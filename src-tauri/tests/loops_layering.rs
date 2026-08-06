@@ -13,9 +13,14 @@
 //! "no known spelling is present", never "the cycle is impossible".
 //!
 //! Widening the net is the only thing a text scan can do, so this file is
-//! written to be widened: `ALLOWED_COMMAND_CHILDREN` is the whole contract, and
-//! the spellings the scan is known to miss are listed below instead of being
-//! left unsaid.
+//! written to be widened: `ALLOWED_COMMAND_REFERENCES` is the whole contract,
+//! and the spellings the scan is known to miss are listed below instead of
+//! being left unsaid.
+//!
+//! Comments and the bodies of string and character literals are removed before
+//! anything is matched, so neither can hide a path from the scan nor feed one
+//! to it. A dependency is code; it is never a comment and never the body of a
+//! literal.
 //!
 //! KNOWN UNCOVERED SPELLINGS.
 //!
@@ -40,23 +45,198 @@
 //!   5. Runtime indirection. A trait object, function pointer or callback whose
 //!      only implementor lives in `commands::loops` and which is wired together
 //!      outside `src/loops/`. No path text appears in the scanned files.
-//!   6. (append here: one entry per spelling a reviewer proves still passes)
+//!   6. `concat!` and friends. `concat!("crate::commands", "::loops")` builds
+//!      the path text out of fragments none of which contains the anchor, and
+//!      the bodies of those literals are removed before the scan in any case.
+//!   7. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::path::{Path, PathBuf};
 
-/// The children of `crate::commands` that `src/loops/` is allowed to name, sorted.
+/// Every `(file, child)` reference under `src/loops/` that is allowed to name a
+/// child of `crate::commands`, sorted.
 ///
 /// `loops::delivery` has referenced `commands::pty` and `commands::session` since
 /// before #1252; neither is in a cycle. Every other child of `commands`, and
-/// `loops` above all, is refused. Adding a name here is a deliberate decision to
-/// accept a new upward arc from the domain into the IPC surface.
-const ALLOWED_COMMAND_CHILDREN: [&str; 2] = ["pty", "session"];
+/// `loops` above all, is refused, and so is either of these two named from any
+/// other file. Adding a row here is a deliberate decision to accept a new upward
+/// arc from the domain into the IPC surface.
+///
+/// The pair is the contract, not the child on its own. Keying on the child alone
+/// made the observed set a union over every file, so
+/// `use crate::commands::session::X;` added to `scheduler.rs` left that set at
+/// `["pty", "session"]` and passed: a new arc from the domain into the IPC
+/// surface that this guard could not see, written in ordinary rustfmt-clean and
+/// clippy-clean Rust. The same union hid a reference moving out of
+/// `delivery.rs` into another file.
+const ALLOWED_COMMAND_REFERENCES: [(&str, &str); 2] = [
+    ("src/loops/delivery.rs", "pty"),
+    ("src/loops/delivery.rs", "session"),
+];
 
 /// The child #1252 removed, called out separately so its failure carries the
 /// explanation of the cycle rather than the generic allowlist message.
 const FORBIDDEN_COMMAND_CHILD: &str = "loops";
 
 const ANCHOR: &str = "commands::";
+
+/// Replace every comment and every string or character literal with a single
+/// space, leaving only code behind.
+///
+/// A comment is whitespace to the Rust lexer, so `commands /* x */ ::loops` is
+/// the same path as `commands::loops`. Normalization collapses whitespace but
+/// never removed comments, so that spelling broke the `commands::` anchor and
+/// passed, and it was measured reintroducing the whole #1252 cycle
+/// (`cyclicSccs = 2`) with this guard, `cargo fmt --check` and
+/// `cargo clippy -- -D warnings` all green. This is a class rather than one
+/// spelling: block, line, nested and multi-line comments all do it, which is why
+/// it is closed here instead of being listed above. A comment becomes a space
+/// and not nothing, because `as/* g */c` is two tokens and must not be welded
+/// into `asc`.
+///
+/// Literal bodies go the same way, for three reasons. Tracking them is what
+/// makes comment removal correct at all: `"https://host"` carries a `//` that
+/// would otherwise blank the rest of its line and hide whatever followed. It
+/// stops prose or a string from holding the observed set at its expected value
+/// after the real references are deleted, which is the failure the membership
+/// assertion below exists to catch. And it removes the false red where an
+/// unclosed `commands::{` inside a doc comment or a string made the scan report
+/// a group it could not delimit.
+///
+/// A literal or comment that never closes is an error rather than a truncated
+/// result, for the same reason an unclosed group is: a scanner that cannot
+/// delimit what it is reading must say so.
+fn code_only(body: &str) -> Result<String, &'static str> {
+    let source: Vec<char> = body.chars().collect();
+    let mut out = String::with_capacity(body.len());
+    let mut index = 0usize;
+
+    while index < source.len() {
+        let character = source[index];
+        let preceded_by_identifier = index
+            .checked_sub(1)
+            .map(|previous| source[previous])
+            .is_some_and(|previous| previous.is_alphanumeric() || previous == '_');
+
+        if character == '/' && source.get(index + 1) == Some(&'/') {
+            while index < source.len() && source[index] != '\n' {
+                index += 1;
+            }
+            out.push(' ');
+            continue;
+        }
+
+        if character == '/' && source.get(index + 1) == Some(&'*') {
+            let mut depth = 0usize;
+            while index < source.len() {
+                if source[index] == '/' && source.get(index + 1) == Some(&'*') {
+                    depth += 1;
+                    index += 2;
+                } else if source[index] == '*' && source.get(index + 1) == Some(&'/') {
+                    depth -= 1;
+                    index += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            if depth != 0 {
+                return Err("a block comment is never closed, so the scan cannot be trusted");
+            }
+            out.push(' ');
+            continue;
+        }
+
+        // `r"..."`, `r#"..."#`, `br"..."` and `br#"..."#`, only at a token
+        // boundary so the `r` ending an identifier is not read as a prefix.
+        if (character == 'r' || character == 'b') && !preceded_by_identifier {
+            let mut cursor = index;
+            if source[cursor] == 'b' {
+                cursor += 1;
+            }
+            if source.get(cursor) == Some(&'r') {
+                cursor += 1;
+                let mut hashes = 0usize;
+                while source.get(cursor) == Some(&'#') {
+                    hashes += 1;
+                    cursor += 1;
+                }
+                if source.get(cursor) == Some(&'"') {
+                    cursor += 1;
+                    let closing: Vec<char> = std::iter::once('"')
+                        .chain(std::iter::repeat_n('#', hashes))
+                        .collect();
+                    let mut closed = false;
+                    while cursor < source.len() {
+                        if source[cursor..].starts_with(closing.as_slice()) {
+                            cursor += closing.len();
+                            closed = true;
+                            break;
+                        }
+                        cursor += 1;
+                    }
+                    if !closed {
+                        return Err("a raw string is never closed, so the scan cannot be trusted");
+                    }
+                    index = cursor;
+                    out.push(' ');
+                    continue;
+                }
+            }
+        }
+
+        if character == '"' {
+            index += 1;
+            let mut closed = false;
+            while index < source.len() {
+                match source[index] {
+                    '\\' => index += 2,
+                    '"' => {
+                        index += 1;
+                        closed = true;
+                        break;
+                    }
+                    _ => index += 1,
+                }
+            }
+            if !closed {
+                return Err("a string literal is never closed, so the scan cannot be trusted");
+            }
+            out.push(' ');
+            continue;
+        }
+
+        // `'x'` and `'\n'` are literals; `'a` is a lifetime. Only a literal is
+        // consumed, so a lifetime cannot swallow the code that follows it.
+        if character == '\'' {
+            if source.get(index + 1) == Some(&'\\') {
+                let mut cursor = index + 3;
+                while cursor < source.len() && source[cursor] != '\'' {
+                    cursor += 1;
+                }
+                if cursor >= source.len() {
+                    return Err(
+                        "a character literal is never closed, so the scan cannot be trusted",
+                    );
+                }
+                index = cursor + 1;
+                out.push(' ');
+                continue;
+            }
+            if source.get(index + 2) == Some(&'\'') {
+                index += 3;
+                out.push(' ');
+                continue;
+            }
+        }
+
+        out.push(character);
+        index += 1;
+    }
+
+    Ok(out)
+}
 
 /// Collapse every run of ASCII whitespace (newlines included, so this is also
 /// CRLF-safe) to one space, then delete the space on both sides of the
@@ -218,6 +398,11 @@ fn relative_of(path: &Path) -> String {
 /// stricter than the detector, which ignores `#[cfg(test)]` items, and strictness
 /// is the safe direction for a guard: a false red is argued about, a false green
 /// is believed.
+///
+/// What is not read is comments and the bodies of literals, which `code_only`
+/// removes first. That is not a narrowing: neither can be a dependency, and
+/// leaving them in was what let a comment inside a path hide the reference and
+/// let prose hold the observed set up after the real references were gone.
 #[test]
 fn no_loops_source_reaches_into_the_command_surface() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/loops");
@@ -227,14 +412,16 @@ fn no_loops_source_reaches_into_the_command_surface() {
         "no Rust sources found under src/loops; the scan proves nothing"
     );
 
-    let mut observed: Vec<String> = Vec::new();
+    let mut observed: Vec<(String, String)> = Vec::new();
     let mut loops_offenders: Vec<String> = Vec::new();
     let mut unlisted_offenders: Vec<String> = Vec::new();
     let mut alias_offenders: Vec<String> = Vec::new();
 
     for path in &files {
         let relative = relative_of(path);
-        let body = normalized(&std::fs::read_to_string(path).expect("read Rust source"));
+        let source = std::fs::read_to_string(path).expect("read Rust source");
+        let code = code_only(&source).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
+        let body = normalized(&code);
         let children =
             command_children(&body).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
         if children
@@ -243,16 +430,17 @@ fn no_loops_source_reaches_into_the_command_surface() {
         {
             loops_offenders.push(relative.clone());
         }
-        if children
-            .iter()
-            .any(|child| !ALLOWED_COMMAND_CHILDREN.contains(&child.as_str()))
-        {
+        if children.iter().any(|child| {
+            !ALLOWED_COMMAND_REFERENCES
+                .iter()
+                .any(|(file, allowed)| *file == relative && allowed == child)
+        }) {
             unlisted_offenders.push(relative.clone());
         }
         if aliases_the_command_group(&body) {
             alias_offenders.push(relative.clone());
         }
-        observed.extend(children);
+        observed.extend(children.into_iter().map(|child| (relative.clone(), child)));
     }
     observed.sort();
     observed.dedup();
@@ -301,9 +489,9 @@ fn no_loops_source_reaches_into_the_command_surface() {
         alias_offenders.join(", ")
     );
 
-    let expected: Vec<String> = ALLOWED_COMMAND_CHILDREN
+    let expected: Vec<(String, String)> = ALLOWED_COMMAND_REFERENCES
         .iter()
-        .map(|child| (*child).to_string())
+        .map(|(file, child)| ((*file).to_string(), (*child).to_string()))
         .collect();
     assert_eq!(
         observed,
@@ -312,17 +500,24 @@ fn no_loops_source_reaches_into_the_command_surface() {
          \n\
          FILES NAMING SOMETHING UNLISTED: {}\n\
          \n\
+         Each entry is a (file, child) pair, because the file is half of the \
+         rule. The two that are allowed, `commands::pty` and `commands::session` \
+         in loops/delivery.rs, predate #1252 and are in no cycle. Naming either \
+         of them from a different file under src/loops is a new arc from the \
+         domain into the IPC surface, so it fails here even though the set of \
+         children on its own would not have moved.\n\
+         \n\
          A LARGER SET means src/loops gained a dependency on the Tauri command \
-         surface. The two that are allowed, `commands::pty` and \
-         `commands::session` in loops/delivery.rs, predate #1252 and are in no \
-         cycle. A third is a decision, not a detail: remove it, or add its name \
-         to ALLOWED_COMMAND_CHILDREN and say in the commit why a new upward arc \
-         from the domain into the IPC surface is acceptable.\n\
+         surface. A third one is a decision, not a detail: remove it, or add its \
+         pair to ALLOWED_COMMAND_REFERENCES and say in the commit why a new \
+         upward arc from the domain into the IPC surface is acceptable.\n\
          \n\
          A SMALLER SET is the more dangerous failure. It usually means the scan \
          stopped seeing references it used to see, because `commands` was \
          renamed or moved or because this matcher was narrowed, and a guard that \
-         observes nothing passes everything. The known references are therefore \
+         observes nothing passes everything. Comments and literal bodies are \
+         removed before the scan so that no amount of prose can hold this set \
+         up while the real references disappear. The known references are \
          asserted by membership and not counted: an equal count is not an equal \
          set.",
         unlisted_offenders.join(", ")
