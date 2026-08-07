@@ -1002,9 +1002,14 @@ const ProjectPanel: Component = () => {
           const compiled = compiledGroups().find((entry) => entry.group.id === groupId);
           return !!compiled?.regex?.test(groupMatchId(wg));
         };
-        const workgroupMatchesAnyGroup = (wg: AcWorkgroup) =>
-          canTestGroupMatchId(wg) &&
-          compiledGroups().some((entry) => entry.regex?.test(groupMatchId(wg)));
+        const workgroupMatchesAnyGroup = (wg: AcWorkgroup) => {
+          const nonStop = groupsConfig().nonStop;
+          return (
+            (canTestGroupMatchId(wg) &&
+              compiledGroups().some((entry) => entry.regex?.test(groupMatchId(wg)))) ||
+            (!!nonStop && nonStopMatchesWorkgroup(nonStop, wg))
+          );
+        };
         const groupPredicate = (wg: AcWorkgroup) => {
           const selected = selectedGroup();
           if (selected.kind === "all") return true;
