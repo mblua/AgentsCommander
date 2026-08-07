@@ -8,6 +8,9 @@ use uuid::Uuid;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+// #1265: keep private. A `pub use` here would re-expose the emitter under the
+// dispatcher's own path and let the deleted arc come back as an import.
+use crate::web::event_broadcast::broadcast_all;
 
 use super::broadcast::WsBroadcaster;
 
@@ -848,17 +851,6 @@ pub fn broadcast_all_r<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str
     let _ = broadcast_all_to_managed(app, event, payload);
 }
 
-/// Emit event to both Tauri windows and WebSocket clients.
-pub fn broadcast_all(
-    app: &tauri::AppHandle,
-    broadcaster: &WsBroadcaster,
-    event: &str,
-    payload: &Value,
-) {
-    let _ = tauri::Emitter::emit(app, event, payload.clone());
-    broadcaster.broadcast_event(event, payload);
-}
-
 // --- Arg helpers ---
 
 fn require_str(args: &Value, key: &str) -> Result<String, String> {
@@ -1155,28 +1147,6 @@ mod tests {
         let payload = json!({ "path": "C:/project", "archived": true });
 
         broadcast_all_r(app.handle(), "project_archive_changed", &payload);
-
-        let event = match receiver.try_recv().expect("broadcast event") {
-            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
-            other => panic!("expected text event, got {other:?}"),
-        };
-        assert_eq!(event["event"], json!("project_archive_changed"));
-        assert_eq!(event["payload"], payload);
-    }
-
-    #[test]
-    fn broadcast_all_sends_to_explicit_websocket_broadcaster() {
-        let managed = WsBroadcaster::new();
-        let explicit = WsBroadcaster::new();
-        let mut receiver = explicit.subscribe();
-        let app = tauri::Builder::default()
-            .any_thread()
-            .manage(managed)
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build test app");
-        let payload = json!({ "path": "C:/project", "archived": false });
-
-        broadcast_all(app.handle(), &explicit, "project_archive_changed", &payload);
 
         let event = match receiver.try_recv().expect("broadcast event") {
             WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).expect("parse event"),
