@@ -56,15 +56,15 @@ mod windows_impl {
         /// Returns `None` (after a warn log) on ANY failure, so a job problem never
         /// blocks a spawn; the identity reaper remains the cleanup fallback.
         ///
-        /// `pid` is the process portable_pty spawned. For a non-`.exe` command the
-        /// non-direct-exe branch of `PtyManager::spawn` wraps it as `cmd.exe /C <cmd>`,
-        /// so `pid` is usually the cmd.exe wrapper and the real agent is a grandchild
-        /// cmd spawns AFTER assignment - that is ideal: KILL_ON_JOB_CLOSE plus
-        /// child-inheritance captures the whole wrapper -> agent -> descendants subtree.
+        /// `pid` is the process portable_pty spawned. For a non-`.exe` command AC
+        /// interposes the configured launcher (`cmd.exe` or PowerShell, #1271), so `pid`
+        /// is usually that launcher and the real agent is a grandchild it spawns AFTER
+        /// assignment - that is ideal: KILL_ON_JOB_CLOSE plus child-inheritance captures
+        /// the whole launcher -> agent -> descendants subtree.
         ///
         /// portable_pty cannot spawn CREATE_SUSPENDED, so `pid` is already running.
         /// A grandchild spawned in the sub-ms window before assignment can escape
-        /// the job; neither cmd.exe nor an agent CLI forks that fast. See the plan
+        /// the job; neither launcher nor an agent CLI forks that fast. See the plan
         /// section 5 for the (accepted, race-bound) shutdown residual this leaves.
         pub fn for_child(pid: u32) -> Option<Self> {
             // SAFETY: every returned handle is null-checked before use; the limit

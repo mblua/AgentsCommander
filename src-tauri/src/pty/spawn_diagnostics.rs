@@ -35,14 +35,17 @@
 //!
 //! ## Windows caveats this module refuses to paper over
 //!
-//! - The first bytes off the PTY are never the child. Measured on the shipping spawn
-//!   shape (`cmd.exe /C codex ...`, which is what AC does for every npm-installed agent
-//!   CLI), **71 bytes arrive within ~45ms with the child still doing nothing**: ConPTY's
+//! - The first bytes off the PTY are never the child. Measured on the `cmd.exe /C codex
+//!   ...` spawn shape, which is what AC did for every npm-installed agent CLI before
+//!   #1271 made the launcher configurable,
+//!   **71 bytes arrive within ~45ms with the child still doing nothing**: ConPTY's
 //!   own handshake (`ESC[?9001h ESC[?1004h`), its screen setup (`ESC[?25l ESC[2J ESC[m
 //!   ESC[H`), and the npm shim's own `title %COMSPEC%` line, which ConPTY renders as an
 //!   OSC title sequence. The paint floor has to sit ABOVE that band or a hung agent
 //!   reads as painted: 64 did not, 256 does. A real coding-agent TUI crosses 256 bytes in
 //!   ~350ms when healthy (measured, fresh codex) and takes seconds when it is hanging.
+//!   The band is launcher-dependent, so #1271 made the floor per family: a PowerShell
+//!   launcher's not-found banner alone is 572 bytes on 5.1 and needs 640.
 //! - `portable_pty::Child::try_wait` cannot tell "running" from "we cannot query this
 //!   handle": `WinChild::is_complete` swallows a failed `GetExitCodeProcess` and
 //!   returns `Ok(None)`, and its `STILL_ACTIVE` sentinel (259) is also a legal exit
@@ -113,12 +116,18 @@ use crate::session::profile::CodingAgentKind;
 const DEFAULT_STALL_TIMEOUT_MS: u64 = 5_000;
 const MAX_STALL_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 /// Output below this many bytes is not a painted screen; it is the shell saying hello.
-/// Measured on the real spawn shape (`cmd.exe /C codex ...`): ConPTY's handshake and
-/// screen setup plus the npm shim's `title %COMSPEC%` put **71 bytes** on the PTY within
-/// ~45ms while the agent itself has written nothing. A floor of 64 was therefore crossed
-/// by noise alone, which made every hung coding agent read as "painted" and silently
-/// disabled the stall detector this module exists for. A healthy codex TUI crosses 256
-/// bytes in ~350ms; a hanging one takes seconds.
+/// Measured on the `cmd.exe /C codex ...` spawn shape, which is the shape AC always used
+/// before #1271: ConPTY's handshake and screen setup plus the npm shim's `title %COMSPEC%`
+/// put **71 bytes** on the PTY within ~45ms while the agent itself has written nothing. A
+/// floor of 64 was therefore crossed by noise alone, which made every hung coding agent
+/// read as "painted" and silently disabled the stall detector this module exists for. A
+/// healthy codex TUI crosses 256 bytes in ~350ms; a hanging one takes seconds.
+///
+/// #1271 - the floor is now PER FAMILY, because the launcher AC interposes is
+/// configurable. A PowerShell launcher's `CommandNotFoundException` banner alone is 572
+/// bytes (5.1) or 380 (pwsh), so 256 would read the most common startup failure as
+/// "painted". `crate::pty::launcher` carries the per-spawn value; this stays the default
+/// and the value for the `cmd.exe` shape it was calibrated on.
 const DEFAULT_PAINT_FLOOR_BYTES: u64 = 256;
 const MAX_PAINT_FLOOR_BYTES: u64 = 64 * 1024;
 const DEFAULT_HEAD_BYTES: u64 = 512;
@@ -180,6 +189,10 @@ pub struct Thresholds {
     /// Deadline for the startup report. Zero disables it.
     pub stall_timeout: Duration,
     pub paint_floor: u64,
+    /// #1271 - true when `AC_SPAWN_PAINT_FLOOR_BYTES` supplied a usable value. An operator
+    /// override wins over the launcher-aware default; the per-family value is the default,
+    /// not a second override layer.
+    pub paint_floor_from_env: bool,
     pub head_bytes: usize,
     pub concurrency_window: Duration,
     pub stop_attribution: Duration,
@@ -196,6 +209,7 @@ impl Thresholds {
     pub const DEFAULT: Self = Self {
         stall_timeout: Duration::from_millis(DEFAULT_STALL_TIMEOUT_MS),
         paint_floor: DEFAULT_PAINT_FLOOR_BYTES,
+        paint_floor_from_env: false,
         head_bytes: DEFAULT_HEAD_BYTES as usize,
         concurrency_window: Duration::from_millis(DEFAULT_CONCURRENCY_WINDOW_MS),
         stop_attribution: Duration::from_millis(DEFAULT_STOP_ATTRIBUTION_MS),
@@ -219,6 +233,7 @@ impl Thresholds {
                 DEFAULT_PAINT_FLOOR_BYTES,
                 MAX_PAINT_FLOOR_BYTES,
             ),
+            paint_floor_from_env: env_u64_is_set("AC_SPAWN_PAINT_FLOOR_BYTES"),
             head_bytes: env_u64("AC_SPAWN_HEAD_BYTES", DEFAULT_HEAD_BYTES, MAX_HEAD_BYTES) as usize,
             concurrency_window: Duration::from_millis(env_u64(
                 "AC_SPAWN_CONCURRENCY_WINDOW_MS",
@@ -233,6 +248,21 @@ impl Thresholds {
             ..Thresholds::DEFAULT
         })
     }
+
+    /// #1271 - apply the launcher-aware default paint floor for this spawn. A value that
+    /// came from `AC_SPAWN_PAINT_FLOOR_BYTES` is left alone: the operator asked for it.
+    pub fn with_default_paint_floor(mut self, paint_floor: u64) -> Self {
+        if !self.paint_floor_from_env {
+            self.paint_floor = paint_floor.min(MAX_PAINT_FLOOR_BYTES);
+        }
+        self
+    }
+}
+
+/// True when `key` holds a value `env_u64` will actually use. A non-numeric value is
+/// warned about and ignored, so it must not count as an override either.
+fn env_u64_is_set(key: &str) -> bool {
+    std::env::var(key).is_ok_and(|raw| raw.trim().parse::<u64>().is_ok())
 }
 
 fn env_u64(key: &str, default: u64, max: u64) -> u64 {
@@ -334,7 +364,9 @@ pub struct SpawnWindow {
 pub struct SpawnRecordInit {
     pub session_id: Uuid,
     pub pid: Option<u32>,
-    /// The argv as executed, including any `cmd.exe /C` wrapper AC added.
+    /// The argv as executed, including any launcher AC interposed (#1271). Under a
+    /// PowerShell launcher the encoded payload is elided and the tokens it encodes are
+    /// restored in plaintext after a `--`, so `scrub` still reaches every secret.
     pub argv: Vec<String>,
     pub cwd: String,
     /// CLI identity from the canonical detector. Keys the stall predicate.
@@ -1069,6 +1101,7 @@ mod tests {
         Thresholds {
             stall_timeout: Duration::from_millis(120),
             paint_floor: DEFAULT_PAINT_FLOOR_BYTES,
+            paint_floor_from_env: false,
             head_bytes: 512,
             concurrency_window: Duration::from_millis(10_000),
             stop_attribution: Duration::from_millis(500),
@@ -1117,9 +1150,52 @@ mod tests {
 
     /// The real thing, captured off a live `cmd.exe /C codex ...` spawn: ConPTY handshake,
     /// ConPTY screen setup, and the npm shim's own `title %COMSPEC%`. 71 bytes, ~45ms, and
-    /// the agent has not written a thing.
+    /// the agent has not written a thing. This is the `Cmd`-family shape; a PowerShell
+    /// launcher has its own, wider preamble and its own floor (#1271).
     const AC_SHELL_PROLOGUE: &[u8] =
         b"\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H\x1b]0;C:\\WINDOWS\\system32\\cmd.exe \x07\x1b[?25h";
+
+    /// #1271 - the deterministic half of "a not-found agent command under a PowerShell
+    /// launcher is still reported as a startup stall". Measured through a real ConPTY, a
+    /// PowerShell `CommandNotFoundException` banner alone is 572 bytes on 5.1 and 380 on
+    /// pwsh, so the `cmd.exe`-calibrated floor of 256 would have read the most common
+    /// startup failure as "painted" and silently turned the detector off. The launcher's
+    /// 640 sits above both banners and below a painted TUI.
+    #[test]
+    fn powershell_not_found_is_still_stalled_at_the_launcher_floor() {
+        const POWERSHELL_51_NOT_FOUND_BANNER: usize = 572;
+        const PWSH_NOT_FOUND_BANNER: usize = 380;
+        let launcher_floor = crate::pty::launcher::build_launch(
+            &crate::pty::launcher::ResolvedLauncher {
+                family: crate::pty::launcher::LauncherFamily::PowerShell,
+                program: "powershell.exe".to_string(),
+            },
+            "claude",
+            &[],
+        )
+        .paint_floor;
+
+        for banner in [POWERSHELL_51_NOT_FOUND_BANNER, PWSH_NOT_FOUND_BANNER] {
+            let stalled = SpawnRecord {
+                thresholds: Thresholds {
+                    paint_floor: launcher_floor,
+                    ..test_thresholds()
+                },
+                ..test_record(Some(CodingAgentKind::Codex))
+            };
+            stalled.note_output(&vec![b'x'; banner]);
+            assert!(
+                stalled.is_stalled(),
+                "{banner} bytes of banner must not count as a painted screen"
+            );
+
+            // The same bytes under the old global floor: this is the regression the
+            // per-family floor exists to prevent.
+            let missed = test_record(Some(CodingAgentKind::Codex));
+            missed.note_output(&vec![b'x'; banner]);
+            assert!(!missed.is_stalled(), "{banner} clears the cmd.exe floor");
+        }
+    }
 
     fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
         let start = Instant::now();

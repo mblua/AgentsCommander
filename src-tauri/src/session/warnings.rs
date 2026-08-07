@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 pub const SESSION_ENV_WARNING_EVENT: &str = "session_env_warning";
 pub const WARNING_KIND_PROTOCOL_MISMATCH: &str = "protocol-mismatch";
+/// #1271 - the configured DEFAULT SHELL could not be used to launch an agent session, so
+/// AC fell back to `cmd.exe`. Never a spawn failure: the session starts either way.
+pub const WARNING_KIND_SHELL_LAUNCHER_FALLBACK: &str = "shell-launcher-fallback";
 pub const CONTAINER_TRANSPORT_PROTOCOL_KEY: &str = "CONTAINER_TRANSPORT_PROTOCOL";
 
 const MAX_WARNINGS_PER_SESSION: usize = 32;

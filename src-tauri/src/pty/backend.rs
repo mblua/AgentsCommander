@@ -161,6 +161,12 @@ pub struct BackendSpawnSpec {
     /// #935 - read-write repo bind mounts for container sessions. Empty for
     /// local-process sessions and when the replica has no admissible repos.
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
+    /// #1271 - the launcher the configured DEFAULT SHELL resolved to for this spawn, or
+    /// `None` when AC chose nothing of its own and the backend keeps its pre-#1271
+    /// behaviour: a direct launch on POSIX, for an `.exe`, and for a container session,
+    /// and the legacy `cmd.exe /C` wrapper for a Windows NON-agent launch of an
+    /// extensionless command (a bare terminal, deliberately left byte for byte as it was).
+    pub launcher: Option<crate::pty::launcher::ResolvedLauncher>,
 }
 
 pub trait PtyBackend: Any + Send + Sync {

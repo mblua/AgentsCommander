@@ -533,6 +533,62 @@ mod tests {
         }
     }
 
+    /// #1271 - the git guard's PATHEXT invariant CHANGED and has to be re-pinned.
+    ///
+    /// `build_git_guard_env` prepends the guard directory to PATH and forces
+    /// `PATHEXT = .CMD;.BAT;.COM;.EXE` so a bare `git` resolves to the guard's `git.cmd`.
+    /// PATHEXT ordering is a `cmd.exe` concept: PowerShell prefers `.ps1` over every
+    /// PATHEXT entry WITHIN a directory, and only then searches PATH in order across
+    /// directories. The guard survives because its directory is prepended and holds
+    /// `git.cmd` with no `git.ps1` beside it - its own PowerShell half is deliberately
+    /// named `git-guard.ps1`. So the invariant is now "PATHEXT decides only where no
+    /// `.ps1` exists in the same directory", and it is launcher-dependent. A future change
+    /// that drops a `git.ps1` into the guard directory would silently invert the ordering,
+    /// which is what this test exists to catch.
+    #[test]
+    fn git_guard_still_wins_under_a_powershell_launcher() {
+        let Ok(Some(guard)) = build_git_guard_env() else {
+            eprintln!("SKIPPED: git.exe not found, so there is no guard to check");
+            return;
+        };
+        assert_eq!(guard.pathext, ".CMD;.BAT;.COM;.EXE");
+
+        let guard_dir = std::env::split_paths(&guard.path)
+            .next()
+            .expect("guard dir is prepended to PATH");
+        assert!(guard_dir.join("git.cmd").is_file());
+        assert!(
+            !guard_dir.join("git.ps1").exists(),
+            "a git.ps1 beside git.cmd would win over it under a PowerShell launcher"
+        );
+
+        let Some(powershell) =
+            crate::pty::launcher::resolve_configured_shell_path("powershell.exe")
+        else {
+            eprintln!("SKIPPED: powershell.exe not resolvable; structural half asserted only");
+            return;
+        };
+        // The same discovery engine `& 'git'` uses inside the launcher payload.
+        let resolved = std::process::Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "(Get-Command git).Source",
+            ])
+            .env("PATH", &guard.path)
+            .env("PATHEXT", &guard.pathext)
+            .output()
+            .expect("probe git discovery");
+        let resolved = String::from_utf8_lossy(&resolved.stdout).trim().to_string();
+        assert_eq!(
+            std::path::Path::new(&resolved),
+            guard_dir.join("git.cmd"),
+            "a bare git must still resolve to the guard under a PowerShell launcher"
+        );
+    }
+
     #[allow(clippy::permissions_set_readonly_false)]
     #[test]
     fn git_guard_writer_skips_unchanged_readonly_file() {
@@ -703,6 +759,7 @@ impl LocalProcessBackend {
             logical_resource_slot: _,
             container_credential: _,
             container_repo_mounts: _,
+            launcher,
         } = spec;
         // #942 - how many sessions were spawned in the window just before this one,
         // and how many of them were the same CLI. Concurrent startups against shared
@@ -726,40 +783,75 @@ impl LocalProcessBackend {
             .openpty(size)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        let is_direct_exe = cmd.to_lowercase().ends_with(".exe")
-            || std::path::Path::new(&cmd)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+        // #1271 - the launcher the configured DEFAULT SHELL resolved to, decided once per
+        // spawn in create_session_inner_impl. `None` means AC chose nothing of its own and
+        // this path keeps its pre-#1271 behaviour: a direct launch on POSIX and for an
+        // `.exe`, and the legacy `cmd.exe /C` wrapper for a Windows NON-agent launch of an
+        // extensionless command, which stays byte for byte what it was on purpose.
+        let launch_plan = launcher
+            .as_ref()
+            .map(|launcher| crate::pty::launcher::build_launch(launcher, &cmd, &args));
+        let is_direct_exe = crate::pty::launcher::is_direct_exe(&cmd);
 
-        let mut command = if cfg!(windows) && !is_direct_exe {
-            let mut c = CommandBuilder::new("cmd.exe");
-            c.arg("/C");
-            c.arg(&cmd);
-            for arg in &args {
-                c.arg(arg);
+        let mut command = match launch_plan.as_ref() {
+            Some(plan) => {
+                let mut c = CommandBuilder::new(&plan.program);
+                for arg in &plan.argv {
+                    c.arg(arg);
+                }
+                c
             }
-            c
-        } else {
-            let mut c = CommandBuilder::new(&cmd);
-            for arg in &args {
-                c.arg(arg);
+            None if cfg!(windows) && !is_direct_exe => {
+                let mut c = CommandBuilder::new("cmd.exe");
+                c.arg("/C");
+                c.arg(&cmd);
+                for arg in &args {
+                    c.arg(arg);
+                }
+                c
             }
-            c
+            None => {
+                let mut c = CommandBuilder::new(&cmd);
+                for arg in &args {
+                    c.arg(arg);
+                }
+                c
+            }
         };
         command.cwd(&spawn_cwd);
 
-        // #942 - the argv exactly as executed, cmd.exe wrapper included. Mirrors the
-        // branch above instead of reshaping the CommandBuilder, so the spawn stays
-        // byte-for-byte what it was.
-        let exec_argv: Vec<String> = if cfg!(windows) && !is_direct_exe {
-            let mut argv = vec!["cmd.exe".to_string(), "/C".to_string(), cmd.clone()];
-            argv.extend(args.iter().cloned());
-            argv
-        } else {
-            let mut argv = vec![cmd.clone()];
-            argv.extend(args.iter().cloned());
-            argv
+        // #942 - the argv exactly as executed, launcher included. Mirrors the branch above
+        // instead of reshaping the CommandBuilder, so the spawn stays byte-for-byte what
+        // it was.
+        //
+        // #1271 - under a PowerShell launcher the executed argv carries a base64 payload,
+        // which `SpawnRecord::scrub` (a plain substring replacement) cannot redact at all.
+        // So the launcher supplies a diagnostics form instead: the payload is elided and
+        // the tokens it encodes are restored in plaintext after a `--`, which keeps the
+        // argv recognisable AND keeps every secret in a position redaction can reach.
+        let exec_argv: Vec<String> = match launch_plan.as_ref() {
+            Some(plan) => plan.diagnostic_argv.clone(),
+            None if cfg!(windows) && !is_direct_exe => {
+                let mut argv = vec!["cmd.exe".to_string(), "/C".to_string(), cmd.clone()];
+                argv.extend(args.iter().cloned());
+                argv
+            }
+            None => {
+                let mut argv = vec![cmd.clone()];
+                argv.extend(args.iter().cloned());
+                argv
+            }
         };
+
+        // #1271 - the stall floor is per spawn, because the launcher AC interposes is
+        // configurable and a PowerShell not-found banner (572 bytes on 5.1) is far wider
+        // than a cmd.exe one. Keeping the cmd.exe-calibrated 256 here would make the most
+        // common startup failure read as "painted" and silently disable the #942 stall
+        // detector. Where AC interposes nothing, the default still applies.
+        let spawn_paint_floor = launch_plan
+            .as_ref()
+            .map(|plan| plan.paint_floor)
+            .unwrap_or(spawn_diagnostics::Thresholds::DEFAULT.paint_floor);
 
         // #942 - what the child will really see for CODEX_HOME: an explicit configured
         // value wins, then an explicit removal, then the AC environment the child
@@ -927,7 +1019,7 @@ impl LocalProcessBackend {
             redact,
             window: spawn_window,
             started: spawn_started,
-            thresholds: diag_thresholds,
+            thresholds: diag_thresholds.with_default_paint_floor(spawn_paint_floor),
         });
 
         // #942 - the startup verdict at the deadline and exit attribution. The PTY

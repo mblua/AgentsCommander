@@ -2031,6 +2031,7 @@ impl ContainerTransportBackend {
             logical_resource_slot,
             container_credential,
             container_repo_mounts,
+            launcher: _,
         } = spec;
 
         let shutdown_producer = self.shutdown_work.register_producer().ok_or_else(|| {
@@ -3763,6 +3764,7 @@ mod tests {
             logical_resource_slot: None,
             container_credential: None,
             container_repo_mounts: Vec::new(),
+            launcher: None,
         }
     }
 

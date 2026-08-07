@@ -2293,6 +2293,52 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
 
         let viewport = viewport.unwrap_or(PtyViewport::DEFAULT);
+
+        // #1271 - the configured DEFAULT SHELL governs the launcher AC interposes when
+        // Windows cannot execute the agent's command directly. Clone the value and drop
+        // the guard: SettingsState is a tokio RwLock and the spawn below opens a real
+        // ConPTY, so a guard held across it would block every settings writer for the
+        // whole spawn.
+        let configured_default_shell = app
+            .state::<SettingsState>()
+            .read()
+            .await
+            .default_shell
+            .clone();
+        // is_agent_owned_launch, not resolved_spawn.is_some(): a restart whose agent
+        // profile no longer resolves falls back to its STORED agent command, and that
+        // session is still an agent session.
+        let launcher_decision = crate::pty::launcher::decide_launcher(
+            cfg!(windows),
+            session.backend_kind != SessionBackendKind::ContainerTransport,
+            is_agent_owned_launch,
+            &configured_default_shell,
+            &shell,
+            &crate::pty::launcher::resolve_configured_shell_path,
+        );
+        if let Some(fallback) = launcher_decision.fallback {
+            // Routed through the finalization collector, never emitted live here: a live
+            // toast would fire before the session exists for the frontend, and a create
+            // that then fails would leave the entry buffered under a session id nobody
+            // will ever drain.
+            let message = match fallback {
+                crate::pty::launcher::LauncherFallback::EmptyConfiguredShell => {
+                    "Default Shell is empty; agent sessions are being launched through cmd.exe. Set a shell in Settings > General.".to_string()
+                }
+                crate::pty::launcher::LauncherFallback::UnsupportedShellFamily => format!(
+                    "Default Shell \"{configured_default_shell}\" cannot be used to launch agent sessions; falling back to cmd.exe. Supported launchers on Windows: cmd.exe, powershell.exe, pwsh.exe."
+                ),
+                crate::pty::launcher::LauncherFallback::ConfiguredShellNotFound => format!(
+                    "Default Shell \"{configured_default_shell}\" was not found on PATH; agent sessions are being launched through cmd.exe."
+                ),
+            };
+            session_env_warnings.push(ContainerEnvWarning {
+                key: "DEFAULT_SHELL".to_string(),
+                kind: crate::session::warnings::WARNING_KIND_SHELL_LAUNCHER_FALLBACK,
+                message,
+            });
+        }
+
         let spawn_spec = BackendSpawnSpec {
             id,
             agent_id: agent_id.clone(),
@@ -2341,6 +2387,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         .collect()
                 })
                 .unwrap_or_default(),
+            launcher: launcher_decision.launcher,
         };
         let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
         drop(spawn_mark);
