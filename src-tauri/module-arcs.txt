@@ -383,7 +383,7 @@ agentscommander_lib::commands::loops -> agentscommander_lib::loops::scheduler
 agentscommander_lib::commands::non_stop -> agentscommander_lib::loops::non_stop_watchdog
 agentscommander_lib::commands::project_settings -> agentscommander_lib::config::project_settings
 agentscommander_lib::commands::project_settings -> agentscommander_lib::web::broadcast
-agentscommander_lib::commands::project_settings -> agentscommander_lib::web::commands
+agentscommander_lib::commands::project_settings -> agentscommander_lib::web::event_broadcast
 agentscommander_lib::commands::pty -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::pty -> agentscommander_lib::config::coordinator_clocks
 agentscommander_lib::commands::pty -> agentscommander_lib::config::root_agent
@@ -976,3 +976,5 @@ agentscommander_lib::web::commands -> agentscommander_lib::session::purge_guard
 agentscommander_lib::web::commands -> agentscommander_lib::session::selection
 agentscommander_lib::web::commands -> agentscommander_lib::session::warnings
 agentscommander_lib::web::commands -> agentscommander_lib::web::broadcast
+agentscommander_lib::web::commands -> agentscommander_lib::web::event_broadcast
+agentscommander_lib::web::event_broadcast -> agentscommander_lib::web::broadcast

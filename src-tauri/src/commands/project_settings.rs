@@ -4,6 +4,7 @@ use crate::config::project_settings::{
     load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
 };
 use crate::web::broadcast::WsBroadcaster;
+use crate::web::event_broadcast::broadcast_all;
 use serde_json::{json, Value};
 use tauri::{AppHandle, State};
 
@@ -41,7 +42,7 @@ pub async fn update_project_groups(
 ) -> Result<WorkgroupGroupsConfig, String> {
     let result = update_project_groups_inner(&path, config)?;
     let payload = project_groups_updated_payload(&path, &result);
-    crate::web::commands::broadcast_all(
+    broadcast_all(
         &app,
         broadcaster.inner(),
         PROJECT_GROUPS_UPDATED_EVENT,
