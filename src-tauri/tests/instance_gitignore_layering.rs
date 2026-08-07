@@ -69,9 +69,10 @@
 //! module's own tests, do not trip the forbidden-name check below.
 //!
 //! Widening the net is the only thing a text scan can do, so this file is
-//! written to be widened: the four `ALLOWED_*` tables are the whole contract,
+//! written to be widened: the six `ALLOWED_*` tables are the whole contract,
 //! and the spellings the scan is known to miss are listed below instead of being
-//! left unsaid.
+//! left unsaid. It was widened once already, by the #1273 review, which is what
+//! the CLOSED notes on entries 14 to 17 record.
 //!
 //! KNOWN UNCOVERED SPELLINGS.
 //!
@@ -163,9 +164,17 @@
 //!      and the equality green. Unlike the equivalent entry in
 //!      `project_settings_layering.rs`, **that deletion can be made to compile**:
 //!      hard-coding the directory name in `required_rules` does it. The
-//!      shrinking-set argument is correspondingly weaker for this one pair, and
-//!      the fourteen-rule behavioural tests in the module are what actually
-//!      hold the production references up.
+//!      shrinking-set argument is correspondingly weaker for this one pair.
+//!
+//!      **This entry used to claim the module's fourteen behavioural tests hold
+//!      the production references up. They do not, and the claim is struck.**
+//!      Measured during the #1273 review: replacing both production references
+//!      with the literal `"ac-root-agent"` leaves this guard at 3 passed AND
+//!      `cargo test --lib config::instance_gitignore` at 15 passed, because
+//!      those tests pin the emitted `.gitignore` bytes, not the path the name is
+//!      reached by. Nothing in this repository currently holds those two
+//!      references up. See entry 19, which is that measurement in full. A
+//!      documented blind spot is usable; a false mitigation is what misleads.
 //!  13. An unanchored path in the constant's home. `src/config/mod.rs` already
 //!      writes `profile::config_dir_name()` three times, a path beginning with
 //!      neither `crate::` nor `super::`, which is why it creates no arc and why
@@ -189,6 +198,12 @@
 //!      unanchored use. Entry 9 anticipated a *moved* glob; this is a *second*
 //!      glob the count cannot see, and unlike a moved one it costs the test
 //!      module nothing.
+//!
+//!      **CLOSED.** The glob count is no longer textual: it counts
+//!      `super::`-anchored items whose leading segment is `GLOB_CHILD`, taken
+//!      before the observed set is deduplicated, so this spelling now counts 2
+//!      and the assertion fires. Proven red on this tree before the closure was
+//!      accepted.
 //!  15. `use super::{*};` in the guarded module. Same evasion of the glob count
 //!      by the same mechanism, and the two children it reports are the allowed
 //!      `*`. Measured: guard **3 passed**. It is the weaker sibling of entry 14
@@ -200,6 +215,11 @@
 //!      change, knot unmoved at 87. That is entry 8's class made writable, and
 //!      it is the cosmetic satisfaction the plan's Section 9.3.2 warns about,
 //!      reached without touching a single anchored path.
+//!
+//!      **CLOSED by the same change as entry 14.** `children_under` normalizes
+//!      the path and walks the brace group, so it reports `*` for this spelling
+//!      exactly as it does for the bare one, and the structural count sees 2.
+//!      Proven red on this tree.
 //!  16. **`use super::*;` at the top level of the constant's home, and it is the
 //!      most damaging spelling found.** `the_constant_home_names_nothing_at_all`
 //!      asserts no glob count at all -- unlike the guarded module's test -- and
@@ -215,6 +235,11 @@
 //!      which #1273 never removed and cannot remove. This is precisely the
 //!      failure this test was written to prevent, walking through the one row it
 //!      allows.
+//!
+//!      **CLOSED.** `the_constant_home_names_nothing_at_all` now asserts the
+//!      same `globs == 1` count the guarded module's test has always asserted,
+//!      so the asymmetry that made this spelling free is gone. Proven red on
+//!      this tree.
 //!  17. **`self::` is scanned under no anchor anywhere in this file.**
 //!      `children_under` is called with `crate::` and `super::` only, and
 //!      `the_constant_home_names_nothing_at_all` does not assert
@@ -229,6 +254,14 @@
 //!      recorded. The same spelling reaches any knot member, not only
 //!      `root_agent`, so the anchorless check would not close the class even if
 //!      the host test asserted it.
+//!
+//!      **CLOSED, and closed as a class rather than a name.** `SELF_ANCHOR` is
+//!      now a third observed set, asserted against an empty table in BOTH tests,
+//!      so any `self::`-anchored reference fails regardless of what it names.
+//!      `the_constant_home_names_nothing_at_all` also asserts `seen.forbidden`
+//!      now, which was computed and thrown away, giving the anchorless
+//!      `root_agent` check a second line of defence over that file. Proven red
+//!      on this tree.
 //!  18. **Promoting an allowed `#[cfg(test)]`-only pair to production.** The
 //!      `ALLOWED_GUARDED_SUPER_REFERENCES` row
 //!      `("src/config/instance_gitignore.rs", "injected_messages")` is allowed
@@ -243,6 +276,14 @@
 //!      87 -> 88, `sccSize` 1 -> **88**, level 1 -> 3. The table's own doc
 //!      comment states the risk; nothing in the file acts on it. Every allowed
 //!      row that names a knot member is one of these.
+//!
+//!      **OPEN, AND DELIBERATELY NOT CLOSED HERE.** This one needs a decision,
+//!      not a matcher change: either the two `injected_messages` imports move
+//!      out of the target's test module, or the allowed row is dropped and the
+//!      pair forbidden. Both are design decisions the frozen plan does not
+//!      cover, so neither was taken during the #1273 review. It is reported
+//!      upward as a follow-up. Until then, treat every allowed row that names a
+//!      knot member as one line of production code away from a regression.
 //!  19. **Entry 12 is live and its stated mitigation does not hold.** That entry
 //!      says "the fourteen-rule behavioural tests in the module are what
 //!      actually hold the production references up". Measured: they do not.
@@ -256,6 +297,14 @@
 //!      bare string literal is neither. So the "moved, not duplicated" property
 //!      of criterion 8 is defeasible by duplicating the *value* rather than the
 //!      definition.
+//!
+//!      **OPEN, AND THIS GUARD CANNOT CLOSE IT.** A hard-coded `"ac-root-agent"`
+//!      is a value, not a path, and this file matches paths. Closing it would
+//!      need a different assertion, that the literal appears exactly once under
+//!      `src/`, which is a separate decision and was not taken here. What the
+//!      #1273 review did do is strike the false mitigation from entry 12: the
+//!      behavioural tests do NOT hold those references up. The blind spot stands
+//!      as the honest record.
 //!  20. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::collections::BTreeSet;
@@ -338,6 +387,32 @@ const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// which is the inversion this guard exists to refuse.
 const ALLOWED_HOST_SUPER_REFERENCES: [(&str, &str); 1] = [("src/config/mod.rs", "*")];
 
+/// Every `(file, child)` reference the guarded module is allowed to make under
+/// `self::`, sorted.
+///
+/// **Empty, and for the same reason the `crate::` table is.** `self::x` and
+/// `x` name the same item, so this anchor is a second spelling of every path
+/// that begins at the module itself, and this module has no such path today.
+///
+/// #1273 review, entry 17: before this table existed, `self::` was scanned under
+/// no anchor anywhere in this file, so it was a free spelling for reaching
+/// anything in scope. An empty equality refuses the whole class rather than the
+/// one name `root_agent`.
+const ALLOWED_GUARDED_SELF_REFERENCES: [(&str, &str); 0] = [];
+
+/// Every `(file, child)` reference the constant's home is allowed to make under
+/// `self::`, sorted.
+///
+/// **Empty, and this is the one that was measured to matter.** From
+/// `src/config/mod.rs`, `self::` means `crate::config`, so
+/// `use self::root_agent::...;` reaches a knot member from the module whose
+/// zero-outgoing-arc property the whole of #1273 Section 4.3 rests on. Measured
+/// during the #1273 review: that one line took the knot 87 to **91** and
+/// `sccSize(config::instance_gitignore)` 1 to **91**, with the guard green,
+/// because no anchor here was reading `self::` at all. Unlike entry 13 the
+/// detector is **not** blind to it: `self::` resolves and the arc is recorded.
+const ALLOWED_HOST_SELF_REFERENCES: [(&str, &str); 0] = [];
+
 /// The module #1273 cut this one away from, matched as a bare identifier under
 /// every anchor and under none.
 ///
@@ -351,6 +426,14 @@ const FORBIDDEN_NAME: &str = "root_agent";
 
 const CRATE_ANCHOR: &str = "crate::";
 const SUPER_ANCHOR: &str = "super::";
+
+/// The third anchor, added by the #1273 review to close entry 17.
+///
+/// `self::` is a legal prefix on any path that starts at the current module, so
+/// leaving it unscanned left a spelling that reached every child of the module
+/// under no anchor this file was reading. Both tests assert it against an empty
+/// table, so it refuses the class and not merely `root_agent`.
+const SELF_ANCHOR: &str = "self::";
 
 /// The module this guard is written about, as path segments below `crate`.
 const GUARDED_MODULE: [&str; 2] = ["config", "instance_gitignore"];
@@ -366,9 +449,21 @@ const HOST_MODULE: [&str; 1] = ["config"];
 const CONSTANT_NAME: &str = "ROOT_AGENT_DIR_NAME";
 const CONSTANT_HOME: &str = "src/config/mod.rs";
 
-/// The one glob import the guarded module is allowed to contain, counted rather
-/// than merely observed. See entry 9 of the uncovered list.
-const GLOB_IMPORT: &str = "use super::*;";
+/// The leading segment `children_under` reports for a glob import.
+///
+/// Counting globs means counting `super::`-anchored items whose leading segment
+/// is this, taken **before** the observed set is deduplicated. See entry 9 of the
+/// uncovered list for why the count exists at all.
+///
+/// #1273 review, entries 14 and 15: this count used to be the number of
+/// occurrences of the literal text `use super::*;`. Neither
+/// `use super::super::*;` nor `use super::{*};` contains that text, so both were
+/// measured slipping past a count whose whole purpose was to be exactly 1, while
+/// the children they report were already allowed rows. Counting structurally
+/// closes both, and closes any other punctuation or nesting that reaches a glob
+/// through `super::`, because `children_under` normalizes the path before it
+/// reads it.
+const GLOB_CHILD: &str = "*";
 
 /// Whether literal bodies survive `scrub`.
 ///
@@ -706,6 +801,17 @@ fn children_under(body: &str, anchor: &str) -> Result<Vec<String>, &'static str>
 ///
 /// Both boundaries are checked, so `root_agent_defaults` and
 /// `x_root_agent` are not hits and `r#root_agent` is.
+///
+/// **`mod root_agent;` is not a hit, and that exemption is what makes this check
+/// applicable to the constant's home at all.** `src/config/mod.rs` is
+/// `config::root_agent`'s parent, so it is *required* to declare it: without the
+/// exemption this check would be red on a correct tree, which is why it could
+/// not simply be switched on for that file. The exemption is safe because a
+/// `mod` declaration is not a dependency and creates no arc, measured and stated
+/// in plan Section 2.7 and in this file's own header. Only the declaration is
+/// exempt: any *use* of the name, `root_agent::X`, `use root_agent::X;` or a
+/// `super::`/`crate::`/`self::`-anchored path, is a separate occurrence and is
+/// still caught.
 fn names_the_replaced_module(body: &str) -> bool {
     let mut from = 0usize;
     while let Some(offset) = body[from..].find(FORBIDDEN_NAME) {
@@ -719,7 +825,8 @@ fn names_the_replaced_module(body: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|character| character.is_alphanumeric() || character == '_');
-        if opens && closes {
+        let declares_it = body[..at].ends_with("mod ") && body[after..].starts_with(';');
+        if opens && closes && !declares_it {
             return true;
         }
         from = after;
@@ -1184,13 +1291,16 @@ fn every_file_under(root: &Path) -> Vec<PathBuf> {
 
 /// What one module's files were observed to name.
 ///
-/// `anchored` and `relative_up` are `(file, child)` pairs under `crate::` and
-/// under `super::` respectively; `aliases` is the files that rename a module
-/// group; `forbidden` is the files that name `root_agent` under no anchor at
-/// all; `globs` is the total number of `use super::*;` across the module.
+/// `anchored`, `relative_up` and `own_module` are `(file, child)` pairs under
+/// `crate::`, under `super::` and under `self::` respectively; `aliases` is the
+/// files that rename a module group; `forbidden` is the files that name
+/// `root_agent` under no anchor at all; `globs` is the number of
+/// `super::`-anchored glob imports across the module, counted before the
+/// observed sets are deduplicated.
 struct Observation {
     anchored: Vec<(String, String)>,
     relative_up: Vec<(String, String)>,
+    own_module: Vec<(String, String)>,
     aliases: Vec<String>,
     forbidden: Vec<String>,
     globs: usize,
@@ -1221,6 +1331,7 @@ fn observe(module: &[&str], reach: Reach) -> Observation {
 
     let mut anchored = Vec::new();
     let mut relative_up = Vec::new();
+    let mut own_module = Vec::new();
     let mut aliases = Vec::new();
     let mut forbidden = Vec::new();
     let mut globs = 0usize;
@@ -1243,22 +1354,33 @@ fn observe(module: &[&str], reach: Reach) -> Observation {
                 .collect::<Vec<_>>()
         };
         anchored.extend(name(children_under(&body, CRATE_ANCHOR)));
-        relative_up.extend(name(children_under(&body, SUPER_ANCHOR)));
+        own_module.extend(name(children_under(&body, SELF_ANCHOR)));
+        // Counted here, before the dedup below, because two globs in one file
+        // deduplicate to one pair and the count is the only thing that sees the
+        // difference. See GLOB_CHILD and entries 9, 14 and 15.
+        let reached_up = name(children_under(&body, SUPER_ANCHOR));
+        globs += reached_up
+            .iter()
+            .filter(|(_, child)| child.as_str() == GLOB_CHILD)
+            .count();
+        relative_up.extend(reached_up);
         if aliases_a_module_group(&body) {
             aliases.push(relative.clone());
         }
         if names_the_replaced_module(&body) {
             forbidden.push(relative.clone());
         }
-        globs += body.matches(GLOB_IMPORT).count();
     }
     anchored.sort();
     anchored.dedup();
     relative_up.sort();
     relative_up.dedup();
+    own_module.sort();
+    own_module.dedup();
     Observation {
         anchored,
         relative_up,
+        own_module,
         aliases,
         forbidden,
         globs,
@@ -1348,7 +1470,8 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
 
     assert_eq!(
         seen.globs, 1,
-        "config::instance_gitignore must contain exactly one `use super::*;`.\n\
+        "src/config/instance_gitignore.rs must contain exactly one glob \
+         import.\n\
          \n\
          WHY: the one that exists is inside `#[cfg(test)] mod tests`, where \
          `super` is this module itself and the glob pulls in the functions under \
@@ -1364,7 +1487,13 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
          needs more of its parent, add the names to its existing glob's file, not \
          a second glob.\n\
          \n\
-         OBSERVED: {} occurrences of `{GLOB_IMPORT}`",
+         THE COUNT IS STRUCTURAL, NOT TEXTUAL. It counts `super::`-anchored \
+         items whose leading segment is `*`, taken before the observed set is \
+         deduplicated, so `use super::super::*;` and `use super::{{*}};` are \
+         counted too. Both were measured passing the old literal count while \
+         adding a real arc: entries 14 and 15.\n\
+         \n\
+         OBSERVED: {} `super::`-anchored glob imports",
         seen.globs
     );
 
@@ -1428,6 +1557,27 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
          removed before the scan so no amount of prose can hold this set up while \
          the real references disappear."
     );
+
+    assert_eq!(
+        seen.own_module,
+        expected(&ALLOWED_GUARDED_SELF_REFERENCES),
+        "the set of names reached by `self::` from config::instance_gitignore \
+         moved.\n\
+         \n\
+         WHY THIS TABLE IS EMPTY: `self::x` and `x` name the same item, so this \
+         anchor is a second spelling of every path that begins at this module, \
+         and this module has no such path today. An empty equality refuses the \
+         whole class rather than one name.\n\
+         \n\
+         WHY IT EXISTS AT ALL: until the #1273 review, `self::` was scanned under \
+         no anchor anywhere in this file. It was measured taking the knot 87 to \
+         91 from the constant's home; here it is closed at the same time, because \
+         a spelling that is free in one guarded module is free in the other. \
+         Entry 17.\n\
+         \n\
+         INSTEAD: name the item without the anchor, so the `super::` equality and \
+         the anchorless check both see it."
+    );
 }
 
 /// #1273 Section 4.3: the knot cannot absorb `config::instance_gitignore`
@@ -1459,6 +1609,64 @@ fn the_constant_home_names_nothing_at_all() {
          \n\
          OFFENDING FILES: {}",
         seen.aliases.join(", ")
+    );
+
+    assert!(
+        seen.forbidden.is_empty(),
+        "the constant's home must not name config::root_agent.\n\
+         \n\
+         WHY: this file is where #1273 put `ROOT_AGENT_DIR_NAME`, precisely so \
+         that nothing below the knot has to reach into it. A path from here into \
+         `config::root_agent` puts `config` in the knot and drags \
+         `config::instance_gitignore` back in with it through arc 547, which \
+         #1273 never removed and cannot remove.\n\
+         \n\
+         WHY IT IS ASSERTED HERE NOW: this observation was computed and thrown \
+         away until the #1273 review. The anchorless check therefore never ran \
+         against this file at all, and `use self::root_agent::...;` here was \
+         measured green while taking the knot 87 to 91. Entry 17.\n\
+         \n\
+         THIS CHECK IS DELIBERATELY ANCHORLESS, for the same reason it is in the \
+         guarded module's test: the arc record cannot see a path that begins with \
+         neither `crate::` nor `super::`. Comments and literal bodies are removed \
+         first.\n\
+         \n\
+         `mod root_agent;` IS EXEMPT AND ONLY THAT. This file is \
+         `config::root_agent`'s parent and must declare it, so without the \
+         exemption this assertion would be red on a correct tree. A `mod` \
+         declaration creates no arc (plan Section 2.7). Any USE of the name is a \
+         separate occurrence and still fails here.\n\
+         \n\
+         OFFENDING FILES: {}",
+        seen.forbidden.join(", ")
+    );
+
+    assert_eq!(
+        seen.globs, 1,
+        "{CONSTANT_HOME} must contain exactly one glob import.\n\
+         \n\
+         WHY: the one that exists is the `use super::*;` inside this file's own \
+         `#[cfg(test)] mod tests`, where `super` is `crate::config` itself. \
+         Written at the TOP LEVEL of this file the same three words mean \
+         `use crate::*;`, which puts every child of the crate root in scope and \
+         gives `config` an outgoing arc to `agentscommander_lib`. That ends the \
+         zero-outgoing-arc premise the whole of #1273 Section 4.3 rests on.\n\
+         \n\
+         THIS IS THE MOST DAMAGING SPELLING THE REVIEW FOUND. Measured: one line \
+         added to this file took the knot 87 to 91 and \
+         `sccSize(config::instance_gitignore)` 1 to 91, with `cargo fmt --check` \
+         at exit 0 and this guard at 3 passed, because the allowed table below \
+         contains the row for the test module's glob and a text scan cannot tell \
+         the two positions apart. Entry 16. The guarded module's test has \
+         asserted this count since day one; this test did not, and that \
+         asymmetry was the hole.\n\
+         \n\
+         INSTEAD: import what you need by name. If the test module genuinely \
+         needs more of its parent, add the names to its existing glob, not a \
+         second one.\n\
+         \n\
+         OBSERVED: {} `super::`-anchored glob imports",
+        seen.globs
     );
 
     assert_eq!(
@@ -1502,6 +1710,31 @@ fn the_constant_home_names_nothing_at_all() {
          \n\
          See that assertion for why an outgoing arc from this file is the one \
          thing that undoes #1273."
+    );
+
+    assert_eq!(
+        seen.own_module,
+        expected(&ALLOWED_HOST_SELF_REFERENCES),
+        "the set of names reached by `self::` from {CONSTANT_HOME} moved.\n\
+         \n\
+         THIS IS THE ANCHOR THAT WAS NOT BEING READ. From this file `self::` \
+         means `crate::config`, so `use self::root_agent::...;` reaches a member \
+         of the knot from the one module whose zero-outgoing-arc property the \
+         whole of #1273 Section 4.3 rests on. Measured during the review: that \
+         one line took the knot 87 to 91 and \
+         `sccSize(config::instance_gitignore)` 1 to 91, with this guard at 3 \
+         passed and `cargo fmt --check` at exit 0, because `children_under` was \
+         only ever called with `crate::` and `super::`. Entry 17.\n\
+         \n\
+         UNLIKE ENTRY 13, THE DETECTOR IS NOT BLIND TO THIS. `self::` resolves \
+         and the arc is recorded, so this spelling is a real regression and not \
+         merely a guard-blind one.\n\
+         \n\
+         THE TABLE IS EMPTY ON PURPOSE. `self::x` and `x` name the same item, so \
+         every row here is a second spelling of a path that should be argued \
+         under its own anchor. The class this closes is every knot member, not \
+         `root_agent` alone, which is why widening the anchorless check would not \
+         have been enough."
     );
 }
 
@@ -1589,10 +1822,14 @@ fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
          WHAT COUNTS AS A DEFINITION: `const` or `static`, then the name, then \
          `:`. The re-export `pub use crate::config::ROOT_AGENT_DIR_NAME;` that \
          #1273 leaves in `src/config/root_agent.rs` names the identifier and \
-         defines nothing, so it is deliberately not counted: 49 references \
-         outside the guarded module still spell \
+         defines nothing, so it is deliberately not counted: 17 references in \
+         five files outside the guarded module still spell \
          `crate::config::root_agent::ROOT_AGENT_DIR_NAME` and resolve through \
-         it.\n\
+         it, and the 31 bare `ROOT_AGENT_DIR_NAME` references inside \
+         `root_agent.rs` itself resolve through it too. (This said 49 until the \
+         #1273 review measured it. 49 is the number of references outside the \
+         guarded module by ANY spelling, which is not the same set; plan Section \
+         4.4 has the split right.)\n\
          \n\
          MORE THAN ONE ENTRY means it was copied rather than moved. NO ENTRY \
          means it was renamed, deleted, or spelled in a way this scan does not \
