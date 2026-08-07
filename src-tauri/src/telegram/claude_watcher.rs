@@ -5,6 +5,8 @@
 // Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
 // constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
 
+pub(super) mod output;
+
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -13,8 +15,8 @@ use tauri::Emitter;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use self::output::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::network::OutboundNetwork;
-use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     find_latest_jsonl, read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS,
     ROTATION_STALE_SECS,
