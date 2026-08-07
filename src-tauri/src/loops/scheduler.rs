@@ -17,6 +17,7 @@ use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
 use crate::config::workspace::existing_workspace_dir;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
+use crate::loops::events::emit_loop_change;
 use crate::shutdown::ShutdownSignal;
 
 pub struct LoopScheduler {
@@ -517,7 +518,7 @@ fn emit_transition(
     message: Option<String>,
 ) {
     let details = details_from_parts(dir, config, state);
-    crate::commands::loops::emit_loop_change(
+    emit_loop_change(
         app,
         project_dir,
         dir,

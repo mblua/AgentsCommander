@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
     read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
-    validate_loop_id, write_loop_config, write_loop_state_atomic, AcLoopSummary,
-    BusyCoordinatorPolicy, LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt,
-    LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
+    validate_loop_id, write_loop_config, write_loop_state_atomic, BusyCoordinatorPolicy,
+    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
+    LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 use crate::config::workspace::existing_workspace_dir;
+// #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
+use crate::loops::events::emit_loop_change;
 use crate::loops::scheduler::LoopScheduler;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,16 +52,6 @@ pub struct LoopUpdateRequest {
 pub struct LoopCronPreview {
     pub next_due_at: Option<chrono::DateTime<Utc>>,
     pub upcoming: Vec<chrono::DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopEventPayload {
-    pub kind: String,
-    pub project_path: String,
-    pub loop_id: String,
-    pub summary: Option<AcLoopSummary>,
-    pub message: Option<String>,
 }
 
 #[tauri::command]
@@ -313,48 +305,5 @@ fn validated_prompt(prompt: String) -> Result<String, String> {
         Err("Loop prompt cannot be empty".to_string())
     } else {
         Ok(prompt)
-    }
-}
-
-pub fn emit_loop_change(
-    app: &AppHandle,
-    project_path: &Path,
-    changed_path: &Path,
-    loop_id: &str,
-    kind: &str,
-    summary: Option<AcLoopSummary>,
-    message: Option<String>,
-) {
-    let project_path = std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.into());
-    let changed_path = std::fs::canonicalize(changed_path).unwrap_or_else(|_| changed_path.into());
-    let project_path_string = project_path.to_string_lossy().to_string();
-    let changed_path_string = changed_path.to_string_lossy().to_string();
-    let _ = app.emit(
-        "loop_event",
-        LoopEventPayload {
-            kind: kind.to_string(),
-            project_path: project_path_string.clone(),
-            loop_id: loop_id.to_string(),
-            summary,
-            message,
-        },
-    );
-    let _ = app.emit(
-        "ac_project_refresh_requested",
-        serde_json::json!({
-            "id": uuid::Uuid::new_v4().to_string(),
-            "projectPath": project_path_string,
-            "changedPath": changed_path_string,
-            "changedName": loop_id,
-            "reason": format!("loop{}", capitalize_reason(kind)),
-        }),
-    );
-}
-
-fn capitalize_reason(kind: &str) -> String {
-    let mut chars = kind.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => "Changed".to_string(),
     }
 }
