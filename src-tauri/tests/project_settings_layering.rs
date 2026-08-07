@@ -151,7 +151,38 @@
 //!      signature. It is written down because the shrinking-set argument is the
 //!      thing somebody will be trusting on the day it stops being true. The
 //!      same asymmetry is recorded in `loops_layering.rs` for #1252.
-//!  13. (append here: one entry per spelling a reviewer proves still passes)
+//!  13. ANY `use crate::<knot member>::...` from the guarded module, and not
+//!      only a reference to `web::commands`. The twelve entries above are all
+//!      written about spellings of that one reference, but the cycle does not
+//!      need it: `web::commands -> commands::project_settings` is alive by
+//!      design, so naming any of the 88 knot members from here closes a cycle
+//!      just as well. Measured on the real tree by adding three words,
+//!      `use crate::session::manager::SessionManager;`, to
+//!      `src/commands/project_settings.rs`: knot 88 to 89,
+//!      `sccSize(commands::project_settings)` 1 to 89, level of `web::commands`
+//!      3 back down to 2, arcs 976 to 977, and **this file green throughout:
+//!      3 passed, 0 failed**. #1265 is undone and no test in the repository
+//!      goes red.
+//!
+//!      CAUSE, and it is an asymmetry between the two guarded modules rather
+//!      than a property of the matcher. The guarded module's test asserts only
+//!      the equality of children under the `web::` anchor, plus the alias
+//!      check. `seen.anchored`, the set of children named under `crate::`, is
+//!      collected by `observe()` and then never asserted for `GUARDED_MODULE`.
+//!      The emitter module does have that equality,
+//!      `ALLOWED_EMITTER_CRATE_REFERENCES`, which is exactly why the
+//!      equivalent spelling is red there and green here.
+//!
+//!      The authoritative check still catches it, as always: the detector puts
+//!      the module straight back into the knot, and the numbers above are what
+//!      it reports. Closing it in this file is cheap and symmetric with what
+//!      already exists, assert `seen.anchored` for `GUARDED_MODULE` against an
+//!      `ALLOWED_GUARDED_CRATE_REFERENCES` table the way the emitter module
+//!      already does. That is tracked in **#1268** and is deliberately not
+//!      done here: it would change the anchor contract of Section 4.3 of
+//!      `plans/1265-extract-project-settings-from-scc.md`, which is
+//!      specification, and appending here is what Section 9.3.5 contemplates.
+//!  14. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
