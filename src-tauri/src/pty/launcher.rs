@@ -695,13 +695,20 @@ mod tests {
                 literal.starts_with('\'') && literal.ends_with('\''),
                 "{token:?}"
             );
-            // Every `'` inside the literal is part of a doubled pair, so none of them can
-            // close it early.
-            assert_eq!(
-                inner.matches('\'').count() % 2,
-                0,
-                "{token:?} leaves an unpaired quote inside the literal"
-            );
+            // Every `'` strictly inside the literal belongs to a doubled pair, so none of
+            // them can close it early. Asserted run by run rather than on the total count:
+            // a parity check passes on `'a'b'c'`, which is two unpaired quotes and a
+            // literal that ends four characters early.
+            let mut rest = inner;
+            while let Some(at) = rest.find('\'') {
+                let run = rest[at..].len() - rest[at..].trim_start_matches('\'').len();
+                assert_eq!(
+                    run % 2,
+                    0,
+                    "{token:?} leaves a run of {run} unpaired quote(s) inside the literal"
+                );
+                rest = &rest[at + run..];
+            }
         }
     }
 
@@ -1160,19 +1167,37 @@ mod windows_behaviour {
     /// under the `cmd.exe` baseline, or be better. NO ROW MAY REGRESS. It is differential
     /// rather than absolute because `cmd.exe` itself damages 7 of the 18 metacharacter
     /// tokens, so "everything survives" would fail on `main` and is not the right question.
+    /// How many rows each arm damaged, so a caller that is pinning a property of the
+    /// command SHAPE (test 32b) can assert on the counts as well. The no-regression rule
+    /// is asserted here for every caller; the counts are evidence, never a hard-coded
+    /// expectation, which is what keeps this objective on a host we did not measure on.
+    struct Differential {
+        rows: usize,
+        baseline_damaged: usize,
+        launcher_damaged: usize,
+    }
+
     fn assert_no_row_regresses(
         label: &str,
         mut baseline: impl FnMut(&str) -> Run,
         mut launcher: impl FnMut(&str) -> Run,
-    ) {
+    ) -> Differential {
         let mut report = String::new();
         let mut regressions = Vec::new();
+        let mut summary = Differential {
+            rows: 0,
+            baseline_damaged: 0,
+            launcher_damaged: 0,
+        };
         for token in super::tests::fixture_matrix() {
             let want = vec![token.to_string()];
             let base = parse_argv(&baseline(token).stdout);
             let ps = parse_argv(&launcher(token).stdout);
             let base_ok = base.as_ref() == Some(&want);
             let ps_ok = ps.as_ref() == Some(&want);
+            summary.rows += 1;
+            summary.baseline_damaged += usize::from(!base_ok);
+            summary.launcher_damaged += usize::from(!ps_ok);
             // The full observed argv, never just its first element: the residual class
             // fails by SPLITTING a token, which a first-element comparison hides.
             report.push_str(&format!(
@@ -1182,13 +1207,17 @@ mod windows_behaviour {
                 regressions.push(format!("{token:?}: baseline={base:?} launcher={ps:?}"));
             }
         }
-        eprintln!("[#1271] argument differential ({label}):\n{report}");
+        eprintln!(
+            "[#1271] argument differential ({label}): {} row(s), baseline damaged {}, launcher damaged {}\n{report}",
+            summary.rows, summary.baseline_damaged, summary.launcher_damaged
+        );
         assert!(
             regressions.is_empty(),
             "{label}: {} row(s) regressed against the cmd.exe baseline:\n{}",
             regressions.len(),
             regressions.join("\n")
         );
+        summary
     }
 
     /// The command is the EXTENSIONLESS `node`, not an absolute path to it, because that
@@ -1220,6 +1249,111 @@ mod windows_behaviour {
                 run_raw("cmd.exe", &args, &cwd, Some(&path))
             },
             |token| run_launcher(&launcher, "node", &[&script, token], &cwd, Some(&path)),
+        );
+    }
+
+    /// 32b. The same matrix again, with the agent command an ABSOLUTE PATH CONTAINING
+    /// SPACES. `cmd /C` removes the first and the last quote of its whole command tail
+    /// when that tail begins and ends with one (2.10, 15.5): `append_quoted` quotes a
+    /// program path that contains a space, so the moment the final argument is quoted too,
+    /// the outer pair goes and `cmd.exe` tries to run the first space-delimited chunk of
+    /// the path. It is a property of the command SHAPE, not of any token, which is why no
+    /// fixture built on a bare program name can see it, and why test 32 must never be
+    /// "simplified" back into this one.
+    ///
+    /// This is a SECOND production defect the change fixes. A PowerShell-family launch
+    /// never routes through `cmd.exe` and is not subject to the rule; a `Cmd`-family launch
+    /// and every fallback keep it, deliberately, because that path is byte for byte
+    /// unchanged by design (6.2).
+    ///
+    /// The target is `node` placed under a directory whose name contains a space, named
+    /// `.com` rather than `.exe` on purpose: `is_direct_exe` is a string test, so an
+    /// absolute `.exe` never reaches a launcher at all, and `.com` is therefore the shape
+    /// in which AC really does interpose one on an absolute path. `CreateProcessW` loads
+    /// the file from its PE header and does not care about the extension.
+    #[test]
+    fn the_absolute_path_with_spaces_shape_collapses_the_cmd_baseline_only() {
+        let Some(launcher) = powershell() else {
+            eprintln!("SKIPPED: powershell.exe not resolvable on this host");
+            return;
+        };
+        let Some(node) = node() else {
+            eprintln!("SKIPPED: node not on PATH");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let spaced = dir.path().join("agent files");
+        std::fs::create_dir_all(&spaced).expect("create a directory whose name has a space");
+        let agent = spaced.join("ac1271agent.com");
+        // A hard link keeps this cheap; a copy is the fallback across volumes.
+        if std::fs::hard_link(&node, &agent).is_err() && std::fs::copy(&node, &agent).is_err() {
+            eprintln!("SKIPPED: could not place a node image at a path containing spaces");
+            return;
+        }
+        let agent = agent.to_string_lossy().to_string();
+        assert!(
+            agent.contains(' '),
+            "the whole point of this fixture is the space: {agent:?}"
+        );
+        let script = argv_printer(dir.path()).to_string_lossy().to_string();
+        let cwd = dir.path().to_path_buf();
+        let path = prepend_path(&spaced);
+
+        // Control, one spawn: the SAME target and the SAME token under test 32's shape,
+        // where the program is a bare name and is therefore not quoted. The tail does not
+        // end up wrapped and `a b` survives. So anything the spaced arm below loses is the
+        // shape's doing, not the token's.
+        let control = run_raw(
+            "cmd.exe",
+            &quoted(&["/C", "ac1271agent", &script, "a b"]),
+            &cwd,
+            Some(&path),
+        );
+        assert_eq!(
+            parse_argv(&control.stdout),
+            Some(vec!["a b".to_string()]),
+            "control: the bare-name baseline must carry {:?} intact, stdout={:?}",
+            "a b",
+            control.stdout
+        );
+
+        // The defect itself, pinned deterministically rather than through a row count.
+        let collapsed = run_raw(
+            "cmd.exe",
+            &quoted(&["/C", &agent, &script, "a b"]),
+            &cwd,
+            Some(&path),
+        );
+        assert_ne!(
+            parse_argv(&collapsed.stdout),
+            Some(vec!["a b".to_string()]),
+            "cmd /C is expected to strip the outer quote pair of a tail that both starts \
+             and ends with one, so this row must NOT survive the baseline; stdout={:?}",
+            collapsed.stdout
+        );
+
+        let differential = assert_no_row_regresses(
+            "absolute path with spaces",
+            |token| {
+                let args = quoted(&["/C", &agent, &script, token]);
+                run_raw("cmd.exe", &args, &cwd, Some(&path))
+            },
+            |token| run_launcher(&launcher, &agent, &[&script, token], &cwd, Some(&path)),
+        );
+
+        // The launcher never routes through `cmd.exe`, so the tail rule cannot reach it and
+        // the measured expectation of 6.7 is zero damage on this shape too.
+        assert_eq!(
+            differential.launcher_damaged, 0,
+            "the PowerShell launcher must stay at 0 damaged rows on the absolute-path shape"
+        );
+        // Evidence, not an assertion: the plan measured the baseline degrading from 7 of 18
+        // damaged on a bare program name to 13 of 18 here. A hard-coded cell value would
+        // stop being objective on a host nobody measured on, so the count is reported and
+        // the deterministic collapse above is what is asserted.
+        assert!(
+            differential.baseline_damaged > differential.launcher_damaged,
+            "the cmd.exe baseline is expected to be strictly worse on this shape"
         );
     }
 
