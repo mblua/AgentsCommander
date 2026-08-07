@@ -1,6 +1,6 @@
 import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from "solid-js";
 import iconUrl from "../../assets/icon-16.png";
-import { SettingsAPI } from "../../shared/ipc";
+import { ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
@@ -26,6 +26,60 @@ const SIDEBAR_SIDE_PRESETS: Array<{ label: string; side: MainSidebarSide }> = [
   { label: "Left", side: "left" },
   { label: "Right", side: "right" },
 ];
+
+const formatScreenshotHotkeyForDisplay = (canonicalHotkey: string): string | null => {
+  const displayTokens = canonicalHotkey.split("+").map((token) => token.trim());
+  if (displayTokens.some((token) => token.length === 0)) return null;
+
+  return displayTokens.join(" + ");
+};
+
+const ScreenshotHotkeyStatusChip: Component = () => {
+  const [canonicalHotkey, setCanonicalHotkey] = createSignal<string | null>(null);
+  const displayHotkey = createMemo(() => {
+    const canonical = canonicalHotkey();
+    return canonical === null ? null : formatScreenshotHotkeyForDisplay(canonical);
+  });
+
+  onMount(() => {
+    let disposed = false;
+    onCleanup(() => {
+      disposed = true;
+    });
+
+    void ScreenshotAPI.getHotkeyStatus()
+      .then((status) => {
+        if (
+          disposed ||
+          status.registered !== true ||
+          status.error !== null ||
+          typeof status.configured !== "string" ||
+          formatScreenshotHotkeyForDisplay(status.configured) === null
+        ) {
+          return;
+        }
+
+        setCanonicalHotkey(status.configured);
+      })
+      .catch(() => {});
+  });
+
+  return (
+    <Show when={displayHotkey()}>
+      {(hotkey) => (
+        <span
+          class="screenshot-hotkey-status"
+          data-ac-testid="screenshot-hotkey-status"
+          title={`Screenshot capture shortcut: ${hotkey()}`}
+          aria-label={`Screenshot capture shortcut: ${hotkey()}`}
+        >
+          <span class="screenshot-hotkey-status-icon" aria-hidden="true">&#x1F4F7;</span>
+          <span class="screenshot-hotkey-status-text">{hotkey()}</span>
+        </span>
+      )}
+    </Show>
+  );
+};
 
 const Titlebar: Component = () => {
   const [layoutOpen, setLayoutOpen] = createSignal(false);
@@ -142,10 +196,13 @@ const Titlebar: Component = () => {
       </div>
       <div class="titlebar-controls">
         <Show when={isTauri}>
-          <WebServerMenu
-            open={webServerOpen()}
-            onOpenChange={setWebServerMenuOpen}
-          />
+          <>
+            <ScreenshotHotkeyStatusChip />
+            <WebServerMenu
+              open={webServerOpen()}
+              onOpenChange={setWebServerMenuOpen}
+            />
+          </>
         </Show>
         <ZoomStepper />
         <div class="layout-dropdown-wrapper">
