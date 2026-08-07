@@ -2031,10 +2031,34 @@ impl Fixture {
     }
 }
 
+fn cleanup_fixture_on_drop(
+    root: &Path,
+    remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()>,
+    mut diagnostic: impl std::io::Write,
+) {
+    if let Err(error) = remove_dir_all(root) {
+        let report_result = std::io::Write::write_fmt(
+            &mut diagnostic,
+            format_args!(
+                "fixture cleanup fallback could not remove isolated fixture {}: {error}\n",
+                root.display()
+            ),
+        );
+        if let Err(report_error) = report_result {
+            // Reporting failure cannot safely trigger another panic from Drop.
+            drop(report_error);
+        }
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         if self.cleanup_on_drop {
-            let _ = fs::remove_dir_all(&self.root);
+            cleanup_fixture_on_drop(
+                &self.root,
+                |root| fs::remove_dir_all(root),
+                std::io::stderr().lock(),
+            );
         }
     }
 }
@@ -2778,6 +2802,39 @@ fn invalid_direct_path_attributes_fail_with_named_diagnostics() {
 
 #[test]
 fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
+    let fixture_root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("claude-watcher-layering")
+        .join("simulated-windows-cleanup-error");
+    assert!(
+        fixture_root.is_absolute(),
+        "simulated cleanup fixture path must be absolute: {}",
+        fixture_root.display()
+    );
+    let simulated_error = std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "simulated Windows sharing violation (os error 32)",
+    );
+    let simulated_error_text = simulated_error.to_string();
+    let mut drop_diagnostic = Vec::new();
+    cleanup_fixture_on_drop(
+        &fixture_root,
+        |observed_root| {
+            assert_eq!(observed_root, fixture_root.as_path());
+            Err(simulated_error)
+        },
+        &mut drop_diagnostic,
+    );
+    let drop_diagnostic = String::from_utf8(drop_diagnostic)
+        .expect("fixture cleanup fallback diagnostic should be UTF-8");
+    assert_eq!(
+        drop_diagnostic,
+        format!(
+            "fixture cleanup fallback could not remove isolated fixture {}: {simulated_error_text}\n",
+            fixture_root.display()
+        ),
+        "Drop fallback must report the absolute fixture path and concrete cleanup error"
+    );
+
     let report = GuardReport {
         sources: [TARGET_ROOT_SOURCE.to_owned()].into_iter().collect(),
         dependencies: [DependencyObservation {
