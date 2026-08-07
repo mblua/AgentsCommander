@@ -10,7 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";
+/// #1273: `ROOT_AGENT_DIR_NAME` moved to `crate::config`, below both this module
+/// and `config::instance_gitignore`, so the instance .gitignore seeder no longer
+/// reaches into this module for one string. Re-exported rather than imported
+/// because 17 references outside this file spell
+/// `crate::config::root_agent::ROOT_AGENT_DIR_NAME`. Do not turn it back into a
+/// `pub const`: `tests/instance_gitignore_layering.rs` asserts the constant is
+/// defined exactly once, in `src/config/mod.rs`.
+pub use crate::config::ROOT_AGENT_DIR_NAME;
 pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
