@@ -13,6 +13,7 @@ pub mod idle_detector;
 pub mod inject;
 pub mod input_activity;
 pub mod job; // #632 - per-agent Job Object for tree-kill
+pub mod launcher; // #1271 - the configured DEFAULT SHELL governs the interposed launcher
 pub mod local_backend;
 pub mod manager;
 pub mod output;
