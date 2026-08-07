@@ -305,7 +305,86 @@
 //!      #1273 review did do is strike the false mitigation from entry 12: the
 //!      behavioural tests do NOT hold those references up. The blind spot stands
 //!      as the honest record.
-//!  20. (append here: one entry per spelling a reviewer proves still passes)
+//!  20. **The `mod root_agent;` exemption does not check what precedes `mod `,
+//!      and that is a hole rather than a blind spot.** `names_the_replaced_module`
+//!      exempts an occurrence when `body[..at].ends_with("mod ")`, with no
+//!      disqualification on the character before it. Every other `mod`-matching
+//!      function in this file -- `find_declarations`, `declared_children` and
+//!      `nested_module_declaration` -- refuses a hit whose preceding character is
+//!      alphanumeric, `_` or `"`, precisely so that `submod x;` is not read as
+//!      `mod x;`. The exemption omits that check, so any text ending in `mod `
+//!      exempts the name.
+//!
+//!      Measured on this tree. A `macro_rules!` defined outside the guarded
+//!      module, matching `(xmod $m:ident;)` and expanding to
+//!      `crate::config::$m::ROOT_AGENT_SESSION_NAME`, invoked from
+//!      `src/config/instance_gitignore.rs` as `probe!(xmod root_agent;);`:
+//!      **guard 3 passed**. The token `root_agent` is present in the guarded
+//!      module's own source and the guard deliberately skips it, while the
+//!      expansion is a production reference from this module into
+//!      `config::root_agent`. The arc record does not move (macro invocations are
+//!      skipped by the detector), so nothing in the repository notices.
+//!
+//!      Note the near miss that makes this specific: written as
+//!      `probe!(mod root_agent;);`, the same attack is caught -- but by
+//!      `declared_children`, which reads the macro argument as a real `mod`
+//!      declaration and aborts because no such file exists. Spelling the
+//!      preceding token `xmod` disqualifies that hit and not the exemption's.
+//!      **The fix is one clause: apply the same preceding-character
+//!      disqualification the other three functions already apply.** Until then
+//!      the exemption is broader than its own doc comment claims, which says
+//!      only the declaration is exempt.
+//!  21. **`extern crate self as <name>;` inside the guarded module.** It
+//!      compiles, it is rustfmt-stable, and it renames the crate root under a
+//!      name no anchor in this file reads.
+//!      `aliases_a_module_group` refuses `use crate as `, `::config as `,
+//!      `{config as `, `,config as `, `config::{self as `, `use super as ` and
+//!      `use super::{self as ` -- this spelling is none of them, and it is the
+//!      most powerful of the family because it aliases the root rather than one
+//!      module group. Measured, one line plus one production function in
+//!      `src/config/instance_gitignore.rs`:
+//!      `extern crate self as c;` then `c::config::injected_messages::...`, guard
+//!      **3 passed**, `cargo fmt --check` **exit 0**, arc record unchanged
+//!      (the detector does not resolve it either). Entry 10 declares the class;
+//!      this is the compiling, one-line member of it, and closing it costs one
+//!      more string in `aliases_a_module_group`.
+//!
+//!      For the record, two neighbours were tried and are caught:
+//!      `use super::super::config as c;` trips the `::config as ` rename, and
+//!      `use super::super::<child> as c;` reports the child pair and fails the
+//!      `super::` equality. `use super::super as c;` does not compile.
+//!  22. **Moving the constant home's glob rather than multiplying it.** Entry 9
+//!      records this class for the guarded module; it is live on the host too,
+//!      and the structural count added for entries 14 to 16 does not see it,
+//!      because moving keeps the total at exactly 1. Measured: deleting
+//!      `use super::*;` from the `#[cfg(test)] mod tests` of `src/config/mod.rs`
+//!      and writing the same three words at the top level of that file leaves
+//!      the guard at **3 passed** with `("src/config/mod.rs", "*")` still the
+//!      one allowed row, while the record gains
+//!      `config -> agentscommander_lib` and the knot goes 87 to **91**.
+//!
+//!      **It is not viable as it stands, and the reason is the compiler and not
+//!      this guard.** `cargo check --all-targets` fails: that test module reaches
+//!      its parent's items through the glob. Every repair turns the guard red --
+//!      naming the items adds `super::` pairs, `use crate::config::*;` or
+//!      `crate::config::...` adds a `crate::` pair against an empty table, and a
+//!      second glob restores the count to 2. So the class is closed in practice
+//!      by two mechanisms neither of which is the count. Recorded because the
+//!      count is what the failure message credits, and a future test module that
+//!      needs less of its parent would remove the compiler's half.
+//!  23. **Entry 13 is now narrower than it reads, and the remainder is still
+//!      open.** Since `the_constant_home_names_nothing_at_all` began asserting
+//!      `seen.forbidden`, an unanchored path from `src/config/mod.rs` into
+//!      `config::root_agent` specifically is caught: measured,
+//!      `root_agent::ROOT_AGENT_SESSION_NAME` in a function there is now red,
+//!      where it was green before the closure. Entry 13's sentence "invisible to
+//!      the detector and to this guard alike" is therefore no longer true for
+//!      that one name. It remains true for every other knot member: measured,
+//!      `injected_messages::INJECTED_MESSAGES_FILENAME` in a function in
+//!      `src/config/mod.rs` is **3 passed**, `cargo fmt --check` exit 0, and the
+//!      arc record does not move. The anchorless check is a name, not a class,
+//!      and only the anchored equalities generalise.
+//!  24. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
