@@ -400,7 +400,89 @@
 //!      `src/config/mod.rs` is **3 passed**, `cargo fmt --check` exit 0, and the
 //!      arc record does not move. The anchorless check is a name, not a class,
 //!      and only the anchored equalities generalise.
-//!  24. (append here: one entry per spelling a reviewer proves still passes)
+//!  24. **The `mod` exemption still exempts a macro argument, and in the
+//!      constant's home nothing else catches it.** Entry 20's fix made
+//!      `keyword_is_whole` use exactly the rule `find_declarations`,
+//!      `declared_children` and `nested_module_declaration` use: the character
+//!      in front of `mod ` must not be alphanumeric, `_` or `"`. That is the
+//!      right rule and it closed `xmod`. It does not close the rest, because
+//!      **punctuation is not disqualified**, and a macro invocation puts
+//!      punctuation in front of the keyword.
+//!
+//!      Measured by extracting `scrub`, `normalized` and
+//!      `names_the_replaced_module` verbatim from this file and running them
+//!      over a table. Nine prefixes keep the exemption while carrying a
+//!      `root_agent` token that is not a declaration:
+//!
+//!        `probe!(mod root_agent;)`    `probe![mod root_agent;]`
+//!        `probe!{mod root_agent;}`    `probe!(a,mod root_agent;)`
+//!        `probe!(!mod root_agent;)`   `probe!(>mod root_agent;)`
+//!        `probe!(.mod root_agent;)`   `probe!(::mod root_agent;)`
+//!        `probe!("x"mod root_agent;)` (the literal is scrubbed to a space first)
+//!
+//!      **In the guarded module this is harmless, and the reason is worth
+//!      knowing.** `declared_children` reads exactly the same text as a real
+//!      `mod root_agent;` declaration, `resolve_children` then finds no
+//!      `src/config/instance_gitignore/root_agent.rs`, and the resolver aborts
+//!      with a hard failure. Measured: `probe!(mod root_agent;)` in the target is
+//!      RED for that reason, not for the forbidden-name reason.
+//!
+//!      **In the constant's home it is live.** `the_constant_home_names_nothing_at_all`
+//!      observes with `Reach::OwnFilesOnly`, so `declared_children` never runs
+//!      over `src/config/mod.rs` at all and only the exemption stands between
+//!      that file and the check. Measured on the merged tree, with a
+//!      `macro_rules!` defined in `src/lib.rs` matching `(mod $m:ident;)` and
+//!      expanding to `crate::config::$m::ROOT_AGENT_SESSION_NAME`, invoked from
+//!      `src/config/mod.rs` as `probe!(mod root_agent;);`: guard **3 passed**,
+//!      and still 3 passed after `cargo fmt` reflows it across three lines, with
+//!      `cargo fmt --check` back at exit 0. The arc record does not move, because
+//!      the detector skips macro invocations, so nothing in the repository
+//!      notices.
+//!
+//!      **This is a residual blind spot, not a regression.** The same probe is
+//!      green against the guard at `c3f6e2c`, the commit that first asserted
+//!      `seen.forbidden` on this file, so no version of this guard ever caught
+//!      it. Entry 20's clause removed a regression; it did not claim to close
+//!      the class, and the class needs a different rule.
+//!
+//!      **The closure is cheap and is a further narrowing, not a widening.**
+//!      After `normalized`, an item-position `mod` can only be preceded by
+//!      nothing, a space, or `}` -- `pub`, `pub(crate)` and `#[cfg(unix)]` all
+//!      leave a space, and a preceding item's `}` is closed up by the
+//!      normalizer. Requiring one of those three drops every row above while
+//!      keeping every real declaration. All nine legitimate forms were measured
+//!      green through the current predicate and would stay green through the
+//!      narrower one.
+//!  25. **`keyword_is_whole` panics on a multi-byte character, and the `'"'` in
+//!      its disqualification set is unreachable.** Two defects in the same
+//!      three lines; neither is a false green, and both are one-line fixes.
+//!
+//!      `at.checked_sub("mod ".len())` yields a **byte** index and
+//!      `body[..keyword_at]` is sliced at it unconditionally, before the
+//!      `ends_with("mod ")` guard is consulted, because the `let` binding is
+//!      evaluated eagerly. If a multi-byte character ends within four bytes of
+//!      any occurrence of `root_agent`, that slice is not on a character
+//!      boundary and the function panics. Measured on the extracted predicate:
+//!      `let \u{00F1}abcroot_agent = 1;` panics with "byte index 5 is not a char
+//!      boundary; it is inside 'n-tilde'". Rust identifiers may be non-ASCII, so
+//!      this is reachable from ordinary code rather than only from a hostile
+//!      file. It fails loud, which is the safe direction, but it replaces the
+//!      #1273 message with a slicing panic that names nothing useful.
+//!      **Fix: make it lazy.** Move the computation behind
+//!      `body[..at].ends_with("mod ")` in the `&&` chain -- when that holds,
+//!      `at - 4` is guaranteed to be a boundary, because `"mod "` is four ASCII
+//!      bytes ending at `at`.
+//!
+//!      The `character == '"'` arm can never fire here. `names_the_replaced_module`
+//!      is only ever called on a body scrubbed with `Literals::Drop`, where every
+//!      string literal has already become a single space, so no `"` survives to
+//!      be examined. It is inherited from `find_declarations`, which *is* called
+//!      on a `with_literals` body and needs it. Harmless -- it can only make the
+//!      disqualification stricter, never looser -- but it does not do the job it
+//!      appears to do, and the row `probe!("x"mod root_agent;)` above is the
+//!      demonstration: the quote is gone before the check sees it, so the prefix
+//!      that reaches the predicate is a space.
+//!  26. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
