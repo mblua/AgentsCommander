@@ -3,12 +3,24 @@
 //! The guard parses Rust syntax and records canonical internal module dependencies.
 //! Later hardening stages extend the same engine with compiler-faithful module-tree
 //! discovery, complete alias resolution, move proofs, and live diagnostics.
+//!
+//! Known blind spots:
+//!
+//! 1. Macro and proc-macro token expansion is not performed. Qualified invocation
+//!    paths are observed, but generated tokens and `include!` contents are not.
+//! 2. Trait, generic, and receiver-method dispatch without a syntactic module path
+//!    is not type-resolved.
+//! 3. Build-script or proc-macro generated source without a literal Rust `mod`
+//!    declaration is outside the module-tree traversal.
+//! 4. Semantic identity introduced only through an outside re-export chain can
+//!    exceed the local alias resolver. The final topology detector remains authoritative.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use syn::{
@@ -25,6 +37,8 @@ const TARGET_ROOT_SOURCE: &str = "src/telegram/claude_watcher.rs";
 const OUTPUT_MODULE: &str = "agentscommander_lib::telegram::claude_watcher::output";
 const OUTPUT_SOURCE: &str = "src/telegram/claude_watcher/output.rs";
 const FOCUSED_RERUN: &str = "cargo test --test claude_watcher_layering -- --nocapture";
+const AUTHORITATIVE_TOPOLOGY: &str = "rust-module-dependency-cycles 1.1.0";
+const SCOPE_TEXT: &str = "SCOPE: this guard is a syntax and compiler module-tree regression net. 1. Macro/proc-macro expansion and include! tokens are not performed. 2. Trait, generic, and receiver dispatch without a syntactic path is not type-resolved. 3. Generated source without a literal mod declaration is outside traversal. 4. Identity available only through an outside re-export chain can exceed the local alias resolver.";
 
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -97,8 +111,8 @@ impl fmt::Display for GuardError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "contract: {}\n{}\nfocused rerun: {}",
-            self.contract, self.detail, FOCUSED_RERUN
+            "CONTRACT: {}\n{}\nfocused rerun: {}\n{}\nauthoritative topology: {}",
+            self.contract, self.detail, FOCUSED_RERUN, SCOPE_TEXT, AUTHORITATIVE_TOPOLOGY
         )
     }
 }
@@ -629,6 +643,13 @@ enum BindingTarget {
     External,
 }
 
+fn describe_binding_target(target: &BindingTarget) -> String {
+    match target {
+        BindingTarget::Internal(path) => path.join("::"),
+        BindingTarget::External => "<external>".to_owned(),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct UseLeaf {
     path: Vec<String>,
@@ -847,8 +868,10 @@ impl DependencyVisitor<'_> {
                 return Err(GuardError::new(
                     "lexical alias conflict",
                     format!(
-                        "binding {name} in {} resolves to conflicting targets {existing:?} and {target:?}",
-                        self.source
+                        "binding {name} in {} resolves to conflicting targets {} and {}",
+                        self.source,
+                        describe_binding_target(existing),
+                        describe_binding_target(&target)
                     ),
                 ));
             }
@@ -1891,9 +1914,48 @@ fn require_exact_source_set(
     ))
 }
 
+fn require_exact_production_report(report: &GuardReport) -> Result<(), GuardError> {
+    let expected_sources = [TARGET_ROOT_SOURCE.to_owned(), OUTPUT_SOURCE.to_owned()]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let expected_dependencies = expected_dependencies();
+    let missing_sources = expected_sources
+        .difference(&report.sources)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unexpected_sources = report
+        .sources
+        .difference(&expected_sources)
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_dependencies = expected_dependencies
+        .difference(&report.dependencies)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unexpected_dependencies = report
+        .dependencies
+        .difference(&expected_dependencies)
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing_sources.is_empty()
+        && unexpected_sources.is_empty()
+        && missing_dependencies.is_empty()
+        && unexpected_dependencies.is_empty()
+    {
+        return Ok(());
+    }
+    Err(GuardError::new(
+        "Claude watcher dependency and source sets",
+        format!(
+            "missing expected source rows: {missing_sources:?}; unexpected observed source rows: {unexpected_sources:?}; missing expected dependency rows: {missing_dependencies:?}; unexpected observed dependency rows: {unexpected_dependencies:?}"
+        ),
+    ))
+}
+
 struct Fixture {
     root: PathBuf,
     manifest: PathBuf,
+    cleanup_on_drop: bool,
 }
 
 impl Fixture {
@@ -1901,7 +1963,11 @@ impl Fixture {
         let parent = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("claude-watcher-layering");
         fs::create_dir_all(&parent).expect("fixture parent should be created");
         let counter = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = parent.join(format!("{label}-{}-{counter}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        let root = parent.join(format!("{label}-{}-{nanos}-{counter}", std::process::id()));
         fs::create_dir(&root).unwrap_or_else(|error| {
             panic!(
                 "fixture directory {} should be exclusive: {error}",
@@ -1910,7 +1976,11 @@ impl Fixture {
         });
         let manifest = root.join("crate");
         fs::create_dir(&manifest).expect("fixture manifest should be created");
-        Self { root, manifest }
+        Self {
+            root,
+            manifest,
+            cleanup_on_drop: true,
+        }
     }
 
     fn write(&self, relative: &str, text: &str) {
@@ -1946,11 +2016,26 @@ impl Fixture {
     fn index_as(&self, crate_id: &str) -> Result<ModuleIndex, GuardError> {
         build_module_index(&self.manifest, &self.manifest.join("src/lib.rs"), crate_id)
     }
+
+    fn cleanup(mut self) -> Result<(), GuardError> {
+        self.cleanup_on_drop = false;
+        fs::remove_dir_all(&self.root).map_err(|error| {
+            GuardError::new(
+                "fixture cleanup",
+                format!(
+                    "could not remove isolated fixture {}: {error}",
+                    self.root.display()
+                ),
+            )
+        })
+    }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        if self.cleanup_on_drop {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -1963,8 +2048,19 @@ fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardE
             "pub mod bridge {{ pub struct BridgeLogger; }}\npub mod claude_watcher {{\n{body}\n}}\n"
         ),
     );
-    let index = fixture.index_as(CRATE_ID)?;
-    analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+    let result = fixture
+        .index_as(CRATE_ID)
+        .and_then(|index| analyze_module_index(&index, CRATE_ID, TARGET_MODULE));
+    let cleanup = fixture.cleanup();
+    match (result, cleanup) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(GuardError::new(
+            "fixture analysis and cleanup",
+            format!("primary failure: {primary}; cleanup failure: {cleanup}"),
+        )),
+    }
 }
 
 fn out_of_line_spelling_report(label: &str, probe: &str) -> Result<GuardReport, GuardError> {
@@ -1979,8 +2075,19 @@ fn out_of_line_spelling_report(label: &str, probe: &str) -> Result<GuardReport, 
         "#[cfg(any())]\n#[path = \"claude_watcher_layering_probe.rs\"]\nmod layering_probe;\n",
     );
     fixture.write("src/telegram/claude_watcher_layering_probe.rs", probe);
-    let index = fixture.index_as(CRATE_ID)?;
-    analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+    let result = fixture
+        .index_as(CRATE_ID)
+        .and_then(|index| analyze_module_index(&index, CRATE_ID, TARGET_MODULE));
+    let cleanup = fixture.cleanup();
+    match (result, cleanup) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(GuardError::new(
+            "fixture analysis and cleanup",
+            format!("primary failure: {primary}; cleanup failure: {cleanup}"),
+        )),
+    }
 }
 
 #[test]
@@ -2622,6 +2729,85 @@ fn module_tree_rejects_escape_duplicate_owner_and_active_source_cycle() {
 }
 
 #[test]
+fn raw_module_ids_normalize_and_exact_cfg_test_bodies_are_excluded() {
+    let fixture = Fixture::new("raw-modules-and-cfg-test");
+    fixture.write("src/lib.rs", "mod r#telegram;\n");
+    fixture.write(
+        "src/telegram.rs",
+        "pub mod r#bridge {}\n#[cfg(test)] mod ignored { mod missing; use super::bridge::Forbidden; }\npub mod r#claude_watcher {}\n",
+    );
+    let index = fixture
+        .index_as(CRATE_ID)
+        .expect("raw target tree should index");
+    assert!(index.declared_modules.contains(TARGET_MODULE));
+    assert!(!index
+        .declared_modules
+        .contains("agentscommander_lib::telegram::ignored"));
+    let report = analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+        .expect("raw target body should analyze");
+    assert!(report
+        .dependencies
+        .iter()
+        .all(|row| row.module != "agentscommander_lib::telegram::bridge"));
+}
+
+#[test]
+fn invalid_direct_path_attributes_fail_with_named_diagnostics() {
+    let non_string = Fixture::new("non-string-path");
+    non_string.write("src/lib.rs", "#[path = 1] mod child;\n");
+    let non_string_message = non_string
+        .index()
+        .expect_err("non-string path must fail")
+        .to_string();
+    assert!(non_string_message.contains("non-string path value"));
+    assert!(non_string_message.contains("module child"));
+
+    let duplicate = Fixture::new("duplicate-direct-path");
+    duplicate.write(
+        "src/lib.rs",
+        "#[path = \"first.rs\"] #[path = \"second.rs\"] mod child;\n",
+    );
+    duplicate.write("src/first.rs", "");
+    duplicate.write("src/second.rs", "");
+    let duplicate_message = duplicate
+        .index()
+        .expect_err("duplicate direct path attributes must fail")
+        .to_string();
+    assert!(duplicate_message.contains("duplicate direct path attributes"));
+}
+
+#[test]
+fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
+    let report = GuardReport {
+        sources: [TARGET_ROOT_SOURCE.to_owned()].into_iter().collect(),
+        dependencies: [DependencyObservation {
+            source: TARGET_ROOT_SOURCE.to_owned(),
+            module: "agentscommander_lib::telegram::bridge".to_owned(),
+        }]
+        .into_iter()
+        .collect(),
+    };
+    let message = require_exact_production_report(&report)
+        .expect_err("incomplete report must fail")
+        .to_string();
+    for marker in [
+        "CONTRACT:",
+        "missing expected source rows",
+        "unexpected observed dependency rows",
+        TARGET_ROOT_SOURCE,
+        "agentscommander_lib::telegram::bridge",
+        FOCUSED_RERUN,
+        "SCOPE:",
+        AUTHORITATIVE_TOPOLOGY,
+    ] {
+        assert!(
+            message.contains(marker),
+            "missing diagnostic marker {marker}"
+        );
+    }
+}
+
+#[test]
 fn production_guard_observes_the_exact_initial_dependency_set() {
     let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crate_root = manifest_root.join("src/lib.rs");
@@ -2630,23 +2816,13 @@ fn production_guard_observes_the_exact_initial_dependency_set() {
     let second_index = build_module_index(&manifest_root, &crate_root, CRATE_ID)
         .expect("second production module tree should build");
     let first = analyze_module_index(&first_index, CRATE_ID, TARGET_MODULE)
-        .expect("production guard should parse and resolve");
+        .unwrap_or_else(|error| panic!("production guard analysis failed:\n{error}"));
     let second = analyze_module_index(&second_index, CRATE_ID, TARGET_MODULE)
-        .expect("second production guard run should parse and resolve");
+        .unwrap_or_else(|error| panic!("second production guard analysis failed:\n{error}"));
 
     assert_eq!(first, second, "guard observations must be deterministic");
-    assert_eq!(
-        first.sources,
-        [TARGET_ROOT_SOURCE.to_owned(), OUTPUT_SOURCE.to_owned()]
-            .into_iter()
-            .collect(),
-        "initial source set must be explicit"
-    );
-    assert_eq!(
-        first.dependencies,
-        expected_dependencies(),
-        "structured dependency set mismatch; rerun with {FOCUSED_RERUN}"
-    );
+    require_exact_production_report(&first)
+        .unwrap_or_else(|error| panic!("production guard failed:\n{error}"));
 }
 
 #[test]
