@@ -334,6 +334,16 @@
 //!      disqualification the other three functions already apply.** Until then
 //!      the exemption is broader than its own doc comment claims, which says
 //!      only the declaration is exempt.
+//!
+//!      **CLOSED.** `names_the_replaced_module` now requires `mod ` to be a
+//!      whole keyword: the character in front of it must not be alphanumeric,
+//!      `_` or `"`, which is the same test the other three functions make.
+//!      `pub mod root_agent;`, `pub(crate) mod root_agent;` and
+//!      `#[cfg(unix)] mod root_agent;` keep the exemption; `xmod root_agent;`
+//!      loses it. Strictly narrower than the first exemption and strictly
+//!      broader than none, which is what the doc comment always claimed and now
+//!      matches. Proven red on this tree with the macro probe above, and the
+//!      real declaration and the anchored spellings re-confirmed unaffected.
 //!  21. **`extern crate self as <name>;` inside the guarded module.** It
 //!      compiles, it is rustfmt-stable, and it renames the crate root under a
 //!      name no anchor in this file reads.
@@ -353,6 +363,12 @@
 //!      `use super::super::config as c;` trips the `::config as ` rename, and
 //!      `use super::super::<child> as c;` reports the child pair and fails the
 //!      `super::` equality. `use super::super as c;` does not compile.
+//!
+//!      **CLOSED.** `"extern crate self as "` is now the eighth spelling
+//!      `aliases_a_module_group` refuses, so the rename is refused rather than
+//!      followed, exactly as the other seven are. Proven red on this tree with
+//!      the alias plus a production reference through it. Entry 10 still stands
+//!      for the class: a rename reached some other way is still not covered.
 //!  22. **Moving the constant home's glob rather than multiplying it.** Entry 9
 //!      records this class for the guarded module; it is live on the host too,
 //!      and the structural count added for entries 14 to 16 does not see it,
@@ -757,6 +773,15 @@ fn normalized(body: &str) -> String {
 /// Anchored on the path punctuation in front of `config` so that English prose
 /// about configuration does not trip it, and on `use crate`/`use super` rather
 /// than the bare keywords for the same reason.
+///
+/// **`extern crate self as <name>;` is the strongest member of the family and was
+/// the last one missing.** It compiles inside the guarded module, it is
+/// rustfmt-stable, and it renames the **crate root** rather than one module
+/// group, so the alias reaches every one of the 87 knot members and not only
+/// `config::root_agent`. Measured during the #1273 review as one line plus one
+/// production reference: guard green, `cargo fmt --check` exit 0, and the
+/// detector does not resolve it either, so nothing in the repository noticed.
+/// Entry 21.
 fn aliases_a_module_group(body: &str) -> bool {
     [
         "use crate as ",
@@ -766,6 +791,7 @@ fn aliases_a_module_group(body: &str) -> bool {
         "config::{self as ",
         "use super as ",
         "use super::{self as ",
+        "extern crate self as ",
     ]
     .iter()
     .any(|spelling| body.contains(spelling))
@@ -891,6 +917,16 @@ fn children_under(body: &str, anchor: &str) -> Result<Vec<String>, &'static str>
 /// exempt: any *use* of the name, `root_agent::X`, `use root_agent::X;` or a
 /// `super::`/`crate::`/`self::`-anchored path, is a separate occurrence and is
 /// still caught.
+///
+/// **`mod ` must be the whole keyword, and the character in front of it is what
+/// decides.** `pub mod root_agent;`, `pub(crate) mod root_agent;` and
+/// `#[cfg(unix)] mod root_agent;` keep the exemption, because a space, `)` or
+/// `]` precedes the keyword. `xmod root_agent;` does not, and that distinction
+/// is load bearing rather than pedantic: inside a macro invocation those are
+/// tokens that compile, and the first version of this exemption skipped them,
+/// which was a measured regression rather than a pre-existing blind spot. Entry
+/// 20 records it. The three other `mod`-matching functions in this file make the
+/// same test for the same reason.
 fn names_the_replaced_module(body: &str) -> bool {
     let mut from = 0usize;
     while let Some(offset) = body[from..].find(FORBIDDEN_NAME) {
@@ -904,7 +940,21 @@ fn names_the_replaced_module(body: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|character| character.is_alphanumeric() || character == '_');
-        let declares_it = body[..at].ends_with("mod ") && body[after..].starts_with(';');
+        // `mod ` has to be the whole keyword and not the tail of an identifier,
+        // decided by the character in front of it exactly as `find_declarations`,
+        // `declared_children` and `nested_module_declaration` decide it. Without
+        // this clause `xmod root_agent;` was exempted too, and inside a macro
+        // invocation that is a token sequence which compiles: entry 20.
+        let keyword_is_whole = at.checked_sub("mod ".len()).is_some_and(|keyword_at| {
+            !body[..keyword_at]
+                .chars()
+                .next_back()
+                .is_some_and(|character| {
+                    character.is_alphanumeric() || character == '_' || character == '"'
+                })
+        });
+        let declares_it =
+            body[..at].ends_with("mod ") && body[after..].starts_with(';') && keyword_is_whole;
         if opens && closes && !declares_it {
             return true;
         }
