@@ -1956,6 +1956,7 @@ struct Fixture {
     root: PathBuf,
     manifest: PathBuf,
     cleanup_on_drop: bool,
+    drop_cleanup: Option<FixtureDropCleanup>,
 }
 
 impl Fixture {
@@ -1980,6 +1981,7 @@ impl Fixture {
             root,
             manifest,
             cleanup_on_drop: true,
+            drop_cleanup: None,
         }
     }
 
@@ -2031,6 +2033,60 @@ impl Fixture {
     }
 }
 
+type FixtureRemoveDirAll = Box<dyn FnOnce(&Path) -> std::io::Result<()>>;
+
+struct FixtureDropCleanup {
+    remove_dir_all: FixtureRemoveDirAll,
+    diagnostic: Box<dyn std::io::Write>,
+}
+
+struct RecordingDiagnostic {
+    bytes: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+}
+
+impl std::io::Write for RecordingDiagnostic {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.bytes.borrow_mut().extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct FailingDiagnostic {
+    write_calls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl std::io::Write for FailingDiagnostic {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        self.write_calls.set(self.write_calls.get() + 1);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "simulated diagnostic writer failure",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Fixture {
+    fn with_drop_cleanup(
+        mut self,
+        remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()> + 'static,
+        diagnostic: impl std::io::Write + 'static,
+    ) -> Self {
+        self.drop_cleanup = Some(FixtureDropCleanup {
+            remove_dir_all: Box::new(remove_dir_all),
+            diagnostic: Box::new(diagnostic),
+        });
+        self
+    }
+}
+
 fn cleanup_fixture_on_drop(
     root: &Path,
     remove_dir_all: impl FnOnce(&Path) -> std::io::Result<()>,
@@ -2054,11 +2110,15 @@ fn cleanup_fixture_on_drop(
 impl Drop for Fixture {
     fn drop(&mut self) {
         if self.cleanup_on_drop {
-            cleanup_fixture_on_drop(
-                &self.root,
-                |root| fs::remove_dir_all(root),
-                std::io::stderr().lock(),
-            );
+            if let Some(cleanup) = self.drop_cleanup.take() {
+                cleanup_fixture_on_drop(&self.root, cleanup.remove_dir_all, cleanup.diagnostic);
+            } else {
+                cleanup_fixture_on_drop(
+                    &self.root,
+                    |root| fs::remove_dir_all(root),
+                    std::io::stderr().lock(),
+                );
+            }
         }
     }
 }
@@ -2802,9 +2862,8 @@ fn invalid_direct_path_attributes_fail_with_named_diagnostics() {
 
 #[test]
 fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
-    let fixture_root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("claude-watcher-layering")
-        .join("simulated-windows-cleanup-error");
+    let fixture = Fixture::new("drop-reporting-contract");
+    let fixture_root = fixture.root.clone();
     assert!(
         fixture_root.is_absolute(),
         "simulated cleanup fixture path must be absolute: {}",
@@ -2815,15 +2874,63 @@ fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
         "simulated Windows sharing violation (os error 32)",
     );
     let simulated_error_text = simulated_error.to_string();
-    let mut drop_diagnostic = Vec::new();
-    cleanup_fixture_on_drop(
-        &fixture_root,
-        |observed_root| {
-            assert_eq!(observed_root, fixture_root.as_path());
+    let drop_diagnostic = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed_fixture_root = fixture_root.clone();
+    let fixture = fixture.with_drop_cleanup(
+        move |observed_root| {
+            assert_eq!(observed_root, observed_fixture_root.as_path());
             Err(simulated_error)
         },
-        &mut drop_diagnostic,
+        RecordingDiagnostic {
+            bytes: std::rc::Rc::clone(&drop_diagnostic),
+        },
     );
+    let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(fixture)));
+    let cleanup_result = fs::remove_dir_all(&fixture_root);
+    assert!(
+        drop_result.is_ok(),
+        "Fixture::drop must not panic while reporting a simulated cleanup failure"
+    );
+    assert!(
+        cleanup_result.is_ok(),
+        "could not remove {} after the injected Fixture::drop failure: {cleanup_result:?}",
+        fixture_root.display()
+    );
+
+    let writer_fixture = Fixture::new("drop-writer-error-contract");
+    let writer_fixture_root = writer_fixture.root.clone();
+    let observed_writer_fixture_root = writer_fixture_root.clone();
+    let write_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let writer_fixture = writer_fixture.with_drop_cleanup(
+        move |observed_root| {
+            assert_eq!(observed_root, observed_writer_fixture_root.as_path());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated Windows sharing violation (os error 32)",
+            ))
+        },
+        FailingDiagnostic {
+            write_calls: std::rc::Rc::clone(&write_calls),
+        },
+    );
+    let writer_drop_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(writer_fixture)));
+    let writer_cleanup_result = fs::remove_dir_all(&writer_fixture_root);
+    assert!(
+        writer_drop_result.is_ok(),
+        "Fixture::drop must not panic when its diagnostic writer returns an error"
+    );
+    assert!(
+        write_calls.get() > 0,
+        "Fixture::drop did not exercise the injected failing diagnostic writer"
+    );
+    assert!(
+        writer_cleanup_result.is_ok(),
+        "could not remove {} after the injected writer failure: {writer_cleanup_result:?}",
+        writer_fixture_root.display()
+    );
+
+    let drop_diagnostic = drop_diagnostic.borrow().clone();
     let drop_diagnostic = String::from_utf8(drop_diagnostic)
         .expect("fixture cleanup fallback diagnostic should be UTF-8");
     assert_eq!(
