@@ -13,6 +13,7 @@ use std::{
 
 use syn::{
     ext::IdentExt,
+    meta::ParseNestedMeta,
     visit::{self, Visit},
     Block, Expr, Item, ItemExternCrate, ItemMod, ItemUse, Lit, Macro, Meta, Path as SynPath, Stmt,
     UseTree, Visibility,
@@ -133,6 +134,94 @@ fn is_exact_cfg_test(item: &ItemMod) -> bool {
                 .parse_args::<syn::Ident>()
                 .is_ok_and(|ident| unraw(&ident) == "test")
     })
+}
+
+fn collect_conditional_paths(
+    meta: ParseNestedMeta<'_>,
+    paths: &mut Vec<PathBuf>,
+) -> syn::Result<()> {
+    let name = meta
+        .path
+        .segments
+        .last()
+        .map(|segment| unraw(&segment.ident))
+        .unwrap_or_default();
+    if name == "path" {
+        let value = meta.value()?.parse::<syn::LitStr>()?;
+        paths.push(PathBuf::from(value.value()));
+        return Ok(());
+    }
+    if meta.input.peek(syn::token::Paren) {
+        let content;
+        syn::parenthesized!(content in meta.input);
+        let nested = content.parse_terminated(|input| input.parse::<Meta>(), syn::Token![,])?;
+        for nested_meta in nested {
+            collect_paths_from_meta(&nested_meta, paths)?;
+        }
+    } else if meta.input.peek(syn::Token![=]) {
+        let _ = meta.value()?.parse::<Expr>()?;
+    }
+    Ok(())
+}
+
+fn collect_paths_from_meta(meta: &Meta, paths: &mut Vec<PathBuf>) -> syn::Result<()> {
+    match meta {
+        Meta::Path(_) => Ok(()),
+        Meta::NameValue(name_value) => {
+            let name = name_value
+                .path
+                .segments
+                .last()
+                .map(|segment| unraw(&segment.ident))
+                .unwrap_or_default();
+            if name == "path" {
+                let Expr::Lit(expression) = &name_value.value else {
+                    return Err(syn::Error::new_spanned(
+                        &name_value.value,
+                        "conditional path must be a string literal",
+                    ));
+                };
+                let Lit::Str(value) = &expression.lit else {
+                    return Err(syn::Error::new_spanned(
+                        &expression.lit,
+                        "conditional path must be a string literal",
+                    ));
+                };
+                paths.push(PathBuf::from(value.value()));
+            }
+            Ok(())
+        }
+        Meta::List(list) => {
+            let nested = list.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            )?;
+            for nested_meta in nested {
+                collect_paths_from_meta(&nested_meta, paths)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn conditional_path_attributes(item: &ItemMod) -> Result<Vec<PathBuf>, GuardError> {
+    let mut paths = Vec::new();
+    for attribute in &item.attrs {
+        if !attribute.path().is_ident("cfg_attr") {
+            continue;
+        }
+        attribute
+            .parse_nested_meta(|meta| collect_conditional_paths(meta, &mut paths))
+            .map_err(|error| {
+                GuardError::new(
+                    "conditional module path attribute",
+                    format!(
+                        "module {} has an invalid cfg_attr path variant: {error}",
+                        unraw(&item.ident)
+                    ),
+                )
+            })?;
+    }
+    Ok(paths)
 }
 
 fn direct_path_attribute(item: &ItemMod) -> Result<Option<PathBuf>, GuardError> {
@@ -335,6 +424,61 @@ impl ModuleTreeBuilder {
         self.canonical_source(existing[0], "out-of-line module canonicalization")
     }
 
+    fn out_of_line_sources(
+        &self,
+        parent: &ModuleBody,
+        item: &ItemMod,
+    ) -> Result<Vec<PathBuf>, GuardError> {
+        let direct = direct_path_attribute(item)?;
+        let conditional = conditional_path_attributes(item)?;
+        if direct.is_some() && !conditional.is_empty() {
+            return Err(GuardError::new(
+                "module path attribute",
+                format!(
+                    "module {} combines a direct path with conditional path variants",
+                    unraw(&item.ident)
+                ),
+            ));
+        }
+
+        let mut sources = vec![self.conventional_source(parent, item)?];
+        if !conditional.is_empty() {
+            let declaration_base = if parent.inline {
+                parent.descendant_base.clone()
+            } else {
+                parent
+                    .source
+                    .parent()
+                    .ok_or_else(|| {
+                        GuardError::new(
+                            "module declaration base",
+                            format!("source has no parent: {}", parent.source.display()),
+                        )
+                    })?
+                    .to_path_buf()
+            };
+            for variant in conditional {
+                let candidate = declaration_base.join(&variant);
+                if !candidate.is_file() {
+                    return Err(GuardError::new(
+                        "conditional module path resolution",
+                        format!(
+                            "conditional path variant {} for module {} does not exist",
+                            candidate.display(),
+                            unraw(&item.ident)
+                        ),
+                    ));
+                }
+                sources.push(
+                    self.canonical_source(&candidate, "conditional module path canonicalization")?,
+                );
+            }
+        }
+        sources.sort();
+        sources.dedup();
+        Ok(sources)
+    }
+
     fn index_body(&mut self, body: ModuleBody) -> Result<(), GuardError> {
         self.index.declared_modules.insert(body.module_id.clone());
         self.index.bodies.push(body.clone());
@@ -359,51 +503,71 @@ impl ModuleTreeBuilder {
 
             if let Some((_, inline_items)) = &module.content {
                 let direct_path = direct_path_attribute(module)?;
-                let descendant_base = if let Some(path) = direct_path {
-                    let declaration_base = if body.inline {
-                        body.descendant_base.clone()
-                    } else {
-                        body.source
-                            .parent()
-                            .ok_or_else(|| {
-                                GuardError::new(
-                                    "inline module base",
-                                    format!("source has no parent: {}", body.source.display()),
-                                )
-                            })?
-                            .to_path_buf()
-                    };
-                    declaration_base.join(path)
+                let conditional_paths = conditional_path_attributes(module)?;
+                if direct_path.is_some() && !conditional_paths.is_empty() {
+                    return Err(GuardError::new(
+                        "module path attribute",
+                        format!(
+                            "inline module {name} combines a direct path with conditional path variants"
+                        ),
+                    ));
+                }
+                let declaration_base = if body.inline {
+                    body.descendant_base.clone()
                 } else {
-                    body.descendant_base.join(&name)
+                    body.source
+                        .parent()
+                        .ok_or_else(|| {
+                            GuardError::new(
+                                "inline module base",
+                                format!("source has no parent: {}", body.source.display()),
+                            )
+                        })?
+                        .to_path_buf()
                 };
-                self.index_body(ModuleBody {
-                    module_id: child_module_id,
-                    source: body.source.clone(),
-                    relative_source: body.relative_source.clone(),
-                    body_id: child_body_id,
-                    descendant_base,
-                    inline: true,
-                    items: inline_items.clone(),
-                })?;
+                let mut descendant_bases = if let Some(path) = direct_path {
+                    vec![declaration_base.join(path)]
+                } else {
+                    vec![body.descendant_base.join(&name)]
+                };
+                descendant_bases.extend(
+                    conditional_paths
+                        .into_iter()
+                        .map(|path| declaration_base.join(path)),
+                );
+                descendant_bases.sort();
+                descendant_bases.dedup();
+                for (base_variant, descendant_base) in descendant_bases.into_iter().enumerate() {
+                    self.index_body(ModuleBody {
+                        module_id: child_module_id.clone(),
+                        source: body.source.clone(),
+                        relative_source: body.relative_source.clone(),
+                        body_id: format!("{child_body_id}@base{base_variant}"),
+                        descendant_base,
+                        inline: true,
+                        items: inline_items.clone(),
+                    })?;
+                }
             } else {
-                let source = self.conventional_source(&body, module)?;
-                self.claim_out_of_line_source(&child_module_id, &source)?;
-                let items = self.parse_source(&source)?;
-                let relative_source = render_relative(&self.manifest_root, &source)?;
-                let descendant_base = descendant_base_for_source(&source)?;
-                self.active_sources.push(source.clone());
-                let result = self.index_body(ModuleBody {
-                    module_id: child_module_id,
-                    source: source.clone(),
-                    relative_source,
-                    body_id: child_body_id,
-                    descendant_base,
-                    inline: false,
-                    items,
-                });
-                self.active_sources.pop();
-                result?;
+                let sources = self.out_of_line_sources(&body, module)?;
+                for (path_variant, source) in sources.into_iter().enumerate() {
+                    self.claim_out_of_line_source(&child_module_id, &source)?;
+                    let items = self.parse_source(&source)?;
+                    let relative_source = render_relative(&self.manifest_root, &source)?;
+                    let descendant_base = descendant_base_for_source(&source)?;
+                    self.active_sources.push(source.clone());
+                    let result = self.index_body(ModuleBody {
+                        module_id: child_module_id.clone(),
+                        source: source.clone(),
+                        relative_source,
+                        body_id: format!("{child_body_id}@path{path_variant}"),
+                        descendant_base,
+                        inline: false,
+                        items,
+                    });
+                    self.active_sources.pop();
+                    result?;
+                }
             }
         }
         Ok(())
@@ -1079,6 +1243,629 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
     .collect()
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SymbolOccurrence {
+    source: String,
+    body_id: String,
+    item_ordinal: usize,
+    associated_item_ordinal: Option<usize>,
+}
+
+type SymbolOccurrences = BTreeMap<String, Vec<SymbolOccurrence>>;
+
+fn expected_moved_symbols() -> BTreeSet<String> {
+    [
+        format!("struct {OUTPUT_MODULE}::BridgeLogger"),
+        format!("method {OUTPUT_MODULE}::BridgeLogger::new"),
+        format!("method {OUTPUT_MODULE}::BridgeLogger::log"),
+        format!("struct {OUTPUT_MODULE}::DiagLogger"),
+        format!("method {OUTPUT_MODULE}::DiagLogger::new"),
+        format!("method {OUTPUT_MODULE}::DiagLogger::log_raw"),
+        format!("method {OUTPUT_MODULE}::DiagLogger::log_sent"),
+        format!("enum {OUTPUT_MODULE}::TelegramErrKind"),
+        format!("fn {OUTPUT_MODULE}::flush_buffer"),
+        format!("fn {OUTPUT_MODULE}::chunk_text"),
+        format!("method {OUTPUT_MODULE}::TelegramErrKind::classify"),
+        format!("method {OUTPUT_MODULE}::TelegramErrKind::as_str"),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn canonical_internal_item_path(
+    current_module: &str,
+    segments: &[String],
+    crate_id: &str,
+    declared_modules: &BTreeSet<String>,
+) -> Option<Vec<String>> {
+    let first = segments.first()?;
+    let mut canonical = if first == "crate" || first == crate_id {
+        vec![crate_id.to_owned()]
+    } else if first == "self" || first == "super" {
+        current_module.split("::").map(str::to_owned).collect()
+    } else {
+        let root = format!("{crate_id}::{first}");
+        if declared_modules
+            .iter()
+            .any(|module| module == &root || module.starts_with(&(root.clone() + "::")))
+        {
+            vec![crate_id.to_owned()]
+        } else if segments.len() == 1 {
+            let mut local = current_module
+                .split("::")
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            local.push(first.clone());
+            return Some(local);
+        } else {
+            return None;
+        }
+    };
+
+    let mut index = 0;
+    if first == "crate" || first == crate_id || first == "self" {
+        index = 1;
+    } else if first != "super" {
+        canonical.push(first.clone());
+        index = 1;
+    }
+    while index < segments.len() && segments[index] == "super" {
+        if canonical.len() <= 1 {
+            return None;
+        }
+        canonical.pop();
+        index += 1;
+    }
+    canonical.extend(segments[index..].iter().cloned());
+    Some(canonical)
+}
+
+fn module_item_aliases(
+    body: &ModuleBody,
+    crate_id: &str,
+    declared_modules: &BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut aliases = BTreeMap::new();
+    for item in &body.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        let mut leaves = Vec::new();
+        expand_use_tree(&item_use.tree, &mut Vec::new(), &mut leaves);
+        for leaf in leaves {
+            let Some(binding) = leaf.binding else {
+                continue;
+            };
+            if let Some(path) = canonical_internal_item_path(
+                &body.module_id,
+                &leaf.path,
+                crate_id,
+                declared_modules,
+            ) {
+                aliases.insert(binding, path);
+            }
+        }
+    }
+    aliases
+}
+
+fn canonical_impl_self_type(
+    body: &ModuleBody,
+    item_impl: &syn::ItemImpl,
+    crate_id: &str,
+    declared_modules: &BTreeSet<String>,
+    aliases: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    if item_impl.trait_.is_some() {
+        return None;
+    }
+    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+    let segments = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| unraw(&segment.ident))
+        .collect::<Vec<_>>();
+    if let Some(alias) = segments.first().and_then(|first| aliases.get(first)) {
+        let mut canonical = alias.clone();
+        canonical.extend(segments.iter().skip(1).cloned());
+        return Some(canonical.join("::"));
+    }
+    canonical_internal_item_path(&body.module_id, &segments, crate_id, declared_modules)
+        .map(|path| path.join("::"))
+}
+
+fn collect_moved_symbol_occurrences(index: &ModuleIndex, crate_id: &str) -> SymbolOccurrences {
+    let direct_names = [
+        "BridgeLogger",
+        "DiagLogger",
+        "TelegramErrKind",
+        "flush_buffer",
+        "chunk_text",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let target_types = ["BridgeLogger", "DiagLogger", "TelegramErrKind"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let target_methods = ["new", "log", "log_raw", "log_sent", "classify", "as_str"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut occurrences = SymbolOccurrences::new();
+
+    for body in &index.bodies {
+        let aliases = module_item_aliases(body, crate_id, &index.declared_modules);
+        for (item_ordinal, item) in body.items.iter().enumerate() {
+            let direct = match item {
+                Item::Struct(item_struct)
+                    if direct_names.contains(unraw(&item_struct.ident).as_str()) =>
+                {
+                    Some(("struct", unraw(&item_struct.ident)))
+                }
+                Item::Enum(item_enum)
+                    if direct_names.contains(unraw(&item_enum.ident).as_str()) =>
+                {
+                    Some(("enum", unraw(&item_enum.ident)))
+                }
+                Item::Fn(item_fn) if direct_names.contains(unraw(&item_fn.sig.ident).as_str()) => {
+                    Some(("fn", unraw(&item_fn.sig.ident)))
+                }
+                _ => None,
+            };
+            if let Some((kind, name)) = direct {
+                occurrences
+                    .entry(format!("{kind} {}::{name}", body.module_id))
+                    .or_default()
+                    .push(SymbolOccurrence {
+                        source: body.relative_source.clone(),
+                        body_id: body.body_id.clone(),
+                        item_ordinal,
+                        associated_item_ordinal: None,
+                    });
+            }
+
+            let Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let Some(self_type) = canonical_impl_self_type(
+                body,
+                item_impl,
+                crate_id,
+                &index.declared_modules,
+                &aliases,
+            ) else {
+                continue;
+            };
+            let self_name = self_type.rsplit("::").next().unwrap_or_default();
+            if !target_types.contains(self_name) {
+                continue;
+            }
+            for (associated_item_ordinal, associated) in item_impl.items.iter().enumerate() {
+                let syn::ImplItem::Fn(method) = associated else {
+                    continue;
+                };
+                let method_name = unraw(&method.sig.ident);
+                if !target_methods.contains(method_name.as_str()) {
+                    continue;
+                }
+                occurrences
+                    .entry(format!("method {self_type}::{method_name}"))
+                    .or_default()
+                    .push(SymbolOccurrence {
+                        source: body.relative_source.clone(),
+                        body_id: body.body_id.clone(),
+                        item_ordinal,
+                        associated_item_ordinal: Some(associated_item_ordinal),
+                    });
+            }
+        }
+    }
+    occurrences
+}
+
+fn verify_exact_moved_symbols(index: &ModuleIndex, crate_id: &str) -> Result<(), GuardError> {
+    let expected = expected_moved_symbols();
+    let occurrences = collect_moved_symbol_occurrences(index, crate_id);
+    let actual = occurrences.keys().cloned().collect::<BTreeSet<_>>();
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let duplicates = occurrences
+        .iter()
+        .filter(|(_, rows)| rows.len() != 1)
+        .map(|(symbol, rows)| (symbol.clone(), rows.clone()))
+        .collect::<Vec<_>>();
+    let misplaced = occurrences
+        .iter()
+        .flat_map(|(symbol, rows)| {
+            rows.iter()
+                .filter(|row| row.source != OUTPUT_SOURCE || !row.body_id.contains("::output#"))
+                .map(|row| (symbol.clone(), row.clone()))
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() && unexpected.is_empty() && duplicates.is_empty() && misplaced.is_empty()
+    {
+        return Ok(());
+    }
+    Err(GuardError::new(
+        "moved symbol identity and location",
+        format!(
+            "missing expected symbols: {missing:?}; unexpected observed symbols: {unexpected:?}; duplicate occurrences: {duplicates:?}; out-of-destination occurrences: {misplaced:?}"
+        ),
+    ))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RequiredVisibility {
+    Private,
+    Crate,
+    Super,
+}
+
+fn restricted_visibility_parts(visibility: &Visibility) -> Option<(bool, Vec<String>)> {
+    let Visibility::Restricted(restricted) = visibility else {
+        return None;
+    };
+    Some((
+        restricted.in_token.is_some(),
+        restricted
+            .path
+            .segments
+            .iter()
+            .map(|segment| unraw(&segment.ident))
+            .collect(),
+    ))
+}
+
+fn describe_visibility(visibility: &Visibility) -> String {
+    match visibility {
+        Visibility::Inherited => "private".to_owned(),
+        Visibility::Public(_) => "pub".to_owned(),
+        Visibility::Restricted(_) => {
+            let (has_in, path) = restricted_visibility_parts(visibility)
+                .expect("restricted visibility should expose its path");
+            if has_in {
+                format!("pub(in {})", path.join("::"))
+            } else {
+                format!("pub({})", path.join("::"))
+            }
+        }
+    }
+}
+
+fn require_visibility(
+    visibility: &Visibility,
+    expected: RequiredVisibility,
+    symbol: &str,
+) -> Result<(), GuardError> {
+    let matches = match expected {
+        RequiredVisibility::Private => matches!(visibility, Visibility::Inherited),
+        RequiredVisibility::Crate => restricted_visibility_parts(visibility)
+            .is_some_and(|(has_in, path)| !has_in && path.len() == 1 && path[0] == "crate"),
+        RequiredVisibility::Super => restricted_visibility_parts(visibility)
+            .is_some_and(|(has_in, path)| !has_in && path.len() == 1 && path[0] == "super"),
+    };
+    if matches {
+        return Ok(());
+    }
+
+    let observed = describe_visibility(visibility);
+    let expected_text = match expected {
+        RequiredVisibility::Private => "private",
+        RequiredVisibility::Crate => "pub(crate) with absent in_token",
+        RequiredVisibility::Super => "pub(super) with absent in_token",
+    };
+    let evidence = if observed == "pub(in crate)" {
+        "; measured detector 1.1.0 variant is graph-neutral, but it violates the canonical in_token.is_none() contract"
+    } else if observed == "pub(in crate::telegram)" {
+        "; external live detector 1.1.0 evidence records claude_watcher::output -> telegram for this spelling"
+    } else {
+        ""
+    };
+    Err(GuardError::new(
+        "exact structured visibility",
+        format!(
+            "symbol {symbol} has observed visibility {observed}; expected {expected_text}{evidence}"
+        ),
+    ))
+}
+
+fn use_leaves(item_use: &ItemUse) -> Vec<UseLeaf> {
+    let mut leaves = Vec::new();
+    expand_use_tree(&item_use.tree, &mut Vec::new(), &mut leaves);
+    leaves
+}
+
+fn exact_use_leaf_set(item_use: &ItemUse, prefix: &[&str], names: &[&str]) -> bool {
+    let leaves = use_leaves(item_use);
+    if leaves.len() != names.len() || leaves.iter().any(|leaf| leaf.glob) {
+        return false;
+    }
+    let expected = names
+        .iter()
+        .map(|name| {
+            prefix
+                .iter()
+                .copied()
+                .chain(std::iter::once(*name))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>();
+    let actual = leaves
+        .iter()
+        .filter(|leaf| leaf.binding.as_ref() == leaf.path.last())
+        .map(|leaf| leaf.path.clone())
+        .collect::<BTreeSet<_>>();
+    actual == expected
+}
+
+fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), GuardError> {
+    let target_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == TARGET_MODULE)
+        .collect::<Vec<_>>();
+    let output_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == OUTPUT_MODULE)
+        .collect::<Vec<_>>();
+    let bridge_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == "agentscommander_lib::telegram::bridge")
+        .collect::<Vec<_>>();
+    if target_bodies.len() != 1 || output_bodies.len() != 1 || bridge_bodies.len() != 1 {
+        return Err(GuardError::new(
+            "interface module identity",
+            format!(
+                "expected one target/output/bridge body, got {}/{}/{}",
+                target_bodies.len(),
+                output_bodies.len(),
+                bridge_bodies.len()
+            ),
+        ));
+    }
+
+    let target_body = target_bodies[0];
+    let output_body = output_bodies[0];
+    let bridge_body = bridge_bodies[0];
+    let output_declarations = target_body
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(item_mod) if unraw(&item_mod.ident) == "output" => Some(item_mod),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if output_declarations.len() != 1 || output_declarations[0].content.is_some() {
+        return Err(GuardError::new(
+            "output module declaration",
+            format!(
+                "expected one out-of-line output declaration in {TARGET_ROOT_SOURCE}, got {}",
+                output_declarations.len()
+            ),
+        ));
+    }
+    require_visibility(
+        &output_declarations[0].vis,
+        RequiredVisibility::Super,
+        "claude_watcher::output module",
+    )?;
+
+    let telegram_output_declarations = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == "agentscommander_lib::telegram")
+        .flat_map(|body| &body.items)
+        .filter(|item| matches!(item, Item::Mod(item_mod) if unraw(&item_mod.ident) == "output"))
+        .count();
+    if telegram_output_declarations != 0 {
+        return Err(GuardError::new(
+            "output module ownership",
+            "telegram/mod.rs declares output; the module must remain nested under Claude",
+        ));
+    }
+
+    let mut interface = BTreeSet::new();
+    let aliases = module_item_aliases(output_body, crate_id, &index.declared_modules);
+    for item in &output_body.items {
+        match item {
+            Item::Struct(item_struct)
+                if matches!(
+                    unraw(&item_struct.ident).as_str(),
+                    "BridgeLogger" | "DiagLogger"
+                ) =>
+            {
+                let name = unraw(&item_struct.ident);
+                require_visibility(
+                    &item_struct.vis,
+                    RequiredVisibility::Crate,
+                    &format!("{OUTPUT_MODULE}::{name}"),
+                )?;
+                for field in &item_struct.fields {
+                    require_visibility(
+                        &field.vis,
+                        RequiredVisibility::Private,
+                        &format!("{OUTPUT_MODULE}::{name} field"),
+                    )?;
+                }
+                interface.insert(format!("struct {name}"));
+            }
+            Item::Enum(item_enum) if unraw(&item_enum.ident) == "TelegramErrKind" => {
+                require_visibility(
+                    &item_enum.vis,
+                    RequiredVisibility::Crate,
+                    &format!("{OUTPUT_MODULE}::TelegramErrKind"),
+                )?;
+                interface.insert("enum TelegramErrKind".to_owned());
+            }
+            Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "flush_buffer" => {
+                require_visibility(
+                    &item_fn.vis,
+                    RequiredVisibility::Crate,
+                    &format!("{OUTPUT_MODULE}::flush_buffer"),
+                )?;
+                interface.insert("fn flush_buffer".to_owned());
+            }
+            Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "chunk_text" => {
+                require_visibility(
+                    &item_fn.vis,
+                    RequiredVisibility::Private,
+                    &format!("{OUTPUT_MODULE}::chunk_text"),
+                )?;
+                interface.insert("fn chunk_text private".to_owned());
+            }
+            Item::Impl(item_impl) => {
+                let Some(self_type) = canonical_impl_self_type(
+                    output_body,
+                    item_impl,
+                    crate_id,
+                    &index.declared_modules,
+                    &aliases,
+                ) else {
+                    continue;
+                };
+                let self_name = self_type.rsplit("::").next().unwrap_or_default();
+                for associated in &item_impl.items {
+                    let syn::ImplItem::Fn(method) = associated else {
+                        continue;
+                    };
+                    let method_name = unraw(&method.sig.ident);
+                    let required = matches!(
+                        (self_name, method_name.as_str()),
+                        ("BridgeLogger", "new" | "log")
+                            | ("DiagLogger", "new" | "log_raw" | "log_sent")
+                            | ("TelegramErrKind", "classify" | "as_str")
+                    );
+                    if required {
+                        require_visibility(
+                            &method.vis,
+                            RequiredVisibility::Crate,
+                            &format!("{self_type}::{method_name}"),
+                        )?;
+                        interface.insert(format!("method {self_name}::{method_name}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let expected_interface = [
+        "struct BridgeLogger",
+        "method BridgeLogger::new",
+        "method BridgeLogger::log",
+        "struct DiagLogger",
+        "method DiagLogger::new",
+        "method DiagLogger::log_raw",
+        "method DiagLogger::log_sent",
+        "enum TelegramErrKind",
+        "method TelegramErrKind::classify",
+        "method TelegramErrKind::as_str",
+        "fn flush_buffer",
+        "fn chunk_text private",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    if interface != expected_interface {
+        return Err(GuardError::new(
+            "output interface members",
+            format!("expected {expected_interface:?}; observed {interface:?}"),
+        ));
+    }
+
+    let bridge_uses = bridge_body
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(item_use) => Some(item_use),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let facade = bridge_uses
+        .iter()
+        .copied()
+        .filter(|item_use| {
+            exact_use_leaf_set(
+                item_use,
+                &["super", "claude_watcher", "output"],
+                &["flush_buffer", "BridgeLogger", "DiagLogger"],
+            )
+        })
+        .collect::<Vec<_>>();
+    if facade.len() != 1 {
+        return Err(GuardError::new(
+            "bridge compatibility facade",
+            format!("expected one exact three-item facade, got {}", facade.len()),
+        ));
+    }
+    require_visibility(
+        &facade[0].vis,
+        RequiredVisibility::Super,
+        "bridge output compatibility facade",
+    )?;
+    let enum_import = bridge_uses
+        .iter()
+        .copied()
+        .filter(|item_use| {
+            exact_use_leaf_set(
+                item_use,
+                &["super", "claude_watcher", "output"],
+                &["TelegramErrKind"],
+            )
+        })
+        .collect::<Vec<_>>();
+    if enum_import.len() != 1 {
+        return Err(GuardError::new(
+            "bridge private error import",
+            format!("expected one direct enum import, got {}", enum_import.len()),
+        ));
+    }
+    require_visibility(
+        &enum_import[0].vis,
+        RequiredVisibility::Private,
+        "bridge TelegramErrKind import",
+    )?;
+
+    let claude_import = target_body
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(item_use)
+                if exact_use_leaf_set(
+                    item_use,
+                    &["self", "output"],
+                    &["flush_buffer", "BridgeLogger", "DiagLogger"],
+                ) =>
+            {
+                Some(item_use)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if claude_import.len() != 1 {
+        return Err(GuardError::new(
+            "Claude direct output import",
+            format!(
+                "expected one exact three-item import, got {}",
+                claude_import.len()
+            ),
+        ));
+    }
+    require_visibility(
+        &claude_import[0].vis,
+        RequiredVisibility::Private,
+        "Claude watcher output import",
+    )?;
+    Ok(())
+}
+
 fn require_exact_source_set(
     report: &GuardReport,
     expected: &BTreeSet<String>,
@@ -1308,6 +2095,116 @@ fn cfg_disabled_out_of_line_spelling_rows_are_scanned() {
 }
 
 #[test]
+fn recursively_nested_cfg_attr_path_variants_scan_every_alternative() {
+    let fixture = Fixture::new("21-nested-cfg-attr-raw-child");
+    fixture.write("src/lib.rs", "mod telegram;\n");
+    fixture.write(
+        "src/telegram.rs",
+        "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
+    );
+    fixture.write(
+        "src/telegram/claude_watcher.rs",
+        "#[cfg_attr(any(), cfg_attr(any(), r#path = \"probe_a.rs\"), path = \"probe_b.rs\")]\nmod r#child;\n",
+    );
+    fixture.write(
+        "src/telegram/claude_watcher/child.rs",
+        "fn conventional() {}\n",
+    );
+    fixture.write(
+        "src/telegram/probe_a.rs",
+        "use crate::telegram::{bridge as b}; use b::BridgeLogger;\n",
+    );
+    fixture.write("src/telegram/probe_b.rs", "fn second_variant() {}\n");
+
+    let index = fixture
+        .index_as(CRATE_ID)
+        .expect("nested cfg_attr path alternatives should all index");
+    let report = analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+        .expect("all conditional target descendants should scan");
+    assert!(report
+        .sources
+        .contains("src/telegram/claude_watcher/child.rs"));
+    assert!(report.sources.contains("src/telegram/probe_a.rs"));
+    assert!(report.sources.contains("src/telegram/probe_b.rs"));
+    assert!(report.dependencies.contains(&DependencyObservation {
+        source: "src/telegram/probe_a.rs".to_owned(),
+        module: "agentscommander_lib::telegram::bridge".to_owned(),
+    }));
+}
+
+#[test]
+fn path_attribute_matrix_handles_rebases_and_rejects_invalid_combinations() {
+    let direct = Fixture::new("direct-path-outside-inline");
+    direct.write(
+        "src/lib.rs",
+        "#[path = \"alternate/telegram.rs\"] mod telegram;\n",
+    );
+    direct.write("src/alternate/telegram.rs", "pub mod claude_watcher {}\n");
+    assert!(direct
+        .index()
+        .expect("direct path should resolve")
+        .declared_modules
+        .contains("fixture::telegram::claude_watcher"));
+
+    for (label, outer_source, child_source) in [
+        (
+            "inline-path-lib-owner",
+            "#[path = \"rebased\"] mod outer { mod child; }\n",
+            "src/rebased/child.rs",
+        ),
+        (
+            "inline-non-mod-owner",
+            "mod outer;\n",
+            "src/outer/inline/child.rs",
+        ),
+        (
+            "inline-mod-owner",
+            "mod outer;\n",
+            "src/outer/inline/child.rs",
+        ),
+    ] {
+        let fixture = Fixture::new(label);
+        fixture.write("src/lib.rs", outer_source);
+        if label == "inline-non-mod-owner" {
+            fixture.write("src/outer.rs", "mod inline { mod child; }\n");
+        }
+        if label == "inline-mod-owner" {
+            fixture.write("src/outer/mod.rs", "mod inline { mod child; }\n");
+        }
+        fixture.write(child_source, "fn discovered() {}\n");
+        fixture
+            .index()
+            .unwrap_or_else(|error| panic!("inline path fixture {label} did not resolve: {error}"));
+    }
+
+    let combined = Fixture::new("direct-plus-conditional");
+    combined.write(
+        "src/lib.rs",
+        "#[path = \"direct.rs\"] #[cfg_attr(any(), path = \"conditional.rs\")] mod child;\n",
+    );
+    combined.write("src/direct.rs", "");
+    combined.write("src/conditional.rs", "");
+    let combined_error = combined
+        .index()
+        .expect_err("direct and conditional path combination must fail")
+        .to_string();
+    assert!(combined_error.contains("combines a direct path"));
+
+    let missing = Fixture::new("missing-conditional-variant");
+    missing.write(
+        "src/lib.rs",
+        "#[cfg_attr(any(), path = \"missing.rs\")] mod child;\n",
+    );
+    missing.write("src/child.rs", "");
+    let missing_error = missing
+        .index()
+        .expect_err("every conditional path variant must exist")
+        .to_string();
+    assert!(missing_error.contains("conditional path variant"));
+    assert!(missing_error.contains("missing.rs"));
+}
+
+#[test]
 fn inert_text_and_macro_tokens_do_not_create_bridge_dependencies() {
     let rows = [
         ("line-comment", "// crate::telegram::bridge::BridgeLogger"),
@@ -1366,6 +2263,167 @@ fn alias_conflicts_cycles_and_globs_fail_closed() {
         assert!(message.contains(marker), "row {label}: {message}");
         assert!(message.contains(FOCUSED_RERUN));
     }
+}
+
+#[test]
+fn production_moved_symbols_and_all_seven_methods_exist_once_at_the_destination() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build");
+    verify_exact_moved_symbols(&index, CRATE_ID)
+        .unwrap_or_else(|error| panic!("moved-symbol proof failed: {error}"));
+}
+
+#[test]
+fn production_interface_is_exactly_telegram_internal_and_canonical() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build");
+    verify_exact_interface(&index, CRATE_ID)
+        .unwrap_or_else(|error| panic!("exact interface proof failed: {error}"));
+}
+
+fn parsed_struct_visibility(prefix: &str) -> Visibility {
+    let source = if prefix.is_empty() {
+        "struct Item;".to_owned()
+    } else {
+        format!("{prefix} struct Item;")
+    };
+    let item = syn::parse_str::<Item>(&source)
+        .unwrap_or_else(|error| panic!("visibility fixture did not parse: {source}: {error}"));
+    let Item::Struct(item_struct) = item else {
+        panic!("visibility fixture did not produce a struct")
+    };
+    item_struct.vis
+}
+
+#[test]
+fn visibility_matrix_distinguishes_canonical_shorthand_from_path_spelling() {
+    require_visibility(
+        &parsed_struct_visibility("pub(crate)"),
+        RequiredVisibility::Crate,
+        "fixture item",
+    )
+    .expect("canonical pub(crate) should pass");
+    for form in [
+        "",
+        "pub(self)",
+        "pub(in self)",
+        "pub(super)",
+        "pub",
+        "pub(in crate)",
+        "pub(in super)",
+        "pub(in crate::telegram)",
+    ] {
+        let message = require_visibility(
+            &parsed_struct_visibility(form),
+            RequiredVisibility::Crate,
+            "fixture item",
+        )
+        .expect_err("noncanonical item visibility must fail")
+        .to_string();
+        assert!(message.contains("fixture item"));
+        assert!(message.contains("observed visibility"));
+        if form == "pub(in crate)" {
+            assert!(message.contains("graph-neutral"));
+            assert!(message.contains("in_token.is_none()"));
+        }
+        if form == "pub(in crate::telegram)" {
+            assert!(message.contains("detector 1.1.0"));
+            assert!(message.contains("output -> telegram"));
+        }
+    }
+
+    require_visibility(
+        &parsed_struct_visibility("pub(super)"),
+        RequiredVisibility::Super,
+        "fixture module/facade",
+    )
+    .expect("canonical pub(super) should pass");
+    for form in [
+        "",
+        "pub(self)",
+        "pub(in self)",
+        "pub(crate)",
+        "pub",
+        "pub(in super)",
+        "pub(in crate)",
+        "pub(in crate::telegram)",
+    ] {
+        require_visibility(
+            &parsed_struct_visibility(form),
+            RequiredVisibility::Super,
+            "fixture module/facade",
+        )
+        .expect_err("noncanonical module/facade visibility must fail");
+    }
+
+    require_visibility(
+        &parsed_struct_visibility(""),
+        RequiredVisibility::Private,
+        "fixture private field/helper",
+    )
+    .expect("inherited visibility should be private");
+    require_visibility(
+        &parsed_struct_visibility("pub(crate)"),
+        RequiredVisibility::Private,
+        "fixture private field/helper",
+    )
+    .expect_err("public helper must not satisfy private contract");
+}
+
+#[test]
+fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes() {
+    let duplicate = Fixture::new("duplicate-symbol-bodies");
+    duplicate.write("src/lib.rs", "mod telegram;\n");
+    duplicate.write(
+        "src/telegram.rs",
+        "pub mod claude_watcher { #[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; } }\n",
+    );
+    let duplicate_index = duplicate
+        .index_as(CRATE_ID)
+        .expect("duplicate fixture should index");
+    let duplicate_rows = collect_moved_symbol_occurrences(&duplicate_index, CRATE_ID)
+        .remove(&format!("struct {OUTPUT_MODULE}::BridgeLogger"))
+        .expect("duplicate BridgeLogger key should exist");
+    assert_eq!(duplicate_rows.len(), 2);
+    assert_ne!(duplicate_rows[0].body_id, duplicate_rows[1].body_id);
+
+    let misplaced = Fixture::new("misplaced-inherent-method");
+    misplaced.write("src/lib.rs", "mod telegram;\n");
+    misplaced.write(
+        "src/telegram.rs",
+        "pub mod claude_watcher { pub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } } } pub mod bridge { impl crate::telegram::claude_watcher::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
+    );
+    let misplaced_index = misplaced
+        .index_as(CRATE_ID)
+        .expect("misplaced fixture should index");
+    let misplaced_map = collect_moved_symbol_occurrences(&misplaced_index, CRATE_ID);
+    let misplaced_log = misplaced_map
+        .get(&format!("method {OUTPUT_MODULE}::BridgeLogger::log"))
+        .expect("out-of-place method should resolve through its destination self type");
+    assert_eq!(misplaced_log.len(), 2);
+    assert!(misplaced_log
+        .iter()
+        .any(|row| row.body_id.contains("::output#")));
+    assert!(misplaced_log
+        .iter()
+        .any(|row| row.body_id.contains("::bridge#")));
+
+    let local = Fixture::new("local-item-not-definition");
+    local.write("src/lib.rs", "mod telegram;\n");
+    local.write(
+        "src/telegram.rs",
+        "pub mod claude_watcher { pub mod output { fn wrapper() { struct BridgeLogger; } } }\n",
+    );
+    let local_index = local
+        .index_as(CRATE_ID)
+        .expect("local-item fixture should index");
+    assert!(
+        !collect_moved_symbol_occurrences(&local_index, CRATE_ID)
+            .contains_key(&format!("struct {OUTPUT_MODULE}::BridgeLogger")),
+        "function-local item must not satisfy module-scope destination presence"
+    );
 }
 
 #[test]
