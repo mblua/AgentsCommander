@@ -412,13 +412,13 @@
 //!      Measured by extracting `scrub`, `normalized` and
 //!      `names_the_replaced_module` verbatim from this file and running them
 //!      over a table. Nine prefixes keep the exemption while carrying a
-//!      `root_agent` token that is not a declaration:
-//!
-//!        `probe!(mod root_agent;)`    `probe![mod root_agent;]`
-//!        `probe!{mod root_agent;}`    `probe!(a,mod root_agent;)`
-//!        `probe!(!mod root_agent;)`   `probe!(>mod root_agent;)`
-//!        `probe!(.mod root_agent;)`   `probe!(::mod root_agent;)`
-//!        `probe!("x"mod root_agent;)` (the literal is scrubbed to a space first)
+//!      `root_agent` token that is not a declaration, all of them inside a
+//!      macro invocation: `probe!(mod root_agent;)`, `probe![mod root_agent;]`,
+//!      `probe!{mod root_agent;}`, `probe!(a,mod root_agent;)`,
+//!      `probe!(!mod root_agent;)`, `probe!(>mod root_agent;)`,
+//!      `probe!(.mod root_agent;)`, `probe!(::mod root_agent;)`, and
+//!      `probe!("x"mod root_agent;)`, where the literal is scrubbed to a space
+//!      before the check ever sees it.
 //!
 //!      **In the guarded module this is harmless, and the reason is worth
 //!      knowing.** `declared_children` reads exactly the same text as a real
