@@ -14,7 +14,8 @@ use std::{
 use syn::{
     ext::IdentExt,
     visit::{self, Visit},
-    Expr, Item, ItemMod, ItemUse, Lit, Meta, Path as SynPath, UseTree, Visibility,
+    Block, Expr, Item, ItemExternCrate, ItemMod, ItemUse, Lit, Macro, Meta, Path as SynPath, Stmt,
+    UseTree, Visibility,
 };
 
 const CRATE_ID: &str = "agentscommander_lib";
@@ -458,7 +459,20 @@ fn build_module_index(
     Ok(builder.index)
 }
 
-fn expand_use_tree(tree: &UseTree, prefix: &mut Vec<String>, leaves: &mut Vec<Vec<String>>) {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BindingTarget {
+    Internal(Vec<String>),
+    External,
+}
+
+#[derive(Clone, Debug)]
+struct UseLeaf {
+    path: Vec<String>,
+    binding: Option<String>,
+    glob: bool,
+}
+
+fn expand_use_tree(tree: &UseTree, prefix: &mut Vec<String>, leaves: &mut Vec<UseLeaf>) {
     match tree {
         UseTree::Path(path) => {
             prefix.push(unraw(&path.ident));
@@ -468,20 +482,37 @@ fn expand_use_tree(tree: &UseTree, prefix: &mut Vec<String>, leaves: &mut Vec<Ve
         UseTree::Name(name) => {
             let name = unraw(&name.ident);
             if name == "self" {
-                leaves.push(prefix.clone());
+                leaves.push(UseLeaf {
+                    path: prefix.clone(),
+                    binding: prefix.last().cloned(),
+                    glob: false,
+                });
             } else {
                 prefix.push(name);
-                leaves.push(prefix.clone());
+                leaves.push(UseLeaf {
+                    path: prefix.clone(),
+                    binding: prefix.last().cloned(),
+                    glob: false,
+                });
                 prefix.pop();
             }
         }
         UseTree::Rename(rename) => {
             let name = unraw(&rename.ident);
+            let binding = unraw(&rename.rename);
             if name == "self" {
-                leaves.push(prefix.clone());
+                leaves.push(UseLeaf {
+                    path: prefix.clone(),
+                    binding: (binding != "_").then_some(binding),
+                    glob: false,
+                });
             } else {
                 prefix.push(name);
-                leaves.push(prefix.clone());
+                leaves.push(UseLeaf {
+                    path: prefix.clone(),
+                    binding: (binding != "_").then_some(binding),
+                    glob: false,
+                });
                 prefix.pop();
             }
         }
@@ -490,7 +521,11 @@ fn expand_use_tree(tree: &UseTree, prefix: &mut Vec<String>, leaves: &mut Vec<Ve
                 expand_use_tree(item, prefix, leaves);
             }
         }
-        UseTree::Glob(_) => leaves.push(prefix.clone()),
+        UseTree::Glob(_) => leaves.push(UseLeaf {
+            path: prefix.clone(),
+            binding: None,
+            glob: true,
+        }),
     }
 }
 
@@ -553,24 +588,268 @@ struct DependencyVisitor<'a> {
     current_module: &'a str,
     crate_id: &'a str,
     declared_modules: &'a BTreeSet<String>,
-    aliases: BTreeMap<String, Vec<String>>,
+    scopes: Vec<BTreeMap<String, BindingTarget>>,
     observations: BTreeSet<DependencyObservation>,
+    error: Option<GuardError>,
 }
 
 impl DependencyVisitor<'_> {
-    fn observe(&mut self, segments: Vec<String>) {
+    fn binding_from_scopes(
+        &self,
+        name: &str,
+        local: &BTreeMap<String, BindingTarget>,
+    ) -> Option<BindingTarget> {
+        local.get(name).cloned().or_else(|| {
+            self.scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name).cloned())
+        })
+    }
+
+    fn resolve_target(
+        &self,
+        segments: &[String],
+        local: &BTreeMap<String, BindingTarget>,
+        pending_names: &BTreeSet<String>,
+    ) -> Result<Option<BindingTarget>, GuardError> {
+        let Some(first) = segments.first() else {
+            return Err(GuardError::new(
+                "path resolution",
+                format!("empty Rust path in {}", self.source),
+            ));
+        };
+        if let Some(binding) = self.binding_from_scopes(first, local) {
+            return match binding {
+                BindingTarget::External => Ok(Some(BindingTarget::External)),
+                BindingTarget::Internal(mut canonical) => {
+                    canonical.extend(segments.iter().skip(1).cloned());
+                    let module = resolve_internal_module(
+                        self.current_module,
+                        &canonical,
+                        self.crate_id,
+                        self.declared_modules,
+                    )
+                    .ok_or_else(|| {
+                        GuardError::new(
+                            "alias path resolution",
+                            format!(
+                                "internal alias path {} in {} has no declared module prefix",
+                                segments.join("::"),
+                                self.source
+                            ),
+                        )
+                    })?;
+                    Ok(Some(BindingTarget::Internal(
+                        module.split("::").map(str::to_owned).collect(),
+                    )))
+                }
+            };
+        }
+        if pending_names.contains(first) {
+            return Ok(None);
+        }
         if let Some(module) = resolve_internal_module(
             self.current_module,
-            &segments,
+            segments,
             self.crate_id,
             self.declared_modules,
         ) {
-            if module != self.current_module {
-                self.observations.insert(DependencyObservation {
-                    source: self.source.to_owned(),
-                    module,
-                });
+            return Ok(Some(BindingTarget::Internal(
+                module.split("::").map(str::to_owned).collect(),
+            )));
+        }
+        if matches!(first.as_str(), "crate" | "self" | "super") || first == self.crate_id {
+            return Err(GuardError::new(
+                "internal path resolution",
+                format!(
+                    "same-crate path {} in {} has no declared module prefix",
+                    segments.join("::"),
+                    self.source
+                ),
+            ));
+        }
+        Ok(Some(BindingTarget::External))
+    }
+
+    fn insert_binding(
+        &self,
+        local: &mut BTreeMap<String, BindingTarget>,
+        name: String,
+        target: BindingTarget,
+    ) -> Result<(), GuardError> {
+        if let Some(existing) = local.get(&name) {
+            if existing != &target {
+                return Err(GuardError::new(
+                    "lexical alias conflict",
+                    format!(
+                        "binding {name} in {} resolves to conflicting targets {existing:?} and {target:?}",
+                        self.source
+                    ),
+                ));
             }
+            return Ok(());
+        }
+        local.insert(name, target);
+        Ok(())
+    }
+
+    fn observe_target(&mut self, target: BindingTarget) {
+        let BindingTarget::Internal(path) = target else {
+            return;
+        };
+        let module = path.join("::");
+        if module != self.current_module {
+            self.observations.insert(DependencyObservation {
+                source: self.source.to_owned(),
+                module,
+            });
+        }
+    }
+
+    fn build_scope(
+        &mut self,
+        items: &[&Item],
+    ) -> Result<BTreeMap<String, BindingTarget>, GuardError> {
+        let mut leaves = Vec::<UseLeaf>::new();
+        let mut extern_crates = Vec::<&ItemExternCrate>::new();
+        for item in items {
+            match item {
+                Item::Use(item_use) => {
+                    expand_use_tree(&item_use.tree, &mut Vec::new(), &mut leaves);
+                }
+                Item::ExternCrate(item_extern) => extern_crates.push(item_extern),
+                _ => {}
+            }
+        }
+        if let Some(glob) = leaves.iter().find(|leaf| leaf.glob) {
+            return Err(GuardError::new(
+                "glob import",
+                format!(
+                    "glob import {}::* is forbidden in target source {}",
+                    glob.path.join("::"),
+                    self.source
+                ),
+            ));
+        }
+
+        let mut local = BTreeMap::new();
+        for item in extern_crates {
+            let crate_name = unraw(&item.ident);
+            let renamed = item.rename.as_ref().map(|(_, ident)| unraw(ident));
+            if crate_name == "self" {
+                let Some(binding) = renamed else {
+                    return Err(GuardError::new(
+                        "current-crate extern alias",
+                        format!(
+                            "unrenamed extern crate self has unresolved binding identity in {}",
+                            self.source
+                        ),
+                    ));
+                };
+                self.insert_binding(
+                    &mut local,
+                    binding,
+                    BindingTarget::Internal(vec![self.crate_id.to_owned()]),
+                )?;
+            } else {
+                self.insert_binding(
+                    &mut local,
+                    renamed.unwrap_or(crate_name),
+                    BindingTarget::External,
+                )?;
+            }
+        }
+
+        let pending = leaves
+            .iter()
+            .filter_map(|leaf| {
+                leaf.binding
+                    .as_ref()
+                    .map(|binding| (binding.clone(), leaf.path.clone()))
+            })
+            .collect::<Vec<_>>();
+        let all_pending_names = pending
+            .iter()
+            .map(|(binding, _)| binding.clone())
+            .collect::<BTreeSet<_>>();
+        let mut unresolved = (0..pending.len()).collect::<BTreeSet<_>>();
+        loop {
+            let mut progress = false;
+            for index in unresolved.clone() {
+                let (binding, path) = &pending[index];
+                let still_pending = all_pending_names
+                    .difference(&local.keys().cloned().collect())
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                if let Some(target) = self.resolve_target(path, &local, &still_pending)? {
+                    self.insert_binding(&mut local, binding.clone(), target)?;
+                    unresolved.remove(&index);
+                    progress = true;
+                }
+            }
+            if unresolved.is_empty() {
+                break;
+            }
+            if !progress {
+                let names = unresolved
+                    .iter()
+                    .map(|index| pending[*index].0.clone())
+                    .collect::<Vec<_>>();
+                return Err(GuardError::new(
+                    "alias fixed point",
+                    format!(
+                        "unresolved or cyclic aliases {names:?} in target source {}",
+                        self.source
+                    ),
+                ));
+            }
+        }
+
+        for leaf in leaves {
+            let target = self
+                .resolve_target(&leaf.path, &local, &BTreeSet::new())?
+                .ok_or_else(|| {
+                    GuardError::new(
+                        "import leaf resolution",
+                        format!("unresolved import leaf {}", leaf.path.join("::")),
+                    )
+                })?;
+            self.observe_target(target);
+        }
+        Ok(local)
+    }
+
+    fn scan_items(&mut self, items: &[Item]) -> Result<(), GuardError> {
+        let item_refs = items.iter().collect::<Vec<_>>();
+        let scope = self.build_scope(&item_refs)?;
+        self.scopes.push(scope);
+        for item in items {
+            self.visit_item(item);
+            if self.error.is_some() {
+                break;
+            }
+        }
+        self.scopes.pop();
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn observe(&mut self, segments: Vec<String>) {
+        if self.error.is_some() {
+            return;
+        }
+        match self.resolve_target(&segments, &BTreeMap::new(), &BTreeSet::new()) {
+            Ok(Some(target)) => self.observe_target(target),
+            Ok(None) => {
+                self.error = Some(GuardError::new(
+                    "path resolution",
+                    format!("unresolved path {} in {}", segments.join("::"), self.source),
+                ));
+            }
+            Err(error) => self.error = Some(error),
         }
     }
 }
@@ -580,25 +859,34 @@ impl<'ast> Visit<'ast> for DependencyVisitor<'_> {
         // The module-tree index scans each body with its own canonical identity.
     }
 
-    fn visit_item_use(&mut self, item: &'ast ItemUse) {
-        let mut leaves = Vec::new();
-        expand_use_tree(&item.tree, &mut Vec::new(), &mut leaves);
-        for leaf in leaves {
-            if let Some(module) = resolve_internal_module(
-                self.current_module,
-                &leaf,
-                self.crate_id,
-                self.declared_modules,
-            ) {
-                if let Some(binding) = leaf.last() {
-                    self.aliases.insert(
-                        binding.clone(),
-                        module.split("::").map(str::to_owned).collect(),
-                    );
-                }
+    fn visit_item_use(&mut self, _item: &'ast ItemUse) {}
+
+    fn visit_item_extern_crate(&mut self, _item: &'ast ItemExternCrate) {}
+
+    fn visit_block(&mut self, block: &'ast Block) {
+        let items = block
+            .stmts
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Item(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let scope = match self.build_scope(&items) {
+            Ok(scope) => scope,
+            Err(error) => {
+                self.error = Some(error);
+                return;
             }
-            self.observe(leaf);
+        };
+        self.scopes.push(scope);
+        for statement in &block.stmts {
+            self.visit_stmt(statement);
+            if self.error.is_some() {
+                break;
+            }
         }
+        self.scopes.pop();
     }
 
     fn visit_path(&mut self, path: &'ast SynPath) {
@@ -607,14 +895,19 @@ impl<'ast> Visit<'ast> for DependencyVisitor<'_> {
             .iter()
             .map(|segment| unraw(&segment.ident))
             .collect::<Vec<_>>();
-        if let Some(alias) = segments.first().and_then(|first| self.aliases.get(first)) {
-            let mut expanded = alias.clone();
-            expanded.extend(segments.iter().skip(1).cloned());
-            self.observe(expanded);
-        } else {
-            self.observe(segments);
-        }
+        self.observe(segments);
         visit::visit_path(self, path);
+    }
+
+    fn visit_macro(&mut self, invocation: &'ast Macro) {
+        self.observe(
+            invocation
+                .path
+                .segments
+                .iter()
+                .map(|segment| unraw(&segment.ident))
+                .collect(),
+        );
     }
 
     fn visit_visibility(&mut self, _visibility: &'ast Visibility) {
@@ -655,12 +948,11 @@ fn analyze_module_index(
             current_module: &body.module_id,
             crate_id,
             declared_modules: &index.declared_modules,
-            aliases: BTreeMap::new(),
+            scopes: Vec::new(),
             observations: BTreeSet::new(),
+            error: None,
         };
-        for item in &body.items {
-            visitor.visit_item(item);
-        }
+        visitor.scan_items(&body.items)?;
         report.sources.insert(body.relative_source.clone());
         report.dependencies.extend(visitor.observations);
     }
@@ -737,10 +1029,11 @@ fn analyze_guard(
             current_module: &spec.module_id,
             crate_id,
             declared_modules,
-            aliases: BTreeMap::new(),
+            scopes: Vec::new(),
             observations: BTreeSet::new(),
+            error: None,
         };
-        visitor.visit_file(&syntax);
+        visitor.scan_items(&syntax.items)?;
         report.sources.insert(relative_source.clone());
         report.dependencies.extend(visitor.observations);
     }
@@ -860,13 +1153,218 @@ impl Fixture {
     }
 
     fn index(&self) -> Result<ModuleIndex, GuardError> {
-        build_module_index(&self.manifest, &self.manifest.join("src/lib.rs"), "fixture")
+        self.index_as("fixture")
+    }
+
+    fn index_as(&self, crate_id: &str) -> Result<ModuleIndex, GuardError> {
+        build_module_index(&self.manifest, &self.manifest.join("src/lib.rs"), crate_id)
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn inline_spelling_report(label: &str, body: &str) -> Result<GuardReport, GuardError> {
+    let fixture = Fixture::new(label);
+    fixture.write("src/lib.rs", "mod telegram;\n");
+    fixture.write(
+        "src/telegram.rs",
+        &format!(
+            "pub mod bridge {{ pub struct BridgeLogger; }}\npub mod claude_watcher {{\n{body}\n}}\n"
+        ),
+    );
+    let index = fixture.index_as(CRATE_ID)?;
+    analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+}
+
+fn out_of_line_spelling_report(label: &str, probe: &str) -> Result<GuardReport, GuardError> {
+    let fixture = Fixture::new(label);
+    fixture.write("src/lib.rs", "mod telegram;\n");
+    fixture.write(
+        "src/telegram.rs",
+        "pub mod bridge { pub struct BridgeLogger; }\npub mod claude_watcher;\n",
+    );
+    fixture.write(
+        "src/telegram/claude_watcher.rs",
+        "#[cfg(any())]\n#[path = \"claude_watcher_layering_probe.rs\"]\nmod layering_probe;\n",
+    );
+    fixture.write("src/telegram/claude_watcher_layering_probe.rs", probe);
+    let index = fixture.index_as(CRATE_ID)?;
+    analyze_module_index(&index, CRATE_ID, TARGET_MODULE)
+}
+
+#[test]
+fn structured_spelling_corpus_resolves_every_supported_bridge_path() {
+    let cases = [
+        (
+            "01-direct",
+            "#[cfg(any())] use crate::telegram::bridge::BridgeLogger;",
+        ),
+        (
+            "02-grouped",
+            "#[cfg(any())] use crate::telegram::{bridge::BridgeLogger};",
+        ),
+        (
+            "03-nested-grouped",
+            "#[cfg(any())] use crate::{telegram::{bridge::{BridgeLogger}}};",
+        ),
+        (
+            "04-raw-bridge",
+            "#[cfg(any())] use crate::telegram::r#bridge::BridgeLogger;",
+        ),
+        (
+            "05-comment-between-segments",
+            "#[cfg(any())] use crate::telegram::/* comment */bridge::BridgeLogger;",
+        ),
+        (
+            "06-sibling-super",
+            "#[cfg(any())] use super::bridge::BridgeLogger;",
+        ),
+        (
+            "07-absolute-crate",
+            "#[cfg(any())] use ::agentscommander_lib::telegram::bridge::BridgeLogger;",
+        ),
+        (
+            "08-fixed-point-alias",
+            "#[cfg(any())] use tg::bridge::BridgeLogger; #[cfg(any())] use crate::telegram as tg;",
+        ),
+        (
+            "09-public-rename",
+            "#[cfg(any())] pub use crate::telegram::bridge::{BridgeLogger as Logger};",
+        ),
+        (
+            "10-type-and-expression",
+            "#[cfg(any())] fn probe(_: crate::telegram::bridge::BridgeLogger) { let _ = crate::telegram::bridge::BridgeLogger::new; }",
+        ),
+        (
+            "13-use-tree-self-chain",
+            "#[cfg(any())] use crate::telegram::{self as tg}; #[cfg(any())] use tg::{bridge as b}; #[cfg(any())] use b::BridgeLogger;",
+        ),
+        (
+            "14-sibling-grouped-rename",
+            "#[cfg(any())] use super::{bridge as b}; #[cfg(any())] use b::BridgeLogger;",
+        ),
+        (
+            "15-nested-repeated-super",
+            "mod nested { #[cfg(any())] use super::super::bridge::BridgeLogger; }",
+        ),
+        (
+            "16-current-crate-extern-alias",
+            "#[cfg(any())] extern crate self as ac; #[cfg(any())] use ac::telegram::bridge::BridgeLogger;",
+        ),
+        (
+            "17-anonymous-import",
+            "#[cfg(any())] use crate::telegram::bridge::BridgeLogger as _;",
+        ),
+        (
+            "18-ufcs",
+            "#[cfg(any())] fn probe() { let _ = <crate::telegram::bridge::BridgeLogger>::new; }",
+        ),
+        (
+            "19-raw-grouped-alias",
+            "#[cfg(any())] use crate::telegram::r#bridge::{BridgeLogger as BL};",
+        ),
+        (
+            "20-explicit-macro-path",
+            "#[cfg(any())] fn probe() { crate::telegram::bridge::forbidden_macro!(); }",
+        ),
+    ];
+
+    for (label, body) in cases {
+        let report = inline_spelling_report(label, body)
+            .unwrap_or_else(|error| panic!("spelling {label} did not resolve: {error}"));
+        assert!(
+            report.dependencies.contains(&DependencyObservation {
+                source: "src/telegram.rs".to_owned(),
+                module: "agentscommander_lib::telegram::bridge".to_owned(),
+            }),
+            "spelling {label} survived the structured guard: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn cfg_disabled_out_of_line_spelling_rows_are_scanned() {
+    for (label, probe) in [
+        (
+            "11-out-of-line-grouped",
+            "use crate::telegram::{bridge::BridgeLogger};\n",
+        ),
+        (
+            "12-out-of-line-raw-grouped",
+            "use crate::telegram::{r#bridge::{BridgeLogger}};\n",
+        ),
+    ] {
+        let report = out_of_line_spelling_report(label, probe)
+            .unwrap_or_else(|error| panic!("out-of-line spelling {label} failed: {error}"));
+        assert!(report.dependencies.contains(&DependencyObservation {
+            source: "src/telegram/claude_watcher_layering_probe.rs".to_owned(),
+            module: "agentscommander_lib::telegram::bridge".to_owned(),
+        }));
+    }
+}
+
+#[test]
+fn inert_text_and_macro_tokens_do_not_create_bridge_dependencies() {
+    let rows = [
+        ("line-comment", "// crate::telegram::bridge::BridgeLogger"),
+        (
+            "block-comment",
+            "/* crate::telegram::bridge::BridgeLogger */",
+        ),
+        (
+            "normal-string",
+            "#[cfg(any())] const TEXT: &str = \"crate::telegram::bridge::BridgeLogger\";",
+        ),
+        (
+            "raw-string",
+            "#[cfg(any())] const TEXT: &str = r#\"crate::telegram::bridge::BridgeLogger\"#;",
+        ),
+        (
+            "stringify-tokens",
+            "#[cfg(any())] fn probe() { let _ = stringify!(crate::telegram::bridge::BridgeLogger); }",
+        ),
+    ];
+    for (label, body) in rows {
+        let report = inline_spelling_report(label, body)
+            .unwrap_or_else(|error| panic!("negative row {label} failed to analyze: {error}"));
+        assert!(
+            report
+                .dependencies
+                .iter()
+                .all(|dependency| dependency.module != "agentscommander_lib::telegram::bridge"),
+            "negative row {label} created a false bridge dependency: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn alias_conflicts_cycles_and_globs_fail_closed() {
+    for (label, body, marker) in [
+        (
+            "alias-conflict",
+            "#[cfg(any())] use crate::telegram::bridge as same; #[cfg(any())] use crate::telegram as same;",
+            "lexical alias conflict",
+        ),
+        (
+            "alias-cycle",
+            "#[cfg(any())] use b as a; #[cfg(any())] use a as b;",
+            "alias fixed point",
+        ),
+        (
+            "glob-import",
+            "#[cfg(any())] use crate::telegram::bridge::*;",
+            "glob import",
+        ),
+    ] {
+        let message = inline_spelling_report(label, body)
+            .expect_err("unsupported alias shape must fail closed")
+            .to_string();
+        assert!(message.contains(marker), "row {label}: {message}");
+        assert!(message.contains(FOCUSED_RERUN));
     }
 }
 
