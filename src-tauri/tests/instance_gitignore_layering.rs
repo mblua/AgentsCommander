@@ -1027,22 +1027,52 @@ fn names_the_replaced_module(body: &str) -> bool {
         // `declared_children` and `nested_module_declaration` decide it. Without
         // this clause `xmod root_agent;` was exempted too, and inside a macro
         // invocation that is a token sequence which compiles: entry 20.
-        let keyword_is_whole = at.checked_sub("mod ".len()).is_some_and(|keyword_at| {
-            !body[..keyword_at]
-                .chars()
-                .next_back()
-                .is_some_and(|character| {
+        let keyword_is_whole = body[..at]
+            .strip_suffix("mod ")
+            .is_some_and(|before_keyword| {
+                !before_keyword.chars().next_back().is_some_and(|character| {
                     character.is_alphanumeric() || character == '_' || character == '"'
                 })
-        });
-        let declares_it =
-            body[..at].ends_with("mod ") && body[after..].starts_with(';') && keyword_is_whole;
+            });
+        let declares_it = body[after..].starts_with(';') && keyword_is_whole;
         if opens && closes && !declares_it {
             return true;
         }
         from = after;
     }
     false
+}
+
+#[test]
+fn replacement_name_scan_is_utf8_safe_and_keeps_the_actionable_rule() {
+    const PATH: &str = "src/config/instance_gitignore_utf8_probe.rs";
+    const RULE: &str =
+        "RULE: root_agent may appear here only in a whole `mod root_agent;` declaration";
+    const REMEDY: &str =
+        "REMEDY: depend on crate::config::ROOT_AGENT_DIR_NAME and rerun the focused guard";
+
+    let cases = [
+        ("let ñabcroot_agent = 1;", false),
+        ("let ñroot_agent = 1;", false),
+        ("let abcroot_agent = 1;", false),
+        ("mod root_agent;", false),
+        ("pub(crate) mod root_agent;", false),
+        ("let _ = root_agent::ROOT_AGENT_DIR_NAME;", true),
+        ("macro_rules! probe { () => { xmod root_agent; } }", true),
+    ];
+
+    for (source, expected_violation) in cases {
+        let observed = std::panic::catch_unwind(|| names_the_replaced_module(source))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "INSTANCE_GITIGNORE_LAYERING UTF8 CONTRACT failed\nPATH: {PATH}\n{RULE}\n{REMEDY}\nSOURCE: {source}"
+                )
+            });
+        assert_eq!(
+            observed, expected_violation,
+            "INSTANCE_GITIGNORE_LAYERING UTF8 CONTRACT failed\nPATH: {PATH}\n{RULE}\n{REMEDY}\nSOURCE: {source}"
+        );
+    }
 }
 
 /// Whether `body`, which must be scrubbed and normalized, defines the constant.
@@ -1482,22 +1512,159 @@ fn crate_sources() -> Result<BTreeSet<String>, String> {
 /// `x.RS` while `"RS" == "rs"` is false, and `#[path = "carrier.inc"]` compiles a
 /// file no extension filter matches. Reading every file closes both and is still
 /// a pure text scan.
-fn every_file_under(root: &Path) -> Vec<PathBuf> {
-    fn visit(directory: &Path, files: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(directory).expect("read source directory") {
-            let path = entry.expect("source directory entry").path();
+struct DirectoryEntryFailure {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+type DirectoryEntryRead = Result<PathBuf, DirectoryEntryFailure>;
+type DirectoryRead = std::io::Result<Vec<DirectoryEntryRead>>;
+
+fn traversal_diagnostic(
+    manifest_root: &Path,
+    path: &Path,
+    operation: &str,
+    source: &std::io::Error,
+) -> String {
+    let relative = path
+        .strip_prefix(manifest_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let relative = if relative.is_empty() { "." } else { &relative };
+    format!(
+        "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT failed\nPATH: {relative}\nOPERATION: {operation}\nOS CAUSE: {:?}: {source}\nRULE: scan every file below the source root so no dependency can hide from the guard\nREMEDY: restore access to the reported path or fix the filesystem entry, then rerun `cargo test --test instance_gitignore_layering -- --nocapture`",
+        source.kind()
+    )
+}
+
+fn every_file_under_with<F>(
+    manifest_root: &Path,
+    scan_root: &Path,
+    read_directory: &mut F,
+) -> Result<Vec<PathBuf>, String>
+where
+    F: FnMut(&Path) -> DirectoryRead,
+{
+    fn visit<F>(
+        manifest_root: &Path,
+        directory: &Path,
+        files: &mut Vec<PathBuf>,
+        read_directory: &mut F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Path) -> DirectoryRead,
+    {
+        let entries = read_directory(directory).map_err(|source| {
+            traversal_diagnostic(manifest_root, directory, "read source directory", &source)
+        })?;
+        for entry in entries {
+            let path = entry.map_err(|failure| {
+                traversal_diagnostic(
+                    manifest_root,
+                    &failure.path,
+                    "read source directory entry",
+                    &failure.source,
+                )
+            })?;
             if path.is_dir() {
-                visit(&path, files);
+                visit(manifest_root, &path, files, read_directory)?;
             } else {
                 files.push(path);
             }
         }
+        Ok(())
     }
 
     let mut files = Vec::new();
-    visit(root, &mut files);
+    visit(manifest_root, scan_root, &mut files, read_directory)?;
     files.sort();
-    files
+    Ok(files)
+}
+
+fn every_file_under(root: &Path) -> Vec<PathBuf> {
+    let mut read_directory = |directory: &Path| -> DirectoryRead {
+        let entries = std::fs::read_dir(directory)?;
+        Ok(entries
+            .enumerate()
+            .map(|(index, entry)| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|source| DirectoryEntryFailure {
+                        path: directory.join(format!("<entry-{index}>")),
+                        source,
+                    })
+            })
+            .collect())
+    };
+    every_file_under_with(root, root, &mut read_directory)
+        .unwrap_or_else(|diagnostic| panic!("{diagnostic}"))
+}
+
+#[test]
+fn traversal_failures_report_relative_paths_contract_and_os_cause() {
+    fn assert_diagnostic(
+        diagnostic: &str,
+        expected_path: &str,
+        expected_operation: &str,
+        expected_cause: &str,
+    ) {
+        for required in [
+            "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT",
+            &format!("PATH: {expected_path}"),
+            &format!("OPERATION: {expected_operation}"),
+            "OS CAUSE: PermissionDenied",
+            expected_cause,
+            "RULE: scan every file below the source root",
+            "REMEDY: restore access to the reported path",
+            "cargo test --test instance_gitignore_layering -- --nocapture",
+        ] {
+            assert!(
+                diagnostic.contains(required),
+                "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT expected `{required}` for `{expected_path}`; observed:\n{diagnostic}"
+            );
+        }
+    }
+
+    let manifest_root = PathBuf::from("fixture-root");
+    let unreadable_directory = manifest_root.join("src/config/unreadable-probe");
+    let mut directory_failure = |_directory: &Path| -> DirectoryRead {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "focal read_dir denial",
+        ))
+    };
+    let diagnostic = every_file_under_with(
+        &manifest_root,
+        &unreadable_directory,
+        &mut directory_failure,
+    )
+    .expect_err("the injected read_dir failure must be diagnostic");
+    assert_diagnostic(
+        &diagnostic,
+        "src/config/unreadable-probe",
+        "read source directory",
+        "focal read_dir denial",
+    );
+
+    let entry_path = manifest_root.join("src/config/instance_gitignore_layering_probe.rs");
+    let mut entry_failure = |_directory: &Path| -> DirectoryRead {
+        Ok(vec![Err(DirectoryEntryFailure {
+            path: entry_path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "focal directory entry denial",
+            ),
+        })])
+    };
+    let diagnostic = every_file_under_with(&manifest_root, &manifest_root, &mut entry_failure)
+        .expect_err("the injected entry failure must be diagnostic");
+    assert_diagnostic(
+        &diagnostic,
+        "src/config/instance_gitignore_layering_probe.rs",
+        "read source directory entry",
+        "focal directory entry denial",
+    );
 }
 
 /// What one module's files were observed to name.
