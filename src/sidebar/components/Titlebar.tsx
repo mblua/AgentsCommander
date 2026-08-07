@@ -51,7 +51,7 @@ const ScreenshotHotkeyStatusChip: Component = () => {
       .then((status) => {
         if (
           disposed ||
-          !status.registered ||
+          status.registered !== true ||
           status.error !== null ||
           typeof status.configured !== "string" ||
           formatScreenshotHotkeyForDisplay(status.configured) === null
@@ -69,7 +69,7 @@ const ScreenshotHotkeyStatusChip: Component = () => {
       {(hotkey) => (
         <span
           class="screenshot-hotkey-status"
-          data-testid="screenshot-hotkey-status"
+          data-ac-testid="screenshot-hotkey-status"
           title={`Screenshot capture shortcut: ${hotkey()}`}
           aria-label={`Screenshot capture shortcut: ${hotkey()}`}
         >

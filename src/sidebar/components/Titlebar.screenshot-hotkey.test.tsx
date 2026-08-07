@@ -45,7 +45,7 @@ vi.mock("./ZoomStepper", () => ({
 
 interface MountOptions {
   native?: boolean;
-  status?: ScreenshotHotkeyStatus;
+  status?: unknown;
   rejectStatus?: boolean;
 }
 
@@ -77,7 +77,7 @@ const setNativeRuntime = (native: boolean) => {
 };
 
 const flushAsyncWork = async () => {
-  await Promise.resolve();
+  await vi.dynamicImportSettled();
   await Promise.resolve();
 };
 
@@ -110,7 +110,7 @@ const mountTitlebar = async ({
 };
 
 const getChip = (root: Element): HTMLElement | null =>
-  root.querySelector<HTMLElement>("[data-testid='screenshot-hotkey-status']");
+  root.querySelector<HTMLElement>("[data-ac-testid='screenshot-hotkey-status']");
 
 describe("Titlebar screenshot hotkey status", () => {
   beforeEach(() => {
@@ -139,9 +139,11 @@ describe("Titlebar screenshot hotkey status", () => {
     expect(zoomStepper).not.toBeNull();
     expect(chip?.querySelector(".screenshot-hotkey-status-text")?.textContent).toBe("Ctrl + 1");
 
-    const controlOrder = Array.from(controls?.children ?? []);
-    expect(controlOrder.indexOf(chip as Element)).toBeLessThan(controlOrder.indexOf(webServerMenu as Element));
-    expect(controlOrder.indexOf(webServerMenu as Element)).toBeLessThan(controlOrder.indexOf(zoomStepper as Element));
+    expect(chip?.parentElement).toBe(controls);
+    expect(webServerMenu?.parentElement).toBe(controls);
+    expect(zoomStepper?.parentElement).toBe(controls);
+    expect(webServerMenu?.previousElementSibling).toBe(chip);
+    expect(zoomStepper?.previousElementSibling).toBe(webServerMenu);
   });
 
   it("formats multipart combinations without changing token order or spelling", async () => {
@@ -175,6 +177,7 @@ describe("Titlebar screenshot hotkey status", () => {
     ["error-bearing", screenshotStatus({ error: "already registered" })],
     ["empty", screenshotStatus({ configured: "" })],
     ["malformed", screenshotStatus({ configured: "Ctrl++1" })],
+    ["runtime-malformed registration", { ...screenshotStatus(), registered: "true" }],
   ])("hides a %s status", async (_label, status) => {
     const { root } = await mountTitlebar({ status });
 
@@ -197,11 +200,10 @@ describe("Titlebar screenshot hotkey status", () => {
     expect(mocks.getHotkeyStatus).not.toHaveBeenCalled();
   });
 
-  it("uses the typed status route without invoking screenshot actions", async () => {
+  it("uses the typed status route while preserving the complete native invoke allowlist", async () => {
     await mountTitlebar();
 
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).not.toHaveBeenCalledWith("screenshot_get_hotkey_status");
-    expect(mocks.invoke).not.toHaveBeenCalledWith("screenshot_capture");
+    expect(mocks.invoke.mock.calls).toEqual([["get_instance_label"]]);
   });
 });
