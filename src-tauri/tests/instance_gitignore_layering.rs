@@ -174,7 +174,89 @@
 //!      guard alike, while putting `config` and this module back into the knot
 //!      the moment anybody anchored it. The two equalities on that file catch
 //!      the anchored forms only.
-//!  14. (append here: one entry per spelling a reviewer proves still passes)
+//!  14. **`use super::super::*;` at the top level of the guarded module's own
+//!      file, and it is the cheapest total defeat found so far.** `GLOB_IMPORT`
+//!      is matched as the literal text `use super::*;`, which
+//!      `use super::super::*;` does not contain, so the count stays at 1. Both
+//!      children it reports, `super` and `*`, are already allowed rows. Measured
+//!      on this tree, one line added above `required_rules` in
+//!      `src/config/instance_gitignore.rs`: guard **3 passed**,
+//!      `cargo fmt --check` **exit 0**, and the record gains
+//!      `config::instance_gitignore -> agentscommander_lib`, taking the knot
+//!      87 -> 88, `sccSize(config::instance_gitignore)` 1 -> 88 and its level
+//!      1 -> 3. From `crate::config::instance_gitignore` the path means
+//!      `use crate::*;`, so it also puts every crate-root child in scope for
+//!      unanchored use. Entry 9 anticipated a *moved* glob; this is a *second*
+//!      glob the count cannot see, and unlike a moved one it costs the test
+//!      module nothing.
+//!  15. `use super::{*};` in the guarded module. Same evasion of the glob count
+//!      by the same mechanism, and the two children it reports are the allowed
+//!      `*`. Measured: guard **3 passed**. It is the weaker sibling of entry 14
+//!      on two counts: `cargo fmt --check` goes red on it, because rustfmt
+//!      rewrites it to `use super::*;` (which would then make the count 2), and
+//!      it reaches only `crate::config`'s children, so a production
+//!      `injected_messages::INJECTED_MESSAGES_FILENAME` written through it is
+//!      invisible to this guard **and** to the detector: measured, zero arc
+//!      change, knot unmoved at 87. That is entry 8's class made writable, and
+//!      it is the cosmetic satisfaction the plan's Section 9.3.2 warns about,
+//!      reached without touching a single anchored path.
+//!  16. **`use super::*;` at the top level of the constant's home, and it is the
+//!      most damaging spelling found.** `the_constant_home_names_nothing_at_all`
+//!      asserts no glob count at all -- unlike the guarded module's test -- and
+//!      `("src/config/mod.rs", "*")` is an allowed row, put there for the glob
+//!      inside that file's own `#[cfg(test)] mod tests`. A text scan cannot tell
+//!      the two positions apart, which is exactly the argument entry 9 makes for
+//!      the guarded module, and the host test never draws the conclusion.
+//!      Measured, one line added to `src/config/mod.rs`: guard **3 passed**,
+//!      `cargo fmt --check` **exit 0**, and the record gains
+//!      `config -> agentscommander_lib`. `config` stops being the pure sink
+//!      Section 4.3 of the plan rests on, the knot goes 87 -> **91**, and
+//!      `sccSize(config::instance_gitignore)` goes 1 -> **91** through arc 547,
+//!      which #1273 never removed and cannot remove. This is precisely the
+//!      failure this test was written to prevent, walking through the one row it
+//!      allows.
+//!  17. **`self::` is scanned under no anchor anywhere in this file.**
+//!      `children_under` is called with `crate::` and `super::` only, and
+//!      `the_constant_home_names_nothing_at_all` does not assert
+//!      `seen.forbidden`, so the anchorless `root_agent` check never runs
+//!      against the constant's home. Measured, one line added to
+//!      `src/config/mod.rs`:
+//!      `use self::root_agent::ROOT_AGENT_SESSION_NAME;` -- guard **3 passed**,
+//!      `cargo fmt --check` **exit 0**, record gains
+//!      `config -> config::root_agent`, knot 87 -> **91**,
+//!      `sccSize(config::instance_gitignore)` 1 -> **91**. Unlike entry 13 the
+//!      detector is **not** blind to this one: `self::` resolves and the arc is
+//!      recorded. The same spelling reaches any knot member, not only
+//!      `root_agent`, so the anchorless check would not close the class even if
+//!      the host test asserted it.
+//!  18. **Promoting an allowed `#[cfg(test)]`-only pair to production.** The
+//!      `ALLOWED_GUARDED_SUPER_REFERENCES` row
+//!      `("src/config/instance_gitignore.rs", "injected_messages")` is allowed
+//!      only because its two references sit inside `#[cfg(test)] mod tests` and
+//!      therefore contribute no arc. The pair is `(file, child)` and carries no
+//!      position, so moving the same reference into production code leaves the
+//!      observed set identical. Measured, one production function added to
+//!      `src/config/instance_gitignore.rs` naming
+//!      `super::injected_messages::INJECTED_MESSAGES_FILENAME`: guard
+//!      **3 passed**, record gains
+//!      `config::instance_gitignore -> config::injected_messages`, knot
+//!      87 -> 88, `sccSize` 1 -> **88**, level 1 -> 3. The table's own doc
+//!      comment states the risk; nothing in the file acts on it. Every allowed
+//!      row that names a knot member is one of these.
+//!  19. **Entry 12 is live and its stated mitigation does not hold.** That entry
+//!      says "the fourteen-rule behavioural tests in the module are what
+//!      actually hold the production references up". Measured: they do not.
+//!      Replacing both production references at `required_rules` with the
+//!      literal `"ac-root-agent"` leaves the guard **3 passed** (the pair
+//!      survives on the six `#[cfg(test)]` references) **and**
+//!      `cargo test --lib config::instance_gitignore` at **15 passed**, because
+//!      those tests pin the emitted `.gitignore` bytes, not the path the name is
+//!      reached by. `the_root_agent_dir_name_constant_is_defined_exactly_once`
+//!      does not catch it either: it counts `const`/`static` definitions, and a
+//!      bare string literal is neither. So the "moved, not duplicated" property
+//!      of criterion 8 is defeasible by duplicating the *value* rather than the
+//!      definition.
+//!  20. (append here: one entry per spelling a reviewer proves still passes)
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
