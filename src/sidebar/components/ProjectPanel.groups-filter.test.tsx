@@ -26,6 +26,7 @@ const wg1Path = `${projectPath}\\.ac\\wg-1-dev-team`;
 const wg2Path = `${projectPath}\\.ac\\wg-2-rust-team`;
 const coordRowTestId = "replica.row.quick.wg-1-dev-team.dev-webpage-ui";
 const workgroupRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-webpage-ui";
+let cleanupGroupFilteringRenderer: (() => void) | null = null;
 
 function groupsConfig(groups = [{ id: "frontend", name: "Frontend", regex: "^wg-1-" }]) {
   return {
@@ -59,7 +60,10 @@ async function renderProjectPanelForGroupFiltering(
   workgroupGroupsStore.setActiveProject(projectPath);
   workgroupGroupsStore.applyExternalUpdate(projectPath, config);
   workgroupGroupsStore.select(projectPath, selection);
-  renderWithFakeTransport(() => <ProjectPanel />, transport);
+  cleanupGroupFilteringRenderer = renderWithFakeTransport(
+    () => <ProjectPanel />,
+    transport
+  ).cleanup;
   await projectStore.loadProject(projectPath);
 }
 
@@ -156,10 +160,15 @@ describe("ProjectPanel workgroup groups", () => {
   });
 
   afterEach(() => {
-    cleanupDom?.();
-    cleanupDom = null;
-    resetUiStoresForTests();
-    document.body.replaceChildren();
+    try {
+      cleanupGroupFilteringRenderer?.();
+    } finally {
+      cleanupGroupFilteringRenderer = null;
+      cleanupDom?.();
+      cleanupDom = null;
+      resetUiStoresForTests();
+      document.body.replaceChildren();
+    }
   });
 
   it("alert_me_only_visible_is_excluded_from_ungrouped", async () => {
