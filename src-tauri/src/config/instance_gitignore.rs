@@ -102,10 +102,10 @@ fn required_rules(agent_local_dir: &str) -> Result<[String; 14], String> {
     Ok([
         format!(
             "/{}/{}/config.json",
-            super::root_agent::ROOT_AGENT_DIR_NAME,
+            super::ROOT_AGENT_DIR_NAME,
             escaped_agent_local_dir
         ),
-        format!("/{}/config.json", super::root_agent::ROOT_AGENT_DIR_NAME),
+        format!("/{}/config.json", super::ROOT_AGENT_DIR_NAME),
         FIXED_RULES[0].to_string(),
         FIXED_RULES[1].to_string(),
         FIXED_RULES[2].to_string(),
@@ -833,7 +833,7 @@ mod tests {
             rules[0],
             format!(
                 "/{}/{escaped_agent_local_dir}/config.json",
-                super::super::root_agent::ROOT_AGENT_DIR_NAME
+                super::super::ROOT_AGENT_DIR_NAME
             )
         );
         assert_eq!(
@@ -863,7 +863,7 @@ mod tests {
         );
         let raw_companion = format!(
             "/{}/{agent_local_dir}/config.json",
-            super::super::root_agent::ROOT_AGENT_DIR_NAME
+            super::super::ROOT_AGENT_DIR_NAME
         );
         assert!(!rules.contains(&raw_companion));
     }
@@ -933,17 +933,17 @@ mod tests {
             );
             let raw_companion = format!(
                 "/{}/{agent_local_dir}/config.json",
-                super::super::root_agent::ROOT_AGENT_DIR_NAME
+                super::super::ROOT_AGENT_DIR_NAME
             );
             assert!(!rules.contains(&raw_companion));
 
             let literal = format!(
                 "instance/{}/{agent_local_dir}/config.json",
-                super::super::root_agent::ROOT_AGENT_DIR_NAME
+                super::super::ROOT_AGENT_DIR_NAME
             );
             let sibling = format!(
                 "instance/{}/{unintended_sibling}/config.json",
-                super::super::root_agent::ROOT_AGENT_DIR_NAME
+                super::super::ROOT_AGENT_DIR_NAME
             );
             for relative in [&literal, &sibling] {
                 let path = repo.join(relative);
@@ -965,7 +965,7 @@ mod tests {
         let canonical_first = &rules[0];
         let raw_first = format!(
             "/{}/{agent_local_dir}/config.json",
-            super::super::root_agent::ROOT_AGENT_DIR_NAME
+            super::super::ROOT_AGENT_DIR_NAME
         );
 
         assert!(!contains_exact_line(
