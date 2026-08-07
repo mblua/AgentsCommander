@@ -463,6 +463,7 @@ export const SESSION_WARNING_KINDS = [
   "outside-mount",
   "no-value",
   "protocol-mismatch",
+  "shell-launcher-fallback",
 ] as const;
 
 export type SessionWarningKind = (typeof SESSION_WARNING_KINDS)[number];
