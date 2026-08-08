@@ -17,6 +17,7 @@ pub mod handlers;
 pub mod identity;
 pub mod message_store;
 pub mod schema;
+pub(crate) mod window_target_registry;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

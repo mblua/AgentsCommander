@@ -19,6 +19,7 @@ pub mod testability;
 pub mod update_check;
 pub mod voice;
 pub mod web;
+pub mod window_capture;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

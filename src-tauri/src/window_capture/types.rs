@@ -1,6 +1,7 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,7 +33,7 @@ impl WindowTargetId {
             return Err(WindowCaptureError::InvalidRequest);
         };
         let uuid = Uuid::parse_str(raw_uuid).map_err(|_| WindowCaptureError::InvalidRequest)?;
-        if uuid.get_version_num() != Some(4) {
+        if uuid.get_version_num() != 4 {
             return Err(WindowCaptureError::InvalidRequest);
         }
 
@@ -52,7 +53,10 @@ impl fmt::Display for WindowTargetId {
 
 impl fmt::Debug for WindowTargetId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("WindowTargetId").field(&self.to_string()).finish()
+        formatter
+            .debug_tuple("WindowTargetId")
+            .field(&self.to_string())
+            .finish()
     }
 }
 
@@ -193,6 +197,31 @@ impl DiscoveredWindow {
     pub(crate) fn into_parts(self) -> (WindowDiagnostics, TargetFingerprint) {
         (self.diagnostics, self.fingerprint)
     }
+
+    pub(crate) fn compare_for_registry(&self, other: &Self) -> Ordering {
+        self.diagnostics
+            .process_name
+            .to_lowercase()
+            .cmp(&other.diagnostics.process_name.to_lowercase())
+            .then_with(|| {
+                self.diagnostics
+                    .process_id
+                    .cmp(&other.diagnostics.process_id)
+            })
+            .then_with(|| {
+                self.diagnostics
+                    .class_name
+                    .encode_utf16()
+                    .cmp(other.diagnostics.class_name.encode_utf16())
+            })
+            .then_with(|| {
+                self.diagnostics
+                    .title
+                    .encode_utf16()
+                    .cmp(other.diagnostics.title.encode_utf16())
+            })
+            .then_with(|| self.fingerprint.hwnd.cmp(&other.fingerprint.hwnd))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,11 +265,11 @@ impl CaptureCancellation {
     }
 
     pub(crate) fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancelled.store(true, AtomicOrdering::Release);
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline
+        self.cancelled.load(AtomicOrdering::Acquire) || Instant::now() >= self.deadline
     }
 
     pub(crate) fn deadline(&self) -> Instant {
@@ -365,6 +394,33 @@ pub(crate) fn fixture_target_fingerprint(seed: u64) -> TargetFingerprint {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_discovered_window(seed: u64) -> DiscoveredWindow {
+    DiscoveredWindow::new(
+        WindowDiagnostics {
+            process_id: seed as u32,
+            process_name: format!("fixture-{seed}.exe"),
+            title: format!("fixture-title-{seed}"),
+            class_name: format!("fixture-class-{seed}"),
+            bounds: Some(WindowBounds {
+                left: seed as i32,
+                top: seed as i32,
+                right: seed as i32 + 10,
+                bottom: seed as i32 + 10,
+            }),
+            session_id: seed as u32,
+            visible: true,
+            minimized: false,
+            cloaked: false,
+            foreground: false,
+            protected: false,
+            monitor_intersection: MonitorIntersection::IntersectsMonitor,
+            warnings: Vec::new(),
+        },
+        fixture_target_fingerprint(seed),
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::{CaptureOptions, WindowCaptureError, WindowTargetId, MAX_TIMEOUT, MIN_TIMEOUT};
 
@@ -373,7 +429,10 @@ mod tests {
         let target_id = WindowTargetId::mint();
         let encoded = target_id.to_string();
 
-        assert_eq!(WindowTargetId::parse(&encoded).unwrap().to_string(), encoded);
+        assert_eq!(
+            WindowTargetId::parse(&encoded).unwrap().to_string(),
+            encoded
+        );
         assert!(matches!(
             WindowTargetId::parse("wct_550e8400-e29b-11d4-a716-446655440000"),
             Err(WindowCaptureError::InvalidRequest)
