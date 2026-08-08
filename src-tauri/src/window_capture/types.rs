@@ -342,6 +342,8 @@ pub(crate) enum WindowCaptureError {
     CaptureProtected,
     #[error("capture_unsupported")]
     CaptureUnsupported,
+    #[error("capture_failed")]
+    CaptureFailed,
     #[error("capture_timeout")]
     CaptureTimeout,
     #[error("capture_device_lost")]
@@ -373,6 +375,7 @@ impl WindowCaptureError {
             Self::OffscreenNoFrame => "offscreen_no_frame",
             Self::CaptureProtected => "capture_protected",
             Self::CaptureUnsupported => "capture_unsupported",
+            Self::CaptureFailed => "capture_failed",
             Self::CaptureTimeout => "capture_timeout",
             Self::CaptureDeviceLost => "capture_device_lost",
             Self::CaptureTooLarge => "capture_too_large",
