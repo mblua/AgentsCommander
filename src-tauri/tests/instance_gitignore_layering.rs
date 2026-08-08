@@ -1599,15 +1599,161 @@ fn every_file_under(manifest_root: &Path) -> Vec<PathBuf> {
         .unwrap_or_else(|diagnostic| panic!("{diagnostic}"))
 }
 
-#[test]
-fn traversal_failures_report_relative_paths_contract_and_os_cause() {
-    struct FixtureRoot(PathBuf);
+type FixtureRemover = Box<dyn FnMut(&Path) -> std::io::Result<()>>;
 
-    impl Drop for FixtureRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+struct FixtureRoot {
+    path: Option<PathBuf>,
+    remover: FixtureRemover,
+}
+
+impl FixtureRoot {
+    fn new(path: PathBuf) -> Self {
+        Self::with_remover(path, Box::new(|path| std::fs::remove_dir_all(path)))
+    }
+
+    fn with_remover(path: PathBuf, remover: FixtureRemover) -> Self {
+        Self {
+            path: Some(path),
+            remover,
         }
     }
+
+    fn path(&self) -> &Path {
+        match self.path.as_deref() {
+            Some(path) => path,
+            None => panic!(
+                "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT fixture path accessed after cleanup"
+            ),
+        }
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        let path = self.path().to_path_buf();
+        (self.remover)(&path).map_err(|source| fixture_cleanup_diagnostic(&path, &source))?;
+        self.disarm();
+        Ok(())
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+fn fixture_cleanup_diagnostic(path: &Path, source: &std::io::Error) -> String {
+    format!(
+        "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not remove fixture root `{}`: {source}",
+        path.display()
+    )
+}
+
+impl Drop for FixtureRoot {
+    fn drop(&mut self) {
+        let Some(path) = self.path.as_ref().cloned() else {
+            return;
+        };
+        if let Err(source) = (self.remover)(&path) {
+            let diagnostic = fixture_cleanup_diagnostic(&path, &source);
+            if std::thread::panicking() {
+                drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || eprintln!("{diagnostic}"),
+                )));
+            } else {
+                panic!("{diagnostic}");
+            }
+        }
+        self.path = None;
+    }
+}
+
+fn fixture_cleanup_disarms_only_after_confirmed_success() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remover_calls = std::sync::Arc::clone(&calls);
+    let mut fixture = FixtureRoot::with_remover(
+        PathBuf::from("deterministic-cleanup-success"),
+        Box::new(move |_path| {
+            remover_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }),
+    );
+
+    fixture
+        .cleanup()
+        .unwrap_or_else(|diagnostic| panic!("{diagnostic}"));
+    assert!(
+        fixture.path.is_none(),
+        "successful cleanup must disarm RAII fallback"
+    );
+    drop(fixture);
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "disarmed fixture must not run fallback cleanup"
+    );
+}
+
+fn fixture_cleanup_error_keeps_fallback_armed_and_reports_path_and_cause() {
+    let path = PathBuf::from("deterministic-cleanup-error");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remover_calls = std::sync::Arc::clone(&calls);
+    let mut fixture = FixtureRoot::with_remover(
+        path.clone(),
+        Box::new(move |_path| {
+            remover_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "focal deterministic cleanup denial",
+            ))
+        }),
+    );
+
+    let diagnostic = match fixture.cleanup() {
+        Ok(()) => panic!("injected cleanup failure unexpectedly succeeded"),
+        Err(diagnostic) => diagnostic,
+    };
+    assert!(
+        diagnostic.contains(path.to_string_lossy().as_ref()),
+        "normal cleanup diagnostic must name fixture path `{}`; observed:\n{diagnostic}",
+        path.display()
+    );
+    assert!(
+        diagnostic.contains("focal deterministic cleanup denial"),
+        "normal cleanup diagnostic must name cause `focal deterministic cleanup denial`; observed:\n{diagnostic}"
+    );
+    assert_eq!(fixture.path.as_deref(), Some(path.as_path()));
+
+    let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(fixture)));
+    let drop_diagnostic = match drop_result {
+        Ok(()) => panic!("armed fallback cleanup failure did not panic"),
+        Err(payload) => {
+            if let Some(message) = payload.downcast_ref::<String>() {
+                message.clone()
+            } else if let Some(message) = payload.downcast_ref::<&str>() {
+                (*message).to_owned()
+            } else {
+                panic!("armed fallback cleanup failure used an unknown panic payload")
+            }
+        }
+    };
+    assert!(
+        drop_diagnostic.contains(path.to_string_lossy().as_ref()),
+        "fallback cleanup diagnostic must name fixture path `{}`; observed:\n{drop_diagnostic}",
+        path.display()
+    );
+    assert!(
+        drop_diagnostic.contains("focal deterministic cleanup denial"),
+        "fallback cleanup diagnostic must name cause `focal deterministic cleanup denial`; observed:\n{drop_diagnostic}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "failed normal cleanup must leave one armed fallback attempt"
+    );
+}
+
+#[test]
+fn traversal_failures_report_relative_paths_contract_and_os_cause() {
+    fixture_cleanup_disarms_only_after_confirmed_success();
+    fixture_cleanup_error_keeps_fallback_armed_and_reports_path_and_cause();
 
     fn assert_diagnostic(
         diagnostic: &str,
@@ -1615,10 +1761,15 @@ fn traversal_failures_report_relative_paths_contract_and_os_cause() {
         expected_operation: &str,
         expected_cause: &str,
     ) {
+        for (key, value) in [("PATH", expected_path), ("OPERATION", expected_operation)] {
+            let required = format!("{key}: {value}");
+            assert!(
+                diagnostic.lines().any(|line| line == required),
+                "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT expected exact line `{required}` for `{expected_path}`; observed:\n{diagnostic}"
+            );
+        }
         for required in [
             "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT",
-            &format!("PATH: {expected_path}"),
-            &format!("OPERATION: {expected_operation}"),
             "OS CAUSE: PermissionDenied",
             expected_cause,
             "RULE: scan every file below the source root",
@@ -1639,15 +1790,26 @@ fn traversal_failures_report_relative_paths_contract_and_os_cause() {
             fixture_parent.display()
         )
     });
-    let fixture_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time must be after the Unix epoch")
-        .as_nanos();
-    let fixture = FixtureRoot(fixture_parent.join(format!(
-        "instance-gitignore-layering-traversal-{}-{fixture_id}",
-        std::process::id()
-    )));
-    let manifest_root = &fixture.0;
+    static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let fixture_path = loop {
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = fixture_parent.join(format!(
+            "instance-gitignore-layering-traversal-{}-{fixture_id}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => break candidate,
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                panic!(
+                    "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not create fixture root `{}`: {source}",
+                    candidate.display()
+                )
+            }
+        }
+    };
+    let mut fixture = FixtureRoot::new(fixture_path);
+    let manifest_root = fixture.path();
     let source_root = manifest_root.join("src");
     let config_directory = source_root.join("config");
     let unreadable_directory = config_directory.join("unreadable-probe");
@@ -1729,7 +1891,7 @@ fn traversal_failures_report_relative_paths_contract_and_os_cause() {
             manifest_root.display()
         )
     });
-    std::mem::forget(fixture);
+    fixture.disarm();
 }
 
 /// What one module's files were observed to name.
