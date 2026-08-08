@@ -52,6 +52,7 @@ dependencies = [
  "uuid",
  "vt100",
  "which",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "xcap",
 ]
