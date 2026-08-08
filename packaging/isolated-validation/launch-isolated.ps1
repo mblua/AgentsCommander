@@ -68,6 +68,25 @@ function Normalize-ComparablePath {
     return $Path
 }
 
+function Publish-ReceiptAtomically {
+    param(
+        [Parameter(Mandatory)][string]$TemporaryPath,
+        [Parameter(Mandatory)][string]$DestinationPath
+    )
+
+    try {
+        if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+            [System.IO.File]::Move($TemporaryPath, $DestinationPath, $true)
+        } else {
+            [System.IO.File]::Move($TemporaryPath, $DestinationPath)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $TemporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $TemporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 if (-not [System.IO.Path]::IsPathRooted($FixtureRoot)) {
     throw '-FixtureRoot must be an existing absolute directory'
 }
@@ -88,8 +107,16 @@ if ($actualManifestHash -cne $ExpectedManifestSha256.ToLowerInvariant()) {
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$executable = Join-Path $artifactDirectory $manifest.executableFileName
-$profile = Join-Path $artifactDirectory ($manifest.profileResourceRelativePath -replace '/', '\')
+$expectedExecutableFileName = 'agentscommander.exe'
+$expectedProfileResourceRelativePath = 'resources/isolated-validation/package-profile.toml'
+if ($manifest.artifactKind -cne 'portable-layout' -or
+    $manifest.executableFileName -cne $expectedExecutableFileName -or
+    $manifest.profileResourceRelativePath -cne $expectedProfileResourceRelativePath) {
+    throw 'handoff manifest does not describe the required portable artifact layout'
+}
+
+$executable = Join-Path $artifactDirectory $expectedExecutableFileName
+$profile = Join-Path $artifactDirectory ($expectedProfileResourceRelativePath -replace '/', '\')
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "handoff executable is missing: $executable"
 }
@@ -104,6 +131,9 @@ if ((Get-Sha256 -LiteralPath $profile) -cne $manifest.installedProfileSha256) {
 }
 if ($manifest.compiledProfileSha256 -cne $manifest.installedProfileSha256) {
     throw 'handoff manifest reports mismatched compiled and installed profile hashes'
+}
+if ($manifest.bundledProfileSha256 -cne $manifest.installedProfileSha256) {
+    throw 'handoff manifest reports mismatched bundled and portable profile hashes'
 }
 
 $isolatedStateRoot = Join-Path $fixture 'app-state'
@@ -141,12 +171,18 @@ $receipt = [ordered]@{
     isolationStatus = $statusJson
     utcTimestamp = [DateTime]::UtcNow.ToString('o')
 }
-[System.IO.File]::WriteAllText(
-    $receiptTemporaryPath,
-    ($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
-    [System.Text.UTF8Encoding]::new($false)
-)
-[System.IO.File]::Move($receiptTemporaryPath, $receiptPath)
+try {
+    [System.IO.File]::WriteAllText(
+        $receiptTemporaryPath,
+        ($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    Publish-ReceiptAtomically -TemporaryPath $receiptTemporaryPath -DestinationPath $receiptPath
+} finally {
+    if (Test-Path -LiteralPath $receiptTemporaryPath -PathType Leaf) {
+        Remove-Item -LiteralPath $receiptTemporaryPath -Force -ErrorAction SilentlyContinue
+    }
+}
 
 $guiProcess = Start-IsolatedChild -Executable $executable -Arguments @(
     '--app',

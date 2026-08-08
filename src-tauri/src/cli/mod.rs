@@ -144,12 +144,18 @@ impl Cli {
                     .to_string(),
             );
         }
-        if self.isolation_status && self.app {
-            return Err("--isolation-status is mutually exclusive with --app".to_string());
-        }
-        if self.isolation_status && self.command.is_some() {
+        if self.isolation_status
+            && (self.app
+                || self.command.is_some()
+                || self.window_x.is_some()
+                || self.window_y.is_some()
+                || self.window_width.is_some()
+                || self.window_height.is_some()
+                || self.window_maximized
+                || self.ui_automation)
+        {
             return Err(
-                "--isolation-status accepts no subcommand; use only --isolated-state-root <absolute-directory> --isolation-status"
+                "--isolation-status accepts only --isolated-state-root <absolute-directory> --isolation-status"
                     .to_string(),
             );
         }
@@ -454,6 +460,26 @@ mod tests {
         ])
         .expect("Clap parses the top-level status fields before semantic validation");
         assert!(invalid_app_status.validate_isolation_grammar().is_err());
+
+        let invalid_window_status = Cli::try_parse_from([
+            "agentscommander",
+            "--isolated-state-root",
+            r"C:\fixture root\app-state",
+            "--isolation-status",
+            "--window-x",
+            "1",
+        ])
+        .expect("Clap parses hidden top-level flags before semantic validation");
+        assert!(invalid_window_status.validate_isolation_grammar().is_err());
+
+        let exact_status = Cli::try_parse_from([
+            "agentscommander",
+            "--isolated-state-root",
+            r"C:\fixture root\app-state",
+            "--isolation-status",
+        ])
+        .expect("the exact isolated status form parses");
+        assert!(exact_status.validate_isolation_grammar().is_ok());
     }
 
     #[test]

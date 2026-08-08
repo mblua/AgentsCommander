@@ -3366,6 +3366,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_production_webview_builder_routes_through_the_isolated_data_directory_seam() {
+        for (path, source) in [
+            ("lib.rs", include_str!("lib.rs")),
+            ("commands/window.rs", include_str!("commands/window.rs")),
+            (
+                "screenshot/windows.rs",
+                include_str!("screenshot/windows.rs"),
+            ),
+        ] {
+            let production = source
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .expect("production source before test module");
+            for (offset, _) in production.match_indices("WebviewWindowBuilder::new") {
+                let preceding_start = offset.saturating_sub(240);
+                let preceding = &production[preceding_start..offset];
+                assert!(
+                    preceding.contains("apply_isolated_webview_data_directory"),
+                    "production WebView builder in {path} must use the isolated data-directory seam"
+                );
+            }
+        }
+    }
+
     fn persisted_row(name: &str, was_active: bool) -> PersistedSession {
         PersistedSession {
             name: name.to_string(),

@@ -884,13 +884,14 @@ pub fn retain_directory(path: &Path) -> Result<RetainedDirectory, String> {
     retain_directory_inner(path, true)
 }
 
-/// Open one direct child directory below an already retained, verified parent.
+/// Retain one direct child directory below an already retained, verified parent,
+/// creating only that verified leaf when it is absent.
 ///
 /// This deliberately does not accept a relative path with multiple components:
 /// callers that need a nested layout must retain each component in turn. That
 /// keeps the reparse-point and object-identity checks at every boundary rather
 /// than turning this primitive into a recursive directory creator.
-pub fn open_or_create_verified_child_directory(
+pub fn retain_or_create_verified_child_directory(
     parent: &RetainedDirectory,
     child_name: &std::ffi::OsStr,
 ) -> Result<RetainedDirectory, String> {
@@ -1971,17 +1972,45 @@ mod tests {
         let fixture = tempfile::TempDir::new().unwrap();
         let parent = retain_directory(fixture.path()).unwrap();
         let child =
-            open_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("leaf")).unwrap();
+            retain_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("leaf"))
+                .unwrap();
 
         assert!(child.identity().canonical_path.ends_with("leaf"));
-        assert!(open_or_create_verified_child_directory(
+        assert!(retain_or_create_verified_child_directory(
             &parent,
             std::ffi::OsStr::new("nested/leaf")
         )
         .is_err());
         assert!(
-            open_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("..")).is_err()
+            retain_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("..")).is_err()
         );
+    }
+
+    #[test]
+    fn retained_child_creation_blocks_or_detects_parent_replacement() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let parent_path = fixture.path().join("parent");
+        let retired_parent = fixture.path().join("retired-parent");
+        std::fs::create_dir(&parent_path).unwrap();
+        let retained_parent = retain_directory(&parent_path).unwrap();
+
+        if std::fs::rename(&parent_path, &retired_parent).is_ok() {
+            std::fs::create_dir(&parent_path).unwrap();
+            assert!(retain_or_create_verified_child_directory(
+                &retained_parent,
+                std::ffi::OsStr::new("state-leaf")
+            )
+            .is_err());
+            assert!(!parent_path.join("state-leaf").exists());
+        } else {
+            let child = retain_or_create_verified_child_directory(
+                &retained_parent,
+                std::ffi::OsStr::new("state-leaf"),
+            )
+            .expect("the retained parent remains the only creation target");
+            assert!(child.identity().canonical_path.ends_with("state-leaf"));
+            assert!(!retired_parent.exists());
+        }
     }
 
     #[test]
@@ -2617,6 +2646,33 @@ mod tests {
             assert!(!real.join("snapshot.png").exists());
             std::fs::remove_dir(&symlink).unwrap();
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_child_creation_rejects_an_existing_junction_leaf() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent_path = directory.path().join("parent");
+        let outside = directory.path().join("outside");
+        let junction = parent_path.join("state-leaf");
+        std::fs::create_dir(&parent_path).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let retained_parent = retain_directory(&parent_path).unwrap();
+
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create the junction fixture");
+        assert!(retain_or_create_verified_child_directory(
+            &retained_parent,
+            std::ffi::OsStr::new("state-leaf")
+        )
+        .is_err());
+        assert!(!outside.join("unexpected-child").exists());
+        std::fs::remove_dir(&junction).unwrap();
     }
 
     #[cfg(windows)]

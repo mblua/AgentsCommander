@@ -5,12 +5,13 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::path_identity::{
-    open_or_create_verified_child_directory, read_bounded_regular, retain_directory, same_object,
+    read_bounded_regular, retain_directory, retain_or_create_verified_child_directory, same_object,
     verify_directory, FileObjectId, RetainedDirectory, VerifiedPathIdentity,
 };
 
@@ -39,13 +40,38 @@ pub enum StartupMode {
     Isolated(CompiledPackageProfile),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ResolvedAppStateRoot {
     mode: StartupMode,
     config_root: Option<PathBuf>,
     root_identity: Option<VerifiedPathIdentity>,
     mutex_hash: Option<String>,
+    retained_root: Option<RetainedDirectory>,
+    retained_webview_data: Option<RetainedDirectory>,
 }
+
+impl std::fmt::Debug for ResolvedAppStateRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedAppStateRoot")
+            .field("mode", &self.mode)
+            .field("config_root", &self.config_root)
+            .field("root_identity", &self.root_identity)
+            .field("mutex_hash", &self.mutex_hash)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ResolvedAppStateRoot {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.config_root == other.config_root
+            && self.root_identity == other.root_identity
+            && self.mutex_hash == other.mutex_hash
+    }
+}
+
+impl Eq for ResolvedAppStateRoot {}
 
 impl ResolvedAppStateRoot {
     pub fn mode(&self) -> &StartupMode {
@@ -53,13 +79,16 @@ impl ResolvedAppStateRoot {
     }
 
     pub fn config_root(&self) -> Option<PathBuf> {
-        self.config_root.clone()
+        if matches!(self.mode, StartupMode::Normal) {
+            return self.config_root.clone();
+        }
+        self.verified_isolated_root()
     }
 
-    pub fn isolated_root(&self) -> Option<&Path> {
+    pub fn isolated_root(&self) -> Option<PathBuf> {
         match self.mode {
             StartupMode::Normal => None,
-            StartupMode::Isolated(_) => self.config_root.as_deref(),
+            StartupMode::Isolated(_) => self.verified_isolated_root(),
         }
     }
 
@@ -76,6 +105,25 @@ impl ResolvedAppStateRoot {
 
     pub fn mutex_hash(&self) -> Option<&str> {
         self.mutex_hash.as_deref()
+    }
+
+    fn verified_isolated_root(&self) -> Option<PathBuf> {
+        let root = self.retained_root.as_ref()?;
+        if root.verify_current().is_err() {
+            log::error!("[isolated-state] retained root verification failed");
+            return None;
+        }
+        Some(root.identity().canonical_path.clone())
+    }
+
+    fn verified_webview_data_directory(&self) -> Option<PathBuf> {
+        let root = self.retained_root.as_ref()?;
+        let webview_data = self.retained_webview_data.as_ref()?;
+        if root.verify_current().is_err() || webview_data.verify_current().is_err() {
+            log::error!("[isolated-state] retained WebView directory verification failed");
+            return None;
+        }
+        Some(webview_data.identity().canonical_path.clone())
     }
 }
 
@@ -181,12 +229,27 @@ pub fn compiled_profile_sha256() -> Option<&'static str> {
 pub fn resolve_startup_state(
     isolated_state_root: Option<&Path>,
 ) -> Result<ResolvedAppStateRoot, IsolationError> {
+    resolve_startup_state_with_normal_resolver(
+        isolated_state_root,
+        crate::config::normal_config_dir,
+    )
+}
+
+fn resolve_startup_state_with_normal_resolver<F>(
+    isolated_state_root: Option<&Path>,
+    normal_config_dir: F,
+) -> Result<ResolvedAppStateRoot, IsolationError>
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
     let Some(requested_root) = isolated_state_root else {
         return Ok(ResolvedAppStateRoot {
             mode: StartupMode::Normal,
-            config_root: crate::config::normal_config_dir(),
+            config_root: normal_config_dir(),
             root_identity: None,
             mutex_hash: None,
+            retained_root: None,
+            retained_webview_data: None,
         });
     };
 
@@ -194,21 +257,42 @@ pub fn resolve_startup_state(
         .cloned()
         .ok_or(IsolationError::Unsupported)?;
     let profile_sha256 = compiled_profile_sha256().ok_or(IsolationError::Unsupported)?;
+    let normal_roots = normal_root_exclusion_candidates();
+    resolve_isolated_startup_state(requested_root, profile, profile_sha256, &normal_roots)
+}
+
+fn resolve_isolated_startup_state(
+    requested_root: &Path,
+    profile: CompiledPackageProfile,
+    profile_sha256: &str,
+    normal_roots: &[PathBuf],
+) -> Result<ResolvedAppStateRoot, IsolationError> {
     let (parent_path, leaf) = validate_requested_root(requested_root)?;
     let parent = retain_directory(&parent_path).map_err(|_| IsolationError::ParentUnavailable)?;
     reject_read_only(&parent)?;
-
-    let bootstrap_name =
-        bootstrap_mutex_name(&profile.package_id, parent.identity().object_id, &leaf);
-    let _bootstrap_lock = BootstrapLock::acquire(&bootstrap_name)?;
     parent
         .verify_current()
         .map_err(|_| IsolationError::UnsafePath)?;
 
-    let root = open_or_create_verified_child_directory(&parent, &leaf)
+    let bootstrap_leaf = canonical_bootstrap_lock_leaf(&parent, &leaf);
+    let bootstrap_name = bootstrap_mutex_name(
+        &profile.package_id,
+        parent.identity().object_id,
+        &bootstrap_leaf,
+    );
+    let _bootstrap_lock = BootstrapLock::acquire(&bootstrap_name)?;
+    parent
+        .verify_current()
+        .map_err(|_| IsolationError::UnsafePath)?;
+    reject_normal_root_parent_overlap(parent.identity(), normal_roots)?;
+    parent
+        .verify_current()
+        .map_err(|_| IsolationError::UnsafePath)?;
+
+    let root = retain_or_create_verified_child_directory(&parent, &leaf)
         .map_err(|_| IsolationError::UnsafePath)?;
     reject_read_only(&root)?;
-    reject_normal_root_overlap(root.identity())?;
+    reject_normal_root_overlap(root.identity(), normal_roots)?;
 
     let marker = IsolationMarker {
         package_id: profile.package_id.clone(),
@@ -217,7 +301,7 @@ pub fn resolve_startup_state(
         root_file: root.identity().object_id.file,
     };
     verify_or_write_marker(&root, &marker)?;
-    bootstrap_isolated_root(&root, &profile)?;
+    let webview_data = bootstrap_isolated_root(&root, &profile)?;
     root.verify_current()
         .map_err(|_| IsolationError::UnsafePath)?;
 
@@ -227,6 +311,8 @@ pub fn resolve_startup_state(
         config_root: Some(root.identity().canonical_path.clone()),
         root_identity: Some(root.identity().clone()),
         mutex_hash: Some(mutex_hash),
+        retained_root: Some(root),
+        retained_webview_data: Some(webview_data),
     })
 }
 
@@ -254,9 +340,7 @@ pub fn isolated_mode_active() -> bool {
 }
 
 pub fn isolated_webview_data_directory() -> Option<PathBuf> {
-    active_state_root()
-        .and_then(ResolvedAppStateRoot::isolated_root)
-        .map(|root| root.join("webview-data"))
+    active_state_root().and_then(ResolvedAppStateRoot::verified_webview_data_directory)
 }
 
 pub fn isolated_servers_disabled() -> bool {
@@ -327,10 +411,7 @@ fn validate_requested_root(
     if !requested_root.is_absolute() || requested_root.as_os_str().is_empty() {
         return Err(IsolationError::InvalidRoot);
     }
-    if requested_root
-        .components()
-        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-    {
+    if contains_raw_dot_segment(requested_root) {
         return Err(IsolationError::InvalidRoot);
     }
 
@@ -356,6 +437,13 @@ fn validate_requested_root(
     Ok((parent.to_path_buf(), leaf))
 }
 
+fn contains_raw_dot_segment(path: &Path) -> bool {
+    path.as_os_str()
+        .to_string_lossy()
+        .split(['\\', '/'])
+        .any(|component| matches!(component, "." | ".."))
+}
+
 fn reject_read_only(directory: &RetainedDirectory) -> Result<(), IsolationError> {
     directory
         .verify_current()
@@ -370,9 +458,29 @@ fn reject_read_only(directory: &RetainedDirectory) -> Result<(), IsolationError>
     Ok(())
 }
 
-fn reject_normal_root_overlap(root: &VerifiedPathIdentity) -> Result<(), IsolationError> {
-    for candidate in normal_root_exclusion_candidates() {
-        let Ok(candidate_identity) = verify_directory(&candidate) else {
+fn reject_normal_root_parent_overlap(
+    parent: &VerifiedPathIdentity,
+    normal_roots: &[PathBuf],
+) -> Result<(), IsolationError> {
+    for candidate in normal_roots {
+        let Ok(candidate_identity) = verify_directory(candidate) else {
+            continue;
+        };
+        if same_object(parent, &candidate_identity)
+            || identity_is_at_or_below(parent, &candidate_identity)
+        {
+            return Err(IsolationError::NormalRootOverlap);
+        }
+    }
+    Ok(())
+}
+
+fn reject_normal_root_overlap(
+    root: &VerifiedPathIdentity,
+    normal_roots: &[PathBuf],
+) -> Result<(), IsolationError> {
+    for candidate in normal_roots {
+        let Ok(candidate_identity) = verify_directory(candidate) else {
             continue;
         };
         if same_object(root, &candidate_identity)
@@ -448,17 +556,23 @@ fn verify_or_write_marker(
 pub fn bootstrap_isolated_root(
     root: &RetainedDirectory,
     profile: &CompiledPackageProfile,
-) -> Result<(), IsolationError> {
-    let profile_container = child(root, PROFILE_PROJECT_CONTAINER)?;
-    let project = child(&profile_container, &profile.workspace)?;
-    let workspace = child(&project, ".ac")?;
-    let matrix = child(&workspace, &format!("_agent_{}", profile.replica_agent))?;
-    let workgroup = child(&workspace, PROFILE_WORKGROUP_DIRECTORY)?;
-    let replica = child(&workgroup, &format!("__agent_{}", profile.replica_agent))?;
-    let _instances = child(root, "instances")?;
-    let _templates = child(root, "agent-templates")?;
-    let _context_cache = child(root, "context-cache")?;
-    let _webview = child(root, "webview-data")?;
+) -> Result<RetainedDirectory, IsolationError> {
+    let profile_container = retain_or_create_verified_state_child(root, PROFILE_PROJECT_CONTAINER)?;
+    let project = retain_or_create_verified_state_child(&profile_container, &profile.workspace)?;
+    let workspace = retain_or_create_verified_state_child(&project, ".ac")?;
+    let matrix = retain_or_create_verified_state_child(
+        &workspace,
+        &format!("_agent_{}", profile.replica_agent),
+    )?;
+    let workgroup = retain_or_create_verified_state_child(&workspace, PROFILE_WORKGROUP_DIRECTORY)?;
+    let replica = retain_or_create_verified_state_child(
+        &workgroup,
+        &format!("__agent_{}", profile.replica_agent),
+    )?;
+    let _instances = retain_or_create_verified_state_child(root, "instances")?;
+    let _templates = retain_or_create_verified_state_child(root, "agent-templates")?;
+    let _context_cache = retain_or_create_verified_state_child(root, "context-cache")?;
+    let webview_data = retain_or_create_verified_state_child(root, "webview-data")?;
 
     let expected_identity = format!("../../_agent_{}", profile.replica_agent);
     let replica_config = serde_json::json!({
@@ -494,11 +608,17 @@ pub fn bootstrap_isolated_root(
 
     root.verify_current()
         .map_err(|_| IsolationError::UnsafePath)?;
-    Ok(())
+    webview_data
+        .verify_current()
+        .map_err(|_| IsolationError::UnsafePath)?;
+    Ok(webview_data)
 }
 
-fn child(parent: &RetainedDirectory, name: &str) -> Result<RetainedDirectory, IsolationError> {
-    open_or_create_verified_child_directory(parent, OsStr::new(name))
+fn retain_or_create_verified_state_child(
+    parent: &RetainedDirectory,
+    name: &str,
+) -> Result<RetainedDirectory, IsolationError> {
+    retain_or_create_verified_child_directory(parent, OsStr::new(name))
         .map_err(|_| IsolationError::UnsafePath)
 }
 
@@ -533,8 +653,9 @@ fn write_or_validate_settings(
     }
 
     for configured_path in current
-        .project_paths
+        .project_path
         .iter()
+        .chain(current.project_paths.iter())
         .chain(current.archived_project_paths.iter())
     {
         let identity = verify_directory(Path::new(configured_path))
@@ -636,9 +757,39 @@ fn write_new_regular_file(
         Ok(())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        if let Err((attempts, error_kind)) =
+            remove_temporary_file_with_retries(&temporary, 3, |path| std::fs::remove_file(path))
+        {
+            let leaf = temporary
+                .file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("<unknown>");
+            log::warn!(
+                "[isolated-state] temporary-file cleanup retained leaf={leaf:?} attempts={attempts} error_kind={error_kind:?}"
+            );
+        }
     }
     result
+}
+
+fn remove_temporary_file_with_retries<F>(
+    path: &Path,
+    max_attempts: u8,
+    mut remove_file: F,
+) -> Result<(), (u8, std::io::ErrorKind)>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let attempts = max_attempts.max(1);
+    for attempt in 1..=attempts {
+        match remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt == attempts => return Err((attempt, error.kind())),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    unreachable!("a nonzero bounded cleanup loop always returns")
 }
 
 fn root_mutex_hash(package_id: &str, root_id: FileObjectId) -> String {
@@ -654,8 +805,27 @@ fn bootstrap_mutex_name(package_id: &str, parent_id: FileObjectId, leaf: &OsStr)
     digest.update(package_id.as_bytes());
     digest.update(parent_id.volume.to_le_bytes());
     digest.update(parent_id.file.to_le_bytes());
-    digest.update(leaf.to_string_lossy().as_bytes());
+    digest.update(canonical_bootstrap_leaf_key(leaf).as_bytes());
     format!("Local\\AC-ISO-BOOT-{}\0", hex_digest(digest.finalize()))
+}
+
+fn canonical_bootstrap_lock_leaf(parent: &RetainedDirectory, leaf: &OsStr) -> std::ffi::OsString {
+    let candidate = parent.identity().canonical_path.join(leaf);
+    verify_directory(&candidate)
+        .ok()
+        .and_then(|identity| identity.canonical_path.file_name().map(OsStr::to_os_string))
+        .unwrap_or_else(|| leaf.to_os_string())
+}
+
+fn canonical_bootstrap_leaf_key(leaf: &OsStr) -> String {
+    #[cfg(windows)]
+    {
+        leaf.to_string_lossy().to_uppercase()
+    }
+    #[cfg(not(windows))]
+    {
+        leaf.to_string_lossy().into_owned()
+    }
 }
 
 fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
@@ -721,11 +891,28 @@ impl BootstrapLock {
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_isolated_root, bootstrap_mutex_name, root_mutex_hash, validate_requested_root,
-        CompiledPackageProfile, FileObjectId, IsolationError,
+        bootstrap_isolated_root, bootstrap_mutex_name, remove_temporary_file_with_retries,
+        resolve_isolated_startup_state, resolve_startup_state_with_normal_resolver,
+        root_mutex_hash, validate_requested_root, CompiledPackageProfile, FileObjectId,
+        IsolationError,
     };
     use crate::path_identity::retain_directory;
+    use std::cell::Cell;
+    use std::io::{Error, ErrorKind};
     use std::path::PathBuf;
+
+    fn test_profile() -> CompiledPackageProfile {
+        CompiledPackageProfile {
+            package_id: "agentscommander-1271-isolated-gates".to_string(),
+            product_label: "Agents Commander Isolated Gates".to_string(),
+            bundle_identifier: "dev.agentscommander.isolatedgates".to_string(),
+            workspace: "AgentsCommander_1271_isolated".to_string(),
+            matrix: "WG-1271-ISOLATED-GATES".to_string(),
+            replica_agent: "gate-tester".to_string(),
+            header_identity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated"
+                .to_string(),
+        }
+    }
 
     #[test]
     fn root_mutex_hash_is_root_identity_bound() {
@@ -748,6 +935,23 @@ mod tests {
         assert!(name.ends_with('\0'));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn bootstrap_mutex_name_normalizes_windows_case_aliases() {
+        let parent = FileObjectId { volume: 7, file: 9 };
+        let lower = bootstrap_mutex_name(
+            "agentscommander-1271-isolated-gates",
+            parent,
+            std::ffi::OsStr::new("app-state"),
+        );
+        let upper = bootstrap_mutex_name(
+            "agentscommander-1271-isolated-gates",
+            parent,
+            std::ffi::OsStr::new("APP-STATE"),
+        );
+        assert_eq!(lower, upper);
+    }
+
     #[test]
     fn root_validation_rejects_relative_paths() {
         assert_eq!(
@@ -757,21 +961,99 @@ mod tests {
     }
 
     #[test]
+    fn root_validation_rejects_raw_lexical_dot_segments() {
+        let raw = if cfg!(windows) {
+            PathBuf::from(r"C:\fixture\.\app-state")
+        } else {
+            PathBuf::from("/fixture/./app-state")
+        };
+        assert_eq!(
+            validate_requested_root(&raw),
+            Err(IsolationError::InvalidRoot)
+        );
+    }
+
+    #[test]
+    fn normal_root_overlap_is_rejected_before_the_requested_leaf_is_created() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let normal_root = fixture.path().join("normal-root");
+        let requested_root = normal_root.join("new-isolated-leaf");
+        std::fs::create_dir(&normal_root).unwrap();
+
+        let result = resolve_isolated_startup_state(
+            &requested_root,
+            test_profile(),
+            "profile-hash",
+            std::slice::from_ref(&normal_root),
+        );
+
+        assert_eq!(result.err(), Some(IsolationError::NormalRootOverlap));
+        assert!(
+            !requested_root.exists(),
+            "normal-root overlap must be rejected before the leaf can be created"
+        );
+        assert!(
+            normal_root.read_dir().unwrap().next().is_none(),
+            "a rejected overlap must not create a marker, profile, or child in normal state"
+        );
+    }
+
+    #[test]
+    fn normal_startup_calls_its_default_resolver_exactly_once() {
+        let calls = Cell::new(0);
+        let expected = PathBuf::from("C:/normal-root");
+        let state = resolve_startup_state_with_normal_resolver(None, || {
+            calls.set(calls.get() + 1);
+            Some(expected.clone())
+        })
+        .unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(state.config_root(), Some(expected));
+    }
+
+    #[cfg(not(feature = "isolated-validation-package"))]
+    #[test]
+    fn isolated_startup_never_calls_the_normal_resolver_when_the_feature_is_absent() {
+        let calls = Cell::new(0);
+        let result = resolve_startup_state_with_normal_resolver(
+            Some(PathBuf::from("C:/fixture/app-state").as_path()),
+            || {
+                calls.set(calls.get() + 1);
+                Some(PathBuf::from("C:/normal-root"))
+            },
+        );
+
+        assert_eq!(result.err(), Some(IsolationError::Unsupported));
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[cfg(feature = "isolated-validation-package")]
+    #[test]
+    fn isolated_startup_never_calls_the_normal_resolver_with_a_normal_sentinel() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let requested_root = fixture.path().join("app-state");
+        let calls = Cell::new(0);
+        let state = resolve_startup_state_with_normal_resolver(Some(&requested_root), || {
+            calls.set(calls.get() + 1);
+            Some(PathBuf::from("C:/normal-root-sentinel"))
+        })
+        .expect("feature build resolves an isolated root without consulting normal state");
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            state.isolated_root(),
+            Some(std::fs::canonicalize(requested_root).unwrap())
+        );
+    }
+
+    #[test]
     fn bootstrap_seeds_an_ordinary_profile_project_and_replica_identity() {
         let fixture = tempfile::TempDir::new().unwrap();
         let root_path = fixture.path().join("app-state");
         std::fs::create_dir(&root_path).unwrap();
         let root = retain_directory(&root_path).unwrap();
-        let profile = CompiledPackageProfile {
-            package_id: "agentscommander-1271-isolated-gates".to_string(),
-            product_label: "Agents Commander Isolated Gates".to_string(),
-            bundle_identifier: "dev.agentscommander.isolatedgates".to_string(),
-            workspace: "AgentsCommander_1271_isolated".to_string(),
-            matrix: "WG-1271-ISOLATED-GATES".to_string(),
-            replica_agent: "gate-tester".to_string(),
-            header_identity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated"
-                .to_string(),
-        };
+        let profile = test_profile();
 
         bootstrap_isolated_root(&root, &profile).unwrap();
 
@@ -831,6 +1113,160 @@ mod tests {
 
         bootstrap_isolated_root(&root, &profile)
             .expect("ordinary in-root settings and replica additions remain valid on relaunch");
+
+        let external_project = fixture.path().join("external-project");
+        std::fs::create_dir(&external_project).unwrap();
+        settings_with_fixture.project_path = Some(
+            std::fs::canonicalize(&external_project)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        std::fs::write(
+            root_path.join("settings.json"),
+            serde_json::to_vec_pretty(&settings_with_fixture).unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            bootstrap_isolated_root(&root, &profile),
+            Err(IsolationError::ProfileInvalid)
+        ));
+    }
+
+    #[test]
+    fn retained_root_and_webview_handles_block_or_detect_post_validation_replacement() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        let state = resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
+            .expect("fixture root bootstraps");
+
+        let retired_root = fixture.path().join("retired-root");
+        if std::fs::rename(&root_path, &retired_root).is_ok() {
+            std::fs::create_dir(&root_path).unwrap();
+            assert!(state.config_root().is_none());
+            return;
+        }
+        assert!(state.config_root().is_some());
+
+        let webview_path = root_path.join("webview-data");
+        let retired_webview = root_path.join("retired-webview-data");
+        if std::fs::rename(&webview_path, &retired_webview).is_ok() {
+            std::fs::create_dir(&webview_path).unwrap();
+            assert!(state.verified_webview_data_directory().is_none());
+        } else {
+            assert!(state.verified_webview_data_directory().is_some());
+        }
+    }
+
+    #[test]
+    fn bootstrap_state_routing_keeps_every_profile_path_below_the_retained_root() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        std::fs::create_dir(&root_path).unwrap();
+        let root = retain_directory(&root_path).unwrap();
+        let webview = bootstrap_isolated_root(&root, &test_profile()).unwrap();
+
+        for directory in [
+            root_path.join("instances"),
+            root_path.join("agent-templates"),
+            root_path.join("context-cache"),
+            root_path.join("profile-project"),
+            webview.identity().canonical_path.clone(),
+        ] {
+            let identity = crate::path_identity::verify_directory(&directory).unwrap();
+            assert!(super::identity_is_at_or_below(&identity, root.identity()));
+        }
+
+        let settings: crate::config::settings::AppSettings =
+            serde_json::from_slice(&std::fs::read(root_path.join("settings.json")).unwrap())
+                .unwrap();
+        for project_path in settings
+            .project_path
+            .iter()
+            .chain(settings.project_paths.iter())
+            .chain(settings.archived_project_paths.iter())
+        {
+            let identity =
+                crate::path_identity::verify_directory(PathBuf::from(project_path).as_path())
+                    .unwrap();
+            assert!(super::identity_is_at_or_below(&identity, root.identity()));
+        }
+    }
+
+    #[test]
+    fn temporary_cleanup_retries_are_bounded_and_report_the_final_error_kind() {
+        let attempts = Cell::new(0);
+        let result = remove_temporary_file_with_retries(
+            PathBuf::from("temporary-state-file").as_path(),
+            3,
+            |_| {
+                attempts.set(attempts.get() + 1);
+                Err(Error::from(ErrorKind::PermissionDenied))
+            },
+        );
+
+        assert_eq!(result, Err((3, ErrorKind::PermissionDenied)));
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn same_and_different_roots_bootstrap_concurrently_without_state_collisions() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let parent = fixture.path().to_path_buf();
+        let lower_profile = test_profile();
+        let upper_profile = test_profile();
+        let lower_parent = parent.clone();
+        let upper_parent = parent.clone();
+
+        let lower = std::thread::spawn(move || {
+            resolve_isolated_startup_state(
+                &lower_parent.join("app-state"),
+                lower_profile,
+                "profile-hash",
+                &[],
+            )
+            .map(|_| ())
+        });
+        let upper = std::thread::spawn(move || {
+            resolve_isolated_startup_state(
+                &upper_parent.join("APP-STATE"),
+                upper_profile,
+                "profile-hash",
+                &[],
+            )
+            .map(|_| ())
+        });
+
+        assert!(lower.join().unwrap().is_ok());
+        assert!(upper.join().unwrap().is_ok());
+        assert!(parent.join("app-state").join("settings.json").is_file());
+
+        let first_parent = parent.clone();
+        let second_parent = parent.clone();
+        let first = std::thread::spawn(move || {
+            resolve_isolated_startup_state(
+                &first_parent.join("first-root"),
+                test_profile(),
+                "profile-hash",
+                &[],
+            )
+            .map(|state| state.mutex_hash().unwrap().to_string())
+        });
+        let second = std::thread::spawn(move || {
+            resolve_isolated_startup_state(
+                &second_parent.join("second-root"),
+                test_profile(),
+                "profile-hash",
+                &[],
+            )
+            .map(|state| state.mutex_hash().unwrap().to_string())
+        });
+
+        let first_hash = first.join().unwrap().unwrap();
+        let second_hash = second.join().unwrap().unwrap();
+        assert_ne!(first_hash, second_hash);
     }
 
     #[cfg(feature = "isolated-validation-package")]
@@ -863,6 +1299,28 @@ mod tests {
         assert_eq!(
             super::compiled_profile_sha256(),
             Some(expected_hash.as_str())
+        );
+    }
+
+    #[cfg(feature = "isolated-validation-package")]
+    #[test]
+    fn package_overlay_declares_the_exact_readonly_profile_resource() {
+        let overlay: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tauri.conf.isolated-validation.json"
+        )))
+        .unwrap();
+        assert_eq!(
+            overlay["productName"],
+            serde_json::Value::String("Agents Commander Isolated Gates".to_string())
+        );
+        assert_eq!(
+            overlay["identifier"],
+            serde_json::Value::String("dev.agentscommander.isolatedgates".to_string())
+        );
+        assert_eq!(
+            overlay["bundle"]["resources"]["../packaging/isolated-validation/package-profile.toml"],
+            serde_json::Value::String("isolated-validation/package-profile.toml".to_string())
         );
     }
 
