@@ -1,8 +1,29 @@
 [CmdletBinding()]
-param()
+param(
+    [Parameter(Mandatory)]
+    [ValidateSet('Desktop', 'Core')]
+    [string]$ExpectedPSEdition,
+
+    [int]$ExpectedMajorVersion,
+
+    [int]$MinimumMajorVersion
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+if ($PSVersionTable.PSEdition -cne $ExpectedPSEdition) {
+    throw "expected PowerShell edition $ExpectedPSEdition, received $($PSVersionTable.PSEdition)"
+}
+if ($ExpectedMajorVersion -gt 0 -and $PSVersionTable.PSVersion.Major -ne $ExpectedMajorVersion) {
+    throw "expected PowerShell major version $ExpectedMajorVersion, received $($PSVersionTable.PSVersion.Major)"
+}
+if ($MinimumMajorVersion -gt 0 -and $PSVersionTable.PSVersion.Major -lt $MinimumMajorVersion) {
+    throw "expected PowerShell major version at least $MinimumMajorVersion, received $($PSVersionTable.PSVersion.Major)"
+}
+if (($ExpectedMajorVersion -gt 0) -eq ($MinimumMajorVersion -gt 0)) {
+    throw 'supply exactly one of -ExpectedMajorVersion or -MinimumMajorVersion'
+}
 
 function Get-Sha256 {
     param([Parameter(Mandatory)][string]$LiteralPath)
