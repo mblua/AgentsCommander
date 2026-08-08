@@ -127,6 +127,17 @@ public static class Program {
         return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
+    private static void WriteJsonArguments(string[] args, int start) {
+        Console.Write("[");
+        for (var index = start; index < args.Length; index++) {
+            if (index > start) {
+                Console.Write(",");
+            }
+            Console.Write("\"" + JsonEscape(args[index]) + "\"");
+        }
+        Console.Write("]");
+    }
+
     public static int Main(string[] args) {
         var capturePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mock-child-env.txt");
         using (var writer = new StreamWriter(capturePath, false)) {
@@ -136,6 +147,17 @@ public static class Program {
                     writer.WriteLine(key + "=" + entry.Value);
                 }
             }
+        }
+
+        if (args.Length >= 1 && args[0] == "--argv-json") {
+            WriteJsonArguments(args, 1);
+            return 0;
+        }
+
+        if (args.Length == 1 && args[0] == "--dual-stream") {
+            Console.Out.Write(new string('o', 131072));
+            Console.Error.Write(new string('e', 131072));
+            return 0;
         }
 
         if (args.Length == 3 && args[0] == "--isolated-state-root" && args[2] == "--isolation-status") {
@@ -179,6 +201,123 @@ public static class Program {
     Copy-Item -LiteralPath (Join-Path $mockOutput 'agentscommander.exe') -Destination $executable
     foreach ($supportFile in @('agentscommander.dll', 'agentscommander.deps.json', 'agentscommander.runtimeconfig.json')) {
         Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact $supportFile)
+    }
+
+    Import-Module -Name $nativeProcessModule -Force -ErrorAction Stop
+    $exportedNativeProcessCommands = @(Get-Command -Module native-process | Select-Object -ExpandProperty Name)
+    if ($exportedNativeProcessCommands.Count -ne 1 -or $exportedNativeProcessCommands[0] -cne 'Start-IsolatedValidationNativeProcess') {
+        throw "native process module exported unexpected commands: $($exportedNativeProcessCommands -join ', ')"
+    }
+
+    $argvProbeValues = @(
+        '',
+        'contains whitespace',
+        'embedded"quote',
+        'trailing\\',
+        'Unicode-✓',
+        '^{commit}',
+        '^{tree}',
+        '^',
+        '&',
+        '|',
+        '<',
+        '>',
+        '$literal',
+        '(parentheses)'
+    )
+    $argvProbe = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $executable `
+        -WorkingDirectory $artifact `
+        -Arguments (@('--argv-json') + $argvProbeValues) `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment
+    if ($argvProbe.ExitCode -ne 0) {
+        throw 'the native process argv probe returned a nonzero exit code'
+    }
+    $receivedArgvProbeValues = @($argvProbe.StandardOutput | ConvertFrom-Json)
+    if ($receivedArgvProbeValues.Count -eq 1 -and $receivedArgvProbeValues[0] -is [System.Array]) {
+        $receivedArgvProbeValues = $receivedArgvProbeValues[0]
+    }
+    if ($receivedArgvProbeValues.Count -ne $argvProbeValues.Count) {
+        throw 'the native process argv probe returned an unexpected argument count'
+    }
+    for ($index = 0; $index -lt $argvProbeValues.Count; $index++) {
+        if ($receivedArgvProbeValues[$index] -cne $argvProbeValues[$index]) {
+            throw "the native process argv probe changed argument index $index"
+        }
+    }
+
+    $zeroArgvProbe = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $executable `
+        -WorkingDirectory $artifact `
+        -Arguments @('--argv-json') `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment
+    $oneEmptyArgvProbe = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $executable `
+        -WorkingDirectory $artifact `
+        -Arguments @('--argv-json', '') `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment
+    if ($zeroArgvProbe.StandardOutput -cne '[]' -or $oneEmptyArgvProbe.StandardOutput -cne '[""]') {
+        throw 'the native process module did not distinguish zero arguments from one empty argument'
+    }
+
+    $dualStreamProbe = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $executable `
+        -WorkingDirectory $artifact `
+        -Arguments @('--dual-stream') `
+        -StandardOutputLimitBytes 256KB `
+        -StandardErrorLimitBytes 256KB `
+        -RemoveAgentsCommanderEnvironment
+    if ($dualStreamProbe.StandardOutput.Length -ne 131072 -or $dualStreamProbe.StandardError.Length -ne 131072) {
+        throw 'the native process module did not capture both streams concurrently'
+    }
+
+    try {
+        Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $executable `
+            -WorkingDirectory $artifact `
+            -Arguments @('--dual-stream') `
+            -StandardOutputLimitBytes 64KB `
+            -StandardErrorLimitBytes 64KB `
+            -RemoveAgentsCommanderEnvironment | Out-Null
+        throw 'the native process module accepted output above its configured capture ceiling'
+    }
+    catch {
+        if ($_.Exception.Message -ne 'E_ISOLATION_NATIVE_PROCESS') {
+            throw
+        }
+    }
+
+    $nativeParentEnvironmentName = 'AGENTSCOMMANDER_TEST_NATIVE_PARENT'
+    $nativeParentEnvironmentValue = [Environment]::GetEnvironmentVariable($nativeParentEnvironmentName)
+    [Environment]::SetEnvironmentVariable($nativeParentEnvironmentName, 'must-remain-parent-only')
+    try {
+        Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $executable `
+            -WorkingDirectory $artifact `
+            -Arguments @('--argv-json') `
+            -StandardOutputLimitBytes 1MB `
+            -StandardErrorLimitBytes 1MB `
+            -RemoveAgentsCommanderEnvironment | Out-Null
+        $nativeChildEnvironment = [string](Get-Content -LiteralPath (Join-Path $artifact 'mock-child-env.txt') -Raw)
+        if ($nativeChildEnvironment.Contains($nativeParentEnvironmentName) -or
+            [Environment]::GetEnvironmentVariable($nativeParentEnvironmentName) -cne 'must-remain-parent-only') {
+            throw 'native process child environment cleanup leaked or mutated an AGENTSCOMMANDER_* value'
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($nativeParentEnvironmentName, $nativeParentEnvironmentValue)
     }
 
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
