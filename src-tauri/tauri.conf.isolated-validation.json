@@ -3,7 +3,7 @@
   "identifier": "dev.agentscommander.isolatedgates",
   "bundle": {
     "resources": {
-      "../packaging/isolated-validation/package-profile.toml": "isolated-validation/package-profile.toml"
+      "../packaging/isolated-validation/package-profile.toml": "package-profile.toml"
     }
   }
 }
