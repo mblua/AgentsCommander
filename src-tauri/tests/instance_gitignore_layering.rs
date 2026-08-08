@@ -1504,7 +1504,8 @@ fn crate_sources() -> Result<BTreeSet<String>, String> {
     Ok(files.iter().map(|path| relative_of(path)).collect())
 }
 
-/// Every file under `root`, sorted, filtered by nothing.
+/// Every file under `scan_root`, sorted, filtered by nothing, with traversal
+/// diagnostics rendered relative to `manifest_root`.
 ///
 /// **Do not add an extension filter here.** `rustc` decides what to compile from
 /// the module tree; a filter decides from the name, and production code lives in
@@ -1512,12 +1513,7 @@ fn crate_sources() -> Result<BTreeSet<String>, String> {
 /// `x.RS` while `"RS" == "rs"` is false, and `#[path = "carrier.inc"]` compiles a
 /// file no extension filter matches. Reading every file closes both and is still
 /// a pure text scan.
-struct DirectoryEntryFailure {
-    path: PathBuf,
-    source: std::io::Error,
-}
-
-type DirectoryEntryRead = Result<PathBuf, DirectoryEntryFailure>;
+type DirectoryEntryRead = std::io::Result<PathBuf>;
 type DirectoryRead = std::io::Result<Vec<DirectoryEntryRead>>;
 
 fn traversal_diagnostic(
@@ -1558,13 +1554,13 @@ where
         let entries = read_directory(directory).map_err(|source| {
             traversal_diagnostic(manifest_root, directory, "read source directory", &source)
         })?;
-        for entry in entries {
-            let path = entry.map_err(|failure| {
+        for (index, entry) in entries.into_iter().enumerate() {
+            let path = entry.map_err(|source| {
                 traversal_diagnostic(
                     manifest_root,
-                    &failure.path,
+                    &directory.join(format!("<entry-{index}>")),
                     "read source directory entry",
-                    &failure.source,
+                    &source,
                 )
             })?;
             if path.is_dir() {
@@ -1582,27 +1578,37 @@ where
     Ok(files)
 }
 
-fn every_file_under(root: &Path) -> Vec<PathBuf> {
+fn every_file_under_from_manifest_with<F>(
+    manifest_root: &Path,
+    read_directory: &mut F,
+) -> Result<Vec<PathBuf>, String>
+where
+    F: FnMut(&Path) -> DirectoryRead,
+{
+    let scan_root = manifest_root.join("src");
+    every_file_under_with(manifest_root, &scan_root, read_directory)
+}
+
+fn every_file_under(manifest_root: &Path) -> Vec<PathBuf> {
     let mut read_directory = |directory: &Path| -> DirectoryRead {
-        let entries = std::fs::read_dir(directory)?;
-        Ok(entries
-            .enumerate()
-            .map(|(index, entry)| {
-                entry
-                    .map(|entry| entry.path())
-                    .map_err(|source| DirectoryEntryFailure {
-                        path: directory.join(format!("<entry-{index}>")),
-                        source,
-                    })
-            })
+        Ok(std::fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.path()))
             .collect())
     };
-    every_file_under_with(root, root, &mut read_directory)
+    every_file_under_from_manifest_with(manifest_root, &mut read_directory)
         .unwrap_or_else(|diagnostic| panic!("{diagnostic}"))
 }
 
 #[test]
 fn traversal_failures_report_relative_paths_contract_and_os_cause() {
+    struct FixtureRoot(PathBuf);
+
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn assert_diagnostic(
         diagnostic: &str,
         expected_path: &str,
@@ -1626,45 +1632,104 @@ fn traversal_failures_report_relative_paths_contract_and_os_cause() {
         }
     }
 
-    let manifest_root = PathBuf::from("fixture-root");
-    let unreadable_directory = manifest_root.join("src/config/unreadable-probe");
-    let mut directory_failure = |_directory: &Path| -> DirectoryRead {
+    let fixture_parent = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&fixture_parent).unwrap_or_else(|source| {
+        panic!(
+            "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not create fixture parent `{}`: {source}",
+            fixture_parent.display()
+        )
+    });
+    let fixture_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time must be after the Unix epoch")
+        .as_nanos();
+    let fixture = FixtureRoot(fixture_parent.join(format!(
+        "instance-gitignore-layering-traversal-{}-{fixture_id}",
+        std::process::id()
+    )));
+    let manifest_root = &fixture.0;
+    let source_root = manifest_root.join("src");
+    let config_directory = source_root.join("config");
+    let unreadable_directory = config_directory.join("unreadable-probe");
+    std::fs::create_dir_all(&unreadable_directory).unwrap_or_else(|source| {
+        panic!(
+            "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not create fixture directory `{}`: {source}",
+            unreadable_directory.display()
+        )
+    });
+
+    let mut source_root_failure = |_directory: &Path| -> DirectoryRead {
         Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "focal read_dir denial",
+            "focal source root read_dir denial",
         ))
     };
-    let diagnostic = every_file_under_with(
-        &manifest_root,
-        &unreadable_directory,
-        &mut directory_failure,
-    )
-    .expect_err("the injected read_dir failure must be diagnostic");
+    let diagnostic = every_file_under_from_manifest_with(manifest_root, &mut source_root_failure)
+        .expect_err("the injected source root read_dir failure must be diagnostic");
+    assert_diagnostic(
+        &diagnostic,
+        "src",
+        "read source directory",
+        "focal source root read_dir denial",
+    );
+
+    let mut directory_failure = |directory: &Path| -> DirectoryRead {
+        if directory == source_root {
+            Ok(vec![Ok(config_directory.clone())])
+        } else if directory == config_directory {
+            Ok(vec![Ok(unreadable_directory.clone())])
+        } else if directory == unreadable_directory {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "focal nested read_dir denial",
+            ))
+        } else {
+            panic!(
+                "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT visited unexpected directory `{}`",
+                directory.display()
+            );
+        }
+    };
+    let diagnostic = every_file_under_from_manifest_with(manifest_root, &mut directory_failure)
+        .expect_err("the injected nested read_dir failure must be diagnostic");
     assert_diagnostic(
         &diagnostic,
         "src/config/unreadable-probe",
         "read source directory",
-        "focal read_dir denial",
+        "focal nested read_dir denial",
     );
 
-    let entry_path = manifest_root.join("src/config/instance_gitignore_layering_probe.rs");
-    let mut entry_failure = |_directory: &Path| -> DirectoryRead {
-        Ok(vec![Err(DirectoryEntryFailure {
-            path: entry_path.clone(),
-            source: std::io::Error::new(
+    let mut entry_failure = |directory: &Path| -> DirectoryRead {
+        if directory == source_root {
+            Ok(vec![Ok(config_directory.clone())])
+        } else if directory == config_directory {
+            Ok(vec![Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "focal directory entry denial",
-            ),
-        })])
+            ))])
+        } else {
+            panic!(
+                "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT visited unexpected directory `{}`",
+                directory.display()
+            );
+        }
     };
-    let diagnostic = every_file_under_with(&manifest_root, &manifest_root, &mut entry_failure)
+    let diagnostic = every_file_under_from_manifest_with(manifest_root, &mut entry_failure)
         .expect_err("the injected entry failure must be diagnostic");
     assert_diagnostic(
         &diagnostic,
-        "src/config/instance_gitignore_layering_probe.rs",
+        "src/config/<entry-0>",
         "read source directory entry",
         "focal directory entry denial",
     );
+
+    std::fs::remove_dir_all(manifest_root).unwrap_or_else(|source| {
+        panic!(
+            "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not remove fixture `{}`: {source}",
+            manifest_root.display()
+        )
+    });
+    std::mem::forget(fixture);
 }
 
 /// What one module's files were observed to name.
@@ -2131,8 +2196,8 @@ fn the_constant_home_names_nothing_at_all() {
 /// has not changed.
 #[test]
 fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
-    let source_root = manifest_dir().join("src");
-    let files = every_file_under(&source_root);
+    let manifest_root = manifest_dir();
+    let files = every_file_under(&manifest_root);
     assert!(
         !files.is_empty(),
         "no files found under src; the scan proves nothing"
