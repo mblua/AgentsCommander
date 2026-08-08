@@ -77,8 +77,13 @@ if ($targetCommit.ToLowerInvariant() -cne $IsolatedStateRootCommit.ToLowerInvari
     throw '-IsolatedStateRootCommit must resolve to its supplied full 40-hex SHA'
 }
 
-& git -C $RepoRoot merge-base --is-ancestor $ExpectedFrozen1271Commit $targetCommit
-if ($LASTEXITCODE -ne 0) {
+$ancestryProbe = Invoke-Git -Arguments @(
+    'merge-base',
+    '--is-ancestor',
+    $ExpectedFrozen1271Commit,
+    $targetCommit
+) -AllowNonZeroExit
+if ($ancestryProbe.ExitCode -ne 0) {
     throw 'the requested combined commit does not descend from the frozen #1271 commit'
 }
 
@@ -119,9 +124,14 @@ if (-not (Test-Path -LiteralPath $tauriCli -PathType Leaf)) {
     throw "missing Tauri CLI: $tauriCli"
 }
 
-& $tauriCli build --features $PackageFeature --config $overlayPath
-if ($LASTEXITCODE -ne 0) {
-    throw "isolated validation package build failed with exit code $LASTEXITCODE"
+$tauriBuild = Start-IsolatedValidationNativeProcess `
+    -Mode Wait `
+    -FilePath $tauriCli `
+    -WorkingDirectory $RepoRoot `
+    -Arguments @('build', '--features', $PackageFeature, '--config', $OverlayRelativePath) `
+    -RemoveAgentsCommanderEnvironment
+if ($tauriBuild.ExitCode -ne 0) {
+    throw "isolated validation package build failed with exit code $($tauriBuild.ExitCode)"
 }
 
 $releaseDirectory = Join-Path $RepoRoot 'src-tauri/target/release'
@@ -133,8 +143,8 @@ if ($null -eq $executable) {
 }
 
 $bundleDirectory = Join-Path $releaseDirectory 'bundle'
-$resourceRelativePath = 'resources/isolated-validation/package-profile.toml'
-$resourceTail = [System.IO.Path]::Combine('resources', 'isolated-validation', 'package-profile.toml')
+$resourceRelativePath = 'resources/package-profile.toml'
+$resourceTail = [System.IO.Path]::Combine('resources', 'package-profile.toml')
 $bundledProfiles = @(
     Get-ChildItem -LiteralPath $bundleDirectory -Recurse -Filter 'package-profile.toml' -File |
         Where-Object {
@@ -153,9 +163,9 @@ $bundledProfile = $bundledProfiles[0]
 # a fresh, verified portable layout from the exact resource materialized by the
 # bundle, not from an arbitrary first profile match or the checked-in source.
 $artifactDirectory = Join-Path $releaseDirectory ('isolated-validation-portable-' + [Guid]::NewGuid().ToString('N'))
-$artifactResources = Join-Path $artifactDirectory 'resources/isolated-validation'
+$artifactResources = Join-Path $artifactDirectory 'resources'
 New-Item -ItemType Directory -Path $artifactResources -ErrorAction Stop | Out-Null
-$artifactExecutable = Join-Path $artifactDirectory $executable.Name
+$artifactExecutable = Join-Path $artifactDirectory 'Agents Commander Isolated Gates.exe'
 $artifactProfile = Join-Path $artifactResources 'package-profile.toml'
 Copy-Item -LiteralPath $executable.FullName -Destination $artifactExecutable -ErrorAction Stop
 Copy-Item -LiteralPath $bundledProfile.FullName -Destination $artifactProfile -ErrorAction Stop
