@@ -1444,4 +1444,20 @@ export interface SpecBoardChangedEvent {
   external: boolean;
 }
 
+export interface NormalPackageTitlebarIdentity {
+  readonly mode: "normal";
+}
+
+export interface IsolatedPackageTitlebarIdentity {
+  readonly mode: "isolated";
+  readonly workgroup: string;
+  readonly agent: string;
+  readonly workspace: string;
+  readonly headerIdentity: string;
+}
+
+export type IsolatedPackageTitlebarIdentityResponse =
+  | NormalPackageTitlebarIdentity
+  | IsolatedPackageTitlebarIdentity;
+
 

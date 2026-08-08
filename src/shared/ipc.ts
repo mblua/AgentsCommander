@@ -7,6 +7,7 @@ import type { Transport, TransportConnectionState, UnlistenFn } from "./transpor
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
+  IsolatedPackageTitlebarIdentityResponse,
   Session,
   SessionCommunication,
   SessionRepo,
@@ -120,6 +121,45 @@ const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
   emit: <T>(event: string, payload: T) =>
     currentTransport().emit<T>(event, payload),
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const decodeIsolatedPackageTitlebarIdentity = (
+  value: unknown,
+): IsolatedPackageTitlebarIdentityResponse => {
+  if (!isRecord(value)) {
+    throw new Error("Invalid isolated package titlebar identity response");
+  }
+  if (value.mode === "normal") return { mode: "normal" };
+  if (
+    value.mode !== "isolated" ||
+    typeof value.workgroup !== "string" ||
+    typeof value.agent !== "string" ||
+    typeof value.workspace !== "string" ||
+    typeof value.headerIdentity !== "string"
+  ) {
+    throw new Error("Invalid isolated package titlebar identity response");
+  }
+
+  if (value.headerIdentity !== `${value.workgroup} ${value.agent}@${value.workspace}`) {
+    throw new Error("Invalid isolated package titlebar identity response");
+  }
+
+  return {
+    mode: "isolated",
+    workgroup: value.workgroup,
+    agent: value.agent,
+    workspace: value.workspace,
+    headerIdentity: value.headerIdentity,
+  };
+};
+
+export const getIsolatedPackageTitlebarIdentity = async (): Promise<
+  IsolatedPackageTitlebarIdentityResponse
+> => decodeIsolatedPackageTitlebarIdentity(
+  await transport.invoke<unknown>("get_isolated_package_titlebar_identity"),
+);
 
 export interface CreateSessionOptions {
   shell?: string;

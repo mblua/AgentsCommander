@@ -1,6 +1,10 @@
-import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from "solid-js";
+import { Component, Show, For, createSignal, createMemo, createResource, onMount, onCleanup } from "solid-js";
 import iconUrl from "../../assets/icon-16.png";
-import { ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
+import {
+  getIsolatedPackageTitlebarIdentity,
+  ScreenshotAPI,
+  SettingsAPI,
+} from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
@@ -15,6 +19,14 @@ import {
 
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
+
+type IsolationTitlebarState = "pending" | "normal" | "isolated" | "error";
+type IsolatedTitlebarBridgeResult =
+  | {
+    readonly kind: "resolved";
+    readonly identity: Awaited<ReturnType<typeof getIsolatedPackageTitlebarIdentity>>;
+  }
+  | { readonly kind: "error" };
 
 const SIDEBAR_WIDTH_PRESETS: Array<{ label: string; width: number }> = [
   { label: "Narrow", width: MAIN_SIDEBAR_MIN_WIDTH },
@@ -86,10 +98,48 @@ const Titlebar: Component = () => {
   const [webServerOpen, setWebServerOpen] = createSignal(false);
   const [instanceLabel, setInstanceLabel] = createSignal("");
   const [currentSide, setCurrentSide] = createSignal<MainSidebarSide>("right");
-  const wgName = createMemo(() => extractWorkgroupName(terminalStore.activeWorkingDirectory));
-  const trailingText = createMemo(() =>
-    computeTrailingText(terminalStore.activeWorkingDirectory, terminalStore.activeSessionName),
-  );
+  const [isolatedTitlebarBridge] = createResource<IsolatedTitlebarBridgeResult>(async () => {
+    try {
+      return {
+        kind: "resolved",
+        identity: await getIsolatedPackageTitlebarIdentity(),
+      };
+    } catch {
+      return { kind: "error" };
+    }
+  });
+  const isolationTitlebarState = createMemo<IsolationTitlebarState>(() => {
+    const bridgeResult = isolatedTitlebarBridge();
+    if (!bridgeResult) return "pending";
+    if (bridgeResult.kind === "error") return "error";
+    return bridgeResult.identity.mode;
+  });
+  const titlebarWorkgroup = createMemo(() => {
+    const bridgeResult = isolatedTitlebarBridge();
+    const identity = bridgeResult?.kind === "resolved" ? bridgeResult.identity : undefined;
+    if (isolationTitlebarState() === "isolated" && identity?.mode === "isolated") {
+      return identity.workgroup;
+    }
+    if (isolationTitlebarState() === "normal") {
+      return extractWorkgroupName(terminalStore.activeWorkingDirectory);
+    }
+    return "";
+  });
+  const titlebarIdentityText = createMemo(() => {
+    const bridgeResult = isolatedTitlebarBridge();
+    const identity = bridgeResult?.kind === "resolved" ? bridgeResult.identity : undefined;
+    if (isolationTitlebarState() === "isolated" && identity?.mode === "isolated") {
+      return `${identity.agent}@${identity.workspace}`;
+    }
+    if (isolationTitlebarState() === "normal") {
+      return computeTrailingText(
+        terminalStore.activeWorkingDirectory,
+        terminalStore.activeSessionName,
+      );
+    }
+    if (isolationTitlebarState() === "error") return "ISOLATION IDENTITY UNAVAILABLE";
+    return "";
+  });
 
   const setLayoutMenuOpen = (nextOpen: boolean) => {
     setLayoutOpen(nextOpen);
@@ -172,7 +222,11 @@ const Titlebar: Component = () => {
   });
 
   return (
-    <div class="titlebar" data-tauri-drag-region>
+    <div
+      class="titlebar"
+      data-isolation-titlebar-state={isolationTitlebarState()}
+      data-tauri-drag-region
+    >
       <div class="titlebar-brand" data-tauri-drag-region>
         <img src={iconUrl} class="titlebar-icon" alt="" draggable={false} />
         <span class="titlebar-title" data-tauri-drag-region>
@@ -187,11 +241,18 @@ const Titlebar: Component = () => {
         {instanceLabel() && (
           <span class="titlebar-stage-badge" data-tauri-drag-region>{instanceLabel()}</span>
         )}
-        <Show when={wgName()}>
-          <span class="titlebar-wg-badge" data-tauri-drag-region>{wgName()}</span>
+        <Show when={titlebarWorkgroup()}>
+          <span class="titlebar-wg-badge" data-tauri-drag-region>{titlebarWorkgroup()}</span>
         </Show>
-        <Show when={trailingText()} fallback={<span class="titlebar-session-name">Terminal</span>}>
-          <span class="titlebar-session-name">{trailingText()}</span>
+        <Show
+          when={titlebarIdentityText()}
+          fallback={
+            <Show when={isolationTitlebarState() === "normal"}>
+              <span class="titlebar-session-name">Terminal</span>
+            </Show>
+          }
+        >
+          <span class="titlebar-session-name">{titlebarIdentityText()}</span>
         </Show>
       </div>
       <div class="titlebar-controls">

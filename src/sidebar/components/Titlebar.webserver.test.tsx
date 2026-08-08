@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component, JSX } from "solid-js";
-import type { AppSettings, WebServerOwnedStatus } from "../../shared/types";
+import type {
+  AppSettings,
+  IsolatedPackageTitlebarIdentityResponse,
+  Session,
+  WebServerOwnedStatus,
+} from "../../shared/types";
 import type { FakeTransport } from "../../shared/testing/fake-transport";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -32,6 +37,21 @@ type HarnessModules = {
 };
 
 type StatusSource = WebServerOwnedStatus | Error;
+interface SnakeCaseIsolatedPackageTitlebarIdentityResponse {
+  readonly mode: "isolated";
+  readonly workgroup: string;
+  readonly agent: string;
+  readonly workspace: string;
+  readonly header_identity: string;
+}
+
+type TitlebarIdentityPayload =
+  | IsolatedPackageTitlebarIdentityResponse
+  | SnakeCaseIsolatedPackageTitlebarIdentityResponse;
+type TitlebarIdentitySource =
+  | TitlebarIdentityPayload
+  | Error
+  | Promise<TitlebarIdentityPayload>;
 
 interface TransportControl {
   getSettings: () => AppSettings;
@@ -42,6 +62,7 @@ interface TransportControl {
 interface MountOptions {
   settings?: Partial<AppSettings>;
   status?: StatusSource;
+  titlebarIdentity?: TitlebarIdentitySource;
   startWebServer?: (control: TransportControl) => boolean | Promise<boolean>;
   stopWebServer?: (control: TransportControl) => boolean | Promise<boolean>;
   openWebRemote?: () => void | Promise<void>;
@@ -95,6 +116,34 @@ const stoppedStatus = (overrides: Partial<WebServerOwnedStatus> = {}) =>
     ...overrides,
   });
 
+const titlebarSession = (overrides: Partial<Session> = {}): Session => ({
+  id: "titlebar-session",
+  name: "Terminal",
+  shell: "powershell.exe",
+  shellArgs: [],
+  effectiveShellArgs: null,
+  createdAt: "2026-08-08T00:00:00Z",
+  workingDirectory: "C:\\work\\AgentsCommander\\.ac\\wg-1271-normal\\__agent_normal-agent",
+  status: "idle",
+  waitingForInput: false,
+  communication: null,
+  pendingReview: false,
+  lastPrompt: null,
+  agentId: null,
+  agentLabel: null,
+  gitRepos: [],
+  workgroupTask: null,
+  isCoordinator: false,
+  isRootAgent: false,
+  token: "",
+  agentKind: null,
+  requestedProfile: null,
+  effectiveProfile: null,
+  profileFallbackChain: [],
+  profileFallbackApplied: false,
+  ...overrides,
+});
+
 const deferred = <T,>() => {
   let resolve: (value: T) => void = () => {};
   const promise = new Promise<T>((nextResolve) => {
@@ -125,6 +174,7 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
   const fake = new modules.FakeTransport();
   let currentSettings = modules.baseSettings(options.settings);
   let currentStatus = options.status ?? stoppedStatus({ port: currentSettings.webServerPort });
+  const titlebarIdentity: TitlebarIdentitySource = options.titlebarIdentity ?? { mode: "normal" };
   const statusQueue: StatusSource[] = [];
 
   const readStatus = () => {
@@ -152,6 +202,10 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
   fake.onInvoke("start_web_server", () => options.startWebServer?.(control) ?? true);
   fake.onInvoke("stop_web_server", () => options.stopWebServer?.(control) ?? true);
   fake.onInvoke("open_web_remote", () => options.openWebRemote?.());
+  fake.onInvoke("get_isolated_package_titlebar_identity", () => {
+    if (titlebarIdentity instanceof Error) throw titlebarIdentity;
+    return titlebarIdentity;
+  });
 
   const rendered = modules.renderWithFakeTransport(() => <modules.Titlebar />, fake);
   cleanups.push(rendered.cleanup);
@@ -543,5 +597,130 @@ describe("Titlebar webserver menu", () => {
       expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
     });
     expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+  });
+});
+
+describe("Titlebar isolated package identity", () => {
+  const isolatedIdentity: IsolatedPackageTitlebarIdentityResponse = {
+    mode: "isolated",
+    workgroup: "WG-1271-ISOLATED-GATES",
+    agent: "gate-tester",
+    workspace: "AgentsCommander_1271_isolated",
+    headerIdentity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated",
+  };
+
+  it("renders no terminal-derived identity while the bridge is pending", async () => {
+    const response = deferred<IsolatedPackageTitlebarIdentityResponse>();
+    const mounted = await mountTitlebar({ titlebarIdentity: response.promise });
+
+    expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+      "data-isolation-titlebar-state",
+    )).toBe("pending");
+    expect(mounted.root.textContent).not.toContain("Terminal");
+
+    response.resolve(isolatedIdentity);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+        "data-isolation-titlebar-state",
+      )).toBe("isolated");
+    });
+  });
+
+  it("renders the fixed isolated identity before any terminal session exists", async () => {
+    const mounted = await mountTitlebar({ titlebarIdentity: isolatedIdentity });
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+        "data-isolation-titlebar-state",
+      )).toBe("isolated");
+    });
+
+    expect(mounted.root.textContent).toContain("WG-1271-ISOLATED-GATES");
+    expect(mounted.root.textContent).toContain("gate-tester@AgentsCommander_1271_isolated");
+    expect(mounted.fake.callsFor("get_isolated_package_titlebar_identity")).toHaveLength(1);
+  });
+
+  it("retains normal terminal-derived identity rendering", async () => {
+    const { terminalStore } = await import("../../terminal/stores/terminal");
+    const session = titlebarSession();
+    terminalStore.bindLockedSession(session);
+
+    try {
+      const mounted = await mountTitlebar({ titlebarIdentity: { mode: "normal" } });
+
+      await mounted.modules.waitFor(() => {
+        expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+          "data-isolation-titlebar-state",
+        )).toBe("normal");
+      });
+
+      expect(mounted.root.textContent).toContain("WG-1271-NORMAL");
+      expect(mounted.root.textContent).toContain("normal-agent@AgentsCommander");
+    } finally {
+      terminalStore.resetForTests();
+    }
+  });
+
+  it("renders the deterministic error instead of a Terminal fallback", async () => {
+    const mounted = await mountTitlebar({
+      titlebarIdentity: new Error("bridge unavailable"),
+    });
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+        "data-isolation-titlebar-state",
+      )).toBe("error");
+    });
+
+    expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
+    expect(mounted.root.textContent).not.toContain("Terminal");
+  });
+
+  it("rejects a snake_case bridge field as unavailable", async () => {
+    const mounted = await mountTitlebar({
+      titlebarIdentity: {
+        mode: "isolated",
+        workgroup: "WG-1271-ISOLATED-GATES",
+        agent: "gate-tester",
+        workspace: "AgentsCommander_1271_isolated",
+        header_identity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated",
+      },
+    });
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+        "data-isolation-titlebar-state",
+      )).toBe("error");
+    });
+
+    expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
+  });
+
+  it("does not let hostile terminal root, marker, or session values influence isolated text", async () => {
+    const { terminalStore } = await import("../../terminal/stores/terminal");
+    terminalStore.bindLockedSession(titlebarSession({
+      name: "hostile-session-name",
+      workingDirectory: "C:\\hostile-root\\hostile-marker\\.ac\\wg-999\\__agent_untrusted",
+    }));
+
+    try {
+      const mounted = await mountTitlebar({ titlebarIdentity: isolatedIdentity });
+
+      await mounted.modules.waitFor(() => {
+        expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+          "data-isolation-titlebar-state",
+        )).toBe("isolated");
+      });
+
+      expect(mounted.root.textContent).toContain("WG-1271-ISOLATED-GATES");
+      expect(mounted.root.textContent).toContain("gate-tester@AgentsCommander_1271_isolated");
+      expect(mounted.root.textContent).not.toContain("hostile-root");
+      expect(mounted.root.textContent).not.toContain("hostile-marker");
+      expect(mounted.root.textContent).not.toContain("hostile-session-name");
+      expect(mounted.root.textContent).not.toContain("WG-999");
+      expect(mounted.root.textContent).not.toContain("untrusted");
+    } finally {
+      terminalStore.resetForTests();
+    }
   });
 });
