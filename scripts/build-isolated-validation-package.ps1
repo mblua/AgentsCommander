@@ -172,18 +172,29 @@ Copy-Item -LiteralPath $bundledProfile.FullName -Destination $artifactProfile -E
 
 $launcherSource = Join-Path $RepoRoot 'packaging/isolated-validation/launch-isolated.ps1'
 $launcherDestination = Join-Path $artifactDirectory 'launch-isolated.ps1'
+$nativeProcessModuleSource = Join-Path $RepoRoot 'packaging/isolated-validation/native-process.psm1'
+$nativeProcessModuleDestination = Join-Path $artifactDirectory 'native-process.psm1'
+if (-not (Test-Path -LiteralPath $launcherSource -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $nativeProcessModuleSource -PathType Leaf)) {
+    throw 'E_ISOLATION_NATIVE_PROCESS'
+}
 Copy-Item -LiteralPath $launcherSource -Destination $launcherDestination -ErrorAction Stop
+Copy-Item -LiteralPath $nativeProcessModuleSource -Destination $nativeProcessModuleDestination -ErrorAction Stop
 
-$manifestPath = Join-Path $artifactDirectory 'isolated-validation-handoff.json'
+$manifestPath = Join-Path $artifactDirectory 'isolated-validation-manifest.json'
 $profileHash = Get-Sha256 -LiteralPath $profilePath
 $bundledProfileHash = Get-Sha256 -LiteralPath $bundledProfile.FullName
 $installedProfileHash = Get-Sha256 -LiteralPath $artifactProfile
 if ($profileHash -cne $bundledProfileHash -or $bundledProfileHash -cne $installedProfileHash) {
     throw 'compiled, bundled, and portable artifact profile bytes must be identical'
 }
+if ((Get-Sha256 -LiteralPath $launcherSource) -cne (Get-Sha256 -LiteralPath $launcherDestination) -or
+    (Get-Sha256 -LiteralPath $nativeProcessModuleSource) -cne (Get-Sha256 -LiteralPath $nativeProcessModuleDestination)) {
+    throw 'the staged launcher and native process module must be byte-identical copies'
+}
 
 $manifest = [ordered]@{
-    schemaVersion = 1
+    schema = 'isolated-validation-handoff-v1'
     baseSha = (Invoke-Git -Arguments @('merge-base', $ExpectedFrozen1271Commit, $targetCommit)).Trim()
     frozen1271Commit = $ExpectedFrozen1271Commit
     isolatedStateRootCommit = $targetCommit
@@ -191,12 +202,7 @@ $manifest = [ordered]@{
     combinedTreeSha = (Invoke-Git -Arguments @('rev-parse', 'HEAD^{tree}')).Trim()
     cleanWorktree = $true
     artifactKind = 'portable-layout'
-    executableFileName = (Split-Path -Path $artifactExecutable -Leaf)
-    executableSha256 = Get-Sha256 -LiteralPath $artifactExecutable
-    profileResourceRelativePath = $resourceRelativePath
     compiledProfileSha256 = $profileHash
-    bundledProfileSha256 = $bundledProfileHash
-    installedProfileSha256 = $installedProfileHash
     utcTimestamp = [DateTime]::UtcNow.ToString('o')
     mode = 'isolated-validation-package'
     target = $env:TARGET
@@ -204,16 +210,29 @@ $manifest = [ordered]@{
     bundleIdentifier = 'dev.agentscommander.isolatedgates'
     headerIdentity = 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated'
     launcherCommand = '.\launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-hash>'
+    payloads = [ordered]@{
+        executable = [ordered]@{
+            relativePath = 'Agents Commander Isolated Gates.exe'
+            sha256 = Get-Sha256 -LiteralPath $artifactExecutable
+        }
+        profile = [ordered]@{
+            relativePath = 'resources/package-profile.toml'
+            sha256 = $installedProfileHash
+        }
+        launcher = [ordered]@{
+            relativePath = 'launch-isolated.ps1'
+            sha256 = Get-Sha256 -LiteralPath $launcherDestination
+        }
+        nativeProcessModule = [ordered]@{
+            relativePath = 'native-process.psm1'
+            sha256 = Get-Sha256 -LiteralPath $nativeProcessModuleDestination
+        }
+    }
 }
 
 $manifestJson = $manifest | ConvertTo-Json -Depth 6
 [System.IO.File]::WriteAllText($manifestPath, $manifestJson + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 $manifestHash = Get-Sha256 -LiteralPath $manifestPath
-[System.IO.File]::WriteAllText(
-    "$manifestPath.sha256",
-    "$manifestHash  $(Split-Path $manifestPath -Leaf)$" + [Environment]::NewLine,
-    [System.Text.UTF8Encoding]::new($false)
-)
 
 [pscustomobject]@{
     artifactDirectory = $artifactDirectory
