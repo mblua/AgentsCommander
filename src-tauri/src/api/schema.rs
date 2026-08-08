@@ -79,6 +79,152 @@ impl SendResponse {
     }
 }
 
+/// `POST /api/v1/window/list` request. Authentication is deliberately handled
+/// before this payload is decoded.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowListRequest {
+    #[serde(default)]
+    pub process_id: Option<u32>,
+    #[serde(default)]
+    pub include_nonvisible: bool,
+}
+
+impl WindowListRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.process_id == Some(0) {
+            return Err("process_id_must_be_nonzero");
+        }
+        Ok(())
+    }
+}
+
+/// `POST /api/v1/window/capture` request. A target remains an opaque string at
+/// the transport boundary and is parsed only by the handler.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowCaptureRequest {
+    pub target: String,
+    pub output: String,
+    #[serde(default)]
+    pub timeout_seconds: Option<u8>,
+}
+
+impl WindowCaptureRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.target.is_empty() || self.output.is_empty() {
+            return Err("target_and_output_are_required");
+        }
+        if self
+            .timeout_seconds
+            .is_some_and(|timeout_seconds| !(5..=60).contains(&timeout_seconds))
+        {
+            return Err("timeout_seconds_out_of_range");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowBoundsResponse {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowTargetResponse {
+    pub target: String,
+    pub pid: u32,
+    pub process: String,
+    pub title: String,
+    pub class: String,
+    pub bounds: Option<WindowBoundsResponse>,
+    pub session: u32,
+    pub visible: bool,
+    pub minimized: bool,
+    pub cloaked: bool,
+    pub foreground: bool,
+    pub protected: bool,
+    pub monitor_intersection: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowListResponse {
+    pub targets: Vec<WindowTargetResponse>,
+    pub expires_in_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowCaptureResponse {
+    pub path: String,
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub sha256: String,
+    pub target_id: String,
+    pub pid: u32,
+    pub observed_state: String,
+    pub state_changed: bool,
+    pub focus_changed: bool,
+    pub backend: String,
+    pub support_level: String,
+    pub duration_ms: u64,
+    pub received_frame_count: u32,
+    pub capture_border: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowApiSuccess<T> {
+    pub schema_version: u8,
+    pub ok: bool,
+    pub result: T,
+}
+
+impl<T> WindowApiSuccess<T> {
+    pub fn new(result: T) -> Self {
+        Self {
+            schema_version: 1,
+            ok: true,
+            result,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowApiError {
+    pub schema_version: u8,
+    pub ok: bool,
+    pub error: WindowApiErrorDetail,
+}
+
+impl WindowApiError {
+    pub fn new(code: &'static str, message: &'static str) -> Self {
+        Self {
+            schema_version: 1,
+            ok: false,
+            error: WindowApiErrorDetail { code, message },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowApiErrorDetail {
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
 /// `POST /api/v1/pty-input` strict request envelope. Payload-bearing request
 /// types intentionally implement no `Debug`.
 #[derive(Deserialize)]
