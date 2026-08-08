@@ -563,6 +563,7 @@ fn open_overlay_windows(
             &p.label,
             WebviewUrl::App(url.into()),
         ))
+        .map_err(|error| error.to_string())?
         .title("Screenshot Capture")
         .decorations(false)
         .transparent(true)

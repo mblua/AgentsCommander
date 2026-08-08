@@ -116,14 +116,20 @@ impl ResolvedAppStateRoot {
         Some(root.identity().canonical_path.clone())
     }
 
-    fn verified_webview_data_directory(&self) -> Option<PathBuf> {
-        let root = self.retained_root.as_ref()?;
-        let webview_data = self.retained_webview_data.as_ref()?;
+    fn verified_webview_data_directory(&self) -> Result<PathBuf, IsolationError> {
+        let root = self.retained_root.as_ref().ok_or_else(|| {
+            log::error!("[isolated-state] retained isolated root is unavailable for WebView data");
+            IsolationError::UnsafePath
+        })?;
+        let webview_data = self.retained_webview_data.as_ref().ok_or_else(|| {
+            log::error!("[isolated-state] retained WebView directory is unavailable");
+            IsolationError::UnsafePath
+        })?;
         if root.verify_current().is_err() || webview_data.verify_current().is_err() {
             log::error!("[isolated-state] retained WebView directory verification failed");
-            return None;
+            return Err(IsolationError::UnsafePath);
         }
-        Some(webview_data.identity().canonical_path.clone())
+        Ok(webview_data.identity().canonical_path.clone())
     }
 }
 
@@ -339,8 +345,16 @@ pub fn isolated_mode_active() -> bool {
     active_state_root().is_some_and(|state| matches!(state.mode(), StartupMode::Isolated(_)))
 }
 
-pub fn isolated_webview_data_directory() -> Option<PathBuf> {
-    active_state_root().and_then(ResolvedAppStateRoot::verified_webview_data_directory)
+pub fn isolated_webview_data_directory() -> Result<Option<PathBuf>, IsolationError> {
+    let Some(state) = active_state_root() else {
+        return Ok(None);
+    };
+
+    if matches!(state.mode(), StartupMode::Normal) {
+        return Ok(None);
+    }
+
+    state.verified_webview_data_directory().map(Some)
 }
 
 pub fn isolated_servers_disabled() -> bool {
@@ -1153,9 +1167,9 @@ mod tests {
         let retired_webview = root_path.join("retired-webview-data");
         if std::fs::rename(&webview_path, &retired_webview).is_ok() {
             std::fs::create_dir(&webview_path).unwrap();
-            assert!(state.verified_webview_data_directory().is_none());
+            assert!(state.verified_webview_data_directory().is_err());
         } else {
-            assert!(state.verified_webview_data_directory().is_some());
+            assert!(state.verified_webview_data_directory().is_ok());
         }
     }
 

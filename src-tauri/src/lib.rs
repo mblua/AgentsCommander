@@ -52,14 +52,14 @@ use web::broadcast::WsBroadcaster;
 /// default data-directory behavior.
 pub fn apply_isolated_webview_data_directory<'a, R, M>(
     builder: tauri::WebviewWindowBuilder<'a, R, M>,
-) -> tauri::WebviewWindowBuilder<'a, R, M>
+) -> Result<tauri::WebviewWindowBuilder<'a, R, M>, config::app_state_root::IsolationError>
 where
     R: tauri::Runtime,
     M: tauri::Manager<R>,
 {
-    match config::app_state_root::isolated_webview_data_directory() {
-        Some(directory) => builder.data_directory(directory),
-        None => builder,
+    match config::app_state_root::isolated_webview_data_directory()? {
+        Some(directory) => Ok(builder.data_directory(directory)),
+        None => Ok(builder),
     }
 }
 
@@ -1902,6 +1902,7 @@ pub fn run(
                 "main",
                 WebviewUrl::App("index.html?window=main".into()),
             ))
+            ?
             .title(config::profile::app_title())
             .icon(icon)
             .expect("Failed to set main window icon")

@@ -253,6 +253,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
             let mut builder = crate::apply_isolated_webview_data_directory(
                 WebviewWindowBuilder::new(transaction.app(), &label, WebviewUrl::App(url.into())),
             )
+            .map_err(|error| error.to_string())?
             .title("Terminal [detached]")
             .icon(icon)
             .map_err(|error| error.to_string())?
@@ -627,6 +628,7 @@ pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
         "main",
         WebviewUrl::App("index.html?window=main".into()),
     ))
+    .map_err(|error| error.to_string())?
     .title(crate::config::profile::app_title())
     .icon(icon)
     .map_err(|e| e.to_string())?
@@ -667,6 +669,7 @@ pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
         "guide",
         WebviewUrl::App("index.html?window=guide".into()),
     ))
+    .map_err(|error| error.to_string())?
     .title(format!(
         "Guide — {}",
         crate::config::profile::app_title_suffix()
@@ -702,6 +705,7 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
         "spec-board",
         WebviewUrl::App("index.html?window=spec-board".into()),
     ))
+    .map_err(|error| error.to_string())?
     .title(format!(
         "Spec Board - {}",
         crate::config::profile::app_title_suffix()
@@ -750,6 +754,7 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
         RESOURCE_MONITOR_WINDOW_LABEL,
         WebviewUrl::App("index.html?window=resource-monitor".into()),
     ))
+    .map_err(|error| error.to_string())?
     .title(format!(
         "Resource Monitor - {}",
         crate::config::profile::app_title_suffix()
@@ -942,6 +947,7 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
         WATCHERS_WINDOW_LABEL,
         WebviewUrl::App(format!("index.html?window=watchers&sessionId={}", session_id).into()),
     ))
+    .map_err(|error| error.to_string())?
     .title(format!(
         "Watcher Activity - {}",
         crate::config::profile::app_title_suffix()
