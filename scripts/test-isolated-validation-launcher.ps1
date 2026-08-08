@@ -178,8 +178,7 @@ public static class Program {
     }
     Copy-Item -LiteralPath (Join-Path $mockOutput 'agentscommander.exe') -Destination $executable
     foreach ($supportFile in @('agentscommander.dll', 'agentscommander.deps.json', 'agentscommander.runtimeconfig.json')) {
-        $extension = $supportFile.Substring('agentscommander'.Length)
-        Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact ('Agents Commander Isolated Gates' + $extension))
+        Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact $supportFile)
     }
 
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
@@ -228,6 +227,9 @@ public static class Program {
     $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 
     [Environment]::SetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED', 'must-not-reach-child')
+    if (Test-Path -LiteralPath (Join-Path $fixture 'app-state')) {
+        throw 'the launcher test fixture pre-created the isolated app-state root'
+    }
     $first = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
     if (-not $first.Succeeded) {
         throw "valid portable artifact did not launch: $($first.Output)"
@@ -271,17 +273,38 @@ public static class Program {
     Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $profileTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'profile hash'
     [System.IO.File]::WriteAllBytes($profile, $profileBytes)
 
+    $launcherTamperFixture = Join-Path $testRoot 'launcher-tamper'
+    New-Item -ItemType Directory -Path $launcherTamperFixture | Out-Null
+    Add-Content -LiteralPath $launcher -Value 'tampered'
+    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $launcherTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'launcher hash'
+    [System.IO.File]::WriteAllBytes($launcher, $launcherBytes)
+
+    $moduleTamperFixture = Join-Path $testRoot 'native-process-module-tamper'
+    New-Item -ItemType Directory -Path $moduleTamperFixture | Out-Null
+    Add-Content -LiteralPath $nativeProcessModule -Value 'tampered'
+    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $moduleTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'native process module hash'
+    [System.IO.File]::WriteAllBytes($nativeProcessModule, $nativeProcessModuleBytes)
+
     $layoutTamperFixture = Join-Path $testRoot 'layout-tamper'
     New-Item -ItemType Directory -Path $layoutTamperFixture | Out-Null
-    $layoutTampered = [ordered]@{}
-    foreach ($property in $manifest.GetEnumerator()) {
-        $layoutTampered[$property.Key] = $property.Value
-    }
-    $layoutTampered.profileResourceRelativePath = '../outside-profile.toml'
+    $layoutTampered = $manifest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $layoutTampered.payloads.profile.relativePath = '../outside-profile.toml'
     Write-JsonFile -LiteralPath $manifestPath -Value $layoutTampered
     $layoutTamperedExpectedHash = Get-Sha256 -LiteralPath $manifestPath
     Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $layoutTamperFixture -ExpectedManifestSha256 $layoutTamperedExpectedHash -CaseName 'portable resource layout'
     [System.IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
+
+    $malformedReceiptFixture = Join-Path $testRoot 'malformed-receipt'
+    New-Item -ItemType Directory -Path $malformedReceiptFixture | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $malformedReceiptFixture 'launch-receipt.json'),
+        '{"malformed":true}',
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $malformedReceiptResult = Invoke-Launcher -Launcher $launcher -FixtureRoot $malformedReceiptFixture -ExpectedManifestSha256 $expectedManifestHash
+    if ($malformedReceiptResult.Succeeded) {
+        throw 'the launcher accepted a malformed existing receipt'
+    }
 
     $substitutedReceipt = Join-Path $testRoot 'caller-controlled-receipt.json'
     try {
@@ -300,8 +323,9 @@ public static class Program {
         result = 'passed'
         cases = @(
             'whitespace and metacharacter fixture root',
-            'same-root receipt replacement',
-            'manifest, executable, profile, and layout tampering',
+            'same-root immutable receipt re-launch',
+            'manifest, executable, profile, launcher, module, and layout tampering',
+            'malformed receipt rejection before child launch',
             'caller-controlled receipt path rejection',
             'child-only AGENTSCOMMANDER_* cleanup'
         )
