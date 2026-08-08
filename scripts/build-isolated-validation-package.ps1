@@ -20,33 +20,28 @@ $ProfileRelativePath = 'packaging/isolated-validation/package-profile.toml'
 $OverlayRelativePath = 'src-tauri/tauri.conf.isolated-validation.json'
 
 function Invoke-Git {
-    param([Parameter(Mandatory)][string[]]$Arguments)
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [switch]$AllowNonZeroExit
+    )
 
-    # PowerShell's legacy native-argument marshalling strips `^` from Git
-    # revision suffixes such as `^{commit}`. ArgumentList preserves the exact
-    # revision bytes while also avoiding a string-built command line.
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = 'git'
-    $startInfo.WorkingDirectory = $RepoRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
+    $result = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $GitExecutable `
+        -WorkingDirectory $RepoRoot `
+        -Arguments $Arguments `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment
+    if ($result.ExitCode -ne 0 -and -not $AllowNonZeroExit) {
+        throw "git command failed with exit code $($result.ExitCode)"
     }
 
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    if (-not $process.Start()) {
-        throw 'failed to start git for isolated validation package preflight'
+    if ($AllowNonZeroExit) {
+        return $result
     }
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) {
-        throw "git $($Arguments -join ' ') failed with exit code $($process.ExitCode): $($stderr.Trim())"
-    }
-    return $stdout
+
+    return $result.StandardOutput
 }
 
 function Get-Sha256 {
@@ -56,6 +51,12 @@ function Get-Sha256 {
 }
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$NativeProcessModulePath = Join-Path $RepoRoot 'packaging/isolated-validation/native-process.psm1'
+if (-not [System.IO.File]::Exists($NativeProcessModulePath)) {
+    throw 'E_ISOLATION_NATIVE_PROCESS'
+}
+Import-Module -Name $NativeProcessModulePath -Force -ErrorAction Stop
+$GitExecutable = (Get-Command -Name 'git.exe' -CommandType Application -ErrorAction Stop).Path
 
 if ($Frozen1271Commit.ToLowerInvariant() -cne $ExpectedFrozen1271Commit) {
     throw "-Frozen1271Commit must be $ExpectedFrozen1271Commit"
@@ -66,8 +67,8 @@ if ($status) {
     throw 'a clean worktree is required before building the isolated validation package'
 }
 
-& git -C $RepoRoot symbolic-ref -q HEAD *> $null
-if ($LASTEXITCODE -eq 0) {
+$headReference = Invoke-Git -Arguments @('symbolic-ref', '-q', 'HEAD') -AllowNonZeroExit
+if ($headReference.ExitCode -eq 0) {
     throw 'a detached worktree is required before building the isolated validation package'
 }
 
