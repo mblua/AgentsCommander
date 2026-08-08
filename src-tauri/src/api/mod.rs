@@ -17,6 +17,7 @@ pub mod handlers;
 pub mod identity;
 pub mod message_store;
 pub mod schema;
+pub(crate) mod window_capture_admission;
 pub(crate) mod window_target_registry;
 
 use std::net::SocketAddr;
@@ -62,7 +63,9 @@ pub struct ApiState {
     pub pty_mgr: Arc<Mutex<PtyManager>>,
     /// Caller-bound, one-time window targets. The registry stores only opaque
     /// bindings and target fingerprints, never raw credentials or output paths.
-    pub window_target_registry: Arc<Mutex<window_target_registry::WindowTargetRegistry>>,
+    pub(crate) window_target_registry: Arc<Mutex<window_target_registry::WindowTargetRegistry>>,
+    /// Daemon-wide native-work permits for window discovery and capture.
+    pub(crate) window_capture_admission: Arc<window_capture_admission::WindowCaptureAdmission>,
     /// Per-daemon random input to opaque caller bindings.
     pub caller_binding_salt: [u8; 32],
 }
@@ -85,6 +88,11 @@ pub fn build_router(state: ApiState) -> Router {
         .route(
             "/api/v1/terminal-snapshot",
             post(handlers::terminal_snapshot::post),
+        )
+        .route("/api/v1/window/list", post(handlers::window_capture::list))
+        .route(
+            "/api/v1/window/capture",
+            post(handlers::window_capture::capture),
         )
         .route("/api/v1/pty-input/{op_id}", get(handlers::pty_input::get))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
@@ -172,6 +180,7 @@ pub fn start_server(
         window_target_registry: Arc::new(Mutex::new(
             window_target_registry::WindowTargetRegistry::new(),
         )),
+        window_capture_admission: Arc::new(window_capture_admission::WindowCaptureAdmission::new()),
         caller_binding_salt: random_caller_binding_salt(),
     };
     let router = build_router(state);

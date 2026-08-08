@@ -5,11 +5,13 @@
 use std::net::IpAddr;
 
 use axum::http::HeaderMap;
+use sha2::{Digest, Sha256};
 
 use crate::api::auth::FreshRegistryError;
 use crate::api::identity::{
     BoundContainerCoordinatorError, InitialApiCredentialProof, VerifiedBoundContainerCoordinator,
 };
+use crate::api::window_target_registry::CallerBinding;
 use crate::api::ApiState;
 
 pub(super) struct InitialAuthenticatedRequest {
@@ -20,6 +22,20 @@ impl InitialAuthenticatedRequest {
     pub(super) fn into_authority(self) -> VerifiedBoundContainerCoordinator {
         self.authority
     }
+
+    pub(super) fn caller_binding(&self, salt: &[u8; 32]) -> CallerBinding {
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        update_length_framed(&mut hasher, self.authority.client_id.as_bytes());
+        let root_object_id = format!("{:?}", self.authority.bound_root_object_id);
+        update_length_framed(&mut hasher, root_object_id.as_bytes());
+        CallerBinding::from_digest(hasher.finalize().into())
+    }
+}
+
+fn update_length_framed(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 pub(super) enum AuthenticatedRequestError {

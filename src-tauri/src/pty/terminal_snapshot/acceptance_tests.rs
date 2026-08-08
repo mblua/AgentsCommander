@@ -1211,6 +1211,13 @@ fn assert_host_finalizer_audit(
 
 fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiState {
     crate::api::ApiState {
+        window_target_registry: std::sync::Arc::new(std::sync::Mutex::new(
+            crate::api::window_target_registry::WindowTargetRegistry::new(),
+        )),
+        window_capture_admission: std::sync::Arc::new(
+            crate::api::window_capture_admission::WindowCaptureAdmission::new(),
+        ),
+        caller_binding_salt: [0_u8; 32],
         store: Arc::new(crate::api::auth::ApiClientStore::new(
             fixture.registry_path.clone(),
         )),

@@ -99,6 +99,12 @@ pub(crate) struct WindowDiagnostics {
     pub(crate) warnings: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DiscoveryFilter {
+    pub(crate) process_id: Option<u32>,
+    pub(crate) include_nonvisible: bool,
+}
+
 /// A native target identity retained only in daemon memory. It deliberately has
 /// no serde, Debug, or public constructor implementation.
 pub(crate) struct TargetFingerprint {
