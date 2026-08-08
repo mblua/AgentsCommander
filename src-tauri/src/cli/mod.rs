@@ -27,6 +27,7 @@ pub mod terminal_snapshot;
 pub mod workgroup;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Print to stdout with BrokenPipe tolerance. If the underlying write fails
 /// SPECIFICALLY with `io::ErrorKind::BrokenPipe` (typically because the
@@ -94,6 +95,16 @@ pub struct Cli {
     #[arg(long)]
     pub app: bool,
 
+    /// Use the dedicated isolated validation package state root. The path must
+    /// be an absolute local directory whose parent already exists.
+    #[arg(long, global = true, value_name = "ABSOLUTE_DIRECTORY")]
+    pub isolated_state_root: Option<PathBuf>,
+
+    /// Validate and bootstrap an isolated root, print its fixed profile JSON,
+    /// and exit before logging, GUI, terminal, or server startup.
+    #[arg(long, global = true)]
+    pub isolation_status: bool,
+
     /// Test-only GUI placement: virtual-desktop X coordinate in physical pixels
     #[arg(long, allow_hyphen_values = true, hide = true)]
     pub window_x: Option<f64>,
@@ -120,6 +131,30 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+impl Cli {
+    /// Clap expresses field conflicts, while the `Option<Commands>` subcommand
+    /// is a structural field. Keep the sole status grammar rule here so there
+    /// is no second raw-argv parser.
+    pub fn validate_isolation_grammar(&self) -> Result<(), String> {
+        if self.isolation_status && self.isolated_state_root.is_none() {
+            return Err(
+                "--isolation-status requires --isolated-state-root <absolute-directory>"
+                    .to_string(),
+            );
+        }
+        if self.isolation_status && self.app {
+            return Err("--isolation-status is mutually exclusive with --app".to_string());
+        }
+        if self.isolation_status && self.command.is_some() {
+            return Err(
+                "--isolation-status accepts no subcommand; use only --isolated-state-root <absolute-directory> --isolation-status"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Subcommand)]
@@ -379,6 +414,47 @@ pub fn flush_outputs() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_root_is_global_and_status_grammar_is_exact() {
+        use clap::Parser;
+
+        let root_after_subcommand = Cli::try_parse_from([
+            "agentscommander",
+            "list-sessions",
+            "--isolated-state-root",
+            r"C:\fixture root\app-state",
+        ])
+        .expect("the global root option must parse after a subcommand");
+        assert_eq!(
+            root_after_subcommand.isolated_state_root,
+            Some(std::path::PathBuf::from(r"C:\fixture root\app-state"))
+        );
+
+        let missing_root = Cli::try_parse_from(["agentscommander", "--isolation-status"])
+            .expect("semantic status grammar is checked without a second parser");
+        assert!(missing_root.validate_isolation_grammar().is_err());
+
+        let invalid_status = Cli::try_parse_from([
+            "agentscommander",
+            "list-sessions",
+            "--isolated-state-root",
+            r"C:\fixture root\app-state",
+            "--isolation-status",
+        ])
+        .expect("Clap parses the global status field before semantic validation");
+        assert!(invalid_status.validate_isolation_grammar().is_err());
+
+        let invalid_app_status = Cli::try_parse_from([
+            "agentscommander",
+            "--app",
+            "--isolated-state-root",
+            r"C:\fixture root\app-state",
+            "--isolation-status",
+        ])
+        .expect("Clap parses the top-level status fields before semantic validation");
+        assert!(invalid_app_status.validate_isolation_grammar().is_err());
+    }
 
     #[test]
     fn validate_cli_token_does_not_echo_invalid_input() {

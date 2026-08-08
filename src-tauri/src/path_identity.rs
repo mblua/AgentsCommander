@@ -884,6 +884,52 @@ pub fn retain_directory(path: &Path) -> Result<RetainedDirectory, String> {
     retain_directory_inner(path, true)
 }
 
+/// Open one direct child directory below an already retained, verified parent.
+///
+/// This deliberately does not accept a relative path with multiple components:
+/// callers that need a nested layout must retain each component in turn. That
+/// keeps the reparse-point and object-identity checks at every boundary rather
+/// than turning this primitive into a recursive directory creator.
+pub fn open_or_create_verified_child_directory(
+    parent: &RetainedDirectory,
+    child_name: &std::ffi::OsStr,
+) -> Result<RetainedDirectory, String> {
+    if child_name.is_empty()
+        || Path::new(child_name).components().count() != 1
+        || matches!(
+            Path::new(child_name).components().next(),
+            Some(
+                Component::CurDir
+                    | Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+            )
+        )
+    {
+        return Err("unsafe_path".to_string());
+    }
+
+    parent.verify_current()?;
+    let child = parent.identity().canonical_path.join(child_name);
+
+    match std::fs::symlink_metadata(&child) {
+        Ok(metadata) => {
+            if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+                return Err("unsafe_path".to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&child).map_err(|_| "unsafe_path".to_string())?;
+        }
+        Err(_) => return Err("unsafe_path".to_string()),
+    }
+
+    parent.verify_current()?;
+    let retained_child = retain_directory(&child)?;
+    parent.verify_current()?;
+    Ok(retained_child)
+}
+
 fn retain_immutable_directory(path: &Path) -> Result<RetainedDirectory, String> {
     retain_directory_inner(path, false)
 }
@@ -1919,6 +1965,24 @@ fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_child_creation_accepts_only_one_safe_leaf() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let parent = retain_directory(fixture.path()).unwrap();
+        let child =
+            open_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("leaf")).unwrap();
+
+        assert!(child.identity().canonical_path.ends_with("leaf"));
+        assert!(open_or_create_verified_child_directory(
+            &parent,
+            std::ffi::OsStr::new("nested/leaf")
+        )
+        .is_err());
+        assert!(
+            open_or_create_verified_child_directory(&parent, std::ffi::OsStr::new("..")).is_err()
+        );
+    }
 
     #[test]
     fn duplicate_json_keys_reject_recursively() {

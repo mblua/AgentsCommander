@@ -47,6 +47,22 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
+/// Apply the isolated WebView profile directory at every native builder seam.
+/// In normal mode this is intentionally a no-op, preserving Tauri's existing
+/// default data-directory behavior.
+pub fn apply_isolated_webview_data_directory<'a, R, M>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M>
+where
+    R: tauri::Runtime,
+    M: tauri::Manager<R>,
+{
+    match config::app_state_root::isolated_webview_data_directory() {
+        Some(directory) => builder.data_directory(directory),
+        None => builder,
+    }
+}
+
 /// Snapshot scanner terminality is deliberately not an input here.
 ///
 /// A retained scanner task publishes a response file; its only `SessionManager`
@@ -1391,7 +1407,9 @@ pub fn run(
             // Start web server if enabled in settings
             {
                 let web_settings = config::settings::load_settings();
-                if web_settings.web_server_enabled {
+                if !config::app_state_root::isolated_servers_disabled()
+                    && web_settings.web_server_enabled
+                {
                     let bind = web_settings.web_server_bind.clone();
                     let port = web_settings.web_server_port;
 
@@ -1428,7 +1446,9 @@ pub fn run(
             // managed handle is stored only after bind readiness is confirmed.
             {
                 let api_settings = config::settings::load_settings();
-                if api_settings.api_server_enabled {
+                if !config::app_state_root::isolated_servers_disabled()
+                    && api_settings.api_server_enabled
+                {
                     let bind = api_settings.api_server_bind.clone();
                     let port = api_settings.api_server_port;
                     let api_shutdown = shutdown_for_setup.token().child_token();
@@ -1877,11 +1897,11 @@ pub fn run(
             };
 
             // Create the unified Main window (replaces sidebar + terminal windows).
-            let main_win = WebviewWindowBuilder::new(
+            let main_win = apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::App("index.html?window=main".into()),
-            )
+            ))
             .title(config::profile::app_title())
             .icon(icon)
             .expect("Failed to set main window icon")
@@ -2680,6 +2700,7 @@ pub fn run(
             commands::config::get_web_server_status,
             commands::config::get_web_server_owned_status,
             commands::config::get_instance_label,
+            commands::config::get_isolated_package_titlebar_identity,
             commands::config::fetch_home_markdown,
             commands::agent_creator::pick_folder,
             commands::agent_creator::create_agent_folder,

@@ -3,6 +3,7 @@ pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
 pub(crate) mod agent_memory;
+pub mod app_state_root;
 pub mod archive_gate;
 pub mod coding_agent_mutations;
 pub mod coding_agent_profiles;
@@ -174,6 +175,16 @@ fn instance_location() -> &'static InstanceLocation {
 /// executable, never from the debug config-dir override, and falls back to
 /// "agentscommander" when `current_exe()` is unavailable.
 pub fn agent_local_dir_name() -> String {
+    if app_state_root::isolated_mode_active() {
+        let stem = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "agentscommander".to_string());
+        return format!(".{stem}");
+    }
     format!(".{}", instance_location().local_dir_stem)
 }
 
@@ -182,14 +193,26 @@ pub fn agent_local_dir_name() -> String {
 /// E.g., `C:\tools\agentscommander_standalone.exe` → `C:\tools\.agentscommander_standalone\`
 /// Fallback: `$HOME/<profile::config_dir_name()>` if current_exe() fails.
 /// Cached via the shared [`InstanceLocation`] — resolved once at first call.
-pub fn config_dir() -> Option<PathBuf> {
+pub(crate) fn normal_config_dir() -> Option<PathBuf> {
     instance_location().config_dir.clone()
+}
+
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(root) = app_state_root::active_state_root() {
+        return root.config_root();
+    }
+    normal_config_dir()
 }
 
 /// #1077: the authoritative ABSOLUTE instance base for portable project-path
 /// pairing, or `None` in any degraded mode. Consumed by the project codec, which
 /// canonicalizes it at its own boundary. Returns raw, uncanonicalized bytes.
 pub(crate) fn instance_base() -> Option<PathBuf> {
+    if app_state_root::isolated_mode_active() {
+        // Isolated profile projects are registered as absolute verified paths;
+        // they must never derive a normal executable-instance pairing.
+        return None;
+    }
     instance_location().instance_base.clone()
 }
 

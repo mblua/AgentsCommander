@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_embedded_dist)");
 
@@ -23,9 +25,33 @@ fn main() {
     if !has_dist {
         omit_missing_dist_resource_for_dev_check();
     }
+    configure_isolated_validation_package();
     embed_windows_test_manifest();
 
     tauri_build::build()
+}
+
+fn configure_isolated_validation_package() {
+    let profile_path = Path::new("../packaging/isolated-validation/package-profile.toml");
+    println!("cargo:rerun-if-changed={}", profile_path.display());
+
+    if std::env::var_os("CARGO_FEATURE_ISOLATED_VALIDATION_PACKAGE").is_none() {
+        return;
+    }
+
+    let bytes = std::fs::read(profile_path).unwrap_or_else(|error| {
+        panic!(
+            "isolated validation package profile is required at {}: {}",
+            profile_path.display(),
+            error
+        )
+    });
+    let hash = Sha256::digest(bytes);
+    let hash = hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    println!("cargo:rustc-env=ISOLATED_PACKAGE_PROFILE_SHA256={hash}");
 }
 
 fn configure_embedded_dist(profile: &str) -> bool {

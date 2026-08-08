@@ -1687,6 +1687,9 @@ pub async fn start_api_server(
     pty_mgr: State<'_, Arc<std::sync::Mutex<PtyManager>>>,
     shutdown: State<'_, crate::shutdown::ShutdownSignal>,
 ) -> Result<bool, String> {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return Err("API server is disabled in isolated mode".to_string());
+    }
     if api_handle.has_running()? {
         return Ok(false);
     }
@@ -1746,6 +1749,9 @@ pub async fn api_server_status(
     api_handle: State<'_, ApiServerHandle>,
     settings: State<'_, SettingsState>,
 ) -> Result<bool, String> {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return Ok(false);
+    }
     if api_handle.has_running()? {
         return Ok(true);
     }
@@ -1916,6 +1922,9 @@ pub async fn start_web_server(
     broadcaster: State<'_, WsBroadcaster>,
     shutdown: State<'_, crate::shutdown::ShutdownSignal>,
 ) -> Result<bool, String> {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return Err("Web server is disabled in isolated mode".to_string());
+    }
     let s = settings.read().await;
     let bind = s.web_server_bind.clone();
     let port = s.web_server_port;
@@ -1968,6 +1977,9 @@ pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bo
 
 #[tauri::command]
 pub async fn get_web_server_status(settings: State<'_, SettingsState>) -> Result<bool, String> {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return Ok(false);
+    }
     let s = settings.read().await;
     let addr = format!("{}:{}", s.web_server_bind, s.web_server_port);
     drop(s);
@@ -1979,6 +1991,14 @@ pub async fn get_web_server_owned_status(
     ws_handle: State<'_, WebServerHandle>,
     settings: State<'_, SettingsState>,
 ) -> Result<WebServerOwnedStatus, String> {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return Ok(build_web_server_owned_status(
+            String::new(),
+            0,
+            false,
+            false,
+        ));
+    }
     let s = settings.read().await;
     let bind = s.web_server_bind.clone();
     let port = s.web_server_port;
@@ -2032,6 +2052,42 @@ async fn is_tcp_listening(addr: &str) -> bool {
 #[tauri::command]
 pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
+}
+
+/// Fixed, startup-installed package identity for the first isolated window.
+/// It intentionally has no parameters and does not read config, sessions,
+/// environment, or the filesystem.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum IsolatedPackageTitlebarIdentityResponse {
+    Normal,
+    Isolated {
+        workgroup: String,
+        agent: String,
+        workspace: String,
+        header_identity: String,
+    },
+}
+
+#[tauri::command]
+pub fn get_isolated_package_titlebar_identity(
+) -> Result<IsolatedPackageTitlebarIdentityResponse, String> {
+    let response = crate::config::app_state_root::active_state_root()
+        .and_then(|state| state.isolated_profile())
+        .map(
+            |profile| IsolatedPackageTitlebarIdentityResponse::Isolated {
+                workgroup: profile.matrix.clone(),
+                agent: profile.replica_agent.clone(),
+                workspace: profile.workspace.clone(),
+                header_identity: profile.header_identity.clone(),
+            },
+        )
+        .unwrap_or(IsolatedPackageTitlebarIdentityResponse::Normal);
+    Ok(response)
 }
 
 /// `pub(crate)` since #1171: `set_watchers_geometry` lives in `commands/window.rs` beside the
@@ -2256,7 +2312,8 @@ mod tests {
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        set_rail_collapse_inner_with_saver, start_api_server, WebServerOwnershipState,
+        set_rail_collapse_inner_with_saver, start_api_server,
+        IsolatedPackageTitlebarIdentityResponse, WebServerOwnershipState,
         MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
@@ -2277,6 +2334,31 @@ mod tests {
     use tauri::Manager;
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn isolated_titlebar_identity_serializes_the_frontend_camel_case_contract() {
+        let normal = serde_json::to_value(IsolatedPackageTitlebarIdentityResponse::Normal).unwrap();
+        assert_eq!(normal, serde_json::json!({ "mode": "normal" }));
+
+        let isolated = serde_json::to_value(IsolatedPackageTitlebarIdentityResponse::Isolated {
+            workgroup: "WG-1271-ISOLATED-GATES".to_string(),
+            agent: "gate-tester".to_string(),
+            workspace: "AgentsCommander_1271_isolated".to_string(),
+            header_identity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated"
+                .to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(isolated["mode"], "isolated");
+        assert_eq!(isolated["workgroup"], "WG-1271-ISOLATED-GATES");
+        assert_eq!(isolated["agent"], "gate-tester");
+        assert_eq!(isolated["workspace"], "AgentsCommander_1271_isolated");
+        assert_eq!(
+            isolated["headerIdentity"],
+            "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated"
+        );
+        assert!(isolated.get("header_identity").is_none());
+    }
 
     // ── #1077 SettingsSnapshot / resolution report ───────────────────────
     mod snapshot {

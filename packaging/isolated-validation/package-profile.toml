@@ -1,0 +1,7 @@
+package_id = "agentscommander-1271-isolated-gates"
+product_label = "Agents Commander Isolated Gates"
+bundle_identifier = "dev.agentscommander.isolatedgates"
+workspace = "AgentsCommander_1271_isolated"
+matrix = "WG-1271-ISOLATED-GATES"
+replica_agent = "gate-tester"
+header_identity = "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated"

@@ -5,6 +5,9 @@ edition = "2021"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
 
+[features]
+isolated-validation-package = []
+
 [dependencies]
 tauri = { version = "2", features = ["image-png"] }
 serde = { version = "1", features = ["derive"] }
@@ -76,6 +79,7 @@ tauri = { version = "2", features = ["image-png", "test"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
 
 [lib]
 name = "agentscommander_lib"

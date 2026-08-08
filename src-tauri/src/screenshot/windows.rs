@@ -558,19 +558,23 @@ fn open_overlay_windows(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
             p.monitor_id
         );
-        let window = WebviewWindowBuilder::new(app, &p.label, WebviewUrl::App(url.into()))
-            .title("Screenshot Capture")
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .focused(true)
-            .zoom_hotkeys_enabled(false)
-            .inner_size(p.width as f64 / scale, p.height as f64 / scale)
-            .position(p.x as f64 / scale, p.y as f64 / scale)
-            .build()
-            .map_err(|e| format!("failed to create overlay '{}': {e}", p.label))?;
+        let window = crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
+            app,
+            &p.label,
+            WebviewUrl::App(url.into()),
+        ))
+        .title("Screenshot Capture")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(true)
+        .zoom_hotkeys_enabled(false)
+        .inner_size(p.width as f64 / scale, p.height as f64 / scale)
+        .position(p.x as f64 / scale, p.y as f64 / scale)
+        .build()
+        .map_err(|e| format!("failed to create overlay '{}': {e}", p.label))?;
 
         window
             .set_size(tauri::Size::Physical(tauri::PhysicalSize {

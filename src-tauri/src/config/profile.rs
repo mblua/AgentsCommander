@@ -61,6 +61,11 @@ pub fn config_dir_name() -> &'static str {
 /// The short "AC" prefix keeps the OS taskbar tooltip compact (issue #606);
 /// only this literal prefix changed, the suffix-derivation logic is unchanged.
 pub fn app_title() -> &'static str {
+    if let Some(profile) = crate::config::app_state_root::active_state_root()
+        .and_then(|state| state.isolated_profile())
+    {
+        return profile.product_label.as_str();
+    }
     static TITLE: OnceLock<String> = OnceLock::new();
     TITLE.get_or_init(|| match binary_suffix() {
         Some(suffix) => format!("AC [{}]", suffix.to_uppercase()),
@@ -81,6 +86,9 @@ pub fn app_title_suffix() -> &'static str {
 /// Windows single-instance mutex name. Each suffix gets a unique mutex
 /// so different instances can run simultaneously.
 pub fn mutex_name() -> &'static str {
+    if let Some(name) = crate::config::app_state_root::root_mutex_name() {
+        return name;
+    }
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| match binary_suffix() {
         Some(suffix) => format!(
@@ -157,6 +165,9 @@ pub fn exe_name() -> &'static str {
 /// Known suffixes get hardcoded ports; unknown suffixes get a deterministic hash
 /// in the 9880-9899 range.
 pub fn web_server_port() -> u16 {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return 0;
+    }
     match binary_suffix() {
         Some("dev") => 9876,
         Some("stage") => 9878,
@@ -179,6 +190,9 @@ pub fn web_server_port() -> u16 {
 /// `web_server_port`'s profile-awareness (dev/stage hardcoded, unknown suffix
 /// hashed, prod fallback), offset into the 98xx range above the web ports.
 pub fn api_server_port() -> u16 {
+    if crate::config::app_state_root::isolated_servers_disabled() {
+        return 0;
+    }
     match binary_suffix() {
         Some("dev") => 9886,
         Some("stage") => 9888,
