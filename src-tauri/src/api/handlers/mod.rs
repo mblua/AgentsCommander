@@ -1,5 +1,6 @@
 //! HTTP handlers for the control-plane API (#791 §6, §7).
 
+pub(crate) mod authenticated_request;
 pub mod list_peers;
 pub mod pty_input;
 pub mod send;
