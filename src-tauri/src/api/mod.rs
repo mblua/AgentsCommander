@@ -29,6 +29,7 @@ use axum::Router;
 use tauri::Manager;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -59,6 +60,20 @@ pub struct ApiState {
     pub session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     /// PTY facade, used to reach the container transport backend.
     pub pty_mgr: Arc<Mutex<PtyManager>>,
+    /// Caller-bound, one-time window targets. The registry stores only opaque
+    /// bindings and target fingerprints, never raw credentials or output paths.
+    pub window_target_registry: Arc<Mutex<window_target_registry::WindowTargetRegistry>>,
+    /// Per-daemon random input to opaque caller bindings.
+    pub caller_binding_salt: [u8; 32],
+}
+
+fn random_caller_binding_salt() -> [u8; 32] {
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let mut salt = [0_u8; 32];
+    salt[..16].copy_from_slice(first.as_bytes());
+    salt[16..].copy_from_slice(second.as_bytes());
+    salt
 }
 
 /// Build the router (state already assembled). Split out so tests can mount it
@@ -154,6 +169,10 @@ pub fn start_server(
         app_handle: app_handle.clone(),
         session_mgr,
         pty_mgr,
+        window_target_registry: Arc::new(Mutex::new(
+            window_target_registry::WindowTargetRegistry::new(),
+        )),
+        caller_binding_salt: random_caller_binding_salt(),
     };
     let router = build_router(state);
 
