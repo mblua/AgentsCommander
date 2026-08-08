@@ -11,6 +11,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+trap {
+    $failure = $_.Exception.Message
+    if ($failure -notmatch '^E_ISOLATION_[A-Z_]+$') {
+        $failure = 'E_ISOLATION_LAUNCHER'
+    }
+    [Console]::Error.WriteLine($failure)
+    exit 2
+}
+
 function Get-Sha256 {
     param([Parameter(Mandatory)][string]$LiteralPath)
 
@@ -42,41 +51,6 @@ function Start-IsolatedChild {
         -Arguments $Arguments `
         -RemoveAgentsCommanderEnvironment
     return $lease.Process
-}
-
-function Normalize-ComparablePath {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if ($Path.StartsWith('\\?\', [System.StringComparison]::Ordinal)) {
-        return $Path.Substring(4)
-    }
-    return $Path
-}
-
-function Publish-ReceiptAtomically {
-    param(
-        [Parameter(Mandatory)][string]$TemporaryPath,
-        [Parameter(Mandatory)][string]$DestinationPath
-    )
-
-    try {
-        if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
-            [System.IO.File]::Move($TemporaryPath, $DestinationPath, $true)
-        } else {
-            [System.IO.File]::Move($TemporaryPath, $DestinationPath)
-        }
-    } finally {
-        if (Test-Path -LiteralPath $TemporaryPath -PathType Leaf) {
-            Remove-Item -LiteralPath $TemporaryPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-if (-not [System.IO.Path]::IsPathRooted($FixtureRoot)) {
-    throw '-FixtureRoot must be an existing absolute directory'
-}
-if (-not (Test-Path -LiteralPath $FixtureRoot -PathType Container)) {
-    throw '-FixtureRoot must name an existing directory'
 }
 
 $fixture = $FixtureRoot
