@@ -1320,7 +1320,7 @@ mod tests {
         );
         assert_eq!(
             overlay["bundle"]["resources"]["../packaging/isolated-validation/package-profile.toml"],
-            serde_json::Value::String("isolated-validation/package-profile.toml".to_string())
+            serde_json::Value::String("package-profile.toml".to_string())
         );
     }
 
