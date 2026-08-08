@@ -122,6 +122,13 @@ const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
     currentTransport().emit<T>(event, payload),
 };
 
+export class InvalidIsolatedPackageTitlebarIdentityResponseError extends Error {
+  constructor() {
+    super("Invalid isolated package titlebar identity response");
+    this.name = "InvalidIsolatedPackageTitlebarIdentityResponseError";
+  }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -129,7 +136,7 @@ const decodeIsolatedPackageTitlebarIdentity = (
   value: unknown,
 ): IsolatedPackageTitlebarIdentityResponse => {
   if (!isRecord(value)) {
-    throw new Error("Invalid isolated package titlebar identity response");
+    throw new InvalidIsolatedPackageTitlebarIdentityResponseError();
   }
   if (value.mode === "normal") return { mode: "normal" };
   if (
@@ -139,11 +146,11 @@ const decodeIsolatedPackageTitlebarIdentity = (
     typeof value.workspace !== "string" ||
     typeof value.headerIdentity !== "string"
   ) {
-    throw new Error("Invalid isolated package titlebar identity response");
+    throw new InvalidIsolatedPackageTitlebarIdentityResponseError();
   }
 
   if (value.headerIdentity !== `${value.workgroup} ${value.agent}@${value.workspace}`) {
-    throw new Error("Invalid isolated package titlebar identity response");
+    throw new InvalidIsolatedPackageTitlebarIdentityResponseError();
   }
 
   return {

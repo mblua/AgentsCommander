@@ -2,6 +2,7 @@ import { Component, Show, For, createSignal, createMemo, createResource, onMount
 import iconUrl from "../../assets/icon-16.png";
 import {
   getIsolatedPackageTitlebarIdentity,
+  InvalidIsolatedPackageTitlebarIdentityResponseError,
   ScreenshotAPI,
   SettingsAPI,
 } from "../../shared/ipc";
@@ -27,6 +28,13 @@ type IsolatedTitlebarBridgeResult =
     readonly identity: Awaited<ReturnType<typeof getIsolatedPackageTitlebarIdentity>>;
   }
   | { readonly kind: "error" };
+
+const reportIsolatedTitlebarBridgeFailure = (cause: unknown): void => {
+  const safeCause = cause instanceof InvalidIsolatedPackageTitlebarIdentityResponseError
+    ? "invalid-response"
+    : "ipc-failure";
+  console.error(`isolated titlebar identity bridge failed: ${safeCause}`);
+};
 
 const SIDEBAR_WIDTH_PRESETS: Array<{ label: string; width: number }> = [
   { label: "Narrow", width: MAIN_SIDEBAR_MIN_WIDTH },
@@ -104,7 +112,8 @@ const Titlebar: Component = () => {
         kind: "resolved",
         identity: await getIsolatedPackageTitlebarIdentity(),
       };
-    } catch {
+    } catch (cause) {
+      reportIsolatedTitlebarBridgeFailure(cause);
       return { kind: "error" };
     }
   });

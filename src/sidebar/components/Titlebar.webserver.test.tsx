@@ -641,6 +641,7 @@ describe("Titlebar isolated package identity", () => {
   });
 
   it("retains normal terminal-derived identity rendering", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { terminalStore } = await import("../../terminal/stores/terminal");
     const session = titlebarSession();
     terminalStore.bindLockedSession(session);
@@ -656,44 +657,66 @@ describe("Titlebar isolated package identity", () => {
 
       expect(mounted.root.textContent).toContain("WG-1271-NORMAL");
       expect(mounted.root.textContent).toContain("normal-agent@AgentsCommander");
+      expect(errorSpy).not.toHaveBeenCalled();
     } finally {
       terminalStore.resetForTests();
+      errorSpy.mockRestore();
     }
   });
 
   it("renders the deterministic error instead of a Terminal fallback", async () => {
+    const secret = "token=very-secret-value root=C:\\sensitive-root";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const mounted = await mountTitlebar({
-      titlebarIdentity: new Error("bridge unavailable"),
+      titlebarIdentity: new Error(secret),
     });
 
-    await mounted.modules.waitFor(() => {
-      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
-        "data-isolation-titlebar-state",
-      )).toBe("error");
-    });
+    try {
+      await mounted.modules.waitFor(() => {
+        expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+          "data-isolation-titlebar-state",
+        )).toBe("error");
+      });
 
-    expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
-    expect(mounted.root.textContent).not.toContain("Terminal");
+      expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
+      expect(mounted.root.textContent).not.toContain("Terminal");
+      expect(errorSpy).toHaveBeenCalledWith(
+        "isolated titlebar identity bridge failed: ipc-failure",
+      );
+      expect(errorSpy.mock.calls.flat().map(String).join(" ")).not.toContain(secret);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("rejects a snake_case bridge field as unavailable", async () => {
+    const secret = "secret-header-identity";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const mounted = await mountTitlebar({
       titlebarIdentity: {
         mode: "isolated",
         workgroup: "WG-1271-ISOLATED-GATES",
         agent: "gate-tester",
         workspace: "AgentsCommander_1271_isolated",
-        header_identity: "WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated",
+        header_identity: secret,
       },
     });
 
-    await mounted.modules.waitFor(() => {
-      expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
-        "data-isolation-titlebar-state",
-      )).toBe("error");
-    });
+    try {
+      await mounted.modules.waitFor(() => {
+        expect(mounted.root.querySelector("[data-isolation-titlebar-state]")?.getAttribute(
+          "data-isolation-titlebar-state",
+        )).toBe("error");
+      });
 
-    expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
+      expect(mounted.root.textContent).toContain("ISOLATION IDENTITY UNAVAILABLE");
+      expect(errorSpy).toHaveBeenCalledWith(
+        "isolated titlebar identity bridge failed: invalid-response",
+      );
+      expect(errorSpy.mock.calls.flat().map(String).join(" ")).not.toContain(secret);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("does not let hostile terminal root, marker, or session values influence isolated text", async () => {
