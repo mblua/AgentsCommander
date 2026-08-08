@@ -1628,10 +1628,21 @@ impl FixtureRoot {
     }
 
     fn cleanup(&mut self) -> Result<(), String> {
+        self.attempt_cleanup()
+    }
+
+    fn attempt_cleanup(&mut self) -> Result<(), String> {
         let path = self.path().to_path_buf();
-        (self.remover)(&path).map_err(|source| fixture_cleanup_diagnostic(&path, &source))?;
-        self.disarm();
-        Ok(())
+        let removal =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.remover)(&path)));
+        match removal {
+            Ok(Ok(())) => {
+                self.disarm();
+                Ok(())
+            }
+            Ok(Err(source)) => Err(fixture_cleanup_diagnostic(&path, &source)),
+            Err(payload) => Err(fixture_cleanup_panic_diagnostic(&path, payload.as_ref())),
+        }
     }
 
     fn disarm(&mut self) {
@@ -1646,22 +1657,93 @@ fn fixture_cleanup_diagnostic(path: &Path, source: &std::io::Error) -> String {
     )
 }
 
+fn fixture_cleanup_panic_diagnostic(path: &Path, payload: &(dyn std::any::Any + Send)) -> String {
+    format!(
+        "INSTANCE_GITIGNORE_LAYERING TRAVERSAL CONTRACT could not remove fixture root `{}`: remover panicked: {}",
+        path.display(),
+        fixture_panic_payload_message(payload)
+    )
+}
+
+fn fixture_panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_owned()
+    }
+}
+
+static FIXTURE_CLEANUP_REPORT_WITNESS: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
+fn record_fixture_cleanup_report_witness(diagnostic: String) {
+    let mut witness = match FIXTURE_CLEANUP_REPORT_WITNESS.lock() {
+        Ok(witness) => witness,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *witness = Some(diagnostic);
+}
+
+fn take_fixture_cleanup_report_witness() -> Option<String> {
+    let mut witness = match FIXTURE_CLEANUP_REPORT_WITNESS.lock() {
+        Ok(witness) => witness,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    witness.take()
+}
+
+fn report_fixture_cleanup_diagnostic_without_panicking(diagnostic: &str) {
+    use std::io::Write;
+
+    record_fixture_cleanup_report_witness(diagnostic.to_owned());
+    let stderr_report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut stderr = std::io::stderr().lock();
+        stderr.write_all(diagnostic.as_bytes())?;
+        stderr.write_all(b"\n")
+    }));
+    let report_failure = match stderr_report {
+        Ok(Ok(())) => return,
+        Ok(Err(source)) => format!("{diagnostic}; stderr reporting failed: {source}"),
+        Err(payload) => format!(
+            "{diagnostic}; stderr reporting panicked: {}",
+            fixture_panic_payload_message(payload.as_ref())
+        ),
+    };
+    record_fixture_cleanup_report_witness(report_failure.clone());
+
+    let stdout_report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(report_failure.as_bytes())?;
+        stdout.write_all(b"\n")
+    }));
+    match stdout_report {
+        Ok(Ok(())) => {}
+        Ok(Err(source)) => record_fixture_cleanup_report_witness(format!(
+            "{report_failure}; stdout fallback reporting failed: {source}"
+        )),
+        Err(payload) => record_fixture_cleanup_report_witness(format!(
+            "{report_failure}; stdout fallback reporting panicked: {}",
+            fixture_panic_payload_message(payload.as_ref())
+        )),
+    }
+}
+
 impl Drop for FixtureRoot {
     fn drop(&mut self) {
-        let Some(path) = self.path.as_ref().cloned() else {
+        if self.path.is_none() {
             return;
-        };
-        if let Err(source) = (self.remover)(&path) {
-            let diagnostic = fixture_cleanup_diagnostic(&path, &source);
-            if std::thread::panicking() {
-                drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || eprintln!("{diagnostic}"),
-                )));
+        }
+        let was_panicking = std::thread::panicking();
+        if let Err(diagnostic) = self.attempt_cleanup() {
+            if was_panicking {
+                report_fixture_cleanup_diagnostic_without_panicking(&diagnostic);
             } else {
                 panic!("{diagnostic}");
             }
         }
-        self.path = None;
+        self.disarm();
     }
 }
 
@@ -1689,6 +1771,91 @@ fn fixture_cleanup_disarms_only_after_confirmed_success() {
         1,
         "disarmed fixture must not run fallback cleanup"
     );
+}
+
+const PANICKING_REMOVER_CHILD_ENV: &str = "INSTANCE_GITIGNORE_LAYERING_PANICKING_REMOVER_CHILD";
+const PANICKING_REMOVER_TEST_NAME: &str =
+    "fixture_cleanup_panicking_remover_during_outer_unwind_preserves_primary_panic";
+const PRIMARY_FIXTURE_PANIC: &str = "primary fixture unwind";
+const PANICKING_REMOVER_CAUSE: &str = "focal panicking fixture remover";
+
+#[test]
+fn fixture_cleanup_panicking_remover_during_outer_unwind_preserves_primary_panic() {
+    if std::env::var_os(PANICKING_REMOVER_CHILD_ENV).is_some() {
+        run_panicking_remover_child();
+        return;
+    }
+
+    let current_exe = std::env::current_exe()
+        .unwrap_or_else(|source| panic!("could not resolve current test executable: {source}"));
+    let output = std::process::Command::new(current_exe)
+        .arg("--exact")
+        .arg(PANICKING_REMOVER_TEST_NAME)
+        .arg("--nocapture")
+        .env(PANICKING_REMOVER_CHILD_ENV, "1")
+        .output()
+        .unwrap_or_else(|source| panic!("could not run panicking-remover child: {source}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        output.status.success(),
+        "panicking-remover child did not survive the outer unwind: status={}\n{combined}",
+        output.status
+    );
+    assert!(
+        combined.contains("panicking-remover child preserved the primary panic"),
+        "child success witness is missing\n{combined}"
+    );
+    assert!(
+        combined.contains("deterministic-panicking-cleanup"),
+        "cleanup diagnostic omitted the fixture path\n{combined}"
+    );
+    assert!(
+        combined.contains(PANICKING_REMOVER_CAUSE),
+        "cleanup diagnostic omitted the remover panic cause\n{combined}"
+    );
+}
+
+fn run_panicking_remover_child() {
+    drop(take_fixture_cleanup_report_witness());
+    let path = PathBuf::from("deterministic-panicking-cleanup");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remover_calls = std::sync::Arc::clone(&calls);
+    let fixture_path = path.clone();
+    let primary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _fixture = FixtureRoot::with_remover(
+            fixture_path,
+            Box::new(move |_path| {
+                remover_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                panic!("{PANICKING_REMOVER_CAUSE}");
+            }),
+        );
+        panic!("{PRIMARY_FIXTURE_PANIC}");
+    }))
+    .expect_err("outer fixture panic was unexpectedly absent");
+
+    assert_eq!(
+        fixture_panic_payload_message(primary.as_ref()),
+        PRIMARY_FIXTURE_PANIC,
+        "cleanup fallback replaced the primary panic"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "armed fixture must attempt fallback cleanup exactly once"
+    );
+    let diagnostic = take_fixture_cleanup_report_witness()
+        .expect("cleanup fallback did not leave an observable diagnostic witness");
+    assert!(
+        diagnostic.contains(&path.display().to_string()),
+        "cleanup witness omitted the fixture path: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains(PANICKING_REMOVER_CAUSE),
+        "cleanup witness omitted the remover panic cause: {diagnostic}"
+    );
+    eprintln!("panicking-remover child preserved the primary panic; attempts=1; {diagnostic}");
 }
 
 fn fixture_cleanup_error_keeps_fallback_armed_and_reports_path_and_cause() {
