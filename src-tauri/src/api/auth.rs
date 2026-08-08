@@ -31,6 +31,8 @@ pub const SCOPE_SESSION_TRANSPORT: &str = "session-transport";
 pub const SCOPE_PTY_INPUT: &str = "pty-input";
 /// Dedicated read-only live terminal snapshot scope.
 pub const SCOPE_TERMINAL_SNAPSHOT: &str = "terminal-snapshot";
+/// Dedicated authenticated native window discovery and capture scope.
+pub const SCOPE_WINDOW_CAPTURE: &str = "window-capture";
 /// Scopes accepted by the registry. Possession of `pty-input` alone is not
 /// authority; the handler also requires an automatic live container binding.
 pub const VALID_SCOPES: &[&str] = &[
@@ -39,6 +41,7 @@ pub const VALID_SCOPES: &[&str] = &[
     SCOPE_SESSION_TRANSPORT,
     SCOPE_PTY_INPUT,
     SCOPE_TERMINAL_SNAPSHOT,
+    SCOPE_WINDOW_CAPTURE,
 ];
 
 /// Registry file basename in `config_dir()`.
