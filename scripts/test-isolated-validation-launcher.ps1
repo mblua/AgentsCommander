@@ -94,21 +94,24 @@ function Wait-For-LauncherChildExit {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $launcherSource = Join-Path $repoRoot 'packaging/isolated-validation/launch-isolated.ps1'
+$nativeProcessModuleSource = Join-Path $repoRoot 'packaging/isolated-validation/native-process.psm1'
 $profileSource = Join-Path $repoRoot 'packaging/isolated-validation/package-profile.toml'
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('agentscommander-isolated-launcher-test-' + [Guid]::NewGuid().ToString('N'))
 $originalInherited = [Environment]::GetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED')
 
 try {
     $artifact = Join-Path $testRoot 'portable-artifact'
-    $resources = Join-Path $artifact 'resources/isolated-validation'
+    $resources = Join-Path $artifact 'resources'
     $fixture = Join-Path $testRoot 'fixture root; & metacharacters'
     New-Item -ItemType Directory -Path $resources -Force | Out-Null
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
 
     $launcher = Join-Path $artifact 'launch-isolated.ps1'
     $profile = Join-Path $resources 'package-profile.toml'
-    $executable = Join-Path $artifact 'agentscommander.exe'
+    $executable = Join-Path $artifact 'Agents Commander Isolated Gates.exe'
+    $nativeProcessModule = Join-Path $artifact 'native-process.psm1'
     Copy-Item -LiteralPath $launcherSource -Destination $launcher
+    Copy-Item -LiteralPath $nativeProcessModuleSource -Destination $nativeProcessModule
     Copy-Item -LiteralPath $profileSource -Destination $profile
 
     $mockSource = @'
@@ -135,7 +138,7 @@ public static class Program {
         if (args.Length == 3 && args[0] == "--isolated-state-root" && args[2] == "--isolation-status") {
             Directory.CreateDirectory(args[1]);
             var root = JsonEscape(Path.GetFullPath(args[1]));
-            Console.Write("{\"effectiveRoot\":\"" + root + "\",\"packageId\":\"agentscommander-1271-isolated-gates\",\"bundleIdentifier\":\"dev.agentscommander.isolatedgates\",\"headerIdentity\":\"WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated\",\"profileSha256\":\"__PROFILE_HASH__\"}");
+            Console.Write("{\"effectiveRoot\":\"" + root + "\",\"packageId\":\"agentscommander-1271-isolated-gates\",\"profileSha256\":\"__PROFILE_HASH__\",\"workspace\":\"AgentsCommander_1271_isolated\",\"matrix\":\"WG-1271-ISOLATED-GATES\",\"replicaAgent\":\"gate-tester\",\"headerIdentity\":\"WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated\",\"bundleIdentifier\":\"dev.agentscommander.isolatedgates\",\"mutexHash\":\"test-mutex-hash\"}");
         }
         return 0;
     }
