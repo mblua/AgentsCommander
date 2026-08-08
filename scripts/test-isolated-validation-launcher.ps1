@@ -310,7 +310,7 @@ public static class Program {
             -StandardOutputLimitBytes 1MB `
             -StandardErrorLimitBytes 1MB `
             -RemoveAgentsCommanderEnvironment | Out-Null
-        $nativeChildEnvironment = [string](Get-Content -LiteralPath (Join-Path $artifact 'mock-child-env.txt') -Raw)
+        $nativeChildEnvironment = [System.IO.File]::ReadAllText((Join-Path $artifact 'mock-child-env.txt'))
         if ($nativeChildEnvironment.Contains($nativeParentEnvironmentName) -or
             [Environment]::GetEnvironmentVariable($nativeParentEnvironmentName) -cne 'must-remain-parent-only') {
             throw 'native process child environment cleanup leaked or mutated an AGENTSCOMMANDER_* value'
