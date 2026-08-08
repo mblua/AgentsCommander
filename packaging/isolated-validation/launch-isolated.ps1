@@ -133,61 +133,157 @@ if ($manifest.compiledProfileSha256 -cne $manifest.payloads.profile.sha256) {
 
 Import-Module -Name $nativeProcessModulePath -Force -ErrorAction Stop
 
+function Assert-ReceiptFields {
+    param(
+        [Parameter(Mandatory)]$Receipt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedFields
+    )
+
+    foreach ($entry in $ExpectedFields.GetEnumerator()) {
+        $property = $Receipt.PSObject.Properties[$entry.Key]
+        if ($null -eq $property -or [string]$property.Value -cne [string]$entry.Value) {
+            throw 'the existing launch receipt does not match the trusted handoff'
+        }
+    }
+}
+
+function Stop-AndDisposeIsolatedGuiProcess {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+        }
+        $Process.WaitForExit()
+    }
+    catch {
+        # Cleanup is best effort, but it always uses the original leased handle.
+    }
+    finally {
+        $Process.Dispose()
+    }
+}
+
 $isolatedStateRoot = Join-Path $fixture 'app-state'
+$receiptPath = Join-Path $fixture 'launch-receipt.json'
+$trustedReceiptFields = [ordered]@{
+    schema = 'isolated-validation-launch-receipt-v1'
+    expectedManifestSha256 = $ExpectedManifestSha256.ToLowerInvariant()
+    manifestSha256 = $actualManifestHash
+    fixtureRoot = $fixture
+    isolatedStateRoot = $isolatedStateRoot
+    packageId = 'agentscommander-1271-isolated-gates'
+    profileSha256 = $manifest.compiledProfileSha256
+    workspace = 'AgentsCommander_1271_isolated'
+    matrix = 'WG-1271-ISOLATED-GATES'
+    replicaAgent = 'gate-tester'
+    headerIdentity = 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated'
+    bundleIdentifier = 'dev.agentscommander.isolatedgates'
+    executableSha256 = $manifest.payloads.executable.sha256
+    profilePayloadSha256 = $manifest.payloads.profile.sha256
+    launcherSha256 = $manifest.payloads.launcher.sha256
+    nativeProcessModuleSha256 = $manifest.payloads.nativeProcessModule.sha256
+}
+
+$existingReceipt = $null
+if (Test-Path -LiteralPath $receiptPath) {
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        throw 'the existing launch receipt is not a regular file'
+    }
+    try {
+        $existingReceipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw 'the existing launch receipt is malformed'
+    }
+    Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+}
+
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
     '--isolated-state-root',
     $isolatedStateRoot,
     '--isolation-status'
 ) -CaptureOutput
 if ($status.ExitCode -ne 0) {
-    throw "isolation status failed with exit code $($status.ExitCode): $($status.StandardError.Trim())"
+    throw 'E_ISOLATION_STATUS'
 }
 
-$statusJson = $status.StandardOutput.Trim() | ConvertFrom-Json
-if ([string]::IsNullOrWhiteSpace([string]$statusJson.effectiveRoot)) {
-    throw 'isolation status reported an unexpected effective root'
-}
-if ($statusJson.packageId -cne 'agentscommander-1271-isolated-gates' -or
-    $statusJson.bundleIdentifier -cne 'dev.agentscommander.isolatedgates' -or
-    $statusJson.headerIdentity -cne 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated') {
-    throw 'isolation status reported an unexpected fixed package identity'
-}
-if ($statusJson.profileSha256 -cne $manifest.compiledProfileSha256) {
-    throw 'isolation status profile hash does not match the trusted handoff manifest'
-}
-
-$receiptPath = Join-Path $fixture 'launch-receipt.json'
-$receiptTemporaryPath = Join-Path $fixture ('.launch-receipt-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-$receipt = [ordered]@{
-    schemaVersion = 1
-    expectedManifestSha256 = $ExpectedManifestSha256.ToLowerInvariant()
-    manifestSha256 = $actualManifestHash
-    executableSha256 = $manifest.executableSha256
-    profileSha256 = $manifest.compiledProfileSha256
-    isolationStatus = $statusJson
-    utcTimestamp = [DateTime]::UtcNow.ToString('o')
-}
 try {
-    [System.IO.File]::WriteAllText(
-        $receiptTemporaryPath,
-        ($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
-        [System.Text.UTF8Encoding]::new($false)
+    $statusJson = $status.StandardOutput.Trim() | ConvertFrom-Json
+}
+catch {
+    throw 'E_ISOLATION_STATUS'
+}
+if ([string]::IsNullOrWhiteSpace([string]$statusJson.effectiveRoot) -or
+    [string]::IsNullOrWhiteSpace([string]$statusJson.mutexHash) -or
+    $statusJson.packageId -cne $trustedReceiptFields.packageId -or
+    $statusJson.profileSha256 -cne $trustedReceiptFields.profileSha256 -or
+    $statusJson.workspace -cne $trustedReceiptFields.workspace -or
+    $statusJson.matrix -cne $trustedReceiptFields.matrix -or
+    $statusJson.replicaAgent -cne $trustedReceiptFields.replicaAgent -or
+    $statusJson.headerIdentity -cne $trustedReceiptFields.headerIdentity -or
+    $statusJson.bundleIdentifier -cne $trustedReceiptFields.bundleIdentifier) {
+    throw 'E_ISOLATION_STATUS'
+}
+
+$trustedReceiptFields.effectiveRoot = $statusJson.effectiveRoot
+$trustedReceiptFields.mutexHash = $statusJson.mutexHash
+if ($null -ne $existingReceipt) {
+    Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+}
+
+$receiptTemporaryPath = $null
+$guiProcess = $null
+$publishedReceipt = $false
+try {
+    if ($null -eq $existingReceipt) {
+        $receiptTemporaryPath = Join-Path $fixture ('.launch-receipt-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+        $receipt = [ordered]@{}
+        foreach ($entry in $trustedReceiptFields.GetEnumerator()) {
+            $receipt[$entry.Key] = $entry.Value
+        }
+        $receipt.utcTimestamp = [DateTime]::UtcNow.ToString('o')
+        [System.IO.File]::WriteAllText(
+            $receiptTemporaryPath,
+            ($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+
+    $guiProcess = Start-IsolatedChild -Executable $executable -Arguments @(
+        '--app',
+        '--isolated-state-root',
+        $isolatedStateRoot
     )
-    Publish-ReceiptAtomically -TemporaryPath $receiptTemporaryPath -DestinationPath $receiptPath
-} finally {
-    if (Test-Path -LiteralPath $receiptTemporaryPath -PathType Leaf) {
+
+    if ($null -eq $existingReceipt) {
+        [System.IO.File]::Move($receiptTemporaryPath, $receiptPath)
+        $publishedReceipt = $true
+        $receiptTemporaryPath = $null
+    }
+
+    [pscustomobject]@{
+        processId = $guiProcess.Id
+        receipt = $receiptPath
+        stateRoot = $statusJson.effectiveRoot
+    } | ConvertTo-Json -Depth 4
+}
+catch {
+    if ($null -ne $guiProcess) {
+        Stop-AndDisposeIsolatedGuiProcess -Process $guiProcess
+        $guiProcess = $null
+    }
+    throw
+}
+finally {
+    if ($null -ne $receiptTemporaryPath -and (Test-Path -LiteralPath $receiptTemporaryPath -PathType Leaf)) {
         Remove-Item -LiteralPath $receiptTemporaryPath -Force -ErrorAction SilentlyContinue
     }
+    if ($null -ne $guiProcess) {
+        $guiProcess.Dispose()
+    }
 }
-
-$guiProcess = Start-IsolatedChild -Executable $executable -Arguments @(
-    '--app',
-    '--isolated-state-root',
-    $isolatedStateRoot
-)
-
-[pscustomobject]@{
-    processId = $guiProcess.Id
-    receipt = $receiptPath
-    stateRoot = $canonicalRoot
-} | ConvertTo-Json -Depth 4
