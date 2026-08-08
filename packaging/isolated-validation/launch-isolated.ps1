@@ -24,39 +24,24 @@ function Start-IsolatedChild {
         [switch]$CaptureOutput
     )
 
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Executable
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $CaptureOutput.IsPresent
-    $startInfo.RedirectStandardError = $CaptureOutput.IsPresent
-
-    foreach ($key in @($startInfo.Environment.Keys)) {
-        if ($key.StartsWith('AGENTSCOMMANDER_', [System.StringComparison]::OrdinalIgnoreCase)) {
-            [void]$startInfo.Environment.Remove($key)
-        }
-    }
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
+    if ($CaptureOutput.IsPresent) {
+        return Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $Executable `
+            -WorkingDirectory $PSScriptRoot `
+            -Arguments $Arguments `
+            -StandardOutputLimitBytes 64KB `
+            -StandardErrorLimitBytes 64KB `
+            -RemoveAgentsCommanderEnvironment
     }
 
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    if (-not $process.Start()) {
-        throw 'failed to start isolated package process'
-    }
-
-    if (-not $CaptureOutput.IsPresent) {
-        return $process
-    }
-
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        StandardOutput = $stdout
-        StandardError = $stderr
-    }
+    $lease = Start-IsolatedValidationNativeProcess `
+        -Mode Start `
+        -FilePath $Executable `
+        -WorkingDirectory $PSScriptRoot `
+        -Arguments $Arguments `
+        -RemoveAgentsCommanderEnvironment
+    return $lease.Process
 }
 
 function Normalize-ComparablePath {
