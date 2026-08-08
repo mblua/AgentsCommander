@@ -6,7 +6,9 @@ param(
 
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
-    [string]$IsolatedStateRootCommit
+    [string]$IsolatedStateRootCommit,
+
+    [switch]$RevisionPreflightOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,11 +22,31 @@ $OverlayRelativePath = 'src-tauri/tauri.conf.isolated-validation.json'
 function Invoke-Git {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
-    $result = & git -C $RepoRoot @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    # PowerShell's legacy native-argument marshalling strips `^` from Git
+    # revision suffixes such as `^{commit}`. ArgumentList preserves the exact
+    # revision bytes while also avoiding a string-built command line.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'git'
+    $startInfo.WorkingDirectory = $RepoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
     }
-    return $result
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        throw 'failed to start git for isolated validation package preflight'
+    }
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "git $($Arguments -join ' ') failed with exit code $($process.ExitCode): $($stderr.Trim())"
+    }
+    return $stdout
 }
 
 function Get-Sha256 {
@@ -71,6 +93,15 @@ if (($normalConfigAtFrozen -join "`n") -cne ($normalConfigAtTarget -join "`n")) 
     throw 'the normal Tauri configuration differs from the frozen #1271 baseline'
 }
 
+if ($RevisionPreflightOnly) {
+    [pscustomobject]@{
+        result = 'passed'
+        stage = 'revision-preflight'
+        targetCommit = $targetCommit
+    } | ConvertTo-Json -Depth 3
+    return
+}
+
 Invoke-Git -Arguments @('checkout', '--detach', $targetCommit) | Out-Null
 
 $profilePath = Join-Path $RepoRoot $ProfileRelativePath
@@ -101,27 +132,43 @@ if ($null -eq $executable) {
 }
 
 $bundleDirectory = Join-Path $releaseDirectory 'bundle'
-$installedProfile = Get-ChildItem -LiteralPath $bundleDirectory -Recurse -Filter 'package-profile.toml' -File |
-    Select-Object -First 1
-if ($null -eq $installedProfile) {
-    throw "could not locate the bundled package profile below $bundleDirectory"
+$resourceRelativePath = 'resources/isolated-validation/package-profile.toml'
+$resourceTail = [System.IO.Path]::Combine('resources', 'isolated-validation', 'package-profile.toml')
+$bundledProfiles = @(
+    Get-ChildItem -LiteralPath $bundleDirectory -Recurse -Filter 'package-profile.toml' -File |
+        Where-Object {
+            $_.FullName.EndsWith(
+                $resourceTail,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+)
+if ($bundledProfiles.Count -ne 1) {
+    throw "expected exactly one bundle resource at $resourceRelativePath below $bundleDirectory; found $($bundledProfiles.Count)"
 }
+$bundledProfile = $bundledProfiles[0]
 
-$artifactDirectory = $executable.Directory.FullName
-$artifactProfileDirectory = Join-Path $artifactDirectory 'isolated-validation'
-New-Item -ItemType Directory -Path $artifactProfileDirectory -Force | Out-Null
-$artifactProfile = Join-Path $artifactProfileDirectory 'package-profile.toml'
-Copy-Item -LiteralPath $installedProfile.FullName -Destination $artifactProfile -Force
+# Tauri's final installer is not itself runnable as the handoff executable. Build
+# a fresh, verified portable layout from the exact resource materialized by the
+# bundle, not from an arbitrary first profile match or the checked-in source.
+$artifactDirectory = Join-Path $releaseDirectory ('isolated-validation-portable-' + [Guid]::NewGuid().ToString('N'))
+$artifactResources = Join-Path $artifactDirectory 'resources/isolated-validation'
+New-Item -ItemType Directory -Path $artifactResources -ErrorAction Stop | Out-Null
+$artifactExecutable = Join-Path $artifactDirectory $executable.Name
+$artifactProfile = Join-Path $artifactResources 'package-profile.toml'
+Copy-Item -LiteralPath $executable.FullName -Destination $artifactExecutable -ErrorAction Stop
+Copy-Item -LiteralPath $bundledProfile.FullName -Destination $artifactProfile -ErrorAction Stop
 
 $launcherSource = Join-Path $RepoRoot 'packaging/isolated-validation/launch-isolated.ps1'
 $launcherDestination = Join-Path $artifactDirectory 'launch-isolated.ps1'
-Copy-Item -LiteralPath $launcherSource -Destination $launcherDestination -Force
+Copy-Item -LiteralPath $launcherSource -Destination $launcherDestination -ErrorAction Stop
 
 $manifestPath = Join-Path $artifactDirectory 'isolated-validation-handoff.json'
 $profileHash = Get-Sha256 -LiteralPath $profilePath
+$bundledProfileHash = Get-Sha256 -LiteralPath $bundledProfile.FullName
 $installedProfileHash = Get-Sha256 -LiteralPath $artifactProfile
-if ($profileHash -cne $installedProfileHash) {
-    throw 'bundled profile bytes differ from the compiled package profile'
+if ($profileHash -cne $bundledProfileHash -or $bundledProfileHash -cne $installedProfileHash) {
+    throw 'compiled, bundled, and portable artifact profile bytes must be identical'
 }
 
 $manifest = [ordered]@{
@@ -132,10 +179,12 @@ $manifest = [ordered]@{
     combinedSourceSha = (Invoke-Git -Arguments @('rev-parse', 'HEAD')).Trim()
     combinedTreeSha = (Invoke-Git -Arguments @('rev-parse', 'HEAD^{tree}')).Trim()
     cleanWorktree = $true
-    executableFileName = $executable.Name
-    executableSha256 = Get-Sha256 -LiteralPath $executable.FullName
-    profileResourceRelativePath = 'isolated-validation/package-profile.toml'
+    artifactKind = 'portable-layout'
+    executableFileName = (Split-Path -Path $artifactExecutable -Leaf)
+    executableSha256 = Get-Sha256 -LiteralPath $artifactExecutable
+    profileResourceRelativePath = $resourceRelativePath
     compiledProfileSha256 = $profileHash
+    bundledProfileSha256 = $bundledProfileHash
     installedProfileSha256 = $installedProfileHash
     utcTimestamp = [DateTime]::UtcNow.ToString('o')
     mode = 'isolated-validation-package'
@@ -157,7 +206,7 @@ $manifestHash = Get-Sha256 -LiteralPath $manifestPath
 
 [pscustomobject]@{
     artifactDirectory = $artifactDirectory
-    executable = $executable.FullName
+    executable = $artifactExecutable
     manifest = $manifestPath
     manifestSha256 = $manifestHash
     profile = $artifactProfile
