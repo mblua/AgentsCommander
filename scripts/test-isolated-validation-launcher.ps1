@@ -53,7 +53,10 @@ function Invoke-Launcher {
 
     try {
         $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
-        return [pscustomobject]@{ Succeeded = $true; Output = ($output -join [Environment]::NewLine) }
+        return [pscustomobject]@{
+            Succeeded = $LASTEXITCODE -eq 0
+            Output = ($output -join [Environment]::NewLine)
+        }
     } catch {
         return [pscustomobject]@{ Succeeded = $false; Output = $_.Exception.Message }
     }
@@ -175,24 +178,53 @@ public static class Program {
     }
     Copy-Item -LiteralPath (Join-Path $mockOutput 'agentscommander.exe') -Destination $executable
     foreach ($supportFile in @('agentscommander.dll', 'agentscommander.deps.json', 'agentscommander.runtimeconfig.json')) {
-        Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact $supportFile)
+        $extension = $supportFile.Substring('agentscommander'.Length)
+        Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact ('Agents Commander Isolated Gates' + $extension))
     }
 
-    $manifestPath = Join-Path $artifact 'isolated-validation-handoff.json'
+    $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
     $manifest = [ordered]@{
-        schemaVersion = 1
+        schema = 'isolated-validation-handoff-v1'
+        baseSha = ('0' * 40)
+        frozen1271Commit = ('1' * 40)
+        isolatedStateRootCommit = ('2' * 40)
+        combinedSourceSha = ('3' * 40)
+        combinedTreeSha = ('4' * 40)
+        cleanWorktree = $true
         artifactKind = 'portable-layout'
-        executableFileName = 'agentscommander.exe'
-        executableSha256 = Get-Sha256 -LiteralPath $executable
-        profileResourceRelativePath = 'resources/isolated-validation/package-profile.toml'
         compiledProfileSha256 = $profileHash
-        bundledProfileSha256 = $profileHash
-        installedProfileSha256 = $profileHash
+        utcTimestamp = [DateTime]::UtcNow.ToString('o')
+        mode = 'isolated-validation-package'
+        target = 'test'
+        productLabel = 'Agents Commander Isolated Gates'
+        bundleIdentifier = 'dev.agentscommander.isolatedgates'
+        headerIdentity = 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated'
+        launcherCommand = '.\launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-hash>'
+        payloads = [ordered]@{
+            executable = [ordered]@{
+                relativePath = 'Agents Commander Isolated Gates.exe'
+                sha256 = Get-Sha256 -LiteralPath $executable
+            }
+            profile = [ordered]@{
+                relativePath = 'resources/package-profile.toml'
+                sha256 = $profileHash
+            }
+            launcher = [ordered]@{
+                relativePath = 'launch-isolated.ps1'
+                sha256 = Get-Sha256 -LiteralPath $launcher
+            }
+            nativeProcessModule = [ordered]@{
+                relativePath = 'native-process.psm1'
+                sha256 = Get-Sha256 -LiteralPath $nativeProcessModule
+            }
+        }
     }
     Write-JsonFile -LiteralPath $manifestPath -Value $manifest
     $expectedManifestHash = Get-Sha256 -LiteralPath $manifestPath
     $executableBytes = [System.IO.File]::ReadAllBytes($executable)
     $profileBytes = [System.IO.File]::ReadAllBytes($profile)
+    $launcherBytes = [System.IO.File]::ReadAllBytes($launcher)
+    $nativeProcessModuleBytes = [System.IO.File]::ReadAllBytes($nativeProcessModule)
     $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 
     [Environment]::SetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED', 'must-not-reach-child')
@@ -205,14 +237,16 @@ public static class Program {
     if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
         throw 'valid portable artifact did not write a receipt after status validation'
     }
-    [System.IO.File]::WriteAllText($receipt, '{"sentinel":"must-be-replaced"}', [System.Text.UTF8Encoding]::new($false))
+    $firstReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
     $second = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
     if (-not $second.Succeeded) {
         throw "same-root launcher relaunch failed: $($second.Output)"
     }
     Wait-For-LauncherChildExit -ProcessId (($second.Output | ConvertFrom-Json).processId)
-    if ((Get-Content -LiteralPath $receipt -Raw).Contains('must-be-replaced')) {
-        throw 'same-root launcher relaunch did not atomically replace the prior receipt'
+    $secondReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
+    if ($firstReceiptBytes.Length -ne $secondReceiptBytes.Length -or
+        [System.BitConverter]::ToString($firstReceiptBytes) -cne [System.BitConverter]::ToString($secondReceiptBytes)) {
+        throw 'same-root launcher relaunch rewrote the immutable prior receipt'
     }
     $capturedChildEnvironment = Get-Content -LiteralPath (Join-Path $artifact 'mock-child-env.txt') -Raw
     if ($null -ne $capturedChildEnvironment -and $capturedChildEnvironment.Contains('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED')) {
