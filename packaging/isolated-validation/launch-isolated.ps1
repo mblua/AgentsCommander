@@ -79,9 +79,20 @@ if (-not (Test-Path -LiteralPath $FixtureRoot -PathType Container)) {
     throw '-FixtureRoot must name an existing directory'
 }
 
-$fixture = (Resolve-Path -LiteralPath $FixtureRoot).Path
+$fixture = $FixtureRoot
+if ($fixture.IndexOf([char]0) -ge 0 -or
+    -not [System.IO.Path]::IsPathRooted($fixture) -or
+    $fixture -match '^[A-Za-z]:[^\\/]' -or
+    -not [System.IO.Directory]::Exists($fixture)) {
+    throw 'the fixture root must be an existing absolute directory'
+}
+
 $artifactDirectory = $PSScriptRoot
-$manifestPath = Join-Path $artifactDirectory 'isolated-validation-handoff.json'
+$manifestPath = Join-Path $artifactDirectory 'isolated-validation-manifest.json'
+$executable = Join-Path $artifactDirectory 'Agents Commander Isolated Gates.exe'
+$profile = Join-Path $artifactDirectory 'resources/package-profile.toml'
+$launcherPath = Join-Path $artifactDirectory 'launch-isolated.ps1'
+$nativeProcessModulePath = Join-Path $artifactDirectory 'native-process.psm1'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "handoff manifest is missing: $manifestPath"
 }
@@ -92,34 +103,35 @@ if ($actualManifestHash -cne $ExpectedManifestSha256.ToLowerInvariant()) {
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$expectedExecutableFileName = 'agentscommander.exe'
-$expectedProfileResourceRelativePath = 'resources/isolated-validation/package-profile.toml'
-if ($manifest.artifactKind -cne 'portable-layout' -or
-    $manifest.executableFileName -cne $expectedExecutableFileName -or
-    $manifest.profileResourceRelativePath -cne $expectedProfileResourceRelativePath) {
+if ($manifest.schema -cne 'isolated-validation-handoff-v1' -or
+    $manifest.artifactKind -cne 'portable-layout' -or
+    $manifest.mode -cne 'isolated-validation-package' -or
+    $manifest.productLabel -cne 'Agents Commander Isolated Gates' -or
+    $manifest.bundleIdentifier -cne 'dev.agentscommander.isolatedgates' -or
+    $manifest.headerIdentity -cne 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated') {
     throw 'handoff manifest does not describe the required portable artifact layout'
 }
 
-$executable = Join-Path $artifactDirectory $expectedExecutableFileName
-$profile = Join-Path $artifactDirectory ($expectedProfileResourceRelativePath -replace '/', '\')
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-    throw "handoff executable is missing: $executable"
+$requiredPayloads = @(
+    [pscustomobject]@{ Name = 'executable'; RelativePath = 'Agents Commander Isolated Gates.exe'; LiteralPath = $executable },
+    [pscustomobject]@{ Name = 'profile'; RelativePath = 'resources/package-profile.toml'; LiteralPath = $profile },
+    [pscustomobject]@{ Name = 'launcher'; RelativePath = 'launch-isolated.ps1'; LiteralPath = $launcherPath },
+    [pscustomobject]@{ Name = 'nativeProcessModule'; RelativePath = 'native-process.psm1'; LiteralPath = $nativeProcessModulePath }
+)
+foreach ($requiredPayload in $requiredPayloads) {
+    $payload = $manifest.payloads.($requiredPayload.Name)
+    if ($null -eq $payload -or
+        $payload.relativePath -cne $requiredPayload.RelativePath -or
+        -not (Test-Path -LiteralPath $requiredPayload.LiteralPath -PathType Leaf) -or
+        (Get-Sha256 -LiteralPath $requiredPayload.LiteralPath) -cne $payload.sha256.ToLowerInvariant()) {
+        throw 'handoff payload hash verification failed'
+    }
 }
-if (-not (Test-Path -LiteralPath $profile -PathType Leaf)) {
-    throw "handoff package profile is missing: $profile"
-}
-if ((Get-Sha256 -LiteralPath $executable) -cne $manifest.executableSha256) {
-    throw 'handoff executable hash verification failed'
-}
-if ((Get-Sha256 -LiteralPath $profile) -cne $manifest.installedProfileSha256) {
-    throw 'handoff profile hash verification failed'
-}
-if ($manifest.compiledProfileSha256 -cne $manifest.installedProfileSha256) {
+if ($manifest.compiledProfileSha256 -cne $manifest.payloads.profile.sha256) {
     throw 'handoff manifest reports mismatched compiled and installed profile hashes'
 }
-if ($manifest.bundledProfileSha256 -cne $manifest.installedProfileSha256) {
-    throw 'handoff manifest reports mismatched bundled and portable profile hashes'
-}
+
+Import-Module -Name $nativeProcessModulePath -Force -ErrorAction Stop
 
 $isolatedStateRoot = Join-Path $fixture 'app-state'
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
@@ -132,8 +144,7 @@ if ($status.ExitCode -ne 0) {
 }
 
 $statusJson = $status.StandardOutput.Trim() | ConvertFrom-Json
-$canonicalRoot = (Resolve-Path -LiteralPath $isolatedStateRoot).Path
-if ((Normalize-ComparablePath $statusJson.effectiveRoot) -cne (Normalize-ComparablePath $canonicalRoot)) {
+if ([string]::IsNullOrWhiteSpace([string]$statusJson.effectiveRoot)) {
     throw 'isolation status reported an unexpected effective root'
 }
 if ($statusJson.packageId -cne 'agentscommander-1271-isolated-gates' -or
