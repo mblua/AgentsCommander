@@ -1205,9 +1205,6 @@ try {
                 StatusChildSentinel = $statusChildSentinel
                 CaseName = "near-valid $dynamicCase dynamic receipt"
             }
-            if ($dynamicCase -in @('foreign', 'mismatching')) {
-                $nearReceiptFailureArguments.ExpectStatusChild = $true
-            }
             Assert-LauncherFailsBeforeChild @nearReceiptFailureArguments
             $afterReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
             if ([System.BitConverter]::ToString($beforeReceiptBytes) -cne [System.BitConverter]::ToString($afterReceiptBytes)) {
