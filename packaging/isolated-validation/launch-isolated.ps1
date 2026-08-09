@@ -53,10 +53,26 @@ function Start-IsolatedChild {
     return $lease.Process
 }
 
+function Test-FullyQualifiedWindowsPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ($Path.IndexOf([char]0) -ge 0) {
+        return $false
+    }
+
+    $isPathFullyQualified = [System.IO.Path].GetMethod(
+        'IsPathFullyQualified',
+        [System.Type[]]@([string])
+    )
+    if ($null -ne $isPathFullyQualified) {
+        return [System.IO.Path]::IsPathFullyQualified($Path)
+    }
+
+    return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\\\\\?\\(?:[A-Za-z]:[\\/]|UNC\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)))'
+}
+
 $fixture = $FixtureRoot
-if ($fixture.IndexOf([char]0) -ge 0 -or
-    -not [System.IO.Path]::IsPathRooted($fixture) -or
-    $fixture -match '^[A-Za-z]:[^\\/]' -or
+if (-not (Test-FullyQualifiedWindowsPath -Path $fixture) -or
     -not [System.IO.Directory]::Exists($fixture)) {
     throw 'the fixture root must be an existing absolute directory'
 }
@@ -115,9 +131,34 @@ function Assert-ReceiptFields {
 
     foreach ($entry in $ExpectedFields.GetEnumerator()) {
         $property = $Receipt.PSObject.Properties[$entry.Key]
-        if ($null -eq $property -or [string]$property.Value -cne [string]$entry.Value) {
+        if ($null -eq $property -or
+            $property.Value -isnot [string] -or
+            $property.Value -cne [string]$entry.Value) {
             throw 'the existing launch receipt does not match the trusted handoff'
         }
+    }
+}
+
+function Assert-ReceiptDynamicFields {
+    param([Parameter(Mandatory)]$Receipt)
+
+    foreach ($name in @('effectiveRoot', 'mutexHash', 'utcTimestamp')) {
+        $property = $Receipt.PSObject.Properties[$name]
+        if ($null -eq $property -or
+            $property.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($property.Value)) {
+            throw 'the existing launch receipt has an invalid dynamic field'
+        }
+    }
+
+    $timestamp = [DateTime]::MinValue
+    if (-not [DateTime]::TryParse(
+        [string]$Receipt.utcTimestamp,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$timestamp
+    )) {
+        throw 'the existing launch receipt has an invalid timestamp'
     }
 }
 
@@ -133,9 +174,13 @@ function Stop-AndDisposeIsolatedGuiProcess {
             $Process.Kill()
         }
         $Process.WaitForExit()
+        if (-not $Process.HasExited) {
+            throw 'owned GUI child did not exit after termination'
+        }
     }
     catch {
-        # Cleanup is best effort, but it always uses the original leased handle.
+        Write-Verbose "[isolated-validation] owned GUI cleanup failed: $($_.Exception.Message)"
+        throw 'E_ISOLATION_NATIVE_PROCESS'
     }
     finally {
         $Process.Dispose()
@@ -175,6 +220,7 @@ if (Test-Path -LiteralPath $receiptPath) {
         throw 'the existing launch receipt is malformed'
     }
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+    Assert-ReceiptDynamicFields -Receipt $existingReceipt
 }
 
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
