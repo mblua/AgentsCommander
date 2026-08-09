@@ -142,22 +142,12 @@ if ($null -eq $executable) {
     throw "could not locate the packaged executable below $releaseDirectory"
 }
 
-$bundleDirectory = Join-Path $releaseDirectory 'bundle'
 $resourceRelativePath = 'resources/package-profile.toml'
-$resourceTail = [System.IO.Path]::Combine('resources', 'package-profile.toml')
-$bundledProfiles = @(
-    Get-ChildItem -LiteralPath $bundleDirectory -Recurse -Filter 'package-profile.toml' -File |
-        Where-Object {
-            $_.FullName.EndsWith(
-                $resourceTail,
-                [System.StringComparison]::OrdinalIgnoreCase
-            )
-        }
-)
-if ($bundledProfiles.Count -ne 1) {
-    throw "expected exactly one bundle resource at $resourceRelativePath below $bundleDirectory; found $($bundledProfiles.Count)"
+$bundledProfilePath = Join-Path $releaseDirectory $resourceRelativePath
+if (-not (Test-Path -LiteralPath $bundledProfilePath -PathType Leaf)) {
+    throw "expected packaged resource at $bundledProfilePath"
 }
-$bundledProfile = $bundledProfiles[0]
+$bundledProfile = Get-Item -LiteralPath $bundledProfilePath -ErrorAction Stop
 
 # Tauri's final installer is not itself runnable as the handoff executable. Build
 # a fresh, verified portable layout from the exact resource materialized by the
