@@ -318,7 +318,8 @@ function Move-IsolatedValidationExtractionToQuarantine {
         [IsolatedValidationExtractionRenameInfo],
         'FileNameFirstCharacter'
     ).ToInt32()
-    $renameBufferLength = $renameFileNameOffset + $quarantineNameBytes.Length
+    $renameInfoSize = [Runtime.InteropServices.Marshal]::SizeOf($renameInfo)
+    $renameBufferLength = $renameInfoSize + $quarantineNameBytes.Length
     $renameBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($renameBufferLength)
     try {
         [Runtime.InteropServices.Marshal]::StructureToPtr($renameInfo, $renameBuffer, $false)
