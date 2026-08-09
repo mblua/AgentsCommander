@@ -196,7 +196,7 @@ function Assert-PowerShellAstContract {
                 }, $true))
         foreach ($command in $commands) {
             $name = $command.GetCommandName()
-            if ($name -in @('Start-Process', 'Invoke-Expression', 'cmd.exe')) {
+            if ($name -in @('Start-Process', 'Stop-Process', 'Invoke-Expression', 'cmd.exe')) {
                 throw "forbidden production command $name in $path"
             }
         }
