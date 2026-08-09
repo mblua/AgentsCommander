@@ -375,13 +375,9 @@ try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     Assert-PowerShellAstContract -ProductionPaths @($moduleSource, $buildScript, $launcherSource)
 
-    Import-Module -Name $moduleSource -Force -ErrorAction Stop
+    $nativeProcessModule = Import-Module -Name $moduleSource -Force -PassThru -ErrorAction Stop
     $exported = @(Get-Command -Module native-process | Select-Object -ExpandProperty Name)
-    $expectedExports = @(
-        'Start-IsolatedValidationNativeProcess',
-        'Test-IsolatedValidationFullyQualifiedPath'
-    )
-    if (@(Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exported).Count -ne 0) {
+    if ($exported.Count -ne 1 -or $exported[0] -cne 'Start-IsolatedValidationNativeProcess') {
         throw "native process module exported unexpected commands: $($exported -join ', ')"
     }
     foreach ($pathVector in @(
@@ -390,7 +386,11 @@ try {
         [pscustomobject]@{ Path = 'C:drive-relative'; Expected = $false },
         [pscustomobject]@{ Path = '\\root-relative'; Expected = $false }
     )) {
-        if ((Test-IsolatedValidationFullyQualifiedPath -Path $pathVector.Path) -ne $pathVector.Expected) {
+        $pathVectorResult = & $nativeProcessModule {
+            param($Path)
+            Test-IsolatedValidationFullyQualifiedPath -Path $Path
+        } $pathVector.Path
+        if ($pathVectorResult -ne $pathVector.Expected) {
             throw "shared fully-qualified path policy rejected its conformance vector: $($pathVector.Path)"
         }
     }
