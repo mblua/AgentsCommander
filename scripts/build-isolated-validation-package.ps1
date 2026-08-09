@@ -406,7 +406,10 @@ $msiArtifacts = @(Get-ChildItem -LiteralPath $msiDirectory -Filter '*.msi' -File
 if ($msiArtifacts.Count -ne 1) {
     throw "expected exactly one isolated validation MSI below $msiDirectory; found $($msiArtifacts.Count)"
 }
-$extractionParentDirectory = [System.IO.Path]::GetTempPath()
+$extractionParentDirectory = $env:TEMP
+if ([string]::IsNullOrWhiteSpace($extractionParentDirectory)) {
+    $extractionParentDirectory = [System.IO.Path]::GetTempPath()
+}
 $installedRoot = Join-Path $extractionParentDirectory ('agentscommander-isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
 $installedPackageDirectory = Join-Path $installedRoot 'PFiles\Agents Commander Isolated Gates'
 $msiExecutable = Join-Path $env:SystemRoot 'System32/msiexec.exe'
