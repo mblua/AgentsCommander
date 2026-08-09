@@ -9,7 +9,8 @@ This is not a general profile feature. A normal build and a normal launch retain
 Use the supplied launcher for validation. It is the supported way to establish the fixture root, verify the handoff, record the receipt, and start the package.
 
 ~~~powershell
-packaging/isolated-validation/launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-handoff-hash>
+powershell.exe -NoProfile -NonInteractive -File packaging/isolated-validation/launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-handoff-hash>
+pwsh -NoProfile -NonInteractive -File packaging/isolated-validation/launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-handoff-hash>
 ~~~
 
 The launcher requires an existing absolute <code>-FixtureRoot</code>. It derives exactly these paths:
@@ -19,7 +20,7 @@ The launcher requires an existing absolute <code>-FixtureRoot</code>. It derives
 | Isolated application-state root | <code>&lt;FixtureRoot&gt;/app-state</code> |
 | Launch receipt | <code>&lt;FixtureRoot&gt;/launch-receipt.json</code> |
 
-It accepts no caller-selected receipt path. It first runs the status command, writes the receipt only after every hash and status check succeeds, then starts the package with <code>--app --isolated-state-root &lt;FixtureRoot&gt;/app-state</code>.
+It accepts no caller-selected receipt path. It validates a complete pre-existing receipt before starting a child, runs the status command, verifies every payload and status value, starts the package with <code>--app --isolated-state-root &lt;FixtureRoot&gt;/app-state</code>, then atomically publishes a new receipt. A valid re-launch retains the original receipt bytes.
 
 ## Launch modes and option grammar
 
@@ -175,26 +176,27 @@ node_modules/.bin/tauri.cmd build --features isolated-validation-package --confi
 
 The isolated overlay preserves normal capabilities, signing, and base settings while applying the fixed product label, bundle identifier, and read-only bundled profile resource. The profile is compiled and bundled read-only. It is not a runtime root or identity input.
 
-The build handoff manifest records:
+The build handoff manifest records provenance plus a hash for exactly four staged payloads:
 
 - Base SHA, frozen #1271 SHA, isolated-state-root SHA, combined source SHA, and combined tree SHA.
-- Clean-worktree result, executable SHA-256, compiled-profile SHA-256, installed-profile SHA-256, and manifest SHA-256.
+- Clean-worktree result, executable SHA-256, compiled-profile SHA-256, and installed-profile SHA-256.
 - UTC timestamp, mode, target, product label, bundle identifier, fixed header identity, and exact launcher command.
+- <code>Agents Commander Isolated Gates.exe</code>, <code>launch-isolated.ps1</code>, <code>native-process.psm1</code>, and <code>isolated-validation-profile.json</code>.
 
-The manifest detects accidental corruption; it is not a standalone tamper-resistance claim. The tech lead supplies the expected manifest SHA-256 out of band with the artifact. Before it trusts the manifest, the launcher verifies that expected hash, then verifies the executable and installed profile hashes. This detects executable-only, manifest-only, and profile-only substitution.
+The manifest does not hash itself. The tech lead supplies the final manifest SHA-256 out of band with the artifact. Before parsing or trusting it, the launcher verifies that final hash, then verifies all four payload hashes, including <code>native-process.psm1</code> before importing the module. This detects manifest-only and individual staged-payload substitution.
 
-The launcher constructs child arguments with <code>System.Diagnostics.ProcessStartInfo.ArgumentList</code> and <code>UseShellExecute = $false</code>. It does not build a shell command from a path, profile, label, identity, or manifest value. It removes inherited <code>AGENTSCOMMANDER_*</code> variables only from the child environment as defense in depth.
+The launcher serializes each child argument with its Windows-native argument serializer into <code>System.Diagnostics.ProcessStartInfo.Arguments</code> and sets <code>UseShellExecute = $false</code>. It does not build a shell command from a path, profile, label, identity, or manifest value. It removes inherited <code>AGENTSCOMMANDER_*</code> values from <code>ProcessStartInfo.EnvironmentVariables</code> only, as defense in depth.
 
 ## Immutable preflight for gates 38–48
 
 Run gates 38–48 only after this preflight succeeds on one immutable combined artifact:
 
-1. Build a clean detached combined artifact from frozen #1271 commit <code>d68495086e168e5258500832b2ef45b4337ed21a</code> and the completed #1286 commit. Hand off the executable, installed profile resource, launcher, manifest, and trusted expected manifest SHA-256.
+1. Build a clean detached combined artifact from frozen #1271 commit <code>d68495086e168e5258500832b2ef45b4337ed21a</code> and the completed #1286 commit. Hand off all four staged payloads, the manifest, and the trusted out-of-band final manifest SHA-256.
 2. Create a new fixture under the tester replica. Record read-only before snapshots of known WG-12 tester and matrix state.
-3. Run the launcher with an absolute fixture root and the trusted manifest hash. Confirm it verifies provenance, captures status JSON, and writes its receipt only after validation.
+3. Run the launcher with an absolute fixture root and the trusted manifest hash. Confirm it verifies the final manifest before parsing, validates every staged payload before module import, captures status JSON, and writes its receipt only after validation.
 4. Before any fixture agent, project, terminal, or shell exists, capture the earliest window. The status, receipt, and header must all show <code>WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated</code>. Reject <code>Terminal</code>, a shared identity, or shared state.
 5. Create exactly one fixture coding agent and one fixture project. Confirm that CLI and sidebar discovery show only fixture objects and that state writes remain under the declared root.
-6. Close and relaunch the same executable with the same root. Reconfirm the header, status, receipt provenance, root-contained data, and unchanged shared-state snapshots.
+6. Capture the initial receipt bytes, then close and relaunch the same staged artifact with the same root and trusted manifest hash. Reconfirm the header, status, receipt provenance, root-contained data, unchanged shared-state snapshots, and byte-for-byte unchanged receipt.
 7. Run gates 38–48 only when every screenshot, gate result, and handoff record cites the same combined source, executable, profile, and manifest hashes.
 
 Do not substitute a rebuilt artifact, source-only run, separate #1271 build, shared root, shared session, or a different executable/profile/manifest/receipt hash set. Any mismatch invalidates the gate run.

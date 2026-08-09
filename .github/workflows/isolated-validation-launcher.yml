@@ -1,0 +1,31 @@
+name: Isolated validation launcher
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/isolated-validation/**'
+      - 'scripts/test-isolated-validation-launcher.ps1'
+      - 'scripts/build-isolated-validation-package.ps1'
+      - 'src-tauri/**'
+      - '.github/workflows/isolated-validation-launcher.yml'
+  workflow_dispatch:
+
+jobs:
+  launcher-regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Run Windows PowerShell 5 launcher regression
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -File scripts/test-isolated-validation-launcher.ps1 -ExpectedPSEdition Desktop -ExpectedMajorVersion 5
+      - name: Run PowerShell 7 launcher regression
+        shell: pwsh
+        run: pwsh -NoProfile -NonInteractive -File scripts/test-isolated-validation-launcher.ps1 -ExpectedPSEdition Core -MinimumMajorVersion 7
