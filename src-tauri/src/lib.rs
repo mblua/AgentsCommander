@@ -1014,7 +1014,13 @@ pub fn run(
 
     // Create instance-private outbox directory and clean up stale ones
     let config_dir = config::config_dir().expect("Cannot determine home directory");
-    let instances_dir = config_dir.join("instances");
+    let instances_dir = match config::app_state_root::isolated_state_directory(
+        config::app_state_root::IsolatedStateDirectory::Instances,
+    ) {
+        Ok(Some(directory)) => directory,
+        Ok(None) => config_dir.join("instances"),
+        Err(error) => panic!("Cannot verify isolated instances directory: {error}"),
+    };
 
     // Clean up old instance dirs (from previous runs)
     if let Ok(entries) = std::fs::read_dir(&instances_dir) {
