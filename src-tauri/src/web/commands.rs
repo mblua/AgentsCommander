@@ -129,16 +129,16 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     {
         return Err("selectionCoordinatorBusy".to_string());
     }
+    if cmd == "get_isolated_package_titlebar_identity" {
+        let identity = crate::commands::config::get_isolated_package_titlebar_identity()
+            .map_err(|error| error.to_string())?;
+        return serde_json::to_value(identity).map_err(|error| error.to_string());
+    }
     if let WebCommandRoute::BrowserProject(project_cmd) = route_web_command(cmd) {
         return dispatch_browser_project_command(state, project_cmd, args).await;
     }
 
     match cmd {
-        "get_isolated_package_titlebar_identity" => serde_json::to_value(
-            crate::commands::config::get_isolated_package_titlebar_identity(),
-        )
-        .map_err(|error| error.to_string()),
-
         // --- Session commands ---
         "list_sessions" => {
             let mgr = state.session_mgr.read().await;
@@ -1279,6 +1279,27 @@ mod tests {
             context_regex: None,
             backend: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn titlebar_identity_websocket_route_returns_normal_identity() {
+        let (state, _receiver) = ws_state_for(AppSettings::default());
+
+        let response = dispatch(
+            &state,
+            1286,
+            "get_isolated_package_titlebar_identity",
+            &json!({}),
+        )
+        .await;
+
+        assert_eq!(response["id"], json!(1286));
+        assert!(response.get("error").is_none());
+        assert_eq!(
+            response["result"]["mode"],
+            json!("normal"),
+            "unexpected WebSocket titlebar response: {response}"
+        );
     }
 
     #[tokio::test]
