@@ -974,22 +974,26 @@ finally {
         }
     }
     if (Test-Path -LiteralPath $testRoot) {
-        $cleanupFailure = $null
+        $testRootCleanupSucceeded = $false
+        $cleanupFailureMessage = $null
         for ($attempt = 1; $attempt -le $testRootCleanupRetryLimit; $attempt++) {
             try {
                 Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
-                break
+                if (-not (Test-Path -LiteralPath $testRoot)) {
+                    $testRootCleanupSucceeded = $true
+                    break
+                }
+                $cleanupFailureMessage = 'the test root remained after a successful removal call'
             }
             catch {
-                $cleanupFailure = $_
-                if ($attempt -lt $testRootCleanupRetryLimit) {
-                    Start-Sleep -Milliseconds 100
-                }
+                $cleanupFailureMessage = $_.Exception.Message
+            }
+            if ($attempt -lt $testRootCleanupRetryLimit) {
+                Start-Sleep -Milliseconds 100
             }
         }
-        if ($attempt -eq $testRootCleanupRetryLimit -and
-            (Test-Path -LiteralPath $testRoot)) {
-            $cleanupMessage = "failed to remove isolated launcher test root after $testRootCleanupRetryLimit attempts: $($cleanupFailure.Exception.Message)"
+        if (-not $testRootCleanupSucceeded) {
+            $cleanupMessage = "failed to remove isolated launcher test root after $testRootCleanupRetryLimit attempts: $cleanupFailureMessage"
             if ($null -ne $primaryFailure) {
                 Write-Warning "$cleanupMessage; preserving the primary test failure"
             }
