@@ -139,6 +139,7 @@ function Get-IsolatedReceiptDynamicFields {
 using System;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
+using System.Text;
 
 [StructLayout(LayoutKind.Sequential)]
 public struct IsolatedValidationFileTime {
@@ -176,6 +177,13 @@ public static class IsolatedValidationFileIdentity {
     public static extern bool GetFileInformationByHandle(
         SafeFileHandle file,
         out IsolatedValidationByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern UInt32 GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder path,
+        UInt32 pathLength,
+        UInt32 flags);
 }
 '@ -ErrorAction Stop
     }
@@ -197,6 +205,28 @@ public static class IsolatedValidationFileIdentity {
         $information = New-Object IsolatedValidationByHandleFileInformation
         if (-not [IsolatedValidationFileIdentity]::GetFileInformationByHandle($handle, [ref]$information)) {
             throw 'could not read the isolated root identity'
+        }
+
+        $pathCapacity = 1024
+        while ($true) {
+            $canonicalPath = [System.Text.StringBuilder]::new($pathCapacity)
+            $pathLength = [IsolatedValidationFileIdentity]::GetFinalPathNameByHandle(
+                $handle,
+                $canonicalPath,
+                [uint32]$pathCapacity,
+                [uint32]0
+            )
+            if ($pathLength -eq 0) {
+                throw 'could not read the isolated root path'
+            }
+            if ($pathLength -lt $pathCapacity) {
+                $effectiveRoot = $canonicalPath.ToString()
+                break
+            }
+            if ($pathLength -ge 32768) {
+                throw 'could not read the isolated root path'
+            }
+            $pathCapacity = [int]$pathLength + 1
         }
     }
     finally {
