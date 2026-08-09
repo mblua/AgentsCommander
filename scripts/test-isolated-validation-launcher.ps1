@@ -48,9 +48,9 @@ function Get-NativeExecutable {
     param([Parameter(Mandatory)][string]$Name)
 
     $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop
-    $path = [string]$command.Source
+    $path = [string]$command.Path
     if ([string]::IsNullOrWhiteSpace($path)) {
-        $path = [string]$command.Path
+        $path = [string]$command.Definition
     }
     if ([string]::IsNullOrWhiteSpace($path) -or -not [System.IO.File]::Exists($path)) {
         throw "required native executable is unavailable: $Name"
