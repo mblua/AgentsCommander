@@ -675,6 +675,15 @@ finally {
         }
     }
     if (Test-Path -LiteralPath $testRoot) {
+        $testRootPrefix = [System.IO.Path]::GetFullPath($testRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $fixtureProcesses = Get-CimInstance Win32_Process | Where-Object {
+            $null -ne $_.ExecutablePath -and
+            $_.ExecutablePath.StartsWith($testRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        foreach ($fixtureProcess in $fixtureProcesses) {
+            Stop-Process -Id $fixtureProcess.ProcessId -Force -ErrorAction Stop
+            Wait-ForProcessExit -ProcessId $fixtureProcess.ProcessId -CaseName 'test fixture cleanup'
+        }
         for ($attempt = 1; $attempt -le 20; $attempt++) {
             try {
                 Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
