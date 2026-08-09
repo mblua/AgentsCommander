@@ -867,7 +867,14 @@ try {
     $statusChildSentinel = Join-Path $artifact 'status-child-sentinel.txt'
     [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_STATUS_CHILD_SENTINEL_PATH', $statusChildSentinel)
     try {
-        foreach ($dynamicCase in @('malformed', 'foreign', 'mismatching')) {
+        foreach ($dynamicCase in @(
+                'malformed',
+                'foreign',
+                'mismatching',
+                'missing-timestamp',
+                'non-string-timestamp',
+                'invalid-timestamp'
+            )) {
             $stage = "near-valid receipt $dynamicCase"
             $nearFixture = Join-Path $testRoot ("near-valid-receipt-$dynamicCase")
             $nearStateRoot = Join-Path $nearFixture 'app-state'
@@ -886,6 +893,15 @@ try {
                 'mismatching' {
                     $nearReceipt.effectiveRoot = $nearStateRoot
                     $nearReceipt.mutexHash = ('0' * 64) -join ''
+                }
+                'missing-timestamp' {
+                    $nearReceipt.PSObject.Properties.Remove('utcTimestamp')
+                }
+                'non-string-timestamp' {
+                    $nearReceipt.utcTimestamp = 1
+                }
+                'invalid-timestamp' {
+                    $nearReceipt.utcTimestamp = 'not-a-roundtrip-utc-timestamp'
                 }
             }
             $nearReceiptPath = Join-Path $nearFixture 'launch-receipt.json'
