@@ -125,6 +125,22 @@ function Assert-ReceiptFields {
             throw 'the existing launch receipt does not match the trusted handoff'
         }
     }
+
+    $timestamp = $Receipt.PSObject.Properties['utcTimestamp']
+    $parsedTimestamp = [DateTime]::MinValue
+    if ($null -eq $timestamp -or
+        $timestamp.Value -isnot [string] -or
+        -not [DateTime]::TryParseExact(
+            [string]$timestamp.Value,
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$parsedTimestamp
+        ) -or
+        $parsedTimestamp.Kind -ne [DateTimeKind]::Utc) {
+        Write-Verbose '[isolated-validation] existing receipt timestamp failed validation'
+        throw 'the existing launch receipt does not match the trusted handoff'
+    }
 }
 
 function Get-IsolatedReceiptDynamicFields {
