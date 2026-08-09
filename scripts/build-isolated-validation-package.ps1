@@ -179,6 +179,26 @@ public static class IsolatedValidationExtractionDirectoryIdentity {
     public static extern bool GetFileInformationByHandle(
         SafeFileHandle file,
         out IsolatedValidationExtractionByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetFileInformationByHandle(
+        SafeFileHandle file,
+        Int32 informationClass,
+        IntPtr information,
+        UInt32 informationLength);
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionRenameInfo {
+    public Byte ReplaceIfExists;
+    public IntPtr RootDirectory;
+    public UInt32 FileNameLength;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionDispositionInfo {
+    public Byte DeleteFile;
 }
 '@ -ErrorAction Stop
     }
@@ -223,6 +243,138 @@ function Test-IsolatedValidationDirectoryIdentity {
 
     return $Expected.volumeSerialNumber -eq $Actual.volumeSerialNumber -and
         $Expected.fileIndex -eq $Actual.fileIndex
+}
+
+function Get-IsolatedValidationDirectoryIdentityFromHandle {
+    param(
+        [Parameter(Mandatory)]$Handle,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $information = New-Object IsolatedValidationExtractionByHandleFileInformation
+    if (-not [IsolatedValidationExtractionDirectoryIdentity]::GetFileInformationByHandle($Handle, [ref]$information)) {
+        throw "could not read MSI administrative extraction directory identity: $Path"
+    }
+    if (($information.FileAttributes -band [uint32]0x00000400) -ne 0) {
+        throw "MSI administrative extraction directory must not be a reparse point: $Path"
+    }
+
+    return [pscustomobject]@{
+        volumeSerialNumber = [uint32]$information.VolumeSerialNumber
+        fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
+    }
+}
+
+function Open-IsolatedValidationExtractionDirectoryLease {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][uint32]$DesiredAccess
+    )
+
+    if ($null -eq ('IsolatedValidationExtractionDirectoryIdentity' -as [type])) {
+        Get-IsolatedValidationDirectoryIdentity -Path $Path | Out-Null
+    }
+
+    $handle = [IsolatedValidationExtractionDirectoryIdentity]::CreateFile(
+        $Path,
+        $DesiredAccess,
+        [uint32]3,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]0x02200000,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        $handle.Dispose()
+        throw "could not retain MSI administrative extraction directory handle: $Path"
+    }
+
+    try {
+        return [pscustomobject]@{
+            handle = $handle
+            identity = Get-IsolatedValidationDirectoryIdentityFromHandle -Handle $handle -Path $Path
+        }
+    }
+    catch {
+        $handle.Dispose()
+        throw
+    }
+}
+
+function Move-IsolatedValidationExtractionToQuarantine {
+    param(
+        [Parameter(Mandatory)]$DirectoryLease,
+        [Parameter(Mandatory)]$ParentDirectoryLease,
+        [Parameter(Mandatory)][string]$QuarantineLeaf
+    )
+
+    $quarantineNameBytes = [Text.Encoding]::Unicode.GetBytes($QuarantineLeaf)
+    $renameInfo = New-Object IsolatedValidationExtractionRenameInfo
+    $renameInfo.ReplaceIfExists = [byte]0
+    $renameInfo.RootDirectory = $ParentDirectoryLease.handle.DangerousGetHandle()
+    $renameInfo.FileNameLength = [uint32]$quarantineNameBytes.Length
+    $renameInfoSize = [Runtime.InteropServices.Marshal]::SizeOf($renameInfo)
+    $renameBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($renameInfoSize + $quarantineNameBytes.Length)
+    try {
+        [Runtime.InteropServices.Marshal]::StructureToPtr($renameInfo, $renameBuffer, $false)
+        [Runtime.InteropServices.Marshal]::Copy(
+            $quarantineNameBytes,
+            0,
+            [IntPtr]::Add($renameBuffer, $renameInfoSize),
+            $quarantineNameBytes.Length
+        )
+        if (-not [IsolatedValidationExtractionDirectoryIdentity]::SetFileInformationByHandle(
+                $DirectoryLease.handle,
+                3,
+                $renameBuffer,
+                [uint32]($renameInfoSize + $quarantineNameBytes.Length)
+            )) {
+            throw 'could not atomically quarantine MSI administrative extraction'
+        }
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($renameBuffer)
+    }
+}
+
+function Clear-IsolatedValidationQuarantinedDirectoryContents {
+    param([Parameter(Mandatory)][string]$Path)
+
+    foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+        if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
+        }
+        elseif ($child.PSIsContainer) {
+            Clear-IsolatedValidationQuarantinedDirectoryContents -Path $child.FullName
+            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
+        }
+        else {
+            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Remove-IsolatedValidationDirectoryByHandle {
+    param([Parameter(Mandatory)]$DirectoryLease)
+
+    $dispositionInfo = New-Object IsolatedValidationExtractionDispositionInfo
+    $dispositionInfo.DeleteFile = [byte]1
+    $dispositionInfoSize = [Runtime.InteropServices.Marshal]::SizeOf($dispositionInfo)
+    $dispositionBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($dispositionInfoSize)
+    try {
+        [Runtime.InteropServices.Marshal]::StructureToPtr($dispositionInfo, $dispositionBuffer, $false)
+        if (-not [IsolatedValidationExtractionDirectoryIdentity]::SetFileInformationByHandle(
+                $DirectoryLease.handle,
+                4,
+                $dispositionBuffer,
+                [uint32]$dispositionInfoSize
+            )) {
+            throw 'could not mark quarantined MSI administrative extraction for handle-bound deletion'
+        }
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($dispositionBuffer)
+    }
 }
 
 $releaseDirectory = Join-Path $RepoRoot 'target/release'
