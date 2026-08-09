@@ -153,6 +153,8 @@ $msiExecutable = Join-Path $env:SystemRoot 'System32/msiexec.exe'
 if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
     throw "missing Windows Installer executable: $msiExecutable"
 }
+$extractionFailure = $null
+try {
 $administrativeInstall = Start-IsolatedValidationNativeProcess `
     -Mode Wait `
     -FilePath $msiExecutable `
@@ -199,6 +201,33 @@ if ($profileHash -cne $materializedProfileHash -or $materializedProfileHash -cne
 if ((Get-Sha256 -LiteralPath $launcherSource) -cne (Get-Sha256 -LiteralPath $launcherDestination) -or
     (Get-Sha256 -LiteralPath $nativeProcessModuleSource) -cne (Get-Sha256 -LiteralPath $nativeProcessModuleDestination)) {
     throw 'the staged launcher and native process module must be byte-identical copies'
+}
+}
+catch {
+    $extractionFailure = $_
+    throw
+}
+finally {
+    if (Test-Path -LiteralPath $installedRoot) {
+        try {
+            if (-not (Test-Path -LiteralPath $installedRoot -PathType Container)) {
+                throw "MSI administrative extraction is not a directory: $installedRoot"
+            }
+            Remove-Item -LiteralPath $installedRoot -Recurse -Force -ErrorAction Stop
+            if (Test-Path -LiteralPath $installedRoot) {
+                throw "MSI administrative extraction remains after cleanup: $installedRoot"
+            }
+        }
+        catch {
+            $cleanupFailure = "could not remove MSI administrative extraction '$installedRoot': $($_.Exception.Message)"
+            if ($null -ne $extractionFailure) {
+                Write-Warning $cleanupFailure
+            }
+            else {
+                throw $cleanupFailure
+            }
+        }
+    }
 }
 
 $manifest = [ordered]@{

@@ -133,7 +133,7 @@ function Get-IsolatedReceiptDynamicFields {
         [Parameter(Mandatory)][string]$RootPath
     )
 
-    $effectiveRoot = (Resolve-Path -LiteralPath $RootPath -ErrorAction Stop).ProviderPath
+    $effectiveRoot = $RootPath
     if ($null -eq ('IsolatedValidationFileIdentity' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -194,7 +194,7 @@ public static class IsolatedValidationFileIdentity {
         [uint32]7,
         [IntPtr]::Zero,
         [uint32]3,
-        [uint32]0x02000000,
+        [uint32]0x02200000,
         [IntPtr]::Zero
     )
     if ($handle.IsInvalid) {
@@ -205,6 +205,9 @@ public static class IsolatedValidationFileIdentity {
         $information = New-Object IsolatedValidationByHandleFileInformation
         if (-not [IsolatedValidationFileIdentity]::GetFileInformationByHandle($handle, [ref]$information)) {
             throw 'could not read the isolated root identity'
+        }
+        if (($information.FileAttributes -band [uint32]0x00000400) -ne 0) {
+            throw 'the isolated root must not be a reparse point'
         }
 
         $pathCapacity = 1024
