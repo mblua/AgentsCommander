@@ -361,6 +361,8 @@ $buildScript = Join-Path $repoRoot 'scripts/build-isolated-validation-package.ps
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('iv-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $frozen1271Commit = 'd68495086e168e5258500832b2ef45b4337ed21a'
 $stage = 'initialization'
+$testRootCleanupRetryLimit = 60
+$primaryFailure = $null
 $savedParentEnvironment = @{}
 foreach ($name in @(
         'AGENTSCOMMANDER_TEST_NATIVE_PARENT',
@@ -884,6 +886,7 @@ try {
     } | ConvertTo-Json -Depth 4
 }
 catch {
+    $primaryFailure = $_
     Write-Error "isolated launcher regression failed during ${stage}: $($_.Exception.Message)"
     throw
 }
@@ -897,16 +900,27 @@ finally {
         }
     }
     if (Test-Path -LiteralPath $testRoot) {
-        for ($attempt = 1; $attempt -le 60; $attempt++) {
+        $cleanupFailure = $null
+        for ($attempt = 1; $attempt -le $testRootCleanupRetryLimit; $attempt++) {
             try {
                 Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
                 break
             }
             catch {
-                if ($attempt -eq 20) {
-                    throw
+                $cleanupFailure = $_
+                if ($attempt -lt $testRootCleanupRetryLimit) {
+                    Start-Sleep -Milliseconds 100
                 }
-                Start-Sleep -Milliseconds 100
+            }
+        }
+        if ($attempt -eq $testRootCleanupRetryLimit -and
+            (Test-Path -LiteralPath $testRoot)) {
+            $cleanupMessage = "failed to remove isolated launcher test root after $testRootCleanupRetryLimit attempts: $($cleanupFailure.Exception.Message)"
+            if ($null -ne $primaryFailure) {
+                Write-Warning "$cleanupMessage; preserving the primary test failure"
+            }
+            else {
+                throw $cleanupMessage
             }
         }
     }
