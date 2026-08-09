@@ -196,6 +196,7 @@ function Stop-AndDisposeIsolatedGuiProcess {
         if (-not $Process.HasExited) {
             throw 'owned GUI child did not exit after termination'
         }
+        Write-Verbose '[isolated-validation] owned GUI cleanup completed'
     }
     catch {
         Write-Verbose "[isolated-validation] owned GUI cleanup failed: $($_.Exception.Message)"

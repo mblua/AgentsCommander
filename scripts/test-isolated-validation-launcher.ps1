@@ -546,6 +546,44 @@ try {
         throw 'could not build the native staged-artifact fixture executable'
     }
 
+    $pipeLeakReadyPath = Join-Path $artifact 'pipe-leak-ready.txt'
+    $pipeLeakExitPath = Join-Path $artifact 'pipe-leak-exit.txt'
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_PIPE_LEAK_READY_PATH', $pipeLeakReadyPath)
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_PIPE_LEAK_EXIT_PATH', $pipeLeakExitPath)
+    try {
+        $pipeLeakStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        Assert-NativeProcessFailure -CaseName 'descendant-held redirected pipe capture' -Action {
+            Start-IsolatedValidationNativeProcess `
+                -Mode CaptureAndWait `
+                -FilePath $executable `
+                -WorkingDirectory $artifact `
+                -Arguments @('--pipe-leak') `
+                -StandardOutputLimitBytes 32KB `
+                -StandardErrorLimitBytes 32KB `
+                -RemoveAgentsCommanderEnvironment
+        }
+        $pipeLeakStopwatch.Stop()
+        if ($pipeLeakStopwatch.ElapsedMilliseconds -gt 5000) {
+            throw 'descendant-held redirected pipe capture cleanup exceeded its bounded deadline'
+        }
+        for ($attempt = 1; $attempt -le 80 -and -not (Test-Path -LiteralPath $pipeLeakReadyPath -PathType Leaf); $attempt++) {
+            Start-Sleep -Milliseconds 25
+        }
+        if (-not (Test-Path -LiteralPath $pipeLeakReadyPath -PathType Leaf)) {
+            throw 'descendant-held redirected pipe fixture did not inherit the redirected handles'
+        }
+        for ($attempt = 1; $attempt -le 240 -and -not (Test-Path -LiteralPath $pipeLeakExitPath -PathType Leaf); $attempt++) {
+            Start-Sleep -Milliseconds 25
+        }
+        if (-not (Test-Path -LiteralPath $pipeLeakExitPath -PathType Leaf)) {
+            throw 'descendant-held redirected pipe fixture did not release its inherited handles'
+        }
+    }
+    finally {
+        Remove-Item Env:ISOLATED_VALIDATION_TEST_PIPE_LEAK_READY_PATH -ErrorAction SilentlyContinue
+        Remove-Item Env:ISOLATED_VALIDATION_TEST_PIPE_LEAK_EXIT_PATH -ErrorAction SilentlyContinue
+    }
+
     $profileHash = Get-Sha256 -LiteralPath $profile
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
     $manifest = [ordered]@{
@@ -660,25 +698,14 @@ try {
     $collisionFixture = Join-Path $testRoot 'receipt-publication-collision'
     $stage = 'receipt-publication collision cleanup'
     New-Item -ItemType Directory -Path $collisionFixture | Out-Null
-    $guiPidPath = Join-Path $artifact 'collision-gui.pid'
     [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION', '1')
-    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_GUI_PID_PATH', $guiPidPath)
     if (Test-Path -LiteralPath $childSentinel) { Remove-Item -LiteralPath $childSentinel -Force }
     $collision = Invoke-Launcher -Launcher $launcher -FixtureRoot $collisionFixture -ExpectedManifestSha256 $expectedManifestHash -IncludeVerboseOutput
     if ($collision.Succeeded) {
         throw 'receipt-publication collision unexpectedly succeeded'
     }
-    for ($attempt = 1; $attempt -le 80 -and -not (Test-Path -LiteralPath $guiPidPath -PathType Leaf); $attempt++) {
-        Start-Sleep -Milliseconds 25
-    }
-    if (-not (Test-Path -LiteralPath $guiPidPath -PathType Leaf)) {
-        throw 'receipt-publication collision GUI did not publish original PID'
-    }
-    try {
-        Wait-ForProcessExit -ProcessId ([int](Get-Content -LiteralPath $guiPidPath -Raw)) -CaseName 'receipt-publication original GUI lease'
-    }
-    catch {
-        throw "$($_.Exception.Message); launcher diagnostics: $($collision.Output)"
+    if ($collision.Output -notmatch 'owned GUI cleanup completed') {
+        throw "receipt-publication collision did not complete cleanup through its original lease: $($collision.Output)"
     }
     $collisionReceipt = Join-Path $collisionFixture 'launch-receipt.json'
     if ((Get-Content -LiteralPath $collisionReceipt -Raw) -cne "concurrent winner`n") {
