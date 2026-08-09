@@ -187,13 +187,17 @@ function Stop-AndDisposeIsolatedGuiProcess {
     }
 
     try {
+        $processId = $Process.Id
+        Write-Verbose "[isolated-validation] stopping owned GUI child PID $processId"
         if (-not $Process.HasExited) {
-            $killTree = $Process.GetType().GetMethod('Kill', [System.Type[]]@([bool]))
-            if ($null -ne $killTree) {
-                [void]$killTree.Invoke($Process, @($true))
+            try {
+                Stop-Process -Id $processId -Force -ErrorAction Stop
             }
-            else {
-                $Process.Kill()
+            catch {
+                $Process.Refresh()
+                if (-not $Process.HasExited) {
+                    throw
+                }
             }
         }
         if (-not $Process.WaitForExit(3000)) {

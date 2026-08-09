@@ -83,22 +83,31 @@ function Invoke-Launcher {
     param(
         [Parameter(Mandatory)][string]$Launcher,
         [Parameter(Mandatory)][string]$FixtureRoot,
-        [Parameter(Mandatory)][string]$ExpectedManifestSha256
+        [Parameter(Mandatory)][string]$ExpectedManifestSha256,
+        [switch]$IncludeVerboseOutput
     )
 
+    $output = @()
     try {
-        $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
-        $exitCodeVariable = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
-        $exitCode = if ($null -eq $exitCodeVariable) { 0 } else { [int]$exitCodeVariable.Value }
+        if ($IncludeVerboseOutput.IsPresent) {
+            & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -Verbose 4>&1 2>&1 |
+                ForEach-Object { $output += $_ }
+        }
+        else {
+            $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
+        }
         return [pscustomobject]@{
-            Succeeded = $exitCode -eq 0
+            Succeeded = $true
             Output = ($output -join [Environment]::NewLine)
         }
     }
     catch {
+        if ($IncludeVerboseOutput.IsPresent) {
+            $output += $_
+        }
         return [pscustomobject]@{
             Succeeded = $false
-            Output = $_.Exception.Message
+            Output = if ($IncludeVerboseOutput.IsPresent) { $output -join [Environment]::NewLine } else { $_.Exception.Message }
         }
     }
 }
@@ -627,7 +636,7 @@ try {
     [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION', '1')
     [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_GUI_PID_PATH', $guiPidPath)
     if (Test-Path -LiteralPath $childSentinel) { Remove-Item -LiteralPath $childSentinel -Force }
-    $collision = Invoke-Launcher -Launcher $launcher -FixtureRoot $collisionFixture -ExpectedManifestSha256 $expectedManifestHash
+    $collision = Invoke-Launcher -Launcher $launcher -FixtureRoot $collisionFixture -ExpectedManifestSha256 $expectedManifestHash -IncludeVerboseOutput
     if ($collision.Succeeded) {
         throw 'receipt-publication collision unexpectedly succeeded'
     }
@@ -637,7 +646,12 @@ try {
     if (-not (Test-Path -LiteralPath $guiPidPath -PathType Leaf)) {
         throw 'receipt-publication collision GUI did not publish original PID'
     }
-    Wait-ForProcessExit -ProcessId ([int](Get-Content -LiteralPath $guiPidPath -Raw)) -CaseName 'receipt-publication original GUI lease'
+    try {
+        Wait-ForProcessExit -ProcessId ([int](Get-Content -LiteralPath $guiPidPath -Raw)) -CaseName 'receipt-publication original GUI lease'
+    }
+    catch {
+        throw "$($_.Exception.Message); launcher diagnostics: $($collision.Output)"
+    }
     $collisionReceipt = Join-Path $collisionFixture 'launch-receipt.json'
     if ((Get-Content -LiteralPath $collisionReceipt -Raw) -cne "concurrent winner$([Environment]::NewLine)") {
         throw 'receipt-publication failure changed a concurrent winner receipt'
