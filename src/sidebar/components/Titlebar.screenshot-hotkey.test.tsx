@@ -26,6 +26,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 vi.mock("../../shared/ipc", () => ({
+  getIsolatedPackageTitlebarIdentity: async () => ({ mode: "normal" as const }),
+  InvalidIsolatedPackageTitlebarIdentityResponseError: class extends Error {},
   ScreenshotAPI: {
     getHotkeyStatus: mocks.getHotkeyStatus,
   },
