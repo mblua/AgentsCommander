@@ -294,6 +294,7 @@ function Open-IsolatedValidationExtractionDirectoryLease {
         return [pscustomobject]@{
             handle = $handle
             identity = Get-IsolatedValidationDirectoryIdentityFromHandle -Handle $handle -Path $Path
+            path = $Path
         }
     }
     catch {
@@ -309,10 +310,11 @@ function Move-IsolatedValidationExtractionToQuarantine {
         [Parameter(Mandatory)][string]$QuarantineLeaf
     )
 
-    $quarantineNameBytes = [Text.Encoding]::Unicode.GetBytes($QuarantineLeaf)
+    $quarantinePath = Join-Path $ParentDirectoryLease.path $QuarantineLeaf
+    $quarantineNameBytes = [Text.Encoding]::Unicode.GetBytes($quarantinePath)
     $renameInfo = New-Object IsolatedValidationExtractionRenameInfo
     $renameInfo.ReplaceIfExists = [byte]0
-    $renameInfo.RootDirectory = $ParentDirectoryLease.handle.DangerousGetHandle()
+    $renameInfo.RootDirectory = [IntPtr]::Zero
     $renameInfo.FileNameLength = [uint32]$quarantineNameBytes.Length
     $renameFileNameOffset = [Runtime.InteropServices.Marshal]::OffsetOf(
         [IsolatedValidationExtractionRenameInfo],
@@ -342,6 +344,8 @@ function Move-IsolatedValidationExtractionToQuarantine {
     finally {
         [Runtime.InteropServices.Marshal]::FreeHGlobal($renameBuffer)
     }
+
+    return $quarantinePath
 }
 
 function Clear-IsolatedValidationQuarantinedDirectoryContents {
@@ -475,11 +479,10 @@ finally {
             }
 
             $quarantineLeaf = '.isolated-validation-cleanup-' + [Guid]::NewGuid().ToString('N')
-            Move-IsolatedValidationExtractionToQuarantine `
+            $quarantinePath = Move-IsolatedValidationExtractionToQuarantine `
                 -DirectoryLease $installedRootLease `
                 -ParentDirectoryLease $releaseDirectoryLease `
                 -QuarantineLeaf $quarantineLeaf
-            $quarantinePath = Join-Path $releaseDirectory $quarantineLeaf
 
             Clear-IsolatedValidationQuarantinedDirectoryContents -Path $quarantinePath
             Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease

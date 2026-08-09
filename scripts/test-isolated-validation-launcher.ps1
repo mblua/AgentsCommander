@@ -436,11 +436,10 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         }
 
         $quarantineLeaf = '.isolated-validation-cleanup-regression-' + [Guid]::NewGuid().ToString('N')
-        Move-IsolatedValidationExtractionToQuarantine `
+        $quarantinePath = Move-IsolatedValidationExtractionToQuarantine `
             -DirectoryLease $installedRootLease `
             -ParentDirectoryLease $releaseDirectoryLease `
             -QuarantineLeaf $quarantineLeaf
-        $quarantinePath = Join-Path $releaseDirectory $quarantineLeaf
 
         New-Item -ItemType Directory -Path $foreignTarget -Force -ErrorAction Stop | Out-Null
         $foreignSentinel = Join-Path $foreignTarget 'must-survive.txt'
