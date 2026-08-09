@@ -1369,6 +1369,10 @@ try {
         throw 'test-local cleanup exhaustion probe root remained after explicit cleanup'
     }
 
+    Invoke-IsolatedValidationExtractionCleanupRegression `
+        -Builder (Join-Path $PSScriptRoot 'build-isolated-validation-package.ps1') `
+        -TestRoot $testRoot
+
     [pscustomobject]@{
         result = 'passed'
         host = "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
@@ -1379,9 +1383,10 @@ try {
             'real Git suffixes and tauri.cmd invocation',
             'detached build revision preflight',
             'staged artifact receipt immutability and payload integrity',
-            'near-valid receipt rejection before GUI launch',
+            'near-valid receipt rejection before child launch',
             'receipt-publication original-handle cleanup',
-            'test-local cleanup exhaustion preserves primary failure'
+            'test-local cleanup exhaustion preserves primary failure',
+            'handle-bound MSI cleanup leaves replacement untouched'
         )
     } | ConvertTo-Json -Depth 4
 }
