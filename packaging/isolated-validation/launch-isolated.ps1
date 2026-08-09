@@ -228,8 +228,8 @@ if (Test-Path -LiteralPath $receiptPath) {
     catch {
         throw 'the existing launch receipt is malformed'
     }
+    $trustedReceiptFields.effectiveRoot = $isolatedStateRoot
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
-    $trustedReceiptFields.effectiveRoot = [string]$existingReceipt.effectiveRoot
     $trustedReceiptFields.mutexHash = [string]$existingReceipt.mutexHash
 }
 
