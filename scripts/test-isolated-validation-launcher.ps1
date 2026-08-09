@@ -741,7 +741,7 @@ function Invoke-DetachedPackageBuildHandoff {
             -StandardOutputLimitBytes 1MB `
             -StandardErrorLimitBytes 1MB `
             -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
-        $fixtureCommitResult = Start-IsolatedValidationNativeProcess `
+        $fixtureCommit = (Start-IsolatedValidationNativeProcess `
             -Mode CaptureAndWait `
             -FilePath $GitExecutable `
             -WorkingDirectory $checkout `
@@ -755,11 +755,9 @@ function Invoke-DetachedPackageBuildHandoff {
             ) `
             -StandardOutputLimitBytes 1MB `
             -StandardErrorLimitBytes 1MB `
-            -RemoveAgentsCommanderEnvironment
-        $fixtureCommit = ([string]$fixtureCommitResult.StandardOutput).Trim()
-        if ($fixtureCommitResult.ExitCode -ne 0 -or $fixtureCommit -notmatch '^[0-9a-f]{40}$') {
-            $fixtureCommitError = ([string]$fixtureCommitResult.StandardError).Trim()
-            throw "could not create detached preflight Git fixture revision (exit code $($fixtureCommitResult.ExitCode); stdout: $fixtureCommit; stderr: $fixtureCommitError)"
+            -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
+        if ($fixtureCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'could not create detached preflight Git fixture revision'
         }
         $reset = Start-IsolatedValidationNativeProcess `
             -Mode Wait `
