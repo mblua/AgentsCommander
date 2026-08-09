@@ -203,7 +203,7 @@ function Assert-PowerShellAstContract {
     }
 }
 
-function Invoke-DetachedRevisionPreflight {
+function Invoke-DetachedPackageBuildHandoff {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$TestRoot,
@@ -224,8 +224,9 @@ function Invoke-DetachedRevisionPreflight {
         throw 'real Git did not return a full detached-checkout revision'
     }
 
-    $checkout = Join-Path $TestRoot 'detached-preflight-checkout'
+    $checkout = Join-Path $TestRoot 'detached-package-build-checkout'
     $created = $false
+    $handoff = $null
     try {
         $add = Start-IsolatedValidationNativeProcess `
             -Mode Wait `
@@ -274,13 +275,51 @@ function Invoke-DetachedRevisionPreflight {
             throw 'could not switch detached preflight checkout to its fixture revision'
         }
 
-        $preflight = Join-Path $checkout 'scripts/build-isolated-validation-package.ps1'
-        & $preflight `
+        $nodeModulesSource = Join-Path $RepositoryRoot 'node_modules'
+        if (-not (Test-Path -LiteralPath $nodeModulesSource -PathType Container)) {
+            throw 'real detached package build requires the repository node_modules directory'
+        }
+        $checkoutNodeModules = Join-Path $checkout 'node_modules'
+        New-Item -ItemType Junction -Path $checkoutNodeModules -Target $nodeModulesSource -ErrorAction Stop | Out-Null
+
+        $build = Join-Path $checkout 'scripts/build-isolated-validation-package.ps1'
+        $preflightOutput = @(& $build `
             -Frozen1271Commit $Frozen1271Commit `
             -IsolatedStateRootCommit $fixtureCommit `
-            -RevisionPreflightOnly
+            -RevisionPreflightOnly 2>&1)
         if (-not $?) {
             throw 'detached build revision preflight failed'
+        }
+
+        $buildOutput = @(& $build `
+            -Frozen1271Commit $Frozen1271Commit `
+            -IsolatedStateRootCommit $fixtureCommit 2>&1)
+        if (-not $?) {
+            throw 'real detached package build failed'
+        }
+        try {
+            $buildHandoff = ($buildOutput -join [Environment]::NewLine) | ConvertFrom-Json
+        }
+        catch {
+            throw 'real detached package build did not return a handoff JSON object'
+        }
+
+        $artifactSource = [System.IO.Path]::GetFullPath([string]$buildHandoff.artifactDirectory)
+        $checkoutPrefix = [System.IO.Path]::GetFullPath($checkout).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $artifactSource.StartsWith($checkoutPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'real detached package build returned an artifact outside its detached checkout'
+        }
+        $handoffDirectory = Join-Path $TestRoot 'actual-detached-package-handoff'
+        if (Test-Path -LiteralPath $handoffDirectory) {
+            throw 'real detached package handoff destination already exists'
+        }
+        [System.IO.Directory]::Move($artifactSource, $handoffDirectory)
+        $handoff = [pscustomobject]@{
+            artifactDirectory = $handoffDirectory
+            executable = Join-Path $handoffDirectory 'Agents Commander Isolated Gates.exe'
+            manifest = Join-Path $handoffDirectory 'isolated-validation-manifest.json'
+            manifestSha256 = [string]$buildHandoff.manifestSha256
+            profile = Join-Path $handoffDirectory 'resources/package-profile.toml'
         }
     }
     finally {
@@ -296,6 +335,8 @@ function Invoke-DetachedRevisionPreflight {
             }
         }
     }
+
+    return $handoff
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -517,12 +558,67 @@ try {
         -StandardOutputLimitBytes 1MB `
         -StandardErrorLimitBytes 1MB `
         -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
-    Invoke-DetachedRevisionPreflight `
+    $stage = 'real detached package build handoff'
+    $actualHandoff = Invoke-DetachedPackageBuildHandoff `
         -RepositoryRoot $repoRoot `
         -TestRoot $testRoot `
         -GitExecutable $git `
         -Frozen1271Commit $frozen1271Commit `
         -IsolatedStateRootCommit $currentCommit
+
+    $actualArtifact = [string]$actualHandoff.artifactDirectory
+    $actualLauncher = Join-Path $actualArtifact 'launch-isolated.ps1'
+    $actualModule = Join-Path $actualArtifact 'native-process.psm1'
+    $actualProfile = Join-Path $actualArtifact 'resources/package-profile.toml'
+    $actualExecutable = Join-Path $actualArtifact 'Agents Commander Isolated Gates.exe'
+    $actualManifest = Join-Path $actualArtifact 'isolated-validation-manifest.json'
+    foreach ($actualPayload in @($actualLauncher, $actualModule, $actualProfile, $actualExecutable, $actualManifest)) {
+        if (-not (Test-Path -LiteralPath $actualPayload -PathType Leaf)) {
+            throw "real detached package handoff is missing $([System.IO.Path]::GetFileName($actualPayload))"
+        }
+    }
+    if ((Get-Sha256 -LiteralPath $actualManifest) -cne $actualHandoff.manifestSha256) {
+        throw 'real detached package handoff manifest hash changed after detached source cleanup'
+    }
+    if (Test-Path -LiteralPath (Join-Path $testRoot 'detached-package-build-checkout')) {
+        throw 'detached source and Cargo-output checkout remained available to the real package handoff test'
+    }
+
+    $actualInvalidReceiptFixture = Join-Path $testRoot 'actual-package-invalid-receipt'
+    New-Item -ItemType Directory -Path $actualInvalidReceiptFixture -Force | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $actualInvalidReceiptFixture 'launch-receipt.json'),
+        "{}$([Environment]::NewLine)",
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $actualInvalidReceipt = Invoke-Launcher `
+        -Launcher $actualLauncher `
+        -FixtureRoot $actualInvalidReceiptFixture `
+        -ExpectedManifestSha256 $actualHandoff.manifestSha256
+    if ($actualInvalidReceipt.Succeeded -or
+        (Test-Path -LiteralPath (Join-Path $actualInvalidReceiptFixture 'app-state'))) {
+        throw 'real detached package handoff accepted an invalid receipt or launched a child'
+    }
+
+    foreach ($actualPayload in @($actualLauncher, $actualModule, $actualProfile, $actualExecutable)) {
+        $stage = "real detached package payload $([System.IO.Path]::GetFileName($actualPayload))"
+        $originalPayloadBytes = [System.IO.File]::ReadAllBytes($actualPayload)
+        $tamperFixture = Join-Path $testRoot ('actual-package-tamper-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tamperFixture | Out-Null
+        try {
+            [System.IO.File]::AppendAllText($actualPayload, 'tampered', [System.Text.UTF8Encoding]::new($false))
+            $tamperResult = Invoke-Launcher `
+                -Launcher $actualLauncher `
+                -FixtureRoot $tamperFixture `
+                -ExpectedManifestSha256 $actualHandoff.manifestSha256
+            if ($tamperResult.Succeeded -or (Test-Path -LiteralPath (Join-Path $tamperFixture 'app-state'))) {
+                throw "real detached package payload tamper was not rejected before child launch: $([System.IO.Path]::GetFileName($actualPayload))"
+            }
+        }
+        finally {
+            [System.IO.File]::WriteAllBytes($actualPayload, $originalPayloadBytes)
+        }
+    }
 
     $artifact = Join-Path $testRoot 'staged-artifact'
     $resources = Join-Path $artifact 'resources'
