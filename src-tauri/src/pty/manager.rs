@@ -14,8 +14,13 @@ use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
-use crate::pty::output::PtyScreenSnapshot;
+use crate::pty::output::{PtyScreenSnapshot, TerminalOutputCoordinator};
 use crate::telegram::manager::OutputSenderMap;
+
+pub(crate) use crate::pty::output::{
+    TerminalOutputActivationResult, TerminalOutputControlState, TerminalRendererMetrics,
+    TerminalRendererMetricsWire,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingSpawn {
@@ -147,6 +152,56 @@ pub struct PtyManager {
     container_backend: Arc<ContainerTransportBackend>,
 }
 
+/// An owned shallow route selected while PtyManager is locked. All forwarding happens after the
+/// caller has dropped that manager lock, so the shared output coordinator never inherits it.
+pub(crate) struct PtyTerminalOutputRoute {
+    session_id: Uuid,
+    backend: Arc<dyn PtyBackend>,
+}
+
+impl PtyTerminalOutputRoute {
+    pub(crate) fn activate_terminal_output(&self) -> TerminalOutputActivationResult {
+        self.backend.activate_terminal_output(self.session_id)
+    }
+
+    pub(crate) fn ready_terminal_output(
+        &self,
+        generation: u64,
+        snapshot_sequence: u64,
+    ) -> TerminalOutputControlState {
+        self.backend
+            .ready_terminal_output(self.session_id, generation, snapshot_sequence)
+    }
+
+    pub(crate) fn deactivate_terminal_output(&self, generation: u64) -> TerminalOutputControlState {
+        self.backend
+            .deactivate_terminal_output(self.session_id, generation)
+    }
+
+    pub(crate) fn ack_terminal_output_delivery(
+        &self,
+        generation: u64,
+        first_sequence: u64,
+        sequence: u64,
+    ) -> TerminalOutputControlState {
+        self.backend.ack_terminal_output_delivery(
+            self.session_id,
+            generation,
+            first_sequence,
+            sequence,
+        )
+    }
+
+    pub(crate) fn report_terminal_renderer_metrics(
+        &self,
+        generation: u64,
+        metrics: TerminalRendererMetrics,
+    ) -> TerminalOutputControlState {
+        self.backend
+            .report_terminal_renderer_metrics(self.session_id, generation, metrics)
+    }
+}
+
 impl PtyManager {
     pub fn new(
         output_senders: OutputSenderMap,
@@ -155,20 +210,25 @@ impl PtyManager {
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
         lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {
-        let local_backend = Arc::new(LocalProcessBackend::new(
+        let coordinator = TerminalOutputCoordinator::new();
+        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::with_coordinator(
             output_senders.clone(),
             idle_detector.clone(),
             git_watcher,
             ws_broadcaster.clone(),
+            Arc::clone(&coordinator),
         ));
-        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime_and_coordinator(
             output_senders,
             idle_detector,
             ws_broadcaster,
             lifecycle_sender,
             Arc::new(DockerRuntime::new()),
             ContainerApiTokenManager::at_config_dir(),
+            coordinator,
         ));
+        debug_assert!(local_backend.as_any().is::<LocalProcessBackend>());
+        debug_assert!(container_backend.as_any().is::<ContainerTransportBackend>());
         Self {
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
@@ -204,7 +264,7 @@ impl PtyManager {
         }
     }
 
-    pub fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
+    pub(crate) fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
         match kind {
             SessionBackendKind::LocalProcess => self.local_backend.clone(),
             SessionBackendKind::ContainerTransport => self.container_backend.clone(),
@@ -213,6 +273,17 @@ impl PtyManager {
 
     pub fn container_backend(&self) -> Arc<ContainerTransportBackend> {
         self.container_backend.clone()
+    }
+
+    pub(crate) fn terminal_output_route(
+        &self,
+        session_id: Uuid,
+    ) -> Result<PtyTerminalOutputRoute, AppError> {
+        let kind = self.kind_for_session(session_id)?;
+        Ok(PtyTerminalOutputRoute {
+            session_id,
+            backend: self.backend_for_kind(kind),
+        })
     }
 
     pub fn start_container_pending_reaper(&self, shutdown: crate::shutdown::ShutdownSignal) {
@@ -462,7 +533,7 @@ impl PtyManager {
         (pending, live)
     }
 
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         manager: &Arc<Mutex<Self>>,
         backend_kind: SessionBackendKind,
         spec: BackendSpawnSpec,
@@ -1085,6 +1156,13 @@ pub(crate) fn lock_route_for_verified_write<'a>(
 
 pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
     lock_route_for_write(permit)?.write(bytes)
+}
+
+impl Drop for PtyManager {
+    fn drop(&mut self) {
+        self.local_backend.shutdown_terminal_output();
+        self.container_backend.shutdown_terminal_output();
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,10 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::pty::manager::PtyManager;
+use crate::pty::manager::{
+    PtyManager, TerminalOutputActivationResult, TerminalOutputControlState,
+    TerminalRendererMetrics, TerminalRendererMetricsWire,
+};
 use crate::voice::tracker::VoiceTrackingState;
 
 #[derive(Clone, serde::Serialize)]
@@ -516,6 +519,116 @@ pub fn get_screen_snapshot(
         cols: Some(snapshot.cols),
         sequence: snapshot.sequence,
     }))
+}
+
+fn parse_terminal_output_counter(value: &str, error: &'static str) -> Result<u64, String> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(error.to_string());
+    }
+    value.parse::<u64>().map_err(|_| error.to_string())
+}
+
+fn selected_terminal_output_route(
+    pty_mgr: &State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: Uuid,
+) -> Result<Option<crate::pty::manager::PtyTerminalOutputRoute>, String> {
+    let manager = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?;
+    Ok(manager.terminal_output_route(session_id).ok())
+}
+
+#[tauri::command]
+pub(crate) fn activate_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+) -> Result<TerminalOutputActivationResult, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let route = {
+        let manager = pty_mgr
+            .lock()
+            .map_err(|_| "PtyManager lock poisoned".to_string())?;
+        manager
+            .terminal_output_route(session_id)
+            .map_err(|error| error.to_string())?
+    };
+    Ok(route.activate_terminal_output())
+}
+
+#[tauri::command]
+pub(crate) fn ready_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    snapshot_sequence: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let snapshot_sequence = parse_terminal_output_counter(
+        &snapshot_sequence,
+        "invalid terminal output snapshot sequence",
+    )?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.ready_terminal_output(generation, snapshot_sequence))
+}
+
+#[tauri::command]
+pub(crate) fn deactivate_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.deactivate_terminal_output(generation))
+}
+
+#[tauri::command]
+pub(crate) fn ack_terminal_output_delivery(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    first_sequence: String,
+    sequence: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let first_sequence =
+        parse_terminal_output_counter(&first_sequence, "invalid terminal output first sequence")?;
+    let sequence = parse_terminal_output_counter(&sequence, "invalid terminal output sequence")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.ack_terminal_output_delivery(generation, first_sequence, sequence))
+}
+
+#[tauri::command]
+pub(crate) fn report_terminal_renderer_metrics(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    metrics: TerminalRendererMetricsWire,
+) -> Result<TerminalOutputControlState, String> {
+    let metrics = TerminalRendererMetrics::try_from(metrics)
+        .map_err(|_| "invalid terminal renderer metrics".to_string())?;
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.report_terminal_renderer_metrics(generation, metrics))
 }
 
 /// #1032 - the last context reading for a session, for a frontend that just mounted and

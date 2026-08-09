@@ -455,7 +455,7 @@ pub(crate) fn frame_from_screen_rows_read(
 pub struct SessionFrameReader(Arc<dyn PtyBackend>);
 
 impl SessionFrameReader {
-    pub fn new(backend: Arc<dyn PtyBackend>) -> Self {
+    pub(crate) fn new(backend: Arc<dyn PtyBackend>) -> Self {
         Self(backend)
     }
 
@@ -2830,7 +2830,7 @@ mod resolution_tests {
 #[cfg(test)]
 mod read_seam_tests {
     use super::*;
-    use crate::pty::output::{PtyOutputTarget, SessionIoFanout};
+    use crate::pty::output::SessionIoFanout;
     use crate::session::profile::IdleTuning;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -2850,12 +2850,10 @@ mod read_seam_tests {
     }
 
     fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
-        fanout.handle_output(
-            &PtyOutputTarget::noop(),
-            id,
-            &id.to_string(),
-            chunk.to_vec(),
-        );
+        let token = fanout
+            .registration_token_for_session(id)
+            .expect("registered watcher fixture");
+        fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
     }
 
     /// #1171, section 7.3 - the three numbers recorded in this module's doc comment.
@@ -2876,7 +2874,9 @@ mod read_seam_tests {
 
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         for row in 0..30u16 {
             feed(
                 &fanout,
@@ -2937,7 +2937,9 @@ mod read_seam_tests {
     fn an_unchanged_frame_returns_unchanged_and_carries_no_rows() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         feed(&fanout, id, b"hello");
 
         let seen = fanout
@@ -2959,7 +2961,9 @@ mod read_seam_tests {
     fn one_output_chunk_makes_the_next_read_a_frame() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         feed(&fanout, id, b"first");
 
         let seen = fanout
@@ -2987,7 +2991,9 @@ mod read_seam_tests {
     fn a_resize_that_does_not_move_the_sequence_still_returns_a_frame() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         feed(&fanout, id, b"content");
 
         let seen = fanout
@@ -3017,7 +3023,9 @@ mod read_seam_tests {
     fn a_poisoned_parser_map_is_missing_and_not_unchanged() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         feed(&fanout, id, b"content");
 
         let seen = fanout
@@ -3040,7 +3048,9 @@ mod read_seam_tests {
     fn a_changed_frame_returns_the_same_rows_as_get_screen_rows() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register timing test session");
         feed(
             &fanout,
             id,
@@ -3063,7 +3073,9 @@ mod read_seam_tests {
     fn wrapped_and_cursor_row_mirror_the_parser() {
         let fanout = fanout();
         let id = timing_session_id();
-        fanout.register_session(id, IdleTuning::DEFAULT, 4, 10);
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 4, 10)
+            .expect("register timing test session");
         // 14 chars into a 10-column grid: row 0 wraps into row 1.
         feed(&fanout, id, b"0123456789abcd");
 
