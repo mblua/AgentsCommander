@@ -53,29 +53,7 @@ function Start-IsolatedChild {
     return $lease.Process
 }
 
-function Test-FullyQualifiedWindowsPath {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if ($Path.IndexOf([char]0) -ge 0) {
-        return $false
-    }
-
-    $isPathFullyQualified = [System.IO.Path].GetMethod(
-        'IsPathFullyQualified',
-        [System.Type[]]@([string])
-    )
-    if ($null -ne $isPathFullyQualified) {
-        return [System.IO.Path]::IsPathFullyQualified($Path)
-    }
-
-    return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\\\\\?\\(?:[A-Za-z]:[\\/]|UNC\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)))'
-}
-
 $fixture = $FixtureRoot
-if (-not (Test-FullyQualifiedWindowsPath -Path $fixture) -or
-    -not [System.IO.Directory]::Exists($fixture)) {
-    throw 'the fixture root must be an existing absolute directory'
-}
 
 $artifactDirectory = $PSScriptRoot
 $manifestPath = Join-Path $artifactDirectory 'isolated-validation-manifest.json'
@@ -122,6 +100,11 @@ if ($manifest.compiledProfileSha256 -cne $manifest.payloads.profile.sha256) {
 }
 
 Import-Module -Name $nativeProcessModulePath -Force -ErrorAction Stop
+
+if (-not (Test-IsolatedValidationFullyQualifiedPath -Path $fixture) -or
+    -not [System.IO.Directory]::Exists($fixture)) {
+    throw 'the fixture root must be an existing absolute directory'
+}
 
 function Assert-ReceiptFields {
     param(

@@ -377,8 +377,35 @@ try {
 
     Import-Module -Name $moduleSource -Force -ErrorAction Stop
     $exported = @(Get-Command -Module native-process | Select-Object -ExpandProperty Name)
-    if ($exported.Count -ne 1 -or $exported[0] -cne 'Start-IsolatedValidationNativeProcess') {
+    $expectedExports = @(
+        'Start-IsolatedValidationNativeProcess',
+        'Test-IsolatedValidationFullyQualifiedPath'
+    )
+    if ((Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exported).Count -ne 0) {
         throw "native process module exported unexpected commands: $($exported -join ', ')"
+    }
+    foreach ($pathVector in @(
+        [pscustomobject]@{ Path = $repoRoot; Expected = $true },
+        [pscustomobject]@{ Path = 'relative-path'; Expected = $false },
+        [pscustomobject]@{ Path = 'C:drive-relative'; Expected = $false },
+        [pscustomobject]@{ Path = '\\root-relative'; Expected = $false }
+    )) {
+        if ((Test-IsolatedValidationFullyQualifiedPath -Path $pathVector.Path) -ne $pathVector.Expected) {
+            throw "shared fully-qualified path policy rejected its conformance vector: $($pathVector.Path)"
+        }
+    }
+    $launcherAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $launcherSource,
+        [ref]$null,
+        [ref]$null
+    )
+    $launcherLocalPathValidator = $launcherAst.FindAll({
+            param($ast)
+            $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $ast.Name -eq 'Test-FullyQualifiedWindowsPath'
+        }, $true)
+    if ($launcherLocalPathValidator.Count -ne 0) {
+        throw 'launcher must use the manifest-verified module path validator'
     }
 
     $node = Get-NativeExecutable -Name 'node.exe'
