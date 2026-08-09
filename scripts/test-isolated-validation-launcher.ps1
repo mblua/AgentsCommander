@@ -382,6 +382,18 @@ try {
         }
     }
 
+    $nulArgument = "before$([char]0)after"
+    Assert-NativeProcessFailure -CaseName 'NUL native argument' -Action {
+        Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $node `
+            -WorkingDirectory $repoRoot `
+            -Arguments @('-e', $nodeArgvScript, $nulArgument) `
+            -StandardOutputLimitBytes 1MB `
+            -StandardErrorLimitBytes 1MB `
+            -RemoveAgentsCommanderEnvironment
+    }
+
     $zeroArgv = Start-IsolatedValidationNativeProcess `
         -Mode CaptureAndWait `
         -FilePath $node `
