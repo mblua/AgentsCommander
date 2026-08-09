@@ -188,9 +188,17 @@ function Stop-AndDisposeIsolatedGuiProcess {
 
     try {
         if (-not $Process.HasExited) {
-            $Process.Kill()
+            $killTree = $Process.GetType().GetMethod('Kill', [System.Type[]]@([bool]))
+            if ($null -ne $killTree) {
+                [void]$killTree.Invoke($Process, @($true))
+            }
+            else {
+                $Process.Kill()
+            }
         }
-        $Process.WaitForExit()
+        if (-not $Process.WaitForExit(3000)) {
+            throw 'owned GUI child did not exit within the cleanup timeout'
+        }
         if (-not $Process.HasExited) {
             throw 'owned GUI child did not exit after termination'
         }
