@@ -98,7 +98,8 @@ function Invoke-Launcher {
         [Parameter(Mandatory)][string]$Launcher,
         [Parameter(Mandatory)][string]$FixtureRoot,
         [Parameter(Mandatory)][string]$ExpectedManifestSha256,
-        [switch]$IncludeVerboseOutput
+        [switch]$IncludeVerboseOutput,
+        [switch]$RetainGuiProcess
     )
 
     $output = @()
@@ -108,13 +109,25 @@ function Invoke-Launcher {
             & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -Verbose 4>&1 2>&1 |
                 ForEach-Object { $output += $_ }
         }
+        elseif ($RetainGuiProcess.IsPresent) {
+            $output = @(& $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -RetainGuiProcess 2>&1)
+        }
         else {
             $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
         }
         $scriptSucceeded = $?
+        $ownedLaunch = @($output | Where-Object {
+                $null -ne $_.PSObject.Properties['guiProcess'] -and
+                $null -ne $_.PSObject.Properties['launch']
+            })
+        if ($RetainGuiProcess.IsPresent -and $ownedLaunch.Count -ne 1) {
+            $scriptSucceeded = $false
+        }
         return [pscustomobject]@{
             Succeeded = $scriptSucceeded
             Output = ($output -join [Environment]::NewLine)
+            Launch = if ($ownedLaunch.Count -eq 1) { $ownedLaunch[0].launch } else { $null }
+            GuiProcess = if ($ownedLaunch.Count -eq 1) { $ownedLaunch[0].guiProcess } else { $null }
         }
     }
     catch {
@@ -670,21 +683,16 @@ try {
     $actualValidResult = Invoke-Launcher `
         -Launcher $actualLauncher `
         -FixtureRoot $actualValidFixture `
-        -ExpectedManifestSha256 $actualHandoff.manifestSha256
+        -ExpectedManifestSha256 $actualHandoff.manifestSha256 `
+        -RetainGuiProcess
     if (-not $actualValidResult.Succeeded) {
         throw "real copied handoff launcher/status flow failed: $($actualValidResult.Output)"
     }
 
-    $actualValidProcessId = 0
+    $actualValidGuiProcess = $actualValidResult.GuiProcess
     try {
-        try {
-            $actualValidLaunch = $actualValidResult.Output | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            throw 'real copied handoff launcher did not return a launch result'
-        }
-        $actualValidProcessId = [int]$actualValidLaunch.processId
-        if ($actualValidProcessId -le 0) {
+        $actualValidLaunch = $actualValidResult.Launch
+        if ($null -eq $actualValidLaunch -or $null -eq $actualValidGuiProcess) {
             throw 'real copied handoff launcher did not start its GUI child'
         }
 
@@ -700,9 +708,18 @@ try {
         }
     }
     finally {
-        if ($actualValidProcessId -gt 0 -and $null -ne (Get-Process -Id $actualValidProcessId -ErrorAction SilentlyContinue)) {
-            Stop-Process -Id $actualValidProcessId -ErrorAction SilentlyContinue
-            Wait-ForProcessExit -ProcessId $actualValidProcessId -CaseName 'real copied handoff GUI child cleanup'
+        if ($null -ne $actualValidGuiProcess) {
+            try {
+                if (-not $actualValidGuiProcess.HasExited) {
+                    $actualValidGuiProcess.Kill()
+                }
+                if (-not $actualValidGuiProcess.WaitForExit(3000) -or -not $actualValidGuiProcess.HasExited) {
+                    throw 'real copied handoff owned GUI child did not exit during cleanup'
+                }
+            }
+            finally {
+                $actualValidGuiProcess.Dispose()
+            }
         }
     }
 

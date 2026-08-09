@@ -5,7 +5,9 @@ param(
 
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
-    [string]$ExpectedManifestSha256
+    [string]$ExpectedManifestSha256,
+
+    [switch]$RetainGuiProcess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -408,11 +410,22 @@ try {
         $receiptTemporaryPath = $null
     }
 
-    [pscustomobject]@{
+    $launchResult = [pscustomobject]@{
         processId = $guiProcess.Id
         receipt = $receiptPath
         stateRoot = $statusJson.effectiveRoot
-    } | ConvertTo-Json -Depth 4
+    }
+    if ($RetainGuiProcess.IsPresent) {
+        $ownedGuiProcess = $guiProcess
+        $guiProcess = $null
+        [pscustomobject]@{
+            launch = $launchResult
+            guiProcess = $ownedGuiProcess
+        }
+    }
+    else {
+        $launchResult | ConvertTo-Json -Depth 4
+    }
 }
 catch {
     if ($null -ne $guiProcess) {
