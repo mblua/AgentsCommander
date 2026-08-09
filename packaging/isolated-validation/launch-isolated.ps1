@@ -99,9 +99,13 @@ if ($manifest.compiledProfileSha256 -cne $manifest.payloads.profile.sha256) {
     throw 'handoff manifest reports mismatched compiled and installed profile hashes'
 }
 
-Import-Module -Name $nativeProcessModulePath -Force -ErrorAction Stop
+$nativeProcessModule = Import-Module -Name $nativeProcessModulePath -Force -PassThru -ErrorAction Stop
 
-if (-not (Test-IsolatedValidationFullyQualifiedPath -Path $fixture) -or
+$fixtureIsFullyQualified = & $nativeProcessModule {
+    param($Path)
+    Test-IsolatedValidationFullyQualifiedPath -Path $Path
+} $fixture
+if (-not $fixtureIsFullyQualified -or
     -not [System.IO.Directory]::Exists($fixture)) {
     throw 'the fixture root must be an existing absolute directory'
 }
@@ -123,42 +127,102 @@ function Assert-ReceiptFields {
     }
 }
 
-function Assert-ReceiptDynamicFields {
-    param([Parameter(Mandatory)]$Receipt)
+function Get-IsolatedReceiptDynamicFields {
+    param(
+        [Parameter(Mandatory)][string]$PackageId,
+        [Parameter(Mandatory)][string]$RootPath
+    )
 
-    foreach ($name in @('effectiveRoot', 'mutexHash')) {
-        $property = $Receipt.PSObject.Properties[$name]
-        if ($null -eq $property -or
-            $property.Value -isnot [string] -or
-            [string]::IsNullOrWhiteSpace($property.Value)) {
-            Write-Verbose "[isolated-validation] existing receipt dynamic field failed: $name"
-            throw 'the existing launch receipt has an invalid dynamic field'
+    $effectiveRoot = (Resolve-Path -LiteralPath $RootPath -ErrorAction Stop).ProviderPath
+    if ($null -eq ('IsolatedValidationFileIdentity' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationFileTime {
+    public UInt32 Low;
+    public UInt32 High;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationByHandleFileInformation {
+    public UInt32 FileAttributes;
+    public IsolatedValidationFileTime CreationTime;
+    public IsolatedValidationFileTime LastAccessTime;
+    public IsolatedValidationFileTime LastWriteTime;
+    public UInt32 VolumeSerialNumber;
+    public UInt32 FileSizeHigh;
+    public UInt32 FileSizeLow;
+    public UInt32 NumberOfLinks;
+    public UInt32 FileIndexHigh;
+    public UInt32 FileIndexLow;
+}
+
+public static class IsolatedValidationFileIdentity {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFile(
+        string fileName,
+        UInt32 desiredAccess,
+        UInt32 shareMode,
+        IntPtr securityAttributes,
+        UInt32 creationDisposition,
+        UInt32 flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out IsolatedValidationByHandleFileInformation information);
+}
+'@ -ErrorAction Stop
+    }
+
+    $handle = [IsolatedValidationFileIdentity]::CreateFile(
+        $effectiveRoot,
+        [uint32]0,
+        [uint32]7,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]0x02000000,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        throw 'could not read the isolated root identity'
+    }
+
+    try {
+        $information = New-Object IsolatedValidationByHandleFileInformation
+        if (-not [IsolatedValidationFileIdentity]::GetFileInformationByHandle($handle, [ref]$information)) {
+            throw 'could not read the isolated root identity'
         }
     }
-
-    $timestampProperty = $Receipt.PSObject.Properties['utcTimestamp']
-    if ($null -eq $timestampProperty -or $null -eq $timestampProperty.Value) {
-        Write-Verbose '[isolated-validation] existing receipt timestamp is missing'
-        throw 'the existing launch receipt has an invalid timestamp'
-    }
-    if ($timestampProperty.Value -is [DateTime]) {
-        return
-    }
-    if ($timestampProperty.Value -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($timestampProperty.Value)) {
-        Write-Verbose '[isolated-validation] existing receipt timestamp has an invalid shape'
-        throw 'the existing launch receipt has an invalid timestamp'
+    finally {
+        $handle.Dispose()
     }
 
-    $timestamp = [DateTime]::MinValue
-    if (-not [DateTime]::TryParse(
-        [string]$timestampProperty.Value,
-        [System.Globalization.CultureInfo]::InvariantCulture,
-        [System.Globalization.DateTimeStyles]::RoundtripKind,
-        [ref]$timestamp
-    )) {
-        Write-Verbose '[isolated-validation] existing receipt timestamp failed validation'
-        throw 'the existing launch receipt has an invalid timestamp'
+    $packageBytes = [System.Text.Encoding]::UTF8.GetBytes($PackageId)
+    $payload = New-Object byte[] ($packageBytes.Length + 16)
+    $volume = [BitConverter]::GetBytes([uint64]$information.VolumeSerialNumber)
+    $file = [BitConverter]::GetBytes(
+        ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
+    )
+    [Buffer]::BlockCopy($packageBytes, 0, $payload, 0, $packageBytes.Length)
+    [Buffer]::BlockCopy($volume, 0, $payload, $packageBytes.Length, $volume.Length)
+    [Buffer]::BlockCopy($file, 0, $payload, $packageBytes.Length + $volume.Length, $file.Length)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $mutexHash = ([BitConverter]::ToString($hasher.ComputeHash($payload))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+    }
+
+    return [ordered]@{
+        effectiveRoot = $effectiveRoot
+        mutexHash = $mutexHash
     }
 }
 
@@ -222,8 +286,12 @@ if (Test-Path -LiteralPath $receiptPath) {
     catch {
         throw 'the existing launch receipt is malformed'
     }
+    $expectedDynamicFields = Get-IsolatedReceiptDynamicFields `
+        -PackageId $trustedReceiptFields.packageId `
+        -RootPath $isolatedStateRoot
+    $trustedReceiptFields.effectiveRoot = $expectedDynamicFields.effectiveRoot
+    $trustedReceiptFields.mutexHash = $expectedDynamicFields.mutexHash
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
-    Assert-ReceiptDynamicFields -Receipt $existingReceipt
 }
 
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
@@ -253,10 +321,12 @@ if ([string]::IsNullOrWhiteSpace([string]$statusJson.effectiveRoot) -or
     throw 'E_ISOLATION_STATUS'
 }
 
-$trustedReceiptFields.effectiveRoot = $statusJson.effectiveRoot
-$trustedReceiptFields.mutexHash = $statusJson.mutexHash
-if ($null -ne $existingReceipt) {
-    Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+if ($null -eq $existingReceipt) {
+    $trustedReceiptFields.effectiveRoot = $statusJson.effectiveRoot
+    $trustedReceiptFields.mutexHash = $statusJson.mutexHash
+} elseif ($statusJson.effectiveRoot -cne $trustedReceiptFields.effectiveRoot -or
+    $statusJson.mutexHash -cne $trustedReceiptFields.mutexHash) {
+    throw 'E_ISOLATION_STATUS'
 }
 
 $receiptTemporaryPath = $null

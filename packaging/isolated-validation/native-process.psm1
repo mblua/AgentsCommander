@@ -374,4 +374,4 @@ function Start-IsolatedValidationNativeProcess {
     }
 }
 
-Export-ModuleMember -Function Start-IsolatedValidationNativeProcess, Test-IsolatedValidationFullyQualifiedPath
+Export-ModuleMember -Function Start-IsolatedValidationNativeProcess
