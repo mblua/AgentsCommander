@@ -413,15 +413,14 @@ if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
     throw "missing Windows Installer executable: $msiExecutable"
 }
 $extractionFailure = $null
+$releaseDirectoryIdentity = Get-IsolatedValidationDirectoryIdentity -Path $releaseDirectory
 $installedRootIdentity = $null
 $installedRootLease = $null
 $releaseDirectoryLease = $null
 $quarantinePath = $null
 try {
 New-Item -ItemType Directory -Path $installedRoot -ErrorAction Stop | Out-Null
-$releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease -Path $releaseDirectory -DesiredAccess ([uint32]0x000000A0)
-$installedRootLease = Open-IsolatedValidationExtractionDirectoryLease -Path $installedRoot -DesiredAccess ([uint32]0x00010080)
-$installedRootIdentity = $installedRootLease.identity
+$installedRootIdentity = Get-IsolatedValidationDirectoryIdentity -Path $installedRoot
 $administrativeInstall = Start-IsolatedValidationNativeProcess `
     -Mode Wait `
     -FilePath $msiExecutable `
@@ -477,8 +476,20 @@ catch {
 finally {
     $cleanupFailure = $null
     try {
-        if ($null -ne $installedRootLease -and $null -ne $installedRootIdentity -and $null -ne $releaseDirectoryLease) {
-            $currentIdentity = Get-IsolatedValidationDirectoryIdentityFromHandle -Handle $installedRootLease.handle -Path $installedRoot
+        if ($null -ne $installedRootIdentity -and (Test-Path -LiteralPath $installedRoot)) {
+            $releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease `
+                -Path $releaseDirectory `
+                -DesiredAccess ([uint32]0x000000A0)
+            if (-not (Test-IsolatedValidationDirectoryIdentity `
+                    -Expected $releaseDirectoryIdentity `
+                    -Actual $releaseDirectoryLease.identity)) {
+                throw "MSI administrative extraction parent identity changed before cleanup: $releaseDirectory"
+            }
+
+            $installedRootLease = Open-IsolatedValidationExtractionDirectoryLease `
+                -Path $installedRoot `
+                -DesiredAccess ([uint32]0x00010080)
+            $currentIdentity = $installedRootLease.identity
             if (-not (Test-IsolatedValidationDirectoryIdentity -Expected $installedRootIdentity -Actual $currentIdentity)) {
                 throw "MSI administrative extraction identity changed before cleanup: $installedRoot"
             }
