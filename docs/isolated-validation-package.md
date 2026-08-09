@@ -181,7 +181,7 @@ The build handoff manifest records provenance plus a hash for exactly four stage
 - Base SHA, frozen #1271 SHA, isolated-state-root SHA, combined source SHA, and combined tree SHA.
 - Clean-worktree result, executable SHA-256, compiled-profile SHA-256, and installed-profile SHA-256.
 - UTC timestamp, mode, target, product label, bundle identifier, fixed header identity, and exact launcher command.
-- <code>Agents Commander Isolated Gates.exe</code>, <code>launch-isolated.ps1</code>, <code>native-process.psm1</code>, and <code>isolated-validation-profile.json</code>.
+- <code>Agents Commander Isolated Gates.exe</code>, <code>launch-isolated.ps1</code>, <code>native-process.psm1</code>, and <code>resources/package-profile.toml</code>.
 
 The manifest does not hash itself. The tech lead supplies the final manifest SHA-256 out of band with the artifact. Before parsing or trusting it, the launcher verifies that final hash, then verifies all four payload hashes, including <code>native-process.psm1</code> before importing the module. This detects manifest-only and individual staged-payload substitution.
 
