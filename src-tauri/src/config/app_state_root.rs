@@ -48,6 +48,24 @@ pub struct ResolvedAppStateRoot {
     mutex_hash: Option<String>,
     retained_root: Option<RetainedDirectory>,
     retained_webview_data: Option<RetainedDirectory>,
+    retained_instances: Option<RetainedDirectory>,
+    retained_agent_templates: Option<RetainedDirectory>,
+    retained_context_cache: Option<RetainedDirectory>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IsolatedStateDirectory {
+    Instances,
+    AgentTemplates,
+    ContextCache,
+}
+
+#[derive(Clone)]
+struct RetainedIsolatedStateDirectories {
+    instances: RetainedDirectory,
+    agent_templates: RetainedDirectory,
+    context_cache: RetainedDirectory,
+    webview_data: RetainedDirectory,
 }
 
 impl std::fmt::Debug for ResolvedAppStateRoot {
@@ -130,6 +148,32 @@ impl ResolvedAppStateRoot {
             return Err(IsolationError::UnsafePath);
         }
         Ok(webview_data.identity().canonical_path.clone())
+    }
+
+    fn verified_state_directory(
+        &self,
+        directory: IsolatedStateDirectory,
+    ) -> Result<PathBuf, IsolationError> {
+        let root = self.retained_root.as_ref().ok_or_else(|| {
+            log::error!("[isolated-state] retained isolated root is unavailable for state access");
+            IsolationError::UnsafePath
+        })?;
+        let child = match directory {
+            IsolatedStateDirectory::Instances => self.retained_instances.as_ref(),
+            IsolatedStateDirectory::AgentTemplates => self.retained_agent_templates.as_ref(),
+            IsolatedStateDirectory::ContextCache => self.retained_context_cache.as_ref(),
+        }
+        .ok_or_else(|| {
+            log::error!("[isolated-state] retained state directory is unavailable: {directory:?}");
+            IsolationError::UnsafePath
+        })?;
+
+        if root.verify_current().is_err() || child.verify_current().is_err() {
+            log::error!("[isolated-state] retained state directory verification failed: {directory:?}");
+            return Err(IsolationError::UnsafePath);
+        }
+
+        Ok(child.identity().canonical_path.clone())
     }
 }
 
@@ -256,6 +300,9 @@ where
             mutex_hash: None,
             retained_root: None,
             retained_webview_data: None,
+            retained_instances: None,
+            retained_agent_templates: None,
+            retained_context_cache: None,
         });
     };
 
@@ -307,7 +354,7 @@ fn resolve_isolated_startup_state(
         root_file: root.identity().object_id.file,
     };
     verify_or_write_marker(&root, &marker)?;
-    let webview_data = bootstrap_isolated_root(&root, &profile)?;
+    let retained_directories = bootstrap_isolated_root(&root, &profile)?;
     root.verify_current()
         .map_err(|_| IsolationError::UnsafePath)?;
 
@@ -318,7 +365,10 @@ fn resolve_isolated_startup_state(
         root_identity: Some(root.identity().clone()),
         mutex_hash: Some(mutex_hash),
         retained_root: Some(root),
-        retained_webview_data: Some(webview_data),
+        retained_webview_data: Some(retained_directories.webview_data),
+        retained_instances: Some(retained_directories.instances),
+        retained_agent_templates: Some(retained_directories.agent_templates),
+        retained_context_cache: Some(retained_directories.context_cache),
     })
 }
 
@@ -355,6 +405,20 @@ pub fn isolated_webview_data_directory() -> Result<Option<PathBuf>, IsolationErr
     }
 
     state.verified_webview_data_directory().map(Some)
+}
+
+pub fn isolated_state_directory(
+    directory: IsolatedStateDirectory,
+) -> Result<Option<PathBuf>, IsolationError> {
+    let Some(state) = active_state_root() else {
+        return Ok(None);
+    };
+
+    if matches!(state.mode(), StartupMode::Normal) {
+        return Ok(None);
+    }
+
+    state.verified_state_directory(directory).map(Some)
 }
 
 pub fn isolated_servers_disabled() -> bool {
@@ -567,10 +631,10 @@ fn verify_or_write_marker(
 /// Bootstrap the ordinary project and replica contracts underneath an already
 /// marked root. Nothing here consults normal settings, session context, or a
 /// WG-12 project tree.
-pub fn bootstrap_isolated_root(
+fn bootstrap_isolated_root(
     root: &RetainedDirectory,
     profile: &CompiledPackageProfile,
-) -> Result<RetainedDirectory, IsolationError> {
+) -> Result<RetainedIsolatedStateDirectories, IsolationError> {
     let profile_container = retain_or_create_verified_state_child(root, PROFILE_PROJECT_CONTAINER)?;
     let project = retain_or_create_verified_state_child(&profile_container, &profile.workspace)?;
     let workspace = retain_or_create_verified_state_child(&project, ".ac")?;
@@ -583,9 +647,9 @@ pub fn bootstrap_isolated_root(
         &workgroup,
         &format!("__agent_{}", profile.replica_agent),
     )?;
-    let _instances = retain_or_create_verified_state_child(root, "instances")?;
-    let _templates = retain_or_create_verified_state_child(root, "agent-templates")?;
-    let _context_cache = retain_or_create_verified_state_child(root, "context-cache")?;
+    let instances = retain_or_create_verified_state_child(root, "instances")?;
+    let agent_templates = retain_or_create_verified_state_child(root, "agent-templates")?;
+    let context_cache = retain_or_create_verified_state_child(root, "context-cache")?;
     let webview_data = retain_or_create_verified_state_child(root, "webview-data")?;
 
     let expected_identity = format!("../../_agent_{}", profile.replica_agent);
@@ -625,7 +689,12 @@ pub fn bootstrap_isolated_root(
     webview_data
         .verify_current()
         .map_err(|_| IsolationError::UnsafePath)?;
-    Ok(webview_data)
+    Ok(RetainedIsolatedStateDirectories {
+        instances,
+        agent_templates,
+        context_cache,
+        webview_data,
+    })
 }
 
 fn retain_or_create_verified_state_child(
