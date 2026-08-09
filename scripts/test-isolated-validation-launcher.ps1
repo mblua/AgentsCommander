@@ -1250,6 +1250,11 @@ try {
     if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
         throw 'valid staged artifact did not publish an initial receipt'
     }
+    $persistedReceipt = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+    if ($persistedReceipt.effectiveRoot -cne $firstResult.stateRoot -or
+        [string]$persistedReceipt.mutexHash -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'initial status receipt did not persist final-root identity fields for relaunch'
+    }
     $firstReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
     $stage = 'immutable staged-artifact relaunch'
     $second = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
@@ -1257,7 +1262,11 @@ try {
         $diagnostic = & $launcher -Verbose -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash 2>&1
         throw "valid staged artifact relaunch failed: $($second.Output); diagnostic=$($diagnostic -join [Environment]::NewLine); receipt=$(Get-Content -LiteralPath $receipt -Raw)"
     }
-    Wait-ForProcessExit -ProcessId (($second.Output | ConvertFrom-Json).processId) -CaseName 'immutable receipt relaunch GUI'
+    $secondResult = $second.Output | ConvertFrom-Json
+    if ($secondResult.stateRoot -cne $persistedReceipt.effectiveRoot) {
+        throw 'valid relaunch did not retain the status-written final root identity'
+    }
+    Wait-ForProcessExit -ProcessId $secondResult.processId -CaseName 'immutable receipt relaunch GUI'
     $secondReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
     if ([System.BitConverter]::ToString($firstReceiptBytes) -cne [System.BitConverter]::ToString($secondReceiptBytes)) {
         throw 'valid re-launch changed immutable receipt bytes'
