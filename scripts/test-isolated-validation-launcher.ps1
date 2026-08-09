@@ -47,7 +47,7 @@ function Write-JsonFile {
 function Get-NativeExecutable {
     param([Parameter(Mandatory)][string]$Name)
 
-    $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop
+    $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $path = [string]$command.Path
     if ([string]::IsNullOrWhiteSpace($path)) {
         $path = [string]$command.Definition
