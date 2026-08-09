@@ -8,7 +8,7 @@ src-tauri/gen/schemas/
 .husky/_
 .visual-specs/
 .vscode/
-plans/
+/plans/
 _logbooks/
 
 # AgentsCommander delete sentinels/orphans.
