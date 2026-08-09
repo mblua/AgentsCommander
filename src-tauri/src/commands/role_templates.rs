@@ -87,7 +87,13 @@ pub(crate) struct AgencyTemplate {
 }
 
 pub fn agency_templates_dir(config_dir: &Path) -> PathBuf {
-    config_dir.join(AGENCY_TEMPLATES_DIR)
+    match crate::config::app_state_root::isolated_state_directory(
+        crate::config::app_state_root::IsolatedStateDirectory::AgentTemplates,
+    ) {
+        Ok(Some(directory)) => directory,
+        Ok(None) => config_dir.join(AGENCY_TEMPLATES_DIR),
+        Err(error) => panic!("Cannot verify isolated agent-templates directory: {error}"),
+    }
 }
 
 pub fn agency_manifest_path(config_dir: &Path) -> PathBuf {
