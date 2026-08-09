@@ -100,9 +100,7 @@ fn ensure_session_context_with_config(
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
-    let config_dir =
-        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = context_cache_directory()?;
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -1401,9 +1399,7 @@ fn write_combined_context_file(
         }
     }
 
-    let config_dir =
-        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = context_cache_directory()?;
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -2381,9 +2377,12 @@ const CONTEXT_CACHE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// removed workgroups (their cache ages out) AND the cap for the unbounded-growth
 /// secondary finding.
 pub fn sweep_context_cache_at_startup() {
-    let Some(context_dir) = super::config_dir().map(|d| d.join("context-cache")) else {
-        log::warn!("[context-cache] no config dir; skipping startup sweep");
-        return;
+    let context_dir = match context_cache_directory() {
+        Ok(context_dir) => context_dir,
+        Err(error) => {
+            log::warn!("[context-cache] {error}; skipping startup sweep");
+            return;
+        }
     };
     let removed = sweep_context_cache_dir(&context_dir, SystemTime::now(), CONTEXT_CACHE_RETENTION);
     if removed > 0 {
@@ -2392,6 +2391,20 @@ pub fn sweep_context_cache_at_startup() {
             removed
         );
     }
+}
+
+fn context_cache_directory() -> Result<std::path::PathBuf, String> {
+    if let Some(directory) = crate::config::app_state_root::isolated_state_directory(
+        crate::config::app_state_root::IsolatedStateDirectory::ContextCache,
+    )
+    .map_err(|error| format!("Failed to verify isolated context-cache directory: {error}"))?
+    {
+        return Ok(directory);
+    }
+
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    Ok(config_dir.join("context-cache"))
 }
 
 /// (#621) Testable core: unlink every generated context file in `context_dir`

@@ -169,7 +169,9 @@ impl ResolvedAppStateRoot {
         })?;
 
         if root.verify_current().is_err() || child.verify_current().is_err() {
-            log::error!("[isolated-state] retained state directory verification failed: {directory:?}");
+            log::error!(
+                "[isolated-state] retained state directory verification failed: {directory:?}"
+            );
             return Err(IsolationError::UnsafePath);
         }
 
