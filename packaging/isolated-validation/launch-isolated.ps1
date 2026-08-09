@@ -196,6 +196,105 @@ function Stop-AndDisposeIsolatedGuiProcess {
     }
 }
 
+function Get-IsolatedReceiptExpectedMutexHash {
+    param(
+        [Parameter(Mandatory)][string]$PackageId,
+        [Parameter(Mandatory)][string]$ParentPath,
+        [Parameter(Mandatory)][string]$LeafName
+    )
+
+    if ($null -eq ('IsolatedValidationReceiptNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class IsolatedValidationReceiptNative
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out ByHandleFileInformation information
+    );
+}
+'@
+    }
+
+    # The app-state argument remains raw. This reads only its known FixtureRoot parent,
+    # matching the bootstrap-mutex input without resolving or normalizing the child path.
+    $directoryHandle = [IsolatedValidationReceiptNative]::CreateFile(
+        $ParentPath,
+        [uint32]0x00000080,
+        [uint32]0x00000007,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]0x02200000,
+        [IntPtr]::Zero
+    )
+    if ($directoryHandle.IsInvalid) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $directoryHandle.Dispose()
+        throw "could not inspect the fixture-root directory identity: $errorCode"
+    }
+
+    try {
+        $information = New-Object IsolatedValidationReceiptNative+ByHandleFileInformation
+        if (-not [IsolatedValidationReceiptNative]::GetFileInformationByHandle($directoryHandle, [ref]$information)) {
+            $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "could not read the fixture-root directory identity: $errorCode"
+        }
+        if (([uint32]$information.FileAttributes -band [uint32]0x00000400) -ne 0) {
+            throw 'the fixture-root directory identity is a reparse point'
+        }
+
+        $hashInput = New-Object 'System.Collections.Generic.List[byte]'
+        $hashInput.AddRange([Text.Encoding]::UTF8.GetBytes($PackageId))
+        $hashInput.AddRange([BitConverter]::GetBytes([uint32]$information.VolumeSerialNumber))
+        $fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
+        $hashInput.AddRange([BitConverter]::GetBytes($fileIndex))
+        $hashInput.AddRange([Text.Encoding]::UTF8.GetBytes($LeafName.ToUpperInvariant()))
+
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha256.ComputeHash($hashInput.ToArray())) -replace '-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $directoryHandle.Dispose()
+    }
+}
+
 $isolatedStateRoot = Join-Path $fixture 'app-state'
 $receiptPath = Join-Path $fixture 'launch-receipt.json'
 $trustedReceiptFields = [ordered]@{
@@ -216,6 +315,8 @@ $trustedReceiptFields = [ordered]@{
     launcherSha256 = $manifest.payloads.launcher.sha256
     nativeProcessModuleSha256 = $manifest.payloads.nativeProcessModule.sha256
 }
+$trustedReceiptFields.effectiveRoot = $isolatedStateRoot
+$trustedReceiptFields.mutexHash = Get-IsolatedReceiptExpectedMutexHash -PackageId $trustedReceiptFields.packageId -ParentPath $fixture -LeafName 'app-state'
 
 $existingReceipt = $null
 if (Test-Path -LiteralPath $receiptPath) {
@@ -228,9 +329,7 @@ if (Test-Path -LiteralPath $receiptPath) {
     catch {
         throw 'the existing launch receipt is malformed'
     }
-    $trustedReceiptFields.effectiveRoot = $isolatedStateRoot
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
-    $trustedReceiptFields.mutexHash = [string]$existingReceipt.mutexHash
 }
 
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
