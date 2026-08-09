@@ -53,6 +53,30 @@ fn main() {
         return;
     }
 
+    if arguments.as_slice() == ["--hold-inherited-pipes"] {
+        if let Ok(ready_path) = env::var("ISOLATED_VALIDATION_TEST_PIPE_LEAK_READY_PATH") {
+            fs::write(ready_path, "ready\n").expect("write pipe-leak ready marker");
+        }
+        thread::sleep(Duration::from_secs(5));
+        if let Ok(exit_path) = env::var("ISOLATED_VALIDATION_TEST_PIPE_LEAK_EXIT_PATH") {
+            fs::write(exit_path, "exited\n").expect("write pipe-leak exit marker");
+        }
+        return;
+    }
+
+    if arguments.as_slice() == ["--pipe-leak"] {
+        std::process::Command::new(env::current_exe().expect("current executable"))
+            .arg("--hold-inherited-pipes")
+            .spawn()
+            .expect("spawn pipe-leak descendant");
+        print!("{}", "o".repeat(131_072));
+        let _ = io::stdout().flush();
+        eprint!("{}", "e".repeat(131_072));
+        let _ = io::stderr().flush();
+        thread::sleep(Duration::from_secs(10));
+        return;
+    }
+
     if arguments.iter().any(|argument| argument == "--isolation-status") {
         let root = value_after(&arguments, "--isolated-state-root").expect("isolated root");
         fs::create_dir_all(root).expect("create isolated root");
@@ -91,9 +115,10 @@ fn main() {
             if let Ok(pid_path) = env::var("ISOLATED_VALIDATION_TEST_GUI_PID_PATH") {
                 fs::write(pid_path, &process_id).expect("write GUI pid");
             }
-            loop {
-                thread::sleep(Duration::from_secs(1));
+            for _ in 0..50 {
+                thread::sleep(Duration::from_millis(100));
             }
+            return;
         }
         thread::sleep(Duration::from_millis(75));
     }
