@@ -445,7 +445,7 @@ $extractionFailure = $null
 $extractionParentDirectoryIdentity = Get-IsolatedValidationDirectoryIdentity -Path $extractionParentDirectory
 $installedRootIdentity = $null
 $installedRootLease = $null
-$releaseDirectoryLease = $null
+$extractionParentDirectoryLease = $null
 $quarantinePath = $null
 try {
 New-Item -ItemType Directory -Path $installedRoot -ErrorAction Stop | Out-Null
@@ -506,12 +506,12 @@ finally {
     $cleanupFailure = $null
     try {
         if ($null -ne $installedRootIdentity -and (Test-Path -LiteralPath $installedRoot)) {
-            $releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease `
+            $extractionParentDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease `
                 -Path $extractionParentDirectory `
                 -DesiredAccess ([uint32]0x000000A0)
             if (-not (Test-IsolatedValidationDirectoryIdentity `
                     -Expected $extractionParentDirectoryIdentity `
-                    -Actual $releaseDirectoryLease.identity)) {
+                    -Actual $extractionParentDirectoryLease.identity)) {
                 throw "MSI administrative extraction parent identity changed before cleanup: $extractionParentDirectory"
             }
 
@@ -526,7 +526,7 @@ finally {
             $quarantineLeaf = '.isolated-validation-cleanup-' + [Guid]::NewGuid().ToString('N')
             $quarantinePath = Move-IsolatedValidationExtractionToQuarantine `
                 -DirectoryLease $installedRootLease `
-                -ParentDirectoryLease $releaseDirectoryLease `
+                -ParentDirectoryLease $extractionParentDirectoryLease `
                 -QuarantineLeaf $quarantineLeaf
 
             Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
@@ -544,9 +544,9 @@ finally {
             $installedRootLease.handle.Dispose()
             $installedRootLease = $null
         }
-        if ($null -ne $releaseDirectoryLease) {
-            $releaseDirectoryLease.handle.Dispose()
-            $releaseDirectoryLease = $null
+        if ($null -ne $extractionParentDirectoryLease) {
+            $extractionParentDirectoryLease.handle.Dispose()
+            $extractionParentDirectoryLease = $null
         }
     }
 
