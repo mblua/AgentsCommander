@@ -1245,6 +1245,51 @@ mod tests {
     }
 
     #[test]
+    fn retained_webview_directory_fails_closed_when_missing_or_replaced() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        let state = resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
+            .expect("fixture root bootstraps");
+        let webview_path = root_path.join("webview-data");
+        let retired_webview = root_path.join("retired-webview-data");
+
+        if std::fs::rename(&webview_path, &retired_webview).is_ok() {
+            assert!(state.verified_webview_data_directory().is_err());
+            std::fs::create_dir(&webview_path).unwrap();
+            assert!(state.verified_webview_data_directory().is_err());
+        } else {
+            assert!(state.verified_webview_data_directory().is_ok());
+        }
+    }
+
+    #[test]
+    fn retained_mutable_directories_fail_closed_after_replacement() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        let state = resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
+            .expect("fixture root bootstraps");
+
+        for (name, directory) in [
+            ("instances", super::IsolatedStateDirectory::Instances),
+            (
+                "agent-templates",
+                super::IsolatedStateDirectory::AgentTemplates,
+            ),
+            ("context-cache", super::IsolatedStateDirectory::ContextCache),
+        ] {
+            let child_path = root_path.join(name);
+            let retired_child = root_path.join(format!("retired-{name}"));
+            if std::fs::rename(&child_path, &retired_child).is_ok() {
+                assert!(state.verified_state_directory(directory).is_err());
+                std::fs::create_dir(&child_path).unwrap();
+                assert!(state.verified_state_directory(directory).is_err());
+            } else {
+                assert!(state.verified_state_directory(directory).is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn bootstrap_state_routing_keeps_every_profile_path_below_the_retained_root() {
         let fixture = tempfile::TempDir::new().unwrap();
         let root_path = fixture.path().join("app-state");
@@ -1257,7 +1302,7 @@ mod tests {
             root_path.join("agent-templates"),
             root_path.join("context-cache"),
             root_path.join("profile-project"),
-            webview.identity().canonical_path.clone(),
+            webview.webview_data.identity().canonical_path.clone(),
         ] {
             let identity = crate::path_identity::verify_directory(&directory).unwrap();
             assert!(super::identity_is_at_or_below(&identity, root.identity()));
