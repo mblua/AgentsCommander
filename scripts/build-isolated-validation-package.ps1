@@ -134,7 +134,7 @@ if ($tauriBuild.ExitCode -ne 0) {
     throw "isolated validation package build failed with exit code $($tauriBuild.ExitCode)"
 }
 
-$releaseDirectory = Join-Path $RepoRoot 'src-tauri/target/release'
+$releaseDirectory = Join-Path $RepoRoot 'target/release'
 $executable = Get-ChildItem -LiteralPath $releaseDirectory -Filter '*.exe' -File |
     Where-Object { $_.BaseName -eq 'agentscommander' } |
     Select-Object -First 1
