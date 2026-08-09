@@ -208,6 +208,7 @@ function Invoke-DetachedPackageBuildHandoff {
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$TestRoot,
         [Parameter(Mandatory)][string]$GitExecutable,
+        [Parameter(Mandatory)][string]$NpmExecutable,
         [Parameter(Mandatory)][string]$Frozen1271Commit,
         [Parameter(Mandatory)][string]$IsolatedStateRootCommit
     )
@@ -275,12 +276,15 @@ function Invoke-DetachedPackageBuildHandoff {
             throw 'could not switch detached preflight checkout to its fixture revision'
         }
 
-        $nodeModulesSource = Join-Path $RepositoryRoot 'node_modules'
-        if (-not (Test-Path -LiteralPath $nodeModulesSource -PathType Container)) {
-            throw 'real detached package build requires the repository node_modules directory'
+        $installDependencies = Start-IsolatedValidationNativeProcess `
+            -Mode Wait `
+            -FilePath $NpmExecutable `
+            -WorkingDirectory $checkout `
+            -Arguments @('ci', '--no-audit', '--no-fund') `
+            -RemoveAgentsCommanderEnvironment
+        if ($installDependencies.ExitCode -ne 0) {
+            throw 'could not install detached package build dependencies'
         }
-        $checkoutNodeModules = Join-Path $checkout 'node_modules'
-        New-Item -ItemType Junction -Path $checkoutNodeModules -Target $nodeModulesSource -ErrorAction Stop | Out-Null
 
         $build = Join-Path $checkout 'scripts/build-isolated-validation-package.ps1'
         $preflightOutput = @(& $build `
@@ -380,6 +384,7 @@ try {
     $node = Get-NativeExecutable -Name 'node.exe'
     $git = Get-NativeExecutable -Name 'git.exe'
     $rustc = Get-NativeExecutable -Name 'rustc.exe'
+    $npm = Get-NativeExecutable -Name 'npm.cmd'
     $tauri = Join-Path $repoRoot 'node_modules/.bin/tauri.cmd'
     if (-not [System.IO.File]::Exists($tauri)) {
         throw 'required project node_modules/.bin/tauri.cmd is unavailable'
@@ -563,6 +568,7 @@ try {
         -RepositoryRoot $repoRoot `
         -TestRoot $testRoot `
         -GitExecutable $git `
+        -NpmExecutable $npm `
         -Frozen1271Commit $frozen1271Commit `
         -IsolatedStateRootCommit $currentCommit
 
