@@ -56,6 +56,15 @@ fn main() {
     if arguments.iter().any(|argument| argument == "--isolation-status") {
         let root = value_after(&arguments, "--isolated-state-root").expect("isolated root");
         fs::create_dir_all(root).expect("create isolated root");
+        if env::var("ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            let fixture = Path::new(root).parent().expect("fixture root");
+            fs::write(fixture.join("launch-receipt.json"), "concurrent winner\n")
+                .expect("publish concurrent receipt");
+        }
         let profile_hash = env::var("ISOLATED_VALIDATION_TEST_PROFILE_HASH")
             .expect("test profile hash");
         let effective_root = fs::canonicalize(root).expect("canonical isolated root");

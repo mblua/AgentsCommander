@@ -88,6 +88,7 @@ function Invoke-Launcher {
     )
 
     $output = @()
+    $scriptSucceeded = $false
     try {
         if ($IncludeVerboseOutput.IsPresent) {
             & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -Verbose 4>&1 2>&1 |
@@ -96,8 +97,9 @@ function Invoke-Launcher {
         else {
             $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
         }
+        $scriptSucceeded = $?
         return [pscustomobject]@{
-            Succeeded = $true
+            Succeeded = $scriptSucceeded
             Output = ($output -join [Environment]::NewLine)
         }
     }
