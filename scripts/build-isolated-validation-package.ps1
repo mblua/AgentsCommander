@@ -142,15 +142,40 @@ if ($null -eq $executable) {
     throw "could not locate the packaged executable below $releaseDirectory"
 }
 
-# Tauri embeds this configured resource into the final installers. The portable
-# handoff keeps the same verified profile bytes beside the actual built executable.
+$msiDirectory = Join-Path $releaseDirectory 'bundle/msi'
+$msiArtifacts = @(Get-ChildItem -LiteralPath $msiDirectory -Filter '*.msi' -File)
+if ($msiArtifacts.Count -ne 1) {
+    throw "expected exactly one isolated validation MSI below $msiDirectory; found $($msiArtifacts.Count)"
+}
+$installedDirectory = Join-Path $releaseDirectory ('isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
+$msiExecutable = Join-Path $env:SystemRoot 'System32/msiexec.exe'
+if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
+    throw "missing Windows Installer executable: $msiExecutable"
+}
+$administrativeInstall = Start-IsolatedValidationNativeProcess `
+    -Mode Wait `
+    -FilePath $msiExecutable `
+    -WorkingDirectory $releaseDirectory `
+    -Arguments @('/a', $msiArtifacts[0].FullName, '/qn', "INSTALLDIR=$installedDirectory") `
+    -RemoveAgentsCommanderEnvironment
+if ($administrativeInstall.ExitCode -ne 0) {
+    throw "could not materialize the isolated validation MSI with exit code $($administrativeInstall.ExitCode)"
+}
+$installedExecutable = Join-Path $installedDirectory 'agentscommander.exe'
+$installedProfile = Join-Path $installedDirectory 'resources/package-profile.toml'
+if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $installedProfile -PathType Leaf)) {
+    throw 'the isolated validation MSI did not materialize its deterministic executable and profile resource layout'
+}
+
+# Stage the actual executable and exact resource bytes materialized by the MSI.
 $artifactDirectory = Join-Path $releaseDirectory ('isolated-validation-portable-' + [Guid]::NewGuid().ToString('N'))
 $artifactResources = Join-Path $artifactDirectory 'resources'
 New-Item -ItemType Directory -Path $artifactResources -ErrorAction Stop | Out-Null
 $artifactExecutable = Join-Path $artifactDirectory 'Agents Commander Isolated Gates.exe'
 $artifactProfile = Join-Path $artifactResources 'package-profile.toml'
-Copy-Item -LiteralPath $executable.FullName -Destination $artifactExecutable -ErrorAction Stop
-Copy-Item -LiteralPath $profilePath -Destination $artifactProfile -ErrorAction Stop
+Copy-Item -LiteralPath $installedExecutable -Destination $artifactExecutable -ErrorAction Stop
+Copy-Item -LiteralPath $installedProfile -Destination $artifactProfile -ErrorAction Stop
 
 $launcherSource = Join-Path $RepoRoot 'packaging/isolated-validation/launch-isolated.ps1'
 $launcherDestination = Join-Path $artifactDirectory 'launch-isolated.ps1'
@@ -165,8 +190,9 @@ Copy-Item -LiteralPath $nativeProcessModuleSource -Destination $nativeProcessMod
 
 $manifestPath = Join-Path $artifactDirectory 'isolated-validation-manifest.json'
 $profileHash = Get-Sha256 -LiteralPath $profilePath
+$materializedProfileHash = Get-Sha256 -LiteralPath $installedProfile
 $installedProfileHash = Get-Sha256 -LiteralPath $artifactProfile
-if ($profileHash -cne $installedProfileHash) {
+if ($profileHash -cne $materializedProfileHash -or $materializedProfileHash -cne $installedProfileHash) {
     throw 'compiled and portable artifact profile bytes must be identical'
 }
 if ((Get-Sha256 -LiteralPath $launcherSource) -cne (Get-Sha256 -LiteralPath $launcherDestination) -or
