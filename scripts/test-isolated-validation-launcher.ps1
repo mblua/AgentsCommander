@@ -39,9 +39,44 @@ function Write-JsonFile {
 
     [System.IO.File]::WriteAllText(
         $LiteralPath,
-        ($Value | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        ($Value | ConvertTo-Json -Depth 10) + [Environment]::NewLine,
         [System.Text.UTF8Encoding]::new($false)
     )
+}
+
+function Get-NativeExecutable {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $command = Get-Command -Name $Name -CommandType Application -ErrorAction Stop
+    $path = [string]$command.Source
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        $path = [string]$command.Path
+    }
+    if ([string]::IsNullOrWhiteSpace($path) -or -not [System.IO.File]::Exists($path)) {
+        throw "required native executable is unavailable: $Name"
+    }
+    return $path
+}
+
+function Assert-NativeProcessFailure {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [Parameter(Mandatory)][string]$CaseName
+    )
+
+    $failed = $false
+    try {
+        & $Action
+    }
+    catch {
+        if ($_.Exception.Message -ne 'E_ISOLATION_NATIVE_PROCESS') {
+            throw
+        }
+        $failed = $true
+    }
+    if (-not $failed) {
+        throw "$CaseName unexpectedly succeeded"
+    }
 }
 
 function Invoke-Launcher {
@@ -53,163 +88,238 @@ function Invoke-Launcher {
 
     try {
         $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
+        $exitCodeVariable = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+        $exitCode = if ($null -eq $exitCodeVariable) { 0 } else { [int]$exitCodeVariable.Value }
         return [pscustomobject]@{
-            Succeeded = $LASTEXITCODE -eq 0
+            Succeeded = $exitCode -eq 0
             Output = ($output -join [Environment]::NewLine)
         }
-    } catch {
-        return [pscustomobject]@{ Succeeded = $false; Output = $_.Exception.Message }
+    }
+    catch {
+        return [pscustomobject]@{
+            Succeeded = $false
+            Output = $_.Exception.Message
+        }
     }
 }
 
-function Assert-LauncherFailsBeforeReceipt {
+function Wait-ForProcessExit {
     param(
-        [Parameter(Mandatory)][string]$Launcher,
-        [Parameter(Mandatory)][string]$FixtureRoot,
-        [Parameter(Mandatory)][string]$ExpectedManifestSha256,
+        [Parameter(Mandatory)][int]$ProcessId,
         [Parameter(Mandatory)][string]$CaseName
     )
 
-    $receipt = Join-Path $FixtureRoot 'launch-receipt.json'
-    if (Test-Path -LiteralPath $receipt) {
-        throw "$CaseName test fixture unexpectedly already has a receipt"
-    }
-    $result = Invoke-Launcher -Launcher $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256
-    if ($result.Succeeded) {
-        throw "$CaseName tampering unexpectedly launched: $($result.Output)"
-    }
-    if (Test-Path -LiteralPath $receipt) {
-        throw "$CaseName tampering wrote a receipt before verification completed"
-    }
-}
-
-function Wait-For-LauncherChildExit {
-    param([Parameter(Mandatory)][int]$ProcessId)
-
-    for ($attempt = 1; $attempt -le 100; $attempt++) {
+    for ($attempt = 1; $attempt -le 160; $attempt++) {
         if ($null -eq (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
             return
         }
         Start-Sleep -Milliseconds 25
     }
-    throw "mock launcher child process $ProcessId did not exit"
+    throw "$CaseName process $ProcessId did not exit"
+}
+
+function Assert-LauncherFailsBeforeChild {
+    param(
+        [Parameter(Mandatory)][string]$Launcher,
+        [Parameter(Mandatory)][string]$FixtureRoot,
+        [Parameter(Mandatory)][string]$ExpectedManifestSha256,
+        [Parameter(Mandatory)][string]$ChildSentinel,
+        [Parameter(Mandatory)][string]$CaseName
+    )
+
+    if (Test-Path -LiteralPath $ChildSentinel) {
+        Remove-Item -LiteralPath $ChildSentinel -Force
+    }
+    $result = Invoke-Launcher -Launcher $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256
+    if ($result.Succeeded) {
+        throw "$CaseName unexpectedly launched: $($result.Output)"
+    }
+    if (Test-Path -LiteralPath $ChildSentinel) {
+        throw "$CaseName started a child before rejecting the input"
+    }
+}
+
+function Assert-PowerShellAstContract {
+    param([Parameter(Mandatory)][string[]]$ProductionPaths)
+
+    foreach ($path in $ProductionPaths) {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        if ($parseErrors.Count -gt 0) {
+            throw "production PowerShell AST has parse errors: $path"
+        }
+
+        $members = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.MemberExpressionAst]
+                }, $true))
+        foreach ($member in $members) {
+            $name = $member.Member.Extent.Text
+            if ($name -ceq 'ArgumentList' -or $name -ceq 'Environment') {
+                throw "forbidden native-process member $name in $path"
+            }
+        }
+
+        $commands = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.CommandAst]
+                }, $true))
+        foreach ($command in $commands) {
+            $name = $command.GetCommandName()
+            if ($name -in @('Start-Process', 'Invoke-Expression', 'cmd.exe')) {
+                throw "forbidden production command $name in $path"
+            }
+        }
+    }
+}
+
+function Invoke-DetachedRevisionPreflight {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$TestRoot,
+        [Parameter(Mandatory)][string]$GitExecutable,
+        [Parameter(Mandatory)][string]$Frozen1271Commit,
+        [Parameter(Mandatory)][string]$IsolatedStateRootCommit
+    )
+
+    $head = (Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $GitExecutable `
+        -WorkingDirectory $RepositoryRoot `
+        -Arguments @('rev-parse', 'HEAD^{commit}') `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
+    if ($head -notmatch '^[0-9a-f]{40}$') {
+        throw 'real Git did not return a full detached-checkout revision'
+    }
+
+    $checkout = Join-Path $TestRoot 'detached-preflight-checkout'
+    $created = $false
+    try {
+        $add = Start-IsolatedValidationNativeProcess `
+            -Mode Wait `
+            -FilePath $GitExecutable `
+            -WorkingDirectory $RepositoryRoot `
+            -Arguments @('worktree', 'add', '--detach', $checkout, $head) `
+            -RemoveAgentsCommanderEnvironment
+        if ($add.ExitCode -ne 0) {
+            throw 'could not create detached preflight checkout'
+        }
+        $created = $true
+
+        $tree = (Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $GitExecutable `
+            -WorkingDirectory $checkout `
+            -Arguments @('rev-parse', 'HEAD^{tree}') `
+            -StandardOutputLimitBytes 1MB `
+            -StandardErrorLimitBytes 1MB `
+            -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
+        $fixtureCommit = (Start-IsolatedValidationNativeProcess `
+            -Mode CaptureAndWait `
+            -FilePath $GitExecutable `
+            -WorkingDirectory $checkout `
+            -Arguments @(
+                '-c', 'user.name=isolated-validation-test',
+                '-c', 'user.email=isolated-validation-test@example.invalid',
+                'commit-tree', $tree,
+                '-p', $head,
+                '-p', $Frozen1271Commit,
+                '-m', 'isolated validation detached preflight fixture'
+            ) `
+            -StandardOutputLimitBytes 1MB `
+            -StandardErrorLimitBytes 1MB `
+            -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
+        if ($fixtureCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'could not create detached preflight Git fixture revision'
+        }
+        $reset = Start-IsolatedValidationNativeProcess `
+            -Mode Wait `
+            -FilePath $GitExecutable `
+            -WorkingDirectory $checkout `
+            -Arguments @('reset', '--hard', $fixtureCommit) `
+            -RemoveAgentsCommanderEnvironment
+        if ($reset.ExitCode -ne 0) {
+            throw 'could not switch detached preflight checkout to its fixture revision'
+        }
+
+        $preflight = Join-Path $checkout 'scripts/build-isolated-validation-package.ps1'
+        & $preflight `
+            -Frozen1271Commit $Frozen1271Commit `
+            -IsolatedStateRootCommit $fixtureCommit `
+            -RevisionPreflightOnly
+        if (-not $?) {
+            throw 'detached build revision preflight failed'
+        }
+    }
+    finally {
+        if ($created) {
+            $remove = Start-IsolatedValidationNativeProcess `
+                -Mode Wait `
+                -FilePath $GitExecutable `
+                -WorkingDirectory $RepositoryRoot `
+                -Arguments @('worktree', 'remove', '--force', $checkout) `
+                -RemoveAgentsCommanderEnvironment
+            if ($remove.ExitCode -ne 0) {
+                throw 'could not remove detached preflight checkout'
+            }
+        }
+    }
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$moduleSource = Join-Path $repoRoot 'packaging/isolated-validation/native-process.psm1'
 $launcherSource = Join-Path $repoRoot 'packaging/isolated-validation/launch-isolated.ps1'
-$nativeProcessModuleSource = Join-Path $repoRoot 'packaging/isolated-validation/native-process.psm1'
 $profileSource = Join-Path $repoRoot 'packaging/isolated-validation/package-profile.toml'
-$testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('agentscommander-isolated-launcher-test-' + [Guid]::NewGuid().ToString('N'))
-$originalInherited = [Environment]::GetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED')
+$fixtureSource = Join-Path $repoRoot 'packaging/isolated-validation/test-native-fixture.rs'
+$buildScript = Join-Path $repoRoot 'scripts/build-isolated-validation-package.ps1'
+$testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('iv-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$frozen1271Commit = 'd68495086e168e5258500832b2ef45b4337ed21a'
+$stage = 'initialization'
+$savedParentEnvironment = @{}
+foreach ($name in @(
+        'AGENTSCOMMANDER_TEST_NATIVE_PARENT',
+        'AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED',
+        'ISOLATED_VALIDATION_TEST_PROFILE_HASH',
+        'ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION',
+        'ISOLATED_VALIDATION_TEST_GUI_PID_PATH',
+        'GIT_DIR',
+        'GIT_WORK_TREE',
+        'GIT_INDEX_FILE',
+        'GIT_COMMON_DIR'
+    )) {
+    $savedParentEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+}
+
+foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR')) {
+    Remove-Item -LiteralPath ("Env:$name") -ErrorAction SilentlyContinue
+}
 
 try {
-    $artifact = Join-Path $testRoot 'portable-artifact'
-    $resources = Join-Path $artifact 'resources'
-    $fixture = Join-Path $testRoot 'fixture root; & metacharacters'
-    New-Item -ItemType Directory -Path $resources -Force | Out-Null
-    New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+    Assert-PowerShellAstContract -ProductionPaths @($moduleSource, $buildScript, $launcherSource)
 
-    $launcher = Join-Path $artifact 'launch-isolated.ps1'
-    $profile = Join-Path $resources 'package-profile.toml'
-    $executable = Join-Path $artifact 'Agents Commander Isolated Gates.exe'
-    $nativeProcessModule = Join-Path $artifact 'native-process.psm1'
-    Copy-Item -LiteralPath $launcherSource -Destination $launcher
-    Copy-Item -LiteralPath $nativeProcessModuleSource -Destination $nativeProcessModule
-    Copy-Item -LiteralPath $profileSource -Destination $profile
-
-    $mockSource = @'
-using System;
-using System.Collections;
-using System.IO;
-
-public static class Program {
-    private static string JsonEscape(string value) {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    Import-Module -Name $moduleSource -Force -ErrorAction Stop
+    $exported = @(Get-Command -Module native-process | Select-Object -ExpandProperty Name)
+    if ($exported.Count -ne 1 -or $exported[0] -cne 'Start-IsolatedValidationNativeProcess') {
+        throw "native process module exported unexpected commands: $($exported -join ', ')"
     }
 
-    private static void WriteJsonArguments(string[] args, int start) {
-        Console.Write("[");
-        for (var index = start; index < args.Length; index++) {
-            if (index > start) {
-                Console.Write(",");
-            }
-            Console.Write("\"" + JsonEscape(args[index]) + "\"");
-        }
-        Console.Write("]");
+    $node = Get-NativeExecutable -Name 'node.exe'
+    $git = Get-NativeExecutable -Name 'git.exe'
+    $rustc = Get-NativeExecutable -Name 'rustc.exe'
+    $tauri = Join-Path $repoRoot 'node_modules/.bin/tauri.cmd'
+    if (-not [System.IO.File]::Exists($tauri)) {
+        throw 'required project node_modules/.bin/tauri.cmd is unavailable'
     }
 
-    public static int Main(string[] args) {
-        var capturePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mock-child-env.txt");
-        using (var writer = new StreamWriter(capturePath, false)) {
-            foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
-                var key = entry.Key.ToString();
-                if (key.StartsWith("AGENTSCOMMANDER_", StringComparison.OrdinalIgnoreCase)) {
-                    writer.WriteLine(key + "=" + entry.Value);
-                }
-            }
-        }
-
-        if (args.Length >= 1 && args[0] == "--argv-json") {
-            WriteJsonArguments(args, 1);
-            return 0;
-        }
-
-        if (args.Length == 1 && args[0] == "--dual-stream") {
-            Console.Out.Write(new string('o', 131072));
-            Console.Error.Write(new string('e', 131072));
-            return 0;
-        }
-
-        if (args.Length == 3 && args[0] == "--isolated-state-root" && args[2] == "--isolation-status") {
-            Directory.CreateDirectory(args[1]);
-            var root = JsonEscape(Path.GetFullPath(args[1]));
-            Console.Write("{\"effectiveRoot\":\"" + root + "\",\"packageId\":\"agentscommander-1271-isolated-gates\",\"profileSha256\":\"__PROFILE_HASH__\",\"workspace\":\"AgentsCommander_1271_isolated\",\"matrix\":\"WG-1271-ISOLATED-GATES\",\"replicaAgent\":\"gate-tester\",\"headerIdentity\":\"WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated\",\"bundleIdentifier\":\"dev.agentscommander.isolatedgates\",\"mutexHash\":\"test-mutex-hash\"}");
-        }
-        return 0;
-    }
-}
-'@
-    $profileHash = Get-Sha256 -LiteralPath $profile
-    $mockSource = $mockSource.Replace('__PROFILE_HASH__', $profileHash)
-    $mockProject = Join-Path $testRoot 'mock-child-project'
-    $mockOutput = Join-Path $testRoot 'mock-child-output'
-    New-Item -ItemType Directory -Path $mockProject -Force | Out-Null
-    [System.IO.File]::WriteAllText(
-        (Join-Path $mockProject 'mock-child.csproj'),
-        @'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net6.0</TargetFramework>
-    <AssemblyName>agentscommander</AssemblyName>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <Nullable>disable</Nullable>
-  </PropertyGroup>
-</Project>
-'@,
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    [System.IO.File]::WriteAllText(
-        (Join-Path $mockProject 'Program.cs'),
-        $mockSource,
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    $buildOutput = & dotnet build (Join-Path $mockProject 'mock-child.csproj') --nologo -c Release -o $mockOutput 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "failed to build launcher mock executable: $($buildOutput -join [Environment]::NewLine)"
-    }
-    Copy-Item -LiteralPath (Join-Path $mockOutput 'agentscommander.exe') -Destination $executable
-    foreach ($supportFile in @('agentscommander.dll', 'agentscommander.deps.json', 'agentscommander.runtimeconfig.json')) {
-        Copy-Item -LiteralPath (Join-Path $mockOutput $supportFile) -Destination (Join-Path $artifact $supportFile)
-    }
-
-    Import-Module -Name $nativeProcessModule -Force -ErrorAction Stop
-    $exportedNativeProcessCommands = @(Get-Command -Module native-process | Select-Object -ExpandProperty Name)
-    if ($exportedNativeProcessCommands.Count -ne 1 -or $exportedNativeProcessCommands[0] -cne 'Start-IsolatedValidationNativeProcess') {
-        throw "native process module exported unexpected commands: $($exportedNativeProcessCommands -join ', ')"
-    }
-
-    $argvProbeValues = @(
+    $argvValues = @(
         '',
         'contains whitespace',
         'embedded"quote',
@@ -225,263 +335,356 @@ public static class Program {
         '$literal',
         '(parentheses)'
     )
+    $nodeArgvScript = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))'
     $argvProbe = Start-IsolatedValidationNativeProcess `
         -Mode CaptureAndWait `
-        -FilePath $executable `
-        -WorkingDirectory $artifact `
-        -Arguments (@('--argv-json') + $argvProbeValues) `
+        -FilePath $node `
+        -WorkingDirectory $repoRoot `
+        -Arguments (@('-e', $nodeArgvScript, '--') + $argvValues) `
         -StandardOutputLimitBytes 1MB `
         -StandardErrorLimitBytes 1MB `
         -RemoveAgentsCommanderEnvironment
     if ($argvProbe.ExitCode -ne 0) {
-        throw 'the native process argv probe returned a nonzero exit code'
+        throw 'native node.exe argv probe failed'
     }
-    $receivedArgvProbeValues = @($argvProbe.StandardOutput | ConvertFrom-Json)
-    if ($receivedArgvProbeValues.Count -eq 1 -and $receivedArgvProbeValues[0] -is [System.Array]) {
-        $receivedArgvProbeValues = $receivedArgvProbeValues[0]
+    $receivedArgv = @($argvProbe.StandardOutput | ConvertFrom-Json)
+    if ($receivedArgv.Count -ne $argvValues.Count) {
+        throw 'native node.exe argv probe returned an unexpected argument count'
     }
-    if ($receivedArgvProbeValues.Count -ne $argvProbeValues.Count) {
-        throw 'the native process argv probe returned an unexpected argument count'
-    }
-    for ($index = 0; $index -lt $argvProbeValues.Count; $index++) {
-        if ($receivedArgvProbeValues[$index] -cne $argvProbeValues[$index]) {
-            throw "the native process argv probe changed argument index $index"
+    for ($index = 0; $index -lt $argvValues.Count; $index++) {
+        if ($receivedArgv[$index] -cne $argvValues[$index]) {
+            throw "native node.exe argv probe changed argument index $index"
         }
     }
 
-    $zeroArgvProbe = Start-IsolatedValidationNativeProcess `
+    $zeroArgv = Start-IsolatedValidationNativeProcess `
         -Mode CaptureAndWait `
-        -FilePath $executable `
-        -WorkingDirectory $artifact `
-        -Arguments @('--argv-json') `
+        -FilePath $node `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('-e', $nodeArgvScript, '--') `
         -StandardOutputLimitBytes 1MB `
         -StandardErrorLimitBytes 1MB `
         -RemoveAgentsCommanderEnvironment
-    $oneEmptyArgvProbe = Start-IsolatedValidationNativeProcess `
+    $oneEmptyArgv = Start-IsolatedValidationNativeProcess `
         -Mode CaptureAndWait `
-        -FilePath $executable `
-        -WorkingDirectory $artifact `
-        -Arguments @('--argv-json', '') `
+        -FilePath $node `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('-e', $nodeArgvScript, '--', '') `
         -StandardOutputLimitBytes 1MB `
         -StandardErrorLimitBytes 1MB `
         -RemoveAgentsCommanderEnvironment
-    if ($zeroArgvProbe.StandardOutput -cne '[]' -or $oneEmptyArgvProbe.StandardOutput -cne '[""]') {
-        throw 'the native process module did not distinguish zero arguments from one empty argument'
+    if ($zeroArgv.StandardOutput -cne '[]' -or $oneEmptyArgv.StandardOutput -cne '[""]') {
+        throw 'native node.exe argv probe did not distinguish zero values from one empty value'
     }
 
-    $dualStreamProbe = Start-IsolatedValidationNativeProcess `
+    $dualStreamScript = "process.stdout.write('o'.repeat(131072)); process.stderr.write('e'.repeat(131072))"
+    $dualStream = Start-IsolatedValidationNativeProcess `
         -Mode CaptureAndWait `
-        -FilePath $executable `
-        -WorkingDirectory $artifact `
-        -Arguments @('--dual-stream') `
+        -FilePath $node `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('-e', $dualStreamScript) `
         -StandardOutputLimitBytes 256KB `
         -StandardErrorLimitBytes 256KB `
         -RemoveAgentsCommanderEnvironment
-    if ($dualStreamProbe.StandardOutput.Length -ne 131072 -or $dualStreamProbe.StandardError.Length -ne 131072) {
-        throw 'the native process module did not capture both streams concurrently'
+    if ($dualStream.StandardOutput.Length -ne 131072 -or $dualStream.StandardError.Length -ne 131072) {
+        throw 'native module did not concurrently drain both node.exe streams'
     }
 
-    try {
+    $capPidPath = Join-Path $testRoot 'cap-overflow-child.pid'
+    $capScript = "require('fs').writeFileSync(process.argv[1], String(process.pid)); process.stdout.write('o'.repeat(131072)); setInterval(() => {}, 1000)"
+    Assert-NativeProcessFailure -CaseName 'bounded capture cap breach' -Action {
         Start-IsolatedValidationNativeProcess `
             -Mode CaptureAndWait `
-            -FilePath $executable `
-            -WorkingDirectory $artifact `
-            -Arguments @('--dual-stream') `
+            -FilePath $node `
+            -WorkingDirectory $repoRoot `
+            -Arguments @('-e', $capScript, '--', $capPidPath) `
             -StandardOutputLimitBytes 64KB `
             -StandardErrorLimitBytes 64KB `
             -RemoveAgentsCommanderEnvironment | Out-Null
-        throw 'the native process module accepted output above its configured capture ceiling'
     }
-    catch {
-        if ($_.Exception.Message -ne 'E_ISOLATION_NATIVE_PROCESS') {
-            throw
+    for ($attempt = 1; $attempt -le 40 -and -not (Test-Path -LiteralPath $capPidPath -PathType Leaf); $attempt++) {
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not (Test-Path -LiteralPath $capPidPath -PathType Leaf)) {
+        throw 'cap-overflow child did not publish its PID before termination'
+    }
+    Wait-ForProcessExit -ProcessId ([int](Get-Content -LiteralPath $capPidPath -Raw)) -CaseName 'cap-overflow original lease'
+
+    $missingFile = Join-Path $testRoot 'missing.exe'
+    $missingDirectory = Join-Path $testRoot 'missing-directory'
+    foreach ($invalid in @(
+            [pscustomobject]@{ FilePath = 'C:relative.exe'; WorkingDirectory = $repoRoot; Name = 'drive-relative executable' },
+            [pscustomobject]@{ FilePath = '\\foo'; WorkingDirectory = $repoRoot; Name = 'UNC-root-relative executable' },
+            [pscustomobject]@{ FilePath = '/foo'; WorkingDirectory = $repoRoot; Name = 'slash-root-relative executable' },
+            [pscustomobject]@{ FilePath = $node; WorkingDirectory = 'C:relative'; Name = 'drive-relative working directory' },
+            [pscustomobject]@{ FilePath = $node; WorkingDirectory = '\\foo'; Name = 'UNC-root-relative working directory' },
+            [pscustomobject]@{ FilePath = $node; WorkingDirectory = '/foo'; Name = 'slash-root-relative working directory' },
+            [pscustomobject]@{ FilePath = $missingFile; WorkingDirectory = $repoRoot; Name = 'missing executable' },
+            [pscustomobject]@{ FilePath = $node; WorkingDirectory = $missingDirectory; Name = 'missing working directory' }
+        )) {
+        Assert-NativeProcessFailure -CaseName $invalid.Name -Action {
+            Start-IsolatedValidationNativeProcess `
+                -Mode Wait `
+                -FilePath $invalid.FilePath `
+                -WorkingDirectory $invalid.WorkingDirectory `
+                -Arguments @() `
+                -RemoveAgentsCommanderEnvironment | Out-Null
         }
     }
 
-    $nativeParentEnvironmentName = 'AGENTSCOMMANDER_TEST_NATIVE_PARENT'
-    $nativeParentEnvironmentValue = [Environment]::GetEnvironmentVariable($nativeParentEnvironmentName)
-    [Environment]::SetEnvironmentVariable($nativeParentEnvironmentName, 'must-remain-parent-only')
-    try {
-        Start-IsolatedValidationNativeProcess `
+    [Environment]::SetEnvironmentVariable('AGENTSCOMMANDER_TEST_NATIVE_PARENT', 'must-remain-parent-only')
+    $environmentScript = "process.stdout.write(JSON.stringify(Object.keys(process.env).filter((key) => key.toUpperCase().startsWith('AGENTSCOMMANDER_'))))"
+    $environmentProbe = Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $node `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('-e', $environmentScript) `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment
+    if ($environmentProbe.StandardOutput -cne '[]' -or
+        [Environment]::GetEnvironmentVariable('AGENTSCOMMANDER_TEST_NATIVE_PARENT') -cne 'must-remain-parent-only') {
+        throw 'native child environment cleanup leaked or changed AGENTSCOMMANDER_* state'
+    }
+
+    foreach ($suffix in @('HEAD^{commit}', 'HEAD^{tree}')) {
+        $gitProbe = Start-IsolatedValidationNativeProcess `
             -Mode CaptureAndWait `
-            -FilePath $executable `
-            -WorkingDirectory $artifact `
-            -Arguments @('--argv-json') `
+            -FilePath $git `
+            -WorkingDirectory $repoRoot `
+            -Arguments @('rev-parse', $suffix) `
             -StandardOutputLimitBytes 1MB `
             -StandardErrorLimitBytes 1MB `
-            -RemoveAgentsCommanderEnvironment | Out-Null
-        $nativeChildEnvironment = [System.IO.File]::ReadAllText((Join-Path $artifact 'mock-child-env.txt'))
-        if ($nativeChildEnvironment.Contains($nativeParentEnvironmentName) -or
-            [Environment]::GetEnvironmentVariable($nativeParentEnvironmentName) -cne 'must-remain-parent-only') {
-            throw 'native process child environment cleanup leaked or mutated an AGENTSCOMMANDER_* value'
+            -RemoveAgentsCommanderEnvironment
+        $gitOutput = ([string]$gitProbe.StandardOutput).Trim()
+        if ($gitProbe.ExitCode -ne 0 -or $gitOutput -notmatch '^[0-9a-f]{40}$') {
+            throw "real Git suffix probe failed for ${suffix}: exit=$($gitProbe.ExitCode), stdout=[$gitOutput], stderr=[$($gitProbe.StandardError)]"
         }
     }
-    finally {
-        [Environment]::SetEnvironmentVariable($nativeParentEnvironmentName, $nativeParentEnvironmentValue)
+
+    $tauriProbe = Start-IsolatedValidationNativeProcess `
+        -Mode Wait `
+        -FilePath $tauri `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('--version') `
+        -RemoveAgentsCommanderEnvironment
+    if ($tauriProbe.ExitCode -ne 0) {
+        throw 'real project tauri.cmd invocation failed'
     }
 
+    $currentCommit = (Start-IsolatedValidationNativeProcess `
+        -Mode CaptureAndWait `
+        -FilePath $git `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('rev-parse', 'HEAD^{commit}') `
+        -StandardOutputLimitBytes 1MB `
+        -StandardErrorLimitBytes 1MB `
+        -RemoveAgentsCommanderEnvironment).StandardOutput.Trim()
+    Invoke-DetachedRevisionPreflight `
+        -RepositoryRoot $repoRoot `
+        -TestRoot $testRoot `
+        -GitExecutable $git `
+        -Frozen1271Commit $frozen1271Commit `
+        -IsolatedStateRootCommit $currentCommit
+
+    $artifact = Join-Path $testRoot 'staged-artifact'
+    $resources = Join-Path $artifact 'resources'
+    $fixture = Join-Path $testRoot 'fixture root; & metacharacters'
+    New-Item -ItemType Directory -Path $resources -Force | Out-Null
+    New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    $launcher = Join-Path $artifact 'launch-isolated.ps1'
+    $module = Join-Path $artifact 'native-process.psm1'
+    $profile = Join-Path $resources 'package-profile.toml'
+    $executable = Join-Path $artifact 'Agents Commander Isolated Gates.exe'
+    Copy-Item -LiteralPath $launcherSource -Destination $launcher
+    Copy-Item -LiteralPath $moduleSource -Destination $module
+    Copy-Item -LiteralPath $profileSource -Destination $profile
+    $fixtureBuild = Start-IsolatedValidationNativeProcess `
+        -Mode Wait `
+        -FilePath $rustc `
+        -WorkingDirectory $repoRoot `
+        -Arguments @('--edition', '2021', $fixtureSource, '-o', $executable) `
+        -RemoveAgentsCommanderEnvironment
+    if ($fixtureBuild.ExitCode -ne 0) {
+        throw 'could not build the native staged-artifact fixture executable'
+    }
+
+    $profileHash = Get-Sha256 -LiteralPath $profile
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
     $manifest = [ordered]@{
         schema = 'isolated-validation-handoff-v1'
         baseSha = ('0' * 40)
-        frozen1271Commit = ('1' * 40)
-        isolatedStateRootCommit = ('2' * 40)
-        combinedSourceSha = ('3' * 40)
-        combinedTreeSha = ('4' * 40)
+        frozen1271Commit = $frozen1271Commit
+        isolatedStateRootCommit = $currentCommit
+        combinedSourceSha = $currentCommit
+        combinedTreeSha = $currentCommit
         cleanWorktree = $true
         artifactKind = 'portable-layout'
         compiledProfileSha256 = $profileHash
         utcTimestamp = [DateTime]::UtcNow.ToString('o')
         mode = 'isolated-validation-package'
-        target = 'test'
+        target = 'native-test-fixture'
         productLabel = 'Agents Commander Isolated Gates'
         bundleIdentifier = 'dev.agentscommander.isolatedgates'
         headerIdentity = 'WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated'
         launcherCommand = '.\launch-isolated.ps1 -FixtureRoot <absolute-fixture-root> -ExpectedManifestSha256 <trusted-hash>'
         payloads = [ordered]@{
-            executable = [ordered]@{
-                relativePath = 'Agents Commander Isolated Gates.exe'
-                sha256 = Get-Sha256 -LiteralPath $executable
-            }
-            profile = [ordered]@{
-                relativePath = 'resources/package-profile.toml'
-                sha256 = $profileHash
-            }
-            launcher = [ordered]@{
-                relativePath = 'launch-isolated.ps1'
-                sha256 = Get-Sha256 -LiteralPath $launcher
-            }
-            nativeProcessModule = [ordered]@{
-                relativePath = 'native-process.psm1'
-                sha256 = Get-Sha256 -LiteralPath $nativeProcessModule
-            }
+            executable = [ordered]@{ relativePath = 'Agents Commander Isolated Gates.exe'; sha256 = Get-Sha256 -LiteralPath $executable }
+            profile = [ordered]@{ relativePath = 'resources/package-profile.toml'; sha256 = $profileHash }
+            launcher = [ordered]@{ relativePath = 'launch-isolated.ps1'; sha256 = Get-Sha256 -LiteralPath $launcher }
+            nativeProcessModule = [ordered]@{ relativePath = 'native-process.psm1'; sha256 = Get-Sha256 -LiteralPath $module }
         }
     }
     Write-JsonFile -LiteralPath $manifestPath -Value $manifest
     $expectedManifestHash = Get-Sha256 -LiteralPath $manifestPath
-    $executableBytes = [System.IO.File]::ReadAllBytes($executable)
-    $profileBytes = [System.IO.File]::ReadAllBytes($profile)
-    $launcherBytes = [System.IO.File]::ReadAllBytes($launcher)
-    $nativeProcessModuleBytes = [System.IO.File]::ReadAllBytes($nativeProcessModule)
-    $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
+    $payloadBytes = @{}
+    foreach ($path in @($manifestPath, $executable, $profile, $launcher, $module)) {
+        $payloadBytes[$path] = [System.IO.File]::ReadAllBytes($path)
+    }
 
     [Environment]::SetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED', 'must-not-reach-child')
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_PROFILE_HASH', $profileHash)
+    $childSentinel = Join-Path $artifact 'child-execution-sentinel.txt'
     if (Test-Path -LiteralPath (Join-Path $fixture 'app-state')) {
-        throw 'the launcher test fixture pre-created the isolated app-state root'
+        throw 'staged-artifact fixture pre-created the isolated app-state root'
     }
+    $stage = 'initial staged-artifact launch'
     $first = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
     if (-not $first.Succeeded) {
-        throw "valid portable artifact did not launch: $($first.Output)"
+        throw "valid staged artifact did not launch: $($first.Output)"
     }
-    Wait-For-LauncherChildExit -ProcessId (($first.Output | ConvertFrom-Json).processId)
+    $firstResult = $first.Output | ConvertFrom-Json
+    Wait-ForProcessExit -ProcessId $firstResult.processId -CaseName 'initial staged artifact GUI'
     $receipt = Join-Path $fixture 'launch-receipt.json'
     if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
-        throw 'valid portable artifact did not write a receipt after status validation'
+        throw 'valid staged artifact did not publish an initial receipt'
     }
     $firstReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
+    $stage = 'immutable staged-artifact relaunch'
     $second = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
     if (-not $second.Succeeded) {
-        throw "same-root launcher relaunch failed: $($second.Output)"
+        $diagnostic = & $launcher -Verbose -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash 2>&1
+        throw "valid staged artifact relaunch failed: $($second.Output); diagnostic=$($diagnostic -join [Environment]::NewLine); receipt=$(Get-Content -LiteralPath $receipt -Raw)"
     }
-    Wait-For-LauncherChildExit -ProcessId (($second.Output | ConvertFrom-Json).processId)
+    Wait-ForProcessExit -ProcessId (($second.Output | ConvertFrom-Json).processId) -CaseName 'immutable receipt relaunch GUI'
     $secondReceiptBytes = [System.IO.File]::ReadAllBytes($receipt)
-    if ($firstReceiptBytes.Length -ne $secondReceiptBytes.Length -or
-        [System.BitConverter]::ToString($firstReceiptBytes) -cne [System.BitConverter]::ToString($secondReceiptBytes)) {
-        throw 'same-root launcher relaunch rewrote the immutable prior receipt'
+    if ([System.BitConverter]::ToString($firstReceiptBytes) -cne [System.BitConverter]::ToString($secondReceiptBytes)) {
+        throw 'valid re-launch changed immutable receipt bytes'
     }
-    $capturedChildEnvironment = Get-Content -LiteralPath (Join-Path $artifact 'mock-child-env.txt') -Raw
-    if ($null -ne $capturedChildEnvironment -and $capturedChildEnvironment.Contains('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED')) {
-        throw 'launcher leaked an AGENTSCOMMANDER_* variable into the child process'
-    }
-
-    $manifestTamperFixture = Join-Path $testRoot 'manifest-tamper'
-    New-Item -ItemType Directory -Path $manifestTamperFixture | Out-Null
-    Add-Content -LiteralPath $manifestPath -Value 'tampered'
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $manifestTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'manifest hash'
-    [System.IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
-
-    $executableTamperFixture = Join-Path $testRoot 'executable-tamper'
-    New-Item -ItemType Directory -Path $executableTamperFixture | Out-Null
-    Add-Content -LiteralPath $executable -Value 'tampered'
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $executableTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'executable hash'
-    [System.IO.File]::WriteAllBytes($executable, $executableBytes)
-
-    $profileTamperFixture = Join-Path $testRoot 'profile-tamper'
-    New-Item -ItemType Directory -Path $profileTamperFixture | Out-Null
-    Add-Content -LiteralPath $profile -Value 'tampered'
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $profileTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'profile hash'
-    [System.IO.File]::WriteAllBytes($profile, $profileBytes)
-
-    $launcherTamperFixture = Join-Path $testRoot 'launcher-tamper'
-    New-Item -ItemType Directory -Path $launcherTamperFixture | Out-Null
-    Add-Content -LiteralPath $launcher -Value 'tampered'
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $launcherTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'launcher hash'
-    [System.IO.File]::WriteAllBytes($launcher, $launcherBytes)
-
-    $moduleTamperFixture = Join-Path $testRoot 'native-process-module-tamper'
-    New-Item -ItemType Directory -Path $moduleTamperFixture | Out-Null
-    Add-Content -LiteralPath $nativeProcessModule -Value 'tampered'
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $moduleTamperFixture -ExpectedManifestSha256 $expectedManifestHash -CaseName 'native process module hash'
-    [System.IO.File]::WriteAllBytes($nativeProcessModule, $nativeProcessModuleBytes)
-
-    $layoutTamperFixture = Join-Path $testRoot 'layout-tamper'
-    New-Item -ItemType Directory -Path $layoutTamperFixture | Out-Null
-    $layoutTampered = $manifest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
-    $layoutTampered.payloads.profile.relativePath = '../outside-profile.toml'
-    Write-JsonFile -LiteralPath $manifestPath -Value $layoutTampered
-    $layoutTamperedExpectedHash = Get-Sha256 -LiteralPath $manifestPath
-    Assert-LauncherFailsBeforeReceipt -Launcher $launcher -FixtureRoot $layoutTamperFixture -ExpectedManifestSha256 $layoutTamperedExpectedHash -CaseName 'portable resource layout'
-    [System.IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
-
-    $malformedReceiptFixture = Join-Path $testRoot 'malformed-receipt'
-    New-Item -ItemType Directory -Path $malformedReceiptFixture | Out-Null
-    [System.IO.File]::WriteAllText(
-        (Join-Path $malformedReceiptFixture 'launch-receipt.json'),
-        '{"malformed":true}',
-        [System.Text.UTF8Encoding]::new($false)
-    )
-    $malformedReceiptResult = Invoke-Launcher -Launcher $launcher -FixtureRoot $malformedReceiptFixture -ExpectedManifestSha256 $expectedManifestHash
-    if ($malformedReceiptResult.Succeeded) {
-        throw 'the launcher accepted a malformed existing receipt'
+    $launcherChildEnvironment = [System.IO.File]::ReadAllText((Join-Path $artifact 'fixture-child-env.txt'))
+    if ($launcherChildEnvironment.Contains('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED')) {
+        throw 'launcher leaked parent AGENTSCOMMANDER_* state to staged child'
     }
 
-    $substitutedReceipt = Join-Path $testRoot 'caller-controlled-receipt.json'
-    try {
-        & $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash -ReceiptPath $substitutedReceipt 2>$null
-        throw 'launcher unexpectedly accepted a caller-controlled receipt path'
-    } catch {
-        if ($_.Exception.Message -eq 'launcher unexpectedly accepted a caller-controlled receipt path') {
-            throw
+    foreach ($tamper in @($manifestPath, $executable, $profile, $launcher, $module)) {
+        $stage = "payload tamper $([System.IO.Path]::GetFileName($tamper))"
+        $tamperFixture = Join-Path $testRoot ('tamper-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tamperFixture | Out-Null
+        Add-Content -LiteralPath $tamper -Value 'tampered'
+        $tamperExpectedHash = if ($tamper -ceq $manifestPath) { Get-Sha256 -LiteralPath $manifestPath } else { $expectedManifestHash }
+        Assert-LauncherFailsBeforeChild `
+            -Launcher $launcher `
+            -FixtureRoot $tamperFixture `
+            -ExpectedManifestSha256 $tamperExpectedHash `
+            -ChildSentinel $childSentinel `
+            -CaseName "payload tamper $([System.IO.Path]::GetFileName($tamper))"
+        [System.IO.File]::WriteAllBytes($tamper, $payloadBytes[$tamper])
+    }
+
+    foreach ($dynamicCase in @('missing', 'corrupt')) {
+        $stage = "near-valid receipt $dynamicCase"
+        $nearFixture = Join-Path $testRoot ("near-valid-receipt-$dynamicCase")
+        New-Item -ItemType Directory -Path $nearFixture | Out-Null
+        $nearReceipt = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+        $nearReceipt.fixtureRoot = $nearFixture
+        $nearReceipt.isolatedStateRoot = Join-Path $nearFixture 'app-state'
+        $nearReceipt.effectiveRoot = $nearReceipt.isolatedStateRoot
+        if ($dynamicCase -eq 'missing') {
+            $nearReceipt.PSObject.Properties.Remove('mutexHash')
+        }
+        else {
+            $nearReceipt.mutexHash = 42
+        }
+        $nearReceiptPath = Join-Path $nearFixture 'launch-receipt.json'
+        Write-JsonFile -LiteralPath $nearReceiptPath -Value $nearReceipt
+        $beforeReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
+        Assert-LauncherFailsBeforeChild `
+            -Launcher $launcher `
+            -FixtureRoot $nearFixture `
+            -ExpectedManifestSha256 $expectedManifestHash `
+            -ChildSentinel $childSentinel `
+            -CaseName "near-valid $dynamicCase dynamic receipt"
+        $afterReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
+        if ([System.BitConverter]::ToString($beforeReceiptBytes) -cne [System.BitConverter]::ToString($afterReceiptBytes)) {
+            throw "near-valid $dynamicCase receipt was changed after rejection"
         }
     }
-    if (Test-Path -LiteralPath $substitutedReceipt) {
-        throw 'launcher created a caller-controlled receipt path'
+
+    $collisionFixture = Join-Path $testRoot 'receipt-publication-collision'
+    $stage = 'receipt-publication collision cleanup'
+    New-Item -ItemType Directory -Path $collisionFixture | Out-Null
+    $guiPidPath = Join-Path $artifact 'collision-gui.pid'
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION', '1')
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_GUI_PID_PATH', $guiPidPath)
+    if (Test-Path -LiteralPath $childSentinel) { Remove-Item -LiteralPath $childSentinel -Force }
+    $collision = Invoke-Launcher -Launcher $launcher -FixtureRoot $collisionFixture -ExpectedManifestSha256 $expectedManifestHash
+    if ($collision.Succeeded) {
+        throw 'receipt-publication collision unexpectedly succeeded'
+    }
+    for ($attempt = 1; $attempt -le 80 -and -not (Test-Path -LiteralPath $guiPidPath -PathType Leaf); $attempt++) {
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not (Test-Path -LiteralPath $guiPidPath -PathType Leaf)) {
+        throw 'receipt-publication collision GUI did not publish original PID'
+    }
+    Wait-ForProcessExit -ProcessId ([int](Get-Content -LiteralPath $guiPidPath -Raw)) -CaseName 'receipt-publication original GUI lease'
+    $collisionReceipt = Join-Path $collisionFixture 'launch-receipt.json'
+    if ((Get-Content -LiteralPath $collisionReceipt -Raw) -cne "concurrent winner$([Environment]::NewLine)") {
+        throw 'receipt-publication failure changed a concurrent winner receipt'
+    }
+    if (@(Get-ChildItem -LiteralPath $collisionFixture -Filter '.launch-receipt-*.tmp' -Force).Count -ne 0) {
+        throw 'receipt-publication failure left a temporary receipt behind'
     }
 
     [pscustomobject]@{
         result = 'passed'
+        host = "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
         cases = @(
-            'whitespace and metacharacter fixture root',
-            'same-root immutable receipt re-launch',
-            'manifest, executable, profile, launcher, module, and layout tampering',
-            'malformed receipt rejection before child launch',
-            'caller-controlled receipt path rejection',
-            'child-only AGENTSCOMMANDER_* cleanup'
+            'AST production contract',
+            'real node.exe argv oracle and bounded capture',
+            'NUL, nonabsolute, and missing native inputs',
+            'real Git suffixes and tauri.cmd invocation',
+            'detached build revision preflight',
+            'staged artifact receipt immutability and payload integrity',
+            'near-valid receipt rejection before child launch',
+            'receipt-publication original-handle cleanup'
         )
     } | ConvertTo-Json -Depth 4
-} finally {
-    [Environment]::SetEnvironmentVariable('AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED', $originalInherited)
+}
+catch {
+    Write-Error "isolated launcher regression failed during ${stage}: $($_.Exception.Message)"
+    throw
+}
+finally {
+    foreach ($name in $savedParentEnvironment.Keys) {
+        if ($null -eq $savedParentEnvironment[$name]) {
+            Remove-Item -LiteralPath ("Env:$name") -ErrorAction SilentlyContinue
+        }
+        else {
+            Set-Item -LiteralPath ("Env:$name") -Value $savedParentEnvironment[$name]
+        }
+    }
     if (Test-Path -LiteralPath $testRoot) {
         for ($attempt = 1; $attempt -le 20; $attempt++) {
             try {
                 Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
                 break
-            } catch {
+            }
+            catch {
                 if ($attempt -eq 20) {
-                    Write-Warning "launcher regression fixture cleanup retained: $testRoot"
-                } else {
-                    Start-Sleep -Milliseconds 50
+                    throw
                 }
+                Start-Sleep -Milliseconds 100
             }
         }
     }

@@ -134,6 +134,7 @@ function Assert-ReceiptFields {
         if ($null -eq $property -or
             $property.Value -isnot [string] -or
             $property.Value -cne [string]$entry.Value) {
+            Write-Verbose "[isolated-validation] existing receipt trusted field failed: $($entry.Key)"
             throw 'the existing launch receipt does not match the trusted handoff'
         }
     }
@@ -142,22 +143,38 @@ function Assert-ReceiptFields {
 function Assert-ReceiptDynamicFields {
     param([Parameter(Mandatory)]$Receipt)
 
-    foreach ($name in @('effectiveRoot', 'mutexHash', 'utcTimestamp')) {
+    foreach ($name in @('effectiveRoot', 'mutexHash')) {
         $property = $Receipt.PSObject.Properties[$name]
         if ($null -eq $property -or
             $property.Value -isnot [string] -or
             [string]::IsNullOrWhiteSpace($property.Value)) {
+            Write-Verbose "[isolated-validation] existing receipt dynamic field failed: $name"
             throw 'the existing launch receipt has an invalid dynamic field'
         }
     }
 
+    $timestampProperty = $Receipt.PSObject.Properties['utcTimestamp']
+    if ($null -eq $timestampProperty -or $null -eq $timestampProperty.Value) {
+        Write-Verbose '[isolated-validation] existing receipt timestamp is missing'
+        throw 'the existing launch receipt has an invalid timestamp'
+    }
+    if ($timestampProperty.Value -is [DateTime]) {
+        return
+    }
+    if ($timestampProperty.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($timestampProperty.Value)) {
+        Write-Verbose '[isolated-validation] existing receipt timestamp has an invalid shape'
+        throw 'the existing launch receipt has an invalid timestamp'
+    }
+
     $timestamp = [DateTime]::MinValue
     if (-not [DateTime]::TryParse(
-        [string]$Receipt.utcTimestamp,
+        [string]$timestampProperty.Value,
         [System.Globalization.CultureInfo]::InvariantCulture,
         [System.Globalization.DateTimeStyles]::RoundtripKind,
         [ref]$timestamp
     )) {
+        Write-Verbose '[isolated-validation] existing receipt timestamp failed validation'
         throw 'the existing launch receipt has an invalid timestamp'
     }
 }
