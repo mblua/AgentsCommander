@@ -804,33 +804,48 @@ try {
         [System.IO.File]::WriteAllBytes($tamper, $payloadBytes[$tamper])
     }
 
-    foreach ($dynamicCase in @('missing', 'corrupt')) {
-        $stage = "near-valid receipt $dynamicCase"
-        $nearFixture = Join-Path $testRoot ("near-valid-receipt-$dynamicCase")
-        New-Item -ItemType Directory -Path $nearFixture | Out-Null
-        $nearReceipt = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
-        $nearReceipt.fixtureRoot = $nearFixture
-        $nearReceipt.isolatedStateRoot = Join-Path $nearFixture 'app-state'
-        $nearReceipt.effectiveRoot = $nearReceipt.isolatedStateRoot
-        if ($dynamicCase -eq 'missing') {
-            $nearReceipt.PSObject.Properties.Remove('mutexHash')
+    $statusChildSentinel = Join-Path $artifact 'status-child-sentinel.txt'
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_STATUS_CHILD_SENTINEL_PATH', $statusChildSentinel)
+    try {
+        foreach ($dynamicCase in @('malformed', 'foreign', 'mismatching')) {
+            $stage = "near-valid receipt $dynamicCase"
+            $nearFixture = Join-Path $testRoot ("near-valid-receipt-$dynamicCase")
+            $nearStateRoot = Join-Path $nearFixture 'app-state'
+            New-Item -ItemType Directory -Path $nearStateRoot -Force | Out-Null
+            $nearReceipt = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+            $nearReceipt.fixtureRoot = $nearFixture
+            $nearReceipt.isolatedStateRoot = $nearStateRoot
+            switch ($dynamicCase) {
+                'malformed' {
+                    $nearReceipt.PSObject.Properties.Remove('mutexHash')
+                }
+                'foreign' {
+                    $nearReceipt.effectiveRoot = Join-Path $testRoot 'foreign-isolated-root'
+                    $nearReceipt.mutexHash = ('f' * 64) -join ''
+                }
+                'mismatching' {
+                    $nearReceipt.effectiveRoot = $nearStateRoot
+                    $nearReceipt.mutexHash = ('0' * 64) -join ''
+                }
+            }
+            $nearReceiptPath = Join-Path $nearFixture 'launch-receipt.json'
+            Write-JsonFile -LiteralPath $nearReceiptPath -Value $nearReceipt
+            $beforeReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
+            Assert-LauncherFailsBeforeChild `
+                -Launcher $launcher `
+                -FixtureRoot $nearFixture `
+                -ExpectedManifestSha256 $expectedManifestHash `
+                -ChildSentinel $childSentinel `
+                -StatusChildSentinel $statusChildSentinel `
+                -CaseName "near-valid $dynamicCase dynamic receipt"
+            $afterReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
+            if ([System.BitConverter]::ToString($beforeReceiptBytes) -cne [System.BitConverter]::ToString($afterReceiptBytes)) {
+                throw "near-valid $dynamicCase receipt was changed after rejection"
+            }
         }
-        else {
-            $nearReceipt.mutexHash = 42
-        }
-        $nearReceiptPath = Join-Path $nearFixture 'launch-receipt.json'
-        Write-JsonFile -LiteralPath $nearReceiptPath -Value $nearReceipt
-        $beforeReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
-        Assert-LauncherFailsBeforeChild `
-            -Launcher $launcher `
-            -FixtureRoot $nearFixture `
-            -ExpectedManifestSha256 $expectedManifestHash `
-            -ChildSentinel $childSentinel `
-            -CaseName "near-valid $dynamicCase dynamic receipt"
-        $afterReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
-        if ([System.BitConverter]::ToString($beforeReceiptBytes) -cne [System.BitConverter]::ToString($afterReceiptBytes)) {
-            throw "near-valid $dynamicCase receipt was changed after rejection"
-        }
+    }
+    finally {
+        Remove-Item Env:ISOLATED_VALIDATION_TEST_STATUS_CHILD_SENTINEL_PATH -ErrorAction SilentlyContinue
     }
 
     $collisionFixture = Join-Path $testRoot 'receipt-publication-collision'
