@@ -115,14 +115,19 @@ function Remove-IsolatedValidationChildEnvironment {
 function Stop-IsolatedValidationProcess {
     param(
         [Parameter(Mandatory = $true)]
-        [System.Diagnostics.Process]$Process
+        [System.Diagnostics.Process]$Process,
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$TimeoutMilliseconds = 3000
     )
 
     try {
         if (-not $Process.HasExited) {
             $Process.Kill()
         }
-        $Process.WaitForExit()
+        if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
+            Write-Verbose '[isolated-validation] owned child cleanup timed out'
+            throw 'owned child cleanup timed out'
+        }
         if (-not $Process.HasExited) {
             throw 'owned child did not exit after termination'
         }
@@ -213,27 +218,16 @@ function Read-IsolatedValidationBoundedStreams {
     }
     finally {
         $cleanupFailed = $false
+        $cleanupTimedOut = $false
+        $cleanupDeadline = [DateTime]::UtcNow.AddMilliseconds(3000)
 
         if (-not $Process.HasExited) {
             try {
-                Stop-IsolatedValidationProcess -Process $Process
+                Stop-IsolatedValidationProcess -Process $Process -TimeoutMilliseconds 3000
             }
             catch {
                 $cleanupFailed = $true
-                Write-Verbose "[isolated-validation] owned child termination during capture cleanup failed: $($_.Exception.Message)"
-            }
-        }
-
-        foreach ($readTask in @($stdoutTask, $stderrTask)) {
-            try {
-                if (-not $readTask.IsCompleted) {
-                    $readTask.Wait()
-                }
-                [void]$readTask.GetAwaiter().GetResult()
-            }
-            catch {
-                $cleanupFailed = $true
-                Write-Verbose "[isolated-validation] stream read cleanup failed: $($_.Exception.Message)"
+                Write-Verbose '[isolated-validation] owned child termination during capture cleanup failed'
             }
         }
 
@@ -243,7 +237,23 @@ function Read-IsolatedValidationBoundedStreams {
             }
             catch {
                 $cleanupFailed = $true
-                Write-Verbose "[isolated-validation] stream reader disposal failed: $($_.Exception.Message)"
+                Write-Verbose '[isolated-validation] stream reader disposal failed'
+            }
+        }
+
+        foreach ($readTask in @($stdoutTask, $stderrTask)) {
+            $remainingMilliseconds = [int][Math]::Max(
+                0,
+                [Math]::Floor(($cleanupDeadline - [DateTime]::UtcNow).TotalMilliseconds)
+            )
+            if (-not $readTask.IsCompleted -and
+                ($remainingMilliseconds -le 0 -or -not $readTask.Wait($remainingMilliseconds))) {
+                $cleanupTimedOut = $true
+                continue
+            }
+
+            if ($readTask.IsFaulted) {
+                [void]$readTask.Exception
             }
         }
 
@@ -255,6 +265,11 @@ function Read-IsolatedValidationBoundedStreams {
                 $cleanupFailed = $true
                 Write-Verbose "[isolated-validation] stream buffer disposal failed: $($_.Exception.Message)"
             }
+        }
+
+        if ($cleanupTimedOut) {
+            $cleanupFailed = $true
+            Write-Verbose '[isolated-validation] native capture cleanup timed out'
         }
 
         if ($cleanupFailed) {

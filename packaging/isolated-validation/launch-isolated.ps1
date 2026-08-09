@@ -187,18 +187,8 @@ function Stop-AndDisposeIsolatedGuiProcess {
     }
 
     try {
-        $processId = $Process.Id
-        Write-Verbose "[isolated-validation] stopping owned GUI child PID $processId"
         if (-not $Process.HasExited) {
-            try {
-                Stop-Process -Id $processId -Force -ErrorAction Stop
-            }
-            catch {
-                $Process.Refresh()
-                if (-not $Process.HasExited) {
-                    throw
-                }
-            }
+            $Process.Kill()
         }
         if (-not $Process.WaitForExit(3000)) {
             throw 'owned GUI child did not exit within the cleanup timeout'
