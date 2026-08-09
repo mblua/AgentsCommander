@@ -23,34 +23,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Node dependencies
         run: npm ci
-      - name: Record Windows PowerShell 5 node.exe resolution
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $commands = @(Get-Command node.exe -All -ErrorAction SilentlyContinue)
-          $matches = @(
-            foreach ($command in $commands) {
-              $resolvedPath = if ([string]::IsNullOrWhiteSpace([string]$command.Path)) {
-                [string]$command.Definition
-              } else {
-                [string]$command.Path
-              }
-
-              [pscustomobject]@{
-                Name = [string]$command.Name
-                CommandType = [string]$command.CommandType
-                Path = [string]$command.Path
-                Definition = [string]$command.Definition
-                FileExists = [System.IO.File]::Exists($resolvedPath)
-              }
-            }
-          )
-
-          [pscustomobject]@{
-            Command = 'node.exe'
-            Matches = $matches
-            PATH = $env:PATH
-          } | ConvertTo-Json -Depth 4
       - name: Run Windows PowerShell 5 launcher regression
         shell: pwsh
         run: powershell.exe -NoProfile -NonInteractive -File scripts/test-isolated-validation-launcher.ps1 -ExpectedPSEdition Desktop -ExpectedMajorVersion 5
