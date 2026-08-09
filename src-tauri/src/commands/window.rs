@@ -248,27 +248,26 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     let url = format!("index.html?window=detached&sessionId={session_id_string}");
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .map_err(|error| format!("Failed to load app icon: {error}"))?;
-    let window =
-        {
-            let mut builder = crate::apply_isolated_webview_data_directory(
-                WebviewWindowBuilder::new(transaction.app(), &label, WebviewUrl::App(url.into())),
-            )
-            .map_err(|error| error.to_string())?
-            .title("Terminal [detached]")
-            .icon(icon)
-            .map_err(|error| error.to_string())?
-            .min_inner_size(400.0, 300.0)
-            .decorations(false)
-            .zoom_hotkeys_enabled(false);
-            if let Some(ref geometry) = geometry {
-                builder = builder
-                    .inner_size(geometry.width, geometry.height)
-                    .position(geometry.x, geometry.y);
-            } else {
-                builder = builder.inner_size(900.0, 600.0);
-            }
-            builder.build().map_err(|error| error.to_string())?
-        };
+    let window = {
+        let mut builder = crate::apply_isolated_webview_data_directory(|| {
+            WebviewWindowBuilder::new(transaction.app(), &label, WebviewUrl::App(url.into()))
+        })
+        .map_err(|error| error.to_string())?
+        .title("Terminal [detached]")
+        .icon(icon)
+        .map_err(|error| error.to_string())?
+        .min_inner_size(400.0, 300.0)
+        .decorations(false)
+        .zoom_hotkeys_enabled(false);
+        if let Some(ref geometry) = geometry {
+            builder = builder
+                .inner_size(geometry.width, geometry.height)
+                .position(geometry.x, geometry.y);
+        } else {
+            builder = builder.inner_size(900.0, 600.0);
+        }
+        builder.build().map_err(|error| error.to_string())?
+    };
 
     transaction
         .app()
@@ -623,11 +622,13 @@ pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    let mut builder = crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-        &app,
-        "main",
-        WebviewUrl::App("index.html?window=main".into()),
-    ))
+    let mut builder = crate::apply_isolated_webview_data_directory(|| {
+        WebviewWindowBuilder::new(
+            &app,
+            "main",
+            WebviewUrl::App("index.html?window=main".into()),
+        )
+    })
     .map_err(|error| error.to_string())?
     .title(crate::config::profile::app_title())
     .icon(icon)
@@ -664,11 +665,13 @@ pub async fn open_guide_window(app: AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-        &app,
-        "guide",
-        WebviewUrl::App("index.html?window=guide".into()),
-    ))
+    crate::apply_isolated_webview_data_directory(|| {
+        WebviewWindowBuilder::new(
+            &app,
+            "guide",
+            WebviewUrl::App("index.html?window=guide".into()),
+        )
+    })
     .map_err(|error| error.to_string())?
     .title(format!(
         "Guide — {}",
@@ -700,11 +703,13 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-        &app,
-        "spec-board",
-        WebviewUrl::App("index.html?window=spec-board".into()),
-    ))
+    crate::apply_isolated_webview_data_directory(|| {
+        WebviewWindowBuilder::new(
+            &app,
+            "spec-board",
+            WebviewUrl::App("index.html?window=spec-board".into()),
+        )
+    })
     .map_err(|error| error.to_string())?
     .title(format!(
         "Spec Board - {}",
@@ -749,11 +754,13 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    let window = crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-        &app,
-        RESOURCE_MONITOR_WINDOW_LABEL,
-        WebviewUrl::App("index.html?window=resource-monitor".into()),
-    ))
+    let window = crate::apply_isolated_webview_data_directory(|| {
+        WebviewWindowBuilder::new(
+            &app,
+            RESOURCE_MONITOR_WINDOW_LABEL,
+            WebviewUrl::App("index.html?window=resource-monitor".into()),
+        )
+    })
     .map_err(|error| error.to_string())?
     .title(format!(
         "Resource Monitor - {}",
@@ -942,11 +949,13 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
-    let mut builder = crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-        &app,
-        WATCHERS_WINDOW_LABEL,
-        WebviewUrl::App(format!("index.html?window=watchers&sessionId={}", session_id).into()),
-    ))
+    let mut builder = crate::apply_isolated_webview_data_directory(|| {
+        WebviewWindowBuilder::new(
+            &app,
+            WATCHERS_WINDOW_LABEL,
+            WebviewUrl::App(format!("index.html?window=watchers&sessionId={}", session_id).into()),
+        )
+    })
     .map_err(|error| error.to_string())?
     .title(format!(
         "Watcher Activity - {}",

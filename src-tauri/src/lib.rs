@@ -47,20 +47,32 @@ use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
-/// Apply the isolated WebView profile directory at every native builder seam.
-/// In normal mode this is intentionally a no-op, preserving Tauri's existing
-/// default data-directory behavior.
+pub(crate) fn build_after_isolated_webview_data_directory_resolution<T>(
+    data_directory: Result<Option<std::path::PathBuf>, config::app_state_root::IsolationError>,
+    build: impl FnOnce(Option<std::path::PathBuf>) -> T,
+) -> Result<T, config::app_state_root::IsolationError> {
+    Ok(build(data_directory?))
+}
+
+/// Resolve the isolated WebView profile directory before constructing a native
+/// builder. In normal mode this preserves Tauri's default data-directory behavior.
 pub fn apply_isolated_webview_data_directory<'a, R, M>(
-    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+    builder: impl FnOnce() -> tauri::WebviewWindowBuilder<'a, R, M>,
 ) -> Result<tauri::WebviewWindowBuilder<'a, R, M>, config::app_state_root::IsolationError>
 where
     R: tauri::Runtime,
     M: tauri::Manager<R>,
 {
-    match config::app_state_root::isolated_webview_data_directory()? {
-        Some(directory) => Ok(builder.data_directory(directory)),
-        None => Ok(builder),
-    }
+    build_after_isolated_webview_data_directory_resolution(
+        config::app_state_root::isolated_webview_data_directory(),
+        |directory| {
+            let builder = builder();
+            match directory {
+                Some(directory) => builder.data_directory(directory),
+                None => builder,
+            }
+        },
+    )
 }
 
 /// Snapshot scanner terminality is deliberately not an input here.
@@ -1903,7 +1915,7 @@ pub fn run(
             };
 
             // Create the unified Main window (replaces sidebar + terminal windows).
-            let main_win = apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
+            let main_win = apply_isolated_webview_data_directory(|| WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::App("index.html?window=main".into()),

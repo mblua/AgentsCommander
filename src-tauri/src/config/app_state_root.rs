@@ -1244,8 +1244,32 @@ mod tests {
         }
     }
 
+    fn assert_failed_webview_resolution_does_not_construct_a_builder(
+        resolution: Result<Option<PathBuf>, IsolationError>,
+    ) {
+        let builder_constructed = Cell::new(false);
+        let default_data_directory_selected = Cell::new(false);
+        let result = crate::build_after_isolated_webview_data_directory_resolution(
+            resolution,
+            |directory| {
+                builder_constructed.set(true);
+                default_data_directory_selected.set(directory.is_none());
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(
+            !builder_constructed.get(),
+            "a rejected isolated directory must not construct a WebView builder"
+        );
+        assert!(
+            !default_data_directory_selected.get(),
+            "a rejected isolated directory must not select the default WebView data directory"
+        );
+    }
+
     #[test]
-    fn retained_webview_directory_fails_closed_when_missing_or_replaced() {
+    fn missing_retained_webview_directory_does_not_construct_a_builder() {
         let fixture = tempfile::TempDir::new().unwrap();
         let root_path = fixture.path().join("app-state");
         let state = resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
@@ -1254,12 +1278,59 @@ mod tests {
         let retired_webview = root_path.join("retired-webview-data");
 
         if std::fs::rename(&webview_path, &retired_webview).is_ok() {
-            assert!(state.verified_webview_data_directory().is_err());
-            std::fs::create_dir(&webview_path).unwrap();
-            assert!(state.verified_webview_data_directory().is_err());
+            assert_failed_webview_resolution_does_not_construct_a_builder(
+                state.verified_webview_data_directory().map(Some),
+            );
         } else {
             assert!(state.verified_webview_data_directory().is_ok());
         }
+    }
+
+    #[test]
+    fn replaced_retained_webview_directory_does_not_construct_a_builder() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        let state = resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
+            .expect("fixture root bootstraps");
+        let webview_path = root_path.join("webview-data");
+        let retired_webview = root_path.join("retired-webview-data");
+
+        if std::fs::rename(&webview_path, &retired_webview).is_ok() {
+            std::fs::create_dir(&webview_path).unwrap();
+            assert_failed_webview_resolution_does_not_construct_a_builder(
+                state.verified_webview_data_directory().map(Some),
+            );
+        } else {
+            assert!(state.verified_webview_data_directory().is_ok());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reparse_retained_webview_directory_does_not_construct_a_builder() {
+        let fixture = tempfile::TempDir::new().unwrap();
+        let root_path = fixture.path().join("app-state");
+        let outside_path = fixture.path().join("outside");
+        let webview_path = root_path.join("webview-data");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::create_dir(&outside_path).unwrap();
+
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&webview_path)
+            .arg(&outside_path)
+            .status()
+            .expect("create the WebView junction fixture");
+        assert!(
+            status.success(),
+            "failed to create the WebView junction fixture"
+        );
+
+        let resolution =
+            resolve_isolated_startup_state(&root_path, test_profile(), "profile-hash", &[])
+                .and_then(|state| state.verified_webview_data_directory().map(Some));
+        std::fs::remove_dir(&webview_path).expect("remove the WebView junction fixture");
+        assert_failed_webview_resolution_does_not_construct_a_builder(resolution);
     }
 
     #[test]

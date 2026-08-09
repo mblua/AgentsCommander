@@ -558,11 +558,9 @@ fn open_overlay_windows(
             "index.html?window=screenshot-overlay&captureId={capture_id}&monitorId={}",
             p.monitor_id
         );
-        let window = crate::apply_isolated_webview_data_directory(WebviewWindowBuilder::new(
-            app,
-            &p.label,
-            WebviewUrl::App(url.into()),
-        ))
+        let window = crate::apply_isolated_webview_data_directory(|| {
+            WebviewWindowBuilder::new(app, &p.label, WebviewUrl::App(url.into()))
+        })
         .map_err(|error| error.to_string())?
         .title("Screenshot Capture")
         .decorations(false)
