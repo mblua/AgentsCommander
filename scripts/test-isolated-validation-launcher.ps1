@@ -488,7 +488,7 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         if (-not (Test-Path -LiteralPath $foreignSentinel)) {
             throw 'handle-bound MSI cleanup followed a substituted quarantine child reparse target'
         }
-        Remove-Item -LiteralPath $quarantinedPayload -Force -ErrorAction Stop
+        [System.IO.Directory]::Delete($quarantinedPayload, $false)
 
         Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
         Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
