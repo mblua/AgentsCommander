@@ -385,6 +385,88 @@ catch {
     }
 }
 
+function Invoke-IsolatedValidationExtractionCleanupRegression {
+    param(
+        [Parameter(Mandatory)][string]$Builder,
+        [Parameter(Mandatory)][string]$TestRoot
+    )
+
+    $builderSource = [System.IO.File]::ReadAllText($Builder)
+    $functionStart = $builderSource.IndexOf(
+        'function Get-IsolatedValidationDirectoryIdentity {',
+        [System.StringComparison]::Ordinal
+    )
+    $mainStart = $builderSource.IndexOf(
+        '$releaseDirectory = Join-Path $RepoRoot',
+        [System.StringComparison]::Ordinal
+    )
+    if ($functionStart -lt 0 -or $mainStart -le $functionStart) {
+        throw 'could not load the production extraction cleanup primitives for regression coverage'
+    }
+    if ($builderSource -match 'Remove-Item -LiteralPath \$installedRoot -Recurse') {
+        throw 'production MSI cleanup must not recursively delete the public administrative extraction path'
+    }
+
+    . ([scriptblock]::Create($builderSource.Substring($functionStart, $mainStart - $functionStart)))
+
+    $regressionRoot = Join-Path $TestRoot ('extraction-cleanup-regression-' + [Guid]::NewGuid().ToString('N'))
+    $releaseDirectory = Join-Path $regressionRoot 'release'
+    $installedRoot = Join-Path $releaseDirectory 'invocation-owned'
+    $foreignTarget = Join-Path $regressionRoot 'foreign-target'
+    $quarantinePath = $null
+    $installedRootLease = $null
+    $releaseDirectoryLease = $null
+    try {
+        New-Item -ItemType Directory -Path $installedRoot -Force -ErrorAction Stop | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $installedRoot 'payload') -Force -ErrorAction Stop | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $installedRoot 'payload\owned.txt'), 'owned')
+
+        $releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease `
+            -Path $releaseDirectory `
+            -DesiredAccess ([uint32]0x000000A0)
+        $installedRootLease = Open-IsolatedValidationExtractionDirectoryLease `
+            -Path $installedRoot `
+            -DesiredAccess ([uint32]0x00010080)
+        $expectedIdentity = $installedRootLease.identity
+        $actualIdentity = Get-IsolatedValidationDirectoryIdentityFromHandle `
+            -Handle $installedRootLease.handle `
+            -Path $installedRoot
+        if (-not (Test-IsolatedValidationDirectoryIdentity -Expected $expectedIdentity -Actual $actualIdentity)) {
+            throw 'the retained administrative extraction handle did not retain its invocation-owned identity'
+        }
+
+        $quarantineLeaf = '.isolated-validation-cleanup-regression-' + [Guid]::NewGuid().ToString('N')
+        Move-IsolatedValidationExtractionToQuarantine `
+            -DirectoryLease $installedRootLease `
+            -ParentDirectoryLease $releaseDirectoryLease `
+            -QuarantineLeaf $quarantineLeaf
+        $quarantinePath = Join-Path $releaseDirectory $quarantineLeaf
+
+        New-Item -ItemType Directory -Path $foreignTarget -Force -ErrorAction Stop | Out-Null
+        $foreignSentinel = Join-Path $foreignTarget 'must-survive.txt'
+        [System.IO.File]::WriteAllText($foreignSentinel, 'foreign')
+        New-Item -ItemType Junction -Path $installedRoot -Target $foreignTarget -ErrorAction Stop | Out-Null
+
+        Clear-IsolatedValidationQuarantinedDirectoryContents -Path $quarantinePath
+        Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
+    }
+    finally {
+        if ($null -ne $installedRootLease) {
+            $installedRootLease.handle.Dispose()
+        }
+        if ($null -ne $releaseDirectoryLease) {
+            $releaseDirectoryLease.handle.Dispose()
+        }
+    }
+
+    if ($null -eq $quarantinePath -or (Test-Path -LiteralPath $quarantinePath)) {
+        throw 'handle-bound MSI cleanup did not remove the quarantined invocation-owned directory'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installedRoot 'must-survive.txt'))) {
+        throw 'handle-bound MSI cleanup removed a replacement or reparse substitution at the public extraction path'
+    }
+}
+
 function Invoke-IsolatedValidationTestRootCleanup {
     param(
         [Parameter(Mandatory)][string]$Path,
