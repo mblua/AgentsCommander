@@ -78,6 +78,9 @@ fn main() {
     }
 
     if arguments.iter().any(|argument| argument == "--isolation-status") {
+        if let Ok(status_sentinel_path) = env::var("ISOLATED_VALIDATION_TEST_STATUS_CHILD_SENTINEL_PATH") {
+            fs::write(status_sentinel_path, "status\n").expect("write status child sentinel");
+        }
         let root = value_after(&arguments, "--isolated-state-root").expect("isolated root");
         fs::create_dir_all(root).expect("create isolated root");
         if env::var("ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION")

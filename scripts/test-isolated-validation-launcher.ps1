@@ -149,11 +149,16 @@ function Assert-LauncherFailsBeforeChild {
         [Parameter(Mandatory)][string]$FixtureRoot,
         [Parameter(Mandatory)][string]$ExpectedManifestSha256,
         [Parameter(Mandatory)][string]$ChildSentinel,
-        [Parameter(Mandatory)][string]$CaseName
+        [Parameter(Mandatory)][string]$CaseName,
+        [string]$StatusChildSentinel
     )
 
     if (Test-Path -LiteralPath $ChildSentinel) {
         Remove-Item -LiteralPath $ChildSentinel -Force
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StatusChildSentinel) -and
+        (Test-Path -LiteralPath $StatusChildSentinel)) {
+        Remove-Item -LiteralPath $StatusChildSentinel -Force
     }
     $result = Invoke-Launcher -Launcher $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256
     if ($result.Succeeded) {
@@ -161,6 +166,10 @@ function Assert-LauncherFailsBeforeChild {
     }
     if (Test-Path -LiteralPath $ChildSentinel) {
         throw "$CaseName started a child before rejecting the input"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StatusChildSentinel) -and
+        (Test-Path -LiteralPath $StatusChildSentinel)) {
+        throw "$CaseName started its status child before rejecting the input"
     }
 }
 
