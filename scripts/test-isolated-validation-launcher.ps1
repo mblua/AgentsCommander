@@ -403,8 +403,17 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
     if ($functionStart -lt 0 -or $mainStart -le $functionStart) {
         throw 'could not load the production extraction cleanup primitives for regression coverage'
     }
-    if ($builderSource -match 'Remove-Item -LiteralPath \$installedRoot -Recurse') {
+    if ($builderSource -match 'Remove-Item\s+-LiteralPath\s+\$installedRoot\b') {
         throw 'production MSI cleanup must not recursively delete the public administrative extraction path'
+    }
+    foreach ($requiredCall in @(
+            'Move-IsolatedValidationExtractionToQuarantine',
+            'Clear-IsolatedValidationQuarantinedDirectoryContents',
+            'Remove-IsolatedValidationDirectoryByHandle'
+        )) {
+        if ([regex]::Matches($builderSource, [regex]::Escape($requiredCall)).Count -lt 2) {
+            throw "production MSI cleanup does not invoke $requiredCall from its cleanup path"
+        }
     }
 
     . ([scriptblock]::Create($builderSource.Substring($functionStart, $mainStart - $functionStart)))
