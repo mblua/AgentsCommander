@@ -655,7 +655,7 @@ try {
         throw "$($_.Exception.Message); launcher diagnostics: $($collision.Output)"
     }
     $collisionReceipt = Join-Path $collisionFixture 'launch-receipt.json'
-    if ((Get-Content -LiteralPath $collisionReceipt -Raw) -cne "concurrent winner$([Environment]::NewLine)") {
+    if ((Get-Content -LiteralPath $collisionReceipt -Raw) -cne "concurrent winner`n") {
         throw 'receipt-publication failure changed a concurrent winner receipt'
     }
     if (@(Get-ChildItem -LiteralPath $collisionFixture -Filter '.launch-receipt-*.tmp' -Force).Count -ne 0) {
