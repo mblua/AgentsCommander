@@ -415,6 +415,22 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
             throw "production MSI cleanup does not invoke $requiredCall from its cleanup path"
         }
     }
+    $clearStart = $builderSource.IndexOf(
+        'function Clear-IsolatedValidationQuarantinedDirectoryContents {',
+        [System.StringComparison]::Ordinal
+    )
+    $clearEnd = $builderSource.IndexOf(
+        'function Remove-IsolatedValidationExtractionEntryByHandle {',
+        [System.StringComparison]::Ordinal
+    )
+    if ($clearStart -lt 0 -or $clearEnd -le $clearStart) {
+        throw 'could not locate production handle-bound quarantine traversal'
+    }
+    $clearBody = $builderSource.Substring($clearStart, $clearEnd - $clearStart)
+    if ($clearBody -match 'Remove-Item' -or
+        $clearBody -notmatch 'Open-IsolatedValidationExtractionEntryLease') {
+        throw 'production MSI quarantine traversal must retain no-follow child handles before deletion'
+    }
 
     . ([scriptblock]::Create($builderSource.Substring($functionStart, $mainStart - $functionStart)))
 
@@ -423,6 +439,7 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
     $installedRoot = Join-Path $releaseDirectory 'invocation-owned'
     $foreignTarget = Join-Path $regressionRoot 'foreign-target'
     $quarantinePath = $null
+    $quarantinedPayload = $null
     $installedRootLease = $null
     $releaseDirectoryLease = $null
     try {
@@ -455,7 +472,25 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         [System.IO.File]::WriteAllText($foreignSentinel, 'foreign')
         New-Item -ItemType Junction -Path $installedRoot -Target $foreignTarget -ErrorAction Stop | Out-Null
 
-        Clear-IsolatedValidationQuarantinedDirectoryContents -Path $quarantinePath
+        $quarantinedPayload = Join-Path $quarantinePath 'payload'
+        Remove-Item -LiteralPath $quarantinedPayload -Recurse -Force -ErrorAction Stop
+        New-Item -ItemType Junction -Path $quarantinedPayload -Target $foreignTarget -ErrorAction Stop | Out-Null
+        $childSubstitutionRejected = $false
+        try {
+            Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
+        }
+        catch {
+            $childSubstitutionRejected = $true
+        }
+        if (-not $childSubstitutionRejected) {
+            throw 'handle-bound MSI cleanup accepted a substituted quarantine child'
+        }
+        if (-not (Test-Path -LiteralPath $foreignSentinel)) {
+            throw 'handle-bound MSI cleanup followed a substituted quarantine child reparse target'
+        }
+        Remove-Item -LiteralPath $quarantinedPayload -Force -ErrorAction Stop
+
+        Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
         Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
     }
     finally {
@@ -472,6 +507,9 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $installedRoot 'must-survive.txt'))) {
         throw 'handle-bound MSI cleanup removed a replacement or reparse substitution at the public extraction path'
+    }
+    if (-not (Test-Path -LiteralPath $foreignSentinel)) {
+        throw 'handle-bound MSI cleanup removed a replacement or reparse substitution below the quarantine root'
     }
 }
 

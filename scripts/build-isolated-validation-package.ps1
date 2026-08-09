@@ -263,10 +263,11 @@ function Get-IsolatedValidationDirectoryIdentityFromHandle {
     return [pscustomobject]@{
         volumeSerialNumber = [uint32]$information.VolumeSerialNumber
         fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
+        fileAttributes = [uint32]$information.FileAttributes
     }
 }
 
-function Open-IsolatedValidationExtractionDirectoryLease {
+function Open-IsolatedValidationExtractionEntryLease {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][uint32]$DesiredAccess
@@ -301,6 +302,15 @@ function Open-IsolatedValidationExtractionDirectoryLease {
         $handle.Dispose()
         throw
     }
+}
+
+function Open-IsolatedValidationExtractionDirectoryLease {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][uint32]$DesiredAccess
+    )
+
+    return Open-IsolatedValidationExtractionEntryLease @PSBoundParameters
 }
 
 function Move-IsolatedValidationExtractionToQuarantine {
@@ -350,28 +360,37 @@ function Move-IsolatedValidationExtractionToQuarantine {
         [Runtime.InteropServices.Marshal]::FreeHGlobal($renameBuffer)
     }
 
+    $DirectoryLease.path = $quarantinePath
     return $quarantinePath
 }
 
 function Clear-IsolatedValidationQuarantinedDirectoryContents {
-    param([Parameter(Mandatory)][string]$Path)
+    param([Parameter(Mandatory)]$DirectoryLease)
 
-    foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
-        if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
+    # Each child is opened without following reparses and held without delete sharing
+    # before traversal. A replacement after this point cannot redirect deletion; a
+    # reparse encountered before the lease is retained fails cleanup closed.
+    foreach ($child in @(Get-ChildItem -LiteralPath $DirectoryLease.path -Force -ErrorAction Stop)) {
+        $childLease = $null
+        try {
+            $childLease = Open-IsolatedValidationExtractionEntryLease `
+                -Path $child.FullName `
+                -DesiredAccess ([uint32]0x00010080)
+            if (($childLease.identity.fileAttributes -band [uint32]0x00000010) -ne 0) {
+                Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $childLease
+            }
+            Remove-IsolatedValidationExtractionEntryByHandle -EntryLease $childLease
         }
-        elseif ($child.PSIsContainer) {
-            Clear-IsolatedValidationQuarantinedDirectoryContents -Path $child.FullName
-            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
-        }
-        else {
-            Remove-Item -LiteralPath $child.FullName -Force -ErrorAction Stop
+        finally {
+            if ($null -ne $childLease) {
+                $childLease.handle.Dispose()
+            }
         }
     }
 }
 
-function Remove-IsolatedValidationDirectoryByHandle {
-    param([Parameter(Mandatory)]$DirectoryLease)
+function Remove-IsolatedValidationExtractionEntryByHandle {
+    param([Parameter(Mandatory)]$EntryLease)
 
     $dispositionInfo = New-Object IsolatedValidationExtractionDispositionInfo
     $dispositionInfo.DeleteFile = [byte]1
@@ -380,7 +399,7 @@ function Remove-IsolatedValidationDirectoryByHandle {
     try {
         [Runtime.InteropServices.Marshal]::StructureToPtr($dispositionInfo, $dispositionBuffer, $false)
         if (-not [IsolatedValidationExtractionDirectoryIdentity]::SetFileInformationByHandle(
-                $DirectoryLease.handle,
+                $EntryLease.handle,
                 4,
                 $dispositionBuffer,
                 [uint32]$dispositionInfoSize
@@ -391,6 +410,12 @@ function Remove-IsolatedValidationDirectoryByHandle {
     finally {
         [Runtime.InteropServices.Marshal]::FreeHGlobal($dispositionBuffer)
     }
+}
+
+function Remove-IsolatedValidationDirectoryByHandle {
+    param([Parameter(Mandatory)]$DirectoryLease)
+
+    Remove-IsolatedValidationExtractionEntryByHandle -EntryLease $DirectoryLease
 }
 
 $releaseDirectory = Join-Path $RepoRoot 'target/release'
@@ -504,7 +529,7 @@ finally {
                 -ParentDirectoryLease $releaseDirectoryLease `
                 -QuarantineLeaf $quarantineLeaf
 
-            Clear-IsolatedValidationQuarantinedDirectoryContents -Path $quarantinePath
+            Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
             Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
         }
         elseif (Test-Path -LiteralPath $installedRoot) {

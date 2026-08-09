@@ -196,13 +196,7 @@ function Stop-AndDisposeIsolatedGuiProcess {
     }
 }
 
-function Get-IsolatedReceiptExpectedMutexHash {
-    param(
-        [Parameter(Mandatory)][string]$PackageId,
-        [Parameter(Mandatory)][string]$ParentPath,
-        [Parameter(Mandatory)][string]$LeafName
-    )
-
+function Initialize-IsolatedValidationReceiptNative {
     if ($null -eq ('IsolatedValidationReceiptNative' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -247,11 +241,18 @@ public static class IsolatedValidationReceiptNative
 }
 '@
     }
+}
 
-    # The app-state argument remains raw. This reads only its known FixtureRoot parent,
-    # matching the bootstrap-mutex input without resolving or normalizing the child path.
+function Get-IsolatedReceiptDirectoryIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Description
+    )
+
+    Initialize-IsolatedValidationReceiptNative
+
     $directoryHandle = [IsolatedValidationReceiptNative]::CreateFile(
-        $ParentPath,
+        $Path,
         [uint32]0x00000080,
         [uint32]0x00000007,
         [IntPtr]::Zero,
@@ -262,36 +263,75 @@ public static class IsolatedValidationReceiptNative
     if ($directoryHandle.IsInvalid) {
         $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         $directoryHandle.Dispose()
-        throw "could not inspect the fixture-root directory identity: $errorCode"
+        throw "could not inspect the $Description directory identity: $errorCode"
     }
 
     try {
         $information = New-Object IsolatedValidationReceiptNative+ByHandleFileInformation
         if (-not [IsolatedValidationReceiptNative]::GetFileInformationByHandle($directoryHandle, [ref]$information)) {
             $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            throw "could not read the fixture-root directory identity: $errorCode"
+            throw "could not read the $Description directory identity: $errorCode"
         }
         if (([uint32]$information.FileAttributes -band [uint32]0x00000400) -ne 0) {
-            throw 'the fixture-root directory identity is a reparse point'
+            throw "the $Description directory identity is a reparse point"
         }
 
-        $hashInput = New-Object 'System.Collections.Generic.List[byte]'
-        $hashInput.AddRange([Text.Encoding]::UTF8.GetBytes($PackageId))
-        $hashInput.AddRange([BitConverter]::GetBytes([uint32]$information.VolumeSerialNumber))
-        $fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
-        $hashInput.AddRange([BitConverter]::GetBytes($fileIndex))
-        $hashInput.AddRange([Text.Encoding]::UTF8.GetBytes($LeafName.ToUpperInvariant()))
-
-        $sha256 = [Security.Cryptography.SHA256]::Create()
-        try {
-            return ([BitConverter]::ToString($sha256.ComputeHash($hashInput.ToArray())) -replace '-', '').ToLowerInvariant()
-        }
-        finally {
-            $sha256.Dispose()
+        return [pscustomobject]@{
+            volumeSerialNumber = [uint32]$information.VolumeSerialNumber
+            fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
         }
     }
     finally {
         $directoryHandle.Dispose()
+    }
+}
+
+function Get-IsolatedReceiptFinalRootMutexHash {
+    param(
+        [Parameter(Mandatory)][string]$PackageId,
+        [Parameter(Mandatory)]$RootIdentity
+    )
+
+    $hashInput = New-Object 'System.Collections.Generic.List[byte]'
+    $hashInput.AddRange([Text.Encoding]::UTF8.GetBytes($PackageId))
+    $hashInput.AddRange([BitConverter]::GetBytes([uint64]$RootIdentity.volumeSerialNumber))
+    $hashInput.AddRange([BitConverter]::GetBytes([uint64]$RootIdentity.fileIndex))
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha256.ComputeHash($hashInput.ToArray())) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Assert-IsolatedReceiptFinalRootBinding {
+    param(
+        [Parameter(Mandatory)]$Receipt,
+        [Parameter(Mandatory)][string]$RawStateRoot,
+        [Parameter(Mandatory)][string]$PackageId
+    )
+
+    # Status owns the bootstrap parent-plus-leaf lock. Persisted receipts instead bind
+    # the canonical final root and its final-root mutex. The raw state-root argument is
+    # inspected only by handle and is never resolved or normalized here.
+    $rawIdentity = Get-IsolatedReceiptDirectoryIdentity `
+        -Path $RawStateRoot `
+        -Description 'raw isolated app-state'
+    $receiptIdentity = Get-IsolatedReceiptDirectoryIdentity `
+        -Path ([string]$Receipt.effectiveRoot) `
+        -Description 'receipt effective-root'
+    if ($rawIdentity.volumeSerialNumber -ne $receiptIdentity.volumeSerialNumber -or
+        $rawIdentity.fileIndex -ne $receiptIdentity.fileIndex) {
+        throw 'the existing launch receipt does not match the trusted handoff'
+    }
+
+    $expectedMutexHash = Get-IsolatedReceiptFinalRootMutexHash `
+        -PackageId $PackageId `
+        -RootIdentity $rawIdentity
+    if ([string]$Receipt.mutexHash -cne $expectedMutexHash) {
+        throw 'the existing launch receipt does not match the trusted handoff'
     }
 }
 
@@ -315,9 +355,6 @@ $trustedReceiptFields = [ordered]@{
     launcherSha256 = $manifest.payloads.launcher.sha256
     nativeProcessModuleSha256 = $manifest.payloads.nativeProcessModule.sha256
 }
-$trustedReceiptFields.effectiveRoot = $isolatedStateRoot
-$trustedReceiptFields.mutexHash = Get-IsolatedReceiptExpectedMutexHash -PackageId $trustedReceiptFields.packageId -ParentPath $fixture -LeafName 'app-state'
-
 $existingReceipt = $null
 if (Test-Path -LiteralPath $receiptPath) {
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
@@ -330,6 +367,10 @@ if (Test-Path -LiteralPath $receiptPath) {
         throw 'the existing launch receipt is malformed'
     }
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+    Assert-IsolatedReceiptFinalRootBinding `
+        -Receipt $existingReceipt `
+        -RawStateRoot $isolatedStateRoot `
+        -PackageId $trustedReceiptFields.packageId
 }
 
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
@@ -362,8 +403,8 @@ if ([string]::IsNullOrWhiteSpace([string]$statusJson.effectiveRoot) -or
 if ($null -eq $existingReceipt) {
     $trustedReceiptFields.effectiveRoot = $statusJson.effectiveRoot
     $trustedReceiptFields.mutexHash = $statusJson.mutexHash
-} elseif ($statusJson.effectiveRoot -cne $trustedReceiptFields.effectiveRoot -or
-    $statusJson.mutexHash -cne $trustedReceiptFields.mutexHash) {
+} elseif ($statusJson.effectiveRoot -cne $existingReceipt.effectiveRoot -or
+    $statusJson.mutexHash -cne $existingReceipt.mutexHash) {
     throw 'E_ISOLATION_STATUS'
 }
 
