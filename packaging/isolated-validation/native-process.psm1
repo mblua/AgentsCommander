@@ -61,14 +61,6 @@ function Test-IsolatedValidationFullyQualifiedPath {
         return $false
     }
 
-    $isPathFullyQualified = [System.IO.Path].GetMethod(
-        'IsPathFullyQualified',
-        [System.Type[]]@([string])
-    )
-    if ($null -ne $isPathFullyQualified) {
-        return [System.IO.Path]::IsPathFullyQualified($Path)
-    }
-
     return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\\\\\?\\(?:[A-Za-z]:[\\/]|UNC\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)))'
 }
 
