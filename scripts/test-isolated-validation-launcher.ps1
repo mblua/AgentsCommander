@@ -368,6 +368,7 @@ foreach ($name in @(
         'AGENTSCOMMANDER_TEST_NATIVE_PARENT',
         'AGENTSCOMMANDER_TEST_LAUNCHER_INHERITED',
         'ISOLATED_VALIDATION_TEST_PROFILE_HASH',
+        'ISOLATED_VALIDATION_TEST_MUTEX_HASH',
         'ISOLATED_VALIDATION_TEST_RECEIPT_COLLISION',
         'ISOLATED_VALIDATION_TEST_GUI_PID_PATH',
         'GIT_DIR',
@@ -664,6 +665,47 @@ try {
         }
     }
 
+    $actualValidFixture = Join-Path $testRoot 'actual-copied-handoff-valid-fixture'
+    New-Item -ItemType Directory -Path $actualValidFixture | Out-Null
+    $actualValidResult = Invoke-Launcher `
+        -Launcher $actualLauncher `
+        -FixtureRoot $actualValidFixture `
+        -ExpectedManifestSha256 $actualHandoff.manifestSha256
+    if (-not $actualValidResult.Succeeded) {
+        throw "real copied handoff launcher/status flow failed: $($actualValidResult.Output)"
+    }
+
+    $actualValidProcessId = 0
+    try {
+        try {
+            $actualValidLaunch = $actualValidResult.Output | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw 'real copied handoff launcher did not return a launch result'
+        }
+        $actualValidProcessId = [int]$actualValidLaunch.processId
+        if ($actualValidProcessId -le 0) {
+            throw 'real copied handoff launcher did not start its GUI child'
+        }
+
+        $actualValidReceiptPath = Join-Path $actualValidFixture 'launch-receipt.json'
+        if (-not (Test-Path -LiteralPath $actualValidReceiptPath -PathType Leaf)) {
+            throw 'real copied handoff launcher did not materialize its status receipt'
+        }
+        $actualValidReceipt = [System.IO.File]::ReadAllText($actualValidReceiptPath, [System.Text.UTF8Encoding]::new($false)) |
+            ConvertFrom-Json -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$actualValidReceipt.effectiveRoot) -or
+            [string]::IsNullOrWhiteSpace([string]$actualValidReceipt.mutexHash)) {
+            throw 'real copied handoff status receipt omitted dynamic root identity'
+        }
+    }
+    finally {
+        if ($actualValidProcessId -gt 0 -and $null -ne (Get-Process -Id $actualValidProcessId -ErrorAction SilentlyContinue)) {
+            Stop-Process -Id $actualValidProcessId -ErrorAction SilentlyContinue
+            Wait-ForProcessExit -ProcessId $actualValidProcessId -CaseName 'real copied handoff GUI child cleanup'
+        }
+    }
+
     $artifact = Join-Path $testRoot 'staged-artifact'
     $resources = Join-Path $artifact 'resources'
     $fixture = Join-Path $testRoot 'fixture root; & metacharacters'
@@ -723,6 +765,98 @@ try {
         Remove-Item Env:ISOLATED_VALIDATION_TEST_PIPE_LEAK_READY_PATH -ErrorAction SilentlyContinue
         Remove-Item Env:ISOLATED_VALIDATION_TEST_PIPE_LEAK_EXIT_PATH -ErrorAction SilentlyContinue
     }
+
+    $fixtureStateRoot = Join-Path $fixture 'app-state'
+    New-Item -ItemType Directory -Path $fixtureStateRoot -Force | Out-Null
+    if ($null -eq ('IsolatedValidationFixtureRootIdentity' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+
+public static class IsolatedValidationFixtureRootIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFile(
+        string path,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        IntPtr handle,
+        out ByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static string MutexHash(string packageId, string root)
+    {
+        IntPtr handle = CreateFile(root, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        if (handle == new IntPtr(-1))
+        {
+            throw new InvalidOperationException("could not open fixture state root");
+        }
+
+        try
+        {
+            ByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information))
+            {
+                throw new InvalidOperationException("could not read fixture state root identity");
+            }
+
+            ulong volume = information.VolumeSerialNumber;
+            ulong file = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
+            byte[] packageBytes = Encoding.UTF8.GetBytes(packageId);
+            byte[] input = new byte[packageBytes.Length + 16];
+            Buffer.BlockCopy(packageBytes, 0, input, 0, packageBytes.Length);
+            for (int index = 0; index < 8; index++)
+            {
+                input[packageBytes.Length + index] = (byte)(volume >> (index * 8));
+                input[packageBytes.Length + 8 + index] = (byte)(file >> (index * 8));
+            }
+
+            using (SHA256 algorithm = SHA256.Create())
+            {
+                return BitConverter.ToString(algorithm.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+            }
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+}
+'@
+    }
+    $fixtureMutexHash = [IsolatedValidationFixtureRootIdentity]::MutexHash(
+        'agentscommander-1271-isolated-gates',
+        $fixtureStateRoot
+    )
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_MUTEX_HASH', $fixtureMutexHash)
 
     $profileHash = Get-Sha256 -LiteralPath $profile
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'

@@ -94,11 +94,14 @@ fn main() {
         }
         let profile_hash = env::var("ISOLATED_VALIDATION_TEST_PROFILE_HASH")
             .expect("test profile hash");
+        let mutex_hash = env::var("ISOLATED_VALIDATION_TEST_MUTEX_HASH")
+            .unwrap_or_else(|_| "test-mutex-hash".to_owned());
         let effective_root = fs::canonicalize(root).expect("canonical isolated root");
         print!(
-            "{{\"effectiveRoot\":\"{}\",\"packageId\":\"agentscommander-1271-isolated-gates\",\"profileSha256\":\"{}\",\"workspace\":\"AgentsCommander_1271_isolated\",\"matrix\":\"WG-1271-ISOLATED-GATES\",\"replicaAgent\":\"gate-tester\",\"headerIdentity\":\"WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated\",\"bundleIdentifier\":\"dev.agentscommander.isolatedgates\",\"mutexHash\":\"test-mutex-hash\"}}",
+            "{{\"effectiveRoot\":\"{}\",\"packageId\":\"agentscommander-1271-isolated-gates\",\"profileSha256\":\"{}\",\"workspace\":\"AgentsCommander_1271_isolated\",\"matrix\":\"WG-1271-ISOLATED-GATES\",\"replicaAgent\":\"gate-tester\",\"headerIdentity\":\"WG-1271-ISOLATED-GATES gate-tester@AgentsCommander_1271_isolated\",\"bundleIdentifier\":\"dev.agentscommander.isolatedgates\",\"mutexHash\":\"{}\"}}",
             json_escape(&effective_root.to_string_lossy()),
-            json_escape(&profile_hash)
+            json_escape(&profile_hash),
+            json_escape(&mutex_hash)
         );
         return;
     }
