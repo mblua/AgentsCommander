@@ -129,11 +129,24 @@ function Assert-ReceiptFields {
     }
 
     $timestamp = $Receipt.PSObject.Properties['utcTimestamp']
+    $timestampText = $null
+    if ($null -ne $timestamp) {
+        if ($timestamp.Value -is [string]) {
+            $timestampText = [string]$timestamp.Value
+        }
+        elseif ($timestamp.Value -is [DateTime]) {
+            # ConvertFrom-Json in PowerShell Core materializes ISO-8601 JSON strings as DateTime.
+            $timestampText = $timestamp.Value.ToString(
+                'o',
+                [System.Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+    }
+
     $parsedTimestamp = [DateTime]::MinValue
-    if ($null -eq $timestamp -or
-        $timestamp.Value -isnot [string] -or
+    if ([string]::IsNullOrWhiteSpace($timestampText) -or
         -not [DateTime]::TryParseExact(
-            [string]$timestamp.Value,
+            $timestampText,
             'o',
             [System.Globalization.CultureInfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::RoundtripKind,
