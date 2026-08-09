@@ -147,7 +147,8 @@ $msiArtifacts = @(Get-ChildItem -LiteralPath $msiDirectory -Filter '*.msi' -File
 if ($msiArtifacts.Count -ne 1) {
     throw "expected exactly one isolated validation MSI below $msiDirectory; found $($msiArtifacts.Count)"
 }
-$installedDirectory = Join-Path $releaseDirectory ('isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
+$installedRoot = Join-Path $releaseDirectory ('isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
+$installedPackageDirectory = Join-Path $installedRoot 'PFiles\Agents Commander Isolated Gates'
 $msiExecutable = Join-Path $env:SystemRoot 'System32/msiexec.exe'
 if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
     throw "missing Windows Installer executable: $msiExecutable"
@@ -156,13 +157,13 @@ $administrativeInstall = Start-IsolatedValidationNativeProcess `
     -Mode Wait `
     -FilePath $msiExecutable `
     -WorkingDirectory $releaseDirectory `
-    -Arguments @('/a', $msiArtifacts[0].FullName, '/qn', "INSTALLDIR=$installedDirectory") `
+    -Arguments @('/a', $msiArtifacts[0].FullName, '/qn', "TARGETDIR=$installedRoot") `
     -RemoveAgentsCommanderEnvironment
 if ($administrativeInstall.ExitCode -ne 0) {
     throw "could not materialize the isolated validation MSI with exit code $($administrativeInstall.ExitCode)"
 }
-$installedExecutable = Join-Path $installedDirectory 'agentscommander.exe'
-$installedProfile = Join-Path $installedDirectory 'resources/package-profile.toml'
+$installedExecutable = Join-Path $installedPackageDirectory 'agentscommander.exe'
+$installedProfile = Join-Path $installedPackageDirectory 'package-profile.toml'
 if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf) -or
     -not (Test-Path -LiteralPath $installedProfile -PathType Leaf)) {
     throw 'the isolated validation MSI did not materialize its deterministic executable and profile resource layout'
