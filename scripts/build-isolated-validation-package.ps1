@@ -334,7 +334,8 @@ function Move-IsolatedValidationExtractionToQuarantine {
                 $renameBuffer,
                 [uint32]$renameBufferLength
             )) {
-            throw 'could not atomically quarantine MSI administrative extraction'
+            $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "could not atomically quarantine MSI administrative extraction: $errorCode"
         }
     }
     finally {
