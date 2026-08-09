@@ -122,16 +122,14 @@ function Stop-IsolatedValidationProcess {
         if (-not $Process.HasExited) {
             $Process.Kill()
         }
-    }
-    catch {
-        # Best effort only. The caller still waits and disposes the owned handle.
-    }
-
-    try {
         $Process.WaitForExit()
+        if (-not $Process.HasExited) {
+            throw 'owned child did not exit after termination'
+        }
     }
     catch {
-        # The process handle is disposed by the caller on every failure path.
+        Write-Verbose "[isolated-validation] owned child cleanup failed: $($_.Exception.Message)"
+        throw 'E_ISOLATION_NATIVE_PROCESS'
     }
 }
 
@@ -147,8 +145,10 @@ function Read-IsolatedValidationBoundedStreams {
         [int]$StandardErrorLimitBytes
     )
 
-    $stdoutStream = $Process.StandardOutput.BaseStream
-    $stderrStream = $Process.StandardError.BaseStream
+    $stdoutReader = $Process.StandardOutput
+    $stderrReader = $Process.StandardError
+    $stdoutStream = $stdoutReader.BaseStream
+    $stderrStream = $stderrReader.BaseStream
     $stdoutBuffer = New-Object byte[] 8192
     $stderrBuffer = New-Object byte[] 8192
     $stdoutBytes = [System.IO.MemoryStream]::new()
@@ -212,8 +212,54 @@ function Read-IsolatedValidationBoundedStreams {
         }
     }
     finally {
-        $stdoutBytes.Dispose()
-        $stderrBytes.Dispose()
+        $cleanupFailed = $false
+
+        if (-not $Process.HasExited) {
+            try {
+                Stop-IsolatedValidationProcess -Process $Process
+            }
+            catch {
+                $cleanupFailed = $true
+                Write-Verbose "[isolated-validation] owned child termination during capture cleanup failed: $($_.Exception.Message)"
+            }
+        }
+
+        foreach ($readTask in @($stdoutTask, $stderrTask)) {
+            try {
+                if (-not $readTask.IsCompleted) {
+                    $readTask.Wait()
+                }
+                [void]$readTask.GetAwaiter().GetResult()
+            }
+            catch {
+                $cleanupFailed = $true
+                Write-Verbose "[isolated-validation] stream read cleanup failed: $($_.Exception.Message)"
+            }
+        }
+
+        foreach ($reader in @($stdoutReader, $stderrReader)) {
+            try {
+                $reader.Dispose()
+            }
+            catch {
+                $cleanupFailed = $true
+                Write-Verbose "[isolated-validation] stream reader disposal failed: $($_.Exception.Message)"
+            }
+        }
+
+        foreach ($buffer in @($stdoutBytes, $stderrBytes)) {
+            try {
+                $buffer.Dispose()
+            }
+            catch {
+                $cleanupFailed = $true
+                Write-Verbose "[isolated-validation] stream buffer disposal failed: $($_.Exception.Message)"
+            }
+        }
+
+        if ($cleanupFailed) {
+            throw 'E_ISOLATION_NATIVE_PROCESS'
+        }
     }
 }
 
