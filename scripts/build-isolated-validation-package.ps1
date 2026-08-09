@@ -406,14 +406,15 @@ $msiArtifacts = @(Get-ChildItem -LiteralPath $msiDirectory -Filter '*.msi' -File
 if ($msiArtifacts.Count -ne 1) {
     throw "expected exactly one isolated validation MSI below $msiDirectory; found $($msiArtifacts.Count)"
 }
-$installedRoot = Join-Path $releaseDirectory ('isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
+$extractionParentDirectory = [System.IO.Path]::GetTempPath()
+$installedRoot = Join-Path $extractionParentDirectory ('agentscommander-isolated-validation-installed-' + [Guid]::NewGuid().ToString('N'))
 $installedPackageDirectory = Join-Path $installedRoot 'PFiles\Agents Commander Isolated Gates'
 $msiExecutable = Join-Path $env:SystemRoot 'System32/msiexec.exe'
 if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
     throw "missing Windows Installer executable: $msiExecutable"
 }
 $extractionFailure = $null
-$releaseDirectoryIdentity = Get-IsolatedValidationDirectoryIdentity -Path $releaseDirectory
+$extractionParentDirectoryIdentity = Get-IsolatedValidationDirectoryIdentity -Path $extractionParentDirectory
 $installedRootIdentity = $null
 $installedRootLease = $null
 $releaseDirectoryLease = $null
@@ -478,12 +479,12 @@ finally {
     try {
         if ($null -ne $installedRootIdentity -and (Test-Path -LiteralPath $installedRoot)) {
             $releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease `
-                -Path $releaseDirectory `
+                -Path $extractionParentDirectory `
                 -DesiredAccess ([uint32]0x000000A0)
             if (-not (Test-IsolatedValidationDirectoryIdentity `
-                    -Expected $releaseDirectoryIdentity `
+                    -Expected $extractionParentDirectoryIdentity `
                     -Actual $releaseDirectoryLease.identity)) {
-                throw "MSI administrative extraction parent identity changed before cleanup: $releaseDirectory"
+                throw "MSI administrative extraction parent identity changed before cleanup: $extractionParentDirectory"
             }
 
             $installedRootLease = Open-IsolatedValidationExtractionDirectoryLease `
