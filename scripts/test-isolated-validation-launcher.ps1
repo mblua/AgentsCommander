@@ -416,7 +416,7 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         }
     }
     $clearStart = $builderSource.IndexOf(
-        'function Clear-IsolatedValidationQuarantinedDirectoryContents {',
+        'function Get-IsolatedValidationQuarantinedDirectoryEntries {',
         [System.StringComparison]::Ordinal
     )
     $clearEnd = $builderSource.IndexOf(
@@ -428,8 +428,12 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
     }
     $clearBody = $builderSource.Substring($clearStart, $clearEnd - $clearStart)
     if ($clearBody -match 'Remove-Item' -or
-        $clearBody -notmatch 'Open-IsolatedValidationExtractionEntryLease') {
-        throw 'production MSI quarantine traversal must retain no-follow child handles before deletion'
+        $clearBody -match 'Get-ChildItem' -or
+        $clearBody -match '\$child\.FullName' -or
+        $clearBody -notmatch 'Get-IsolatedValidationQuarantinedDirectoryEntries' -or
+        $clearBody -notmatch 'Open-IsolatedValidationExtractionEntryLeaseRelative' -or
+        $clearBody -notmatch 'Clear-IsolatedValidationQuarantinedDirectoryEntries') {
+        throw 'production MSI quarantine traversal must bind enumerated child identities to no-follow parent-relative handles before deletion'
     }
 
     . ([scriptblock]::Create($builderSource.Substring($functionStart, $mainStart - $functionStart)))
@@ -452,7 +456,7 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
             -DesiredAccess ([uint32]0x000000A0)
         $installedRootLease = Open-IsolatedValidationExtractionDirectoryLease `
             -Path $installedRoot `
-            -DesiredAccess ([uint32]0x00010080)
+            -DesiredAccess ([uint32]0x00010081)
         $expectedIdentity = $installedRootLease.identity
         $actualIdentity = Get-IsolatedValidationDirectoryIdentityFromHandle `
             -Handle $installedRootLease.handle `
@@ -473,11 +477,45 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         New-Item -ItemType Junction -Path $installedRoot -Target $foreignTarget -ErrorAction Stop | Out-Null
 
         $quarantinedPayload = Join-Path $quarantinePath 'payload'
+        $normalEntries = @(Get-IsolatedValidationQuarantinedDirectoryEntries -DirectoryLease $installedRootLease)
+        $normalPayloadEntries = @($normalEntries | Where-Object { $_.name -ceq 'payload' })
+        if ($normalPayloadEntries.Count -ne 1) {
+            throw 'handle-bound MSI cleanup did not snapshot the original quarantined payload before substitution'
+        }
+        Remove-Item -LiteralPath $quarantinedPayload -Recurse -Force -ErrorAction Stop
+        $normalReplacementDirectory = Join-Path $regressionRoot 'foreign-normal-directory'
+        New-Item -ItemType Directory -Path $normalReplacementDirectory -Force -ErrorAction Stop | Out-Null
+        $normalReplacementSentinel = Join-Path $normalReplacementDirectory 'must-survive-normal-directory.txt'
+        [System.IO.File]::WriteAllText($normalReplacementSentinel, 'foreign-normal')
+        Move-Item -LiteralPath $normalReplacementDirectory -Destination $quarantinedPayload -ErrorAction Stop
+        $normalReplacementSentinel = Join-Path $quarantinedPayload 'must-survive-normal-directory.txt'
+        $normalSubstitutionRejected = $false
+        try {
+            Clear-IsolatedValidationQuarantinedDirectoryEntries `
+                -DirectoryLease $installedRootLease `
+                -Entries $normalEntries
+        }
+        catch {
+            $normalSubstitutionRejected = $true
+        }
+        if (-not $normalSubstitutionRejected) {
+            throw 'handle-bound MSI cleanup accepted an ordinary directory substituted after enumeration'
+        }
+        if (-not (Test-Path -LiteralPath $normalReplacementSentinel)) {
+            throw 'handle-bound MSI cleanup deleted an ordinary directory substituted after enumeration'
+        }
+        Remove-Item -LiteralPath $quarantinedPayload -Recurse -Force -ErrorAction Stop
+
+        New-Item -ItemType Directory -Path $quarantinedPayload -Force -ErrorAction Stop | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $quarantinedPayload 'owned.txt'), 'owned')
+        $junctionEntries = @(Get-IsolatedValidationQuarantinedDirectoryEntries -DirectoryLease $installedRootLease)
         Remove-Item -LiteralPath $quarantinedPayload -Recurse -Force -ErrorAction Stop
         New-Item -ItemType Junction -Path $quarantinedPayload -Target $foreignTarget -ErrorAction Stop | Out-Null
         $childSubstitutionRejected = $false
         try {
-            Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
+            Clear-IsolatedValidationQuarantinedDirectoryEntries `
+                -DirectoryLease $installedRootLease `
+                -Entries $junctionEntries
         }
         catch {
             $childSubstitutionRejected = $true
@@ -490,6 +528,10 @@ function Invoke-IsolatedValidationExtractionCleanupRegression {
         }
         [System.IO.Directory]::Delete($quarantinedPayload, $false)
 
+        New-Item -ItemType Directory -Path $quarantinedPayload -Force -ErrorAction Stop | Out-Null
+        $nestedOwnedDirectory = Join-Path $quarantinedPayload 'nested'
+        New-Item -ItemType Directory -Path $nestedOwnedDirectory -Force -ErrorAction Stop | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $nestedOwnedDirectory 'owned.txt'), 'owned')
         Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $installedRootLease
         Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
     }

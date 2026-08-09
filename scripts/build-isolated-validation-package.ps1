@@ -187,6 +187,7 @@ public static class IsolatedValidationExtractionDirectoryIdentity {
         Int32 informationClass,
         IntPtr information,
         UInt32 informationLength);
+
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -265,6 +266,92 @@ function Get-IsolatedValidationDirectoryIdentityFromHandle {
         fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
         fileAttributes = [uint32]$information.FileAttributes
     }
+}
+
+function Initialize-IsolatedValidationExtractionCleanupNative {
+    if ($null -ne ('IsolatedValidationExtractionCleanupNative' -as [type])) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionCleanupUnicodeString {
+    public UInt16 Length;
+    public UInt16 MaximumLength;
+    public IntPtr Buffer;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionCleanupObjectAttributes {
+    public UInt32 Length;
+    public IntPtr RootDirectory;
+    public IntPtr ObjectName;
+    public UInt32 Attributes;
+    public IntPtr SecurityDescriptor;
+    public IntPtr SecurityQualityOfService;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionCleanupIoStatusBlock {
+    public IntPtr Status;
+    public IntPtr Information;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader {
+    public UInt32 NextEntryOffset;
+    public UInt32 FileIndex;
+    public Int64 CreationTime;
+    public Int64 LastAccessTime;
+    public Int64 LastWriteTime;
+    public Int64 ChangeTime;
+    public Int64 EndOfFile;
+    public Int64 AllocationSize;
+    public UInt32 FileAttributes;
+    public UInt32 FileNameLength;
+    public UInt32 EaSize;
+    public Byte ShortNameLength;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 12, ArraySubType = UnmanagedType.U2)]
+    public UInt16[] ShortName;
+    public UInt64 FileId;
+    public UInt16 FileNameFirstCharacter;
+}
+
+public static class IsolatedValidationExtractionCleanupNative {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle file,
+        Int32 informationClass,
+        IntPtr information,
+        UInt32 informationLength);
+
+    [DllImport("ntdll.dll")]
+    public static extern Int32 NtCreateFile(
+        out IntPtr fileHandle,
+        UInt32 desiredAccess,
+        ref IsolatedValidationExtractionCleanupObjectAttributes objectAttributes,
+        out IsolatedValidationExtractionCleanupIoStatusBlock ioStatusBlock,
+        IntPtr allocationSize,
+        UInt32 fileAttributes,
+        UInt32 shareAccess,
+        UInt32 createDisposition,
+        UInt32 createOptions,
+        IntPtr eaBuffer,
+        UInt32 eaLength);
+
+    [DllImport("ntdll.dll")]
+    public static extern Int32 NtClose(IntPtr handle);
+
+    public static SafeFileHandle CreateSafeFileHandle(IntPtr handle) {
+        return new SafeFileHandle(handle, true);
+    }
+}
+'@ -ErrorAction Stop
 }
 
 function Open-IsolatedValidationExtractionEntryLease {
@@ -364,18 +451,246 @@ function Move-IsolatedValidationExtractionToQuarantine {
     return $quarantinePath
 }
 
-function Clear-IsolatedValidationQuarantinedDirectoryContents {
+function Get-IsolatedValidationQuarantinedDirectoryEntries {
     param([Parameter(Mandatory)]$DirectoryLease)
 
-    # Each child is opened without following reparses and held without delete sharing
-    # before traversal. A replacement after this point cannot redirect deletion; a
-    # reparse encountered before the lease is retained fails cleanup closed.
-    foreach ($child in @(Get-ChildItem -LiteralPath $DirectoryLease.path -Force -ErrorAction Stop)) {
+    Initialize-IsolatedValidationExtractionCleanupNative
+
+    # Query the held directory handle directly. This creates a stable entry
+    # snapshot that is later bound to the child handle opened relative to this
+    # same trusted parent, instead of re-resolving an absolute child path.
+    $fileIdBothDirectoryInfo = 10
+    $fileIdBothDirectoryRestartInfo = 11
+    $errorNoMoreFiles = 18
+    $bufferLength = 65536
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufferLength)
+    try {
+        $fileAttributesOffset = [Runtime.InteropServices.Marshal]::OffsetOf(
+            [IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader],
+            'FileAttributes'
+        ).ToInt32()
+        $fileNameLengthOffset = [Runtime.InteropServices.Marshal]::OffsetOf(
+            [IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader],
+            'FileNameLength'
+        ).ToInt32()
+        $fileNameOffset = [Runtime.InteropServices.Marshal]::OffsetOf(
+            [IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader],
+            'FileNameFirstCharacter'
+        ).ToInt32()
+        $entryHeaderSize = [Runtime.InteropServices.Marshal]::SizeOf(
+            (New-Object IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader)
+        )
+        if ($fileAttributesOffset -lt 0 -or
+            $fileNameLengthOffset -lt $fileAttributesOffset -or
+            $fileNameOffset -le $fileNameLengthOffset -or
+            $entryHeaderSize -lt $fileNameOffset -or
+            $entryHeaderSize -gt $bufferLength -or
+            $fileNameOffset -ge $bufferLength) {
+            throw 'could not determine safe FILE_ID_BOTH_DIR_INFORMATION field offsets'
+        }
+
+        $entries = New-Object System.Collections.ArrayList
+        $informationClass = $fileIdBothDirectoryRestartInfo
+        while ($true) {
+            if (-not [IsolatedValidationExtractionCleanupNative]::GetFileInformationByHandleEx(
+                    $DirectoryLease.handle,
+                    $informationClass,
+                    $buffer,
+                    [uint32]$bufferLength
+                )) {
+                $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                if ($errorCode -eq $errorNoMoreFiles) {
+                    break
+                }
+                throw "could not enumerate quarantined MSI administrative extraction by handle: $errorCode"
+            }
+
+            $entryOffset = 0
+            while ($true) {
+                if ($entryOffset -lt 0 -or $entryOffset -gt ($bufferLength - $entryHeaderSize)) {
+                    throw 'received malformed FILE_ID_BOTH_DIR_INFORMATION entry offset'
+                }
+
+                $entryPointer = [IntPtr]::Add($buffer, $entryOffset)
+                $entry = [Runtime.InteropServices.Marshal]::PtrToStructure(
+                    $entryPointer,
+                    [type][IsolatedValidationExtractionCleanupFileIdBothDirectoryInformationHeader]
+                )
+                $fileNameByteLength = [uint32]$entry.FileNameLength
+                if (($fileNameByteLength -eq 0) -or
+                    (($fileNameByteLength % 2) -ne 0) -or
+                    $fileNameByteLength -gt ($bufferLength - $entryOffset - $fileNameOffset)) {
+                    throw 'received malformed FILE_ID_BOTH_DIR_INFORMATION file name'
+                }
+
+                $entryName = [Runtime.InteropServices.Marshal]::PtrToStringUni(
+                    [IntPtr]::Add($entryPointer, $fileNameOffset),
+                    [int]($fileNameByteLength / 2)
+                )
+                if ([string]::IsNullOrEmpty($entryName)) {
+                    throw 'received an empty FILE_ID_BOTH_DIR_INFORMATION file name'
+                }
+                if ($entryName -ne '.' -and $entryName -ne '..') {
+                    if ($entryName.Contains([string][char]0) -or
+                        $entryName.Contains('\\') -or
+                        $entryName.Contains('/') -or
+                        $entryName.Contains(':')) {
+                        throw 'received a non-leaf FILE_ID_BOTH_DIR_INFORMATION file name'
+                    }
+                    [void]$entries.Add([pscustomobject]@{
+                            name = $entryName
+                            fileIndex = [uint64]$entry.FileId
+                            fileAttributes = [uint32]$entry.FileAttributes
+                        })
+                }
+
+                $nextEntryOffset = [uint64]$entry.NextEntryOffset
+                if ($nextEntryOffset -eq 0) {
+                    break
+                }
+                if (($nextEntryOffset % 8) -ne 0 -or
+                    $nextEntryOffset -lt [uint64]$entryHeaderSize -or
+                    $nextEntryOffset -gt [uint64]($bufferLength - $entryOffset)) {
+                    throw 'received malformed FILE_ID_BOTH_DIR_INFORMATION next-entry offset'
+                }
+                $entryOffset += [int]$nextEntryOffset
+            }
+
+            $informationClass = $fileIdBothDirectoryInfo
+        }
+
+        return $entries.ToArray()
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
+    }
+}
+
+function Open-IsolatedValidationExtractionEntryLeaseRelative {
+    param(
+        [Parameter(Mandatory)]$ParentDirectoryLease,
+        [Parameter(Mandatory)]$Entry
+    )
+
+    $entryName = [string]$Entry.name
+    Initialize-IsolatedValidationExtractionCleanupNative
+
+    if ([string]::IsNullOrEmpty($entryName) -or
+        $entryName -eq '.' -or
+        $entryName -eq '..' -or
+        $entryName.Contains([string][char]0) -or
+        $entryName.Contains('\\') -or
+        $entryName.Contains('/') -or
+        $entryName.Contains(':')) {
+        throw 'refusing to open a non-leaf quarantined MSI administrative extraction entry'
+    }
+    if (([uint32]$Entry.fileAttributes -band [uint32]0x00000400) -ne 0) {
+        throw "refusing to open a reparse-point quarantined MSI administrative extraction entry: $entryName"
+    }
+
+    $entryNameBytes = [Text.Encoding]::Unicode.GetBytes($entryName)
+    if ($entryNameBytes.Length -gt ([UInt16]::MaxValue - 2)) {
+        throw "quarantined MSI administrative extraction entry name is too long: $entryName"
+    }
+
+    $unicodeString = New-Object IsolatedValidationExtractionCleanupUnicodeString
+    $unicodeString.Length = [uint16]$entryNameBytes.Length
+    $unicodeString.MaximumLength = [uint16]($entryNameBytes.Length + 2)
+    $unicodeString.Buffer = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($entryName)
+    $unicodeStringPointer = [IntPtr]::Zero
+    $rawHandle = [IntPtr]::Zero
+    $handle = $null
+    try {
+        $unicodeStringPointer = [Runtime.InteropServices.Marshal]::AllocHGlobal(
+            [Runtime.InteropServices.Marshal]::SizeOf($unicodeString)
+        )
+        [Runtime.InteropServices.Marshal]::StructureToPtr($unicodeString, $unicodeStringPointer, $false)
+
+        $objectAttributes = New-Object IsolatedValidationExtractionCleanupObjectAttributes
+        $objectAttributes.Length = [uint32][Runtime.InteropServices.Marshal]::SizeOf($objectAttributes)
+        $objectAttributes.RootDirectory = $ParentDirectoryLease.handle.DangerousGetHandle()
+        $objectAttributes.ObjectName = $unicodeStringPointer
+        $objectAttributes.Attributes = [uint32]0x00000040
+        $ioStatusBlock = New-Object IsolatedValidationExtractionCleanupIoStatusBlock
+        $desiredAccess = [uint32]0x00110080
+        if (([uint32]$Entry.fileAttributes -band [uint32]0x00000010) -ne 0) {
+            $desiredAccess = $desiredAccess -bor [uint32]0x00000001
+        }
+
+        $ntStatus = [IsolatedValidationExtractionCleanupNative]::NtCreateFile(
+            [ref]$rawHandle,
+            $desiredAccess,
+            [ref]$objectAttributes,
+            [ref]$ioStatusBlock,
+            [IntPtr]::Zero,
+            [uint32]0,
+            [uint32]3,
+            [uint32]1,
+            [uint32]0x00204020,
+            [IntPtr]::Zero,
+            [uint32]0
+        )
+        if ($ntStatus -ne 0) {
+            $hexStatus = '{0:X8}' -f ([uint32]$ntStatus)
+            throw "could not retain quarantined MSI administrative extraction entry relative to its trusted parent: $entryName (NTSTATUS 0x$hexStatus)"
+        }
+
+        $handle = [IsolatedValidationExtractionCleanupNative]::CreateSafeFileHandle($rawHandle)
+        $rawHandle = [IntPtr]::Zero
+        if ($handle.IsInvalid) {
+            $handle.Dispose()
+            throw "could not retain quarantined MSI administrative extraction entry handle: $entryName"
+        }
+
+        $identity = Get-IsolatedValidationDirectoryIdentityFromHandle `
+            -Handle $handle `
+            -Path "relative entry '$entryName'"
+        if ($identity.fileIndex -ne [uint64]$Entry.fileIndex) {
+            throw "quarantined MSI administrative extraction entry identity changed after enumeration: $entryName"
+        }
+        $expectedDirectory = (([uint32]$Entry.fileAttributes -band [uint32]0x00000010) -ne 0)
+        $actualDirectory = (($identity.fileAttributes -band [uint32]0x00000010) -ne 0)
+        if ($expectedDirectory -ne $actualDirectory) {
+            throw "quarantined MSI administrative extraction entry type changed after enumeration: $entryName"
+        }
+
+        return [pscustomobject]@{
+            handle = $handle
+            identity = $identity
+            name = $entryName
+        }
+    }
+    catch {
+        if ($null -ne $handle) {
+            $handle.Dispose()
+        }
+        throw
+    }
+    finally {
+        if ($rawHandle -ne [IntPtr]::Zero) {
+            [void][IsolatedValidationExtractionCleanupNative]::NtClose($rawHandle)
+        }
+        if ($unicodeStringPointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($unicodeStringPointer)
+        }
+        if ($unicodeString.Buffer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($unicodeString.Buffer)
+        }
+    }
+}
+
+function Clear-IsolatedValidationQuarantinedDirectoryEntries {
+    param(
+        [Parameter(Mandatory)]$DirectoryLease,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entries
+    )
+
+    foreach ($entry in $Entries) {
         $childLease = $null
         try {
-            $childLease = Open-IsolatedValidationExtractionEntryLease `
-                -Path $child.FullName `
-                -DesiredAccess ([uint32]0x00010080)
+            $childLease = Open-IsolatedValidationExtractionEntryLeaseRelative `
+                -ParentDirectoryLease $DirectoryLease `
+                -Entry $entry
             if (($childLease.identity.fileAttributes -band [uint32]0x00000010) -ne 0) {
                 Clear-IsolatedValidationQuarantinedDirectoryContents -DirectoryLease $childLease
             }
@@ -387,6 +702,15 @@ function Clear-IsolatedValidationQuarantinedDirectoryContents {
             }
         }
     }
+}
+
+function Clear-IsolatedValidationQuarantinedDirectoryContents {
+    param([Parameter(Mandatory)]$DirectoryLease)
+
+    $entries = @(Get-IsolatedValidationQuarantinedDirectoryEntries -DirectoryLease $DirectoryLease)
+    Clear-IsolatedValidationQuarantinedDirectoryEntries `
+        -DirectoryLease $DirectoryLease `
+        -Entries $entries
 }
 
 function Remove-IsolatedValidationExtractionEntryByHandle {
@@ -517,7 +841,7 @@ finally {
 
             $installedRootLease = Open-IsolatedValidationExtractionDirectoryLease `
                 -Path $installedRoot `
-                -DesiredAccess ([uint32]0x00010080)
+                -DesiredAccess ([uint32]0x00010081)
             $currentIdentity = $installedRootLease.identity
             if (-not (Test-IsolatedValidationDirectoryIdentity -Expected $installedRootIdentity -Actual $currentIdentity)) {
                 throw "MSI administrative extraction identity changed before cleanup: $installedRoot"
