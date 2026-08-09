@@ -381,7 +381,7 @@ try {
         'Start-IsolatedValidationNativeProcess',
         'Test-IsolatedValidationFullyQualifiedPath'
     )
-    if ((Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exported).Count -ne 0) {
+    if (@(Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exported).Count -ne 0) {
         throw "native process module exported unexpected commands: $($exported -join ', ')"
     }
     foreach ($pathVector in @(
