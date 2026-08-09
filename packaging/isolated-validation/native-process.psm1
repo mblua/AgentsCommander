@@ -51,15 +51,34 @@ function ConvertTo-WindowsNativeArgument {
     return $serialized.ToString()
 }
 
+function Test-IsolatedValidationFullyQualifiedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ($Path.IndexOf([char]0) -ge 0) {
+        return $false
+    }
+
+    $isPathFullyQualified = [System.IO.Path].GetMethod(
+        'IsPathFullyQualified',
+        [System.Type[]]@([string])
+    )
+    if ($null -ne $isPathFullyQualified) {
+        return [System.IO.Path]::IsPathFullyQualified($Path)
+    }
+
+    return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\\\\\?\\(?:[A-Za-z]:[\\/]|UNC\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)))'
+}
+
 function Test-IsolatedValidationAbsoluteFile {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
 
-    if ($Path.IndexOf([char]0) -ge 0 -or
-        -not [System.IO.Path]::IsPathRooted($Path) -or
-        $Path -match '^[A-Za-z]:[^\\/]') {
+    if (-not (Test-IsolatedValidationFullyQualifiedPath -Path $Path)) {
         return $false
     }
 
@@ -72,9 +91,7 @@ function Test-IsolatedValidationAbsoluteDirectory {
         [string]$Path
     )
 
-    if ($Path.IndexOf([char]0) -ge 0 -or
-        -not [System.IO.Path]::IsPathRooted($Path) -or
-        $Path -match '^[A-Za-z]:[^\\/]') {
+    if (-not (Test-IsolatedValidationFullyQualifiedPath -Path $Path)) {
         return $false
     }
 
