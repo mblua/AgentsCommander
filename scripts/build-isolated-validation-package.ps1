@@ -134,6 +134,97 @@ if ($tauriBuild.ExitCode -ne 0) {
     throw "isolated validation package build failed with exit code $($tauriBuild.ExitCode)"
 }
 
+function Get-IsolatedValidationDirectoryIdentity {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ($null -eq ('IsolatedValidationExtractionDirectoryIdentity' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionFileTime {
+    public UInt32 Low;
+    public UInt32 High;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct IsolatedValidationExtractionByHandleFileInformation {
+    public UInt32 FileAttributes;
+    public IsolatedValidationExtractionFileTime CreationTime;
+    public IsolatedValidationExtractionFileTime LastAccessTime;
+    public IsolatedValidationExtractionFileTime LastWriteTime;
+    public UInt32 VolumeSerialNumber;
+    public UInt32 FileSizeHigh;
+    public UInt32 FileSizeLow;
+    public UInt32 NumberOfLinks;
+    public UInt32 FileIndexHigh;
+    public UInt32 FileIndexLow;
+}
+
+public static class IsolatedValidationExtractionDirectoryIdentity {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFile(
+        string fileName,
+        UInt32 desiredAccess,
+        UInt32 shareMode,
+        IntPtr securityAttributes,
+        UInt32 creationDisposition,
+        UInt32 flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out IsolatedValidationExtractionByHandleFileInformation information);
+}
+'@ -ErrorAction Stop
+    }
+
+    $handle = [IsolatedValidationExtractionDirectoryIdentity]::CreateFile(
+        $Path,
+        [uint32]0,
+        [uint32]3,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]0x02200000,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        throw "could not open MSI administrative extraction directory: $Path"
+    }
+
+    try {
+        $information = New-Object IsolatedValidationExtractionByHandleFileInformation
+        if (-not [IsolatedValidationExtractionDirectoryIdentity]::GetFileInformationByHandle($handle, [ref]$information)) {
+            throw "could not read MSI administrative extraction directory identity: $Path"
+        }
+        if (($information.FileAttributes -band [uint32]0x00000400) -ne 0) {
+            throw "MSI administrative extraction directory must not be a reparse point: $Path"
+        }
+
+        return [pscustomobject]@{
+            volumeSerialNumber = [uint32]$information.VolumeSerialNumber
+            fileIndex = ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
+        }
+    }
+    finally {
+        $handle.Dispose()
+    }
+}
+
+function Test-IsolatedValidationDirectoryIdentity {
+    param(
+        [Parameter(Mandatory)]$Expected,
+        [Parameter(Mandatory)]$Actual
+    )
+
+    return $Expected.volumeSerialNumber -eq $Actual.volumeSerialNumber -and
+        $Expected.fileIndex -eq $Actual.fileIndex
+}
+
 $releaseDirectory = Join-Path $RepoRoot 'target/release'
 $executable = Get-ChildItem -LiteralPath $releaseDirectory -Filter '*.exe' -File |
     Where-Object { $_.BaseName -eq 'agentscommander' } |
@@ -154,7 +245,10 @@ if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
     throw "missing Windows Installer executable: $msiExecutable"
 }
 $extractionFailure = $null
+$installedRootIdentity = $null
 try {
+New-Item -ItemType Directory -Path $installedRoot -ErrorAction Stop | Out-Null
+$installedRootIdentity = Get-IsolatedValidationDirectoryIdentity -Path $installedRoot
 $administrativeInstall = Start-IsolatedValidationNativeProcess `
     -Mode Wait `
     -FilePath $msiExecutable `
@@ -208,10 +302,14 @@ catch {
     throw
 }
 finally {
-    if (Test-Path -LiteralPath $installedRoot) {
+    if ($null -ne $installedRootIdentity -and (Test-Path -LiteralPath $installedRoot)) {
         try {
             if (-not (Test-Path -LiteralPath $installedRoot -PathType Container)) {
                 throw "MSI administrative extraction is not a directory: $installedRoot"
+            }
+            $currentIdentity = Get-IsolatedValidationDirectoryIdentity -Path $installedRoot
+            if (-not (Test-IsolatedValidationDirectoryIdentity -Expected $installedRootIdentity -Actual $currentIdentity)) {
+                throw "MSI administrative extraction identity changed before cleanup: $installedRoot"
             }
             Remove-Item -LiteralPath $installedRoot -Recurse -Force -ErrorAction Stop
             if (Test-Path -LiteralPath $installedRoot) {
@@ -226,6 +324,15 @@ finally {
             else {
                 throw $cleanupFailure
             }
+        }
+    }
+    elseif (Test-Path -LiteralPath $installedRoot) {
+        $cleanupFailure = "refusing to remove MSI administrative extraction without its invocation-owned directory identity: $installedRoot"
+        if ($null -ne $extractionFailure) {
+            Write-Warning $cleanupFailure
+        }
+        else {
+            throw $cleanupFailure
         }
     }
 }

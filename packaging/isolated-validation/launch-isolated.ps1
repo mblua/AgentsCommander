@@ -5,9 +5,7 @@ param(
 
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
-    [string]$ExpectedManifestSha256,
-
-    [switch]$RetainGuiProcess
+    [string]$ExpectedManifestSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -156,137 +154,17 @@ function Assert-ReceiptFields {
         Write-Verbose '[isolated-validation] existing receipt timestamp failed validation'
         throw 'the existing launch receipt does not match the trusted handoff'
     }
-}
 
-function Get-IsolatedReceiptDynamicFields {
-    param(
-        [Parameter(Mandatory)][string]$PackageId,
-        [Parameter(Mandatory)][string]$RootPath
-    )
-
-    $effectiveRoot = $RootPath
-    if ($null -eq ('IsolatedValidationFileIdentity' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-using System.Text;
-
-[StructLayout(LayoutKind.Sequential)]
-public struct IsolatedValidationFileTime {
-    public UInt32 Low;
-    public UInt32 High;
-}
-
-[StructLayout(LayoutKind.Sequential)]
-public struct IsolatedValidationByHandleFileInformation {
-    public UInt32 FileAttributes;
-    public IsolatedValidationFileTime CreationTime;
-    public IsolatedValidationFileTime LastAccessTime;
-    public IsolatedValidationFileTime LastWriteTime;
-    public UInt32 VolumeSerialNumber;
-    public UInt32 FileSizeHigh;
-    public UInt32 FileSizeLow;
-    public UInt32 NumberOfLinks;
-    public UInt32 FileIndexHigh;
-    public UInt32 FileIndexLow;
-}
-
-public static class IsolatedValidationFileIdentity {
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern SafeFileHandle CreateFile(
-        string fileName,
-        UInt32 desiredAccess,
-        UInt32 shareMode,
-        IntPtr securityAttributes,
-        UInt32 creationDisposition,
-        UInt32 flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool GetFileInformationByHandle(
-        SafeFileHandle file,
-        out IsolatedValidationByHandleFileInformation information);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern UInt32 GetFinalPathNameByHandle(
-        SafeFileHandle file,
-        StringBuilder path,
-        UInt32 pathLength,
-        UInt32 flags);
-}
-'@ -ErrorAction Stop
-    }
-
-    $handle = [IsolatedValidationFileIdentity]::CreateFile(
-        $effectiveRoot,
-        [uint32]0,
-        [uint32]7,
-        [IntPtr]::Zero,
-        [uint32]3,
-        [uint32]0x02200000,
-        [IntPtr]::Zero
-    )
-    if ($handle.IsInvalid) {
-        throw 'could not read the isolated root identity'
-    }
-
-    try {
-        $information = New-Object IsolatedValidationByHandleFileInformation
-        if (-not [IsolatedValidationFileIdentity]::GetFileInformationByHandle($handle, [ref]$information)) {
-            throw 'could not read the isolated root identity'
-        }
-        if (($information.FileAttributes -band [uint32]0x00000400) -ne 0) {
-            throw 'the isolated root must not be a reparse point'
-        }
-
-        $pathCapacity = 1024
-        while ($true) {
-            $canonicalPath = [System.Text.StringBuilder]::new($pathCapacity)
-            $pathLength = [IsolatedValidationFileIdentity]::GetFinalPathNameByHandle(
-                $handle,
-                $canonicalPath,
-                [uint32]$pathCapacity,
-                [uint32]0
-            )
-            if ($pathLength -eq 0) {
-                throw 'could not read the isolated root path'
-            }
-            if ($pathLength -lt $pathCapacity) {
-                $effectiveRoot = $canonicalPath.ToString()
-                break
-            }
-            if ($pathLength -ge 32768) {
-                throw 'could not read the isolated root path'
-            }
-            $pathCapacity = [int]$pathLength + 1
-        }
-    }
-    finally {
-        $handle.Dispose()
-    }
-
-    $packageBytes = [System.Text.Encoding]::UTF8.GetBytes($PackageId)
-    $payload = New-Object byte[] ($packageBytes.Length + 16)
-    $volume = [BitConverter]::GetBytes([uint64]$information.VolumeSerialNumber)
-    $file = [BitConverter]::GetBytes(
-        ([uint64]$information.FileIndexHigh * [uint64]4294967296) + [uint64]$information.FileIndexLow
-    )
-    [Buffer]::BlockCopy($packageBytes, 0, $payload, 0, $packageBytes.Length)
-    [Buffer]::BlockCopy($volume, 0, $payload, $packageBytes.Length, $volume.Length)
-    [Buffer]::BlockCopy($file, 0, $payload, $packageBytes.Length + $volume.Length, $file.Length)
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $mutexHash = ([BitConverter]::ToString($hasher.ComputeHash($payload))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $hasher.Dispose()
-    }
-
-    return [ordered]@{
-        effectiveRoot = $effectiveRoot
-        mutexHash = $mutexHash
+    $effectiveRoot = $Receipt.PSObject.Properties['effectiveRoot']
+    $mutexHash = $Receipt.PSObject.Properties['mutexHash']
+    if ($null -eq $effectiveRoot -or
+        $effectiveRoot.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$effectiveRoot.Value) -or
+        $null -eq $mutexHash -or
+        $mutexHash.Value -isnot [string] -or
+        [string]$mutexHash.Value -cnotmatch '^[0-9a-f]{64}$') {
+        Write-Verbose '[isolated-validation] existing receipt dynamic root identity failed validation'
+        throw 'the existing launch receipt does not match the trusted handoff'
     }
 }
 
@@ -350,12 +228,9 @@ if (Test-Path -LiteralPath $receiptPath) {
     catch {
         throw 'the existing launch receipt is malformed'
     }
-    $expectedDynamicFields = Get-IsolatedReceiptDynamicFields `
-        -PackageId $trustedReceiptFields.packageId `
-        -RootPath $isolatedStateRoot
-    $trustedReceiptFields.effectiveRoot = $expectedDynamicFields.effectiveRoot
-    $trustedReceiptFields.mutexHash = $expectedDynamicFields.mutexHash
     Assert-ReceiptFields -Receipt $existingReceipt -ExpectedFields $trustedReceiptFields
+    $trustedReceiptFields.effectiveRoot = [string]$existingReceipt.effectiveRoot
+    $trustedReceiptFields.mutexHash = [string]$existingReceipt.mutexHash
 }
 
 $status = Start-IsolatedChild -Executable $executable -Arguments @(
@@ -428,17 +303,7 @@ try {
         receipt = $receiptPath
         stateRoot = $statusJson.effectiveRoot
     }
-    if ($RetainGuiProcess.IsPresent) {
-        $ownedGuiProcess = $guiProcess
-        $guiProcess = $null
-        [pscustomobject]@{
-            launch = $launchResult
-            guiProcess = $ownedGuiProcess
-        }
-    }
-    else {
-        $launchResult | ConvertTo-Json -Depth 4
-    }
+    $launchResult | ConvertTo-Json -Depth 4
 }
 catch {
     if ($null -ne $guiProcess) {

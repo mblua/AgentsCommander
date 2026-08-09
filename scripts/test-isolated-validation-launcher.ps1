@@ -98,8 +98,7 @@ function Invoke-Launcher {
         [Parameter(Mandatory)][string]$Launcher,
         [Parameter(Mandatory)][string]$FixtureRoot,
         [Parameter(Mandatory)][string]$ExpectedManifestSha256,
-        [switch]$IncludeVerboseOutput,
-        [switch]$RetainGuiProcess
+        [switch]$IncludeVerboseOutput
     )
 
     $output = @()
@@ -109,25 +108,13 @@ function Invoke-Launcher {
             & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -Verbose 4>&1 2>&1 |
                 ForEach-Object { $output += $_ }
         }
-        elseif ($RetainGuiProcess.IsPresent) {
-            $output = @(& $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 -RetainGuiProcess 2>&1)
-        }
         else {
             $output = & $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256 2>&1
         }
         $scriptSucceeded = $?
-        $ownedLaunch = @($output | Where-Object {
-                $null -ne $_.PSObject.Properties['guiProcess'] -and
-                $null -ne $_.PSObject.Properties['launch']
-            })
-        if ($RetainGuiProcess.IsPresent -and $ownedLaunch.Count -ne 1) {
-            $scriptSucceeded = $false
-        }
         return [pscustomobject]@{
             Succeeded = $scriptSucceeded
             Output = ($output -join [Environment]::NewLine)
-            Launch = if ($ownedLaunch.Count -eq 1) { $ownedLaunch[0].launch } else { $null }
-            GuiProcess = if ($ownedLaunch.Count -eq 1) { $ownedLaunch[0].guiProcess } else { $null }
         }
     }
     catch {
@@ -139,6 +126,313 @@ function Invoke-Launcher {
             Output = if ($IncludeVerboseOutput.IsPresent) { $output -join [Environment]::NewLine } else { $_.Exception.Message }
         }
     }
+}
+
+function New-IsolatedValidationKillOnCloseJob {
+    if ($null -eq ('IsolatedValidationKillOnCloseJob' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public sealed class IsolatedValidationKillOnCloseJob : IDisposable {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters {
+        public UInt64 ReadOperationCount;
+        public UInt64 WriteOperationCount;
+        public UInt64 OtherOperationCount;
+        public UInt64 ReadTransferCount;
+        public UInt64 WriteTransferCount;
+        public UInt64 OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimitInformation {
+        public Int64 PerProcessUserTimeLimit;
+        public Int64 PerJobUserTimeLimit;
+        public UInt32 LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public UInt32 ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public UInt32 PriorityClass;
+        public UInt32 SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExtendedLimitInformation {
+        public BasicLimitInformation BasicLimitInformation;
+        public IoCounters IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetInformationJobObject(
+        IntPtr job,
+        Int32 informationClass,
+        IntPtr information,
+        UInt32 informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private const UInt32 JobObjectLimitKillOnJobClose = 0x00002000;
+    private const Int32 JobObjectExtendedLimitInformation = 9;
+    private IntPtr handle;
+
+    private IsolatedValidationKillOnCloseJob(IntPtr handle) {
+        this.handle = handle;
+    }
+
+    public static IsolatedValidationKillOnCloseJob Create() {
+        IntPtr handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not create test job");
+        }
+
+        var job = new IsolatedValidationKillOnCloseJob(handle);
+        try {
+            var information = new ExtendedLimitInformation();
+            information.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+            Int32 length = Marshal.SizeOf(typeof(ExtendedLimitInformation));
+            IntPtr memory = Marshal.AllocHGlobal(length);
+            try {
+                Marshal.StructureToPtr(information, memory, false);
+                if (!SetInformationJobObject(
+                    job.handle,
+                    JobObjectExtendedLimitInformation,
+                    memory,
+                    (UInt32)length)) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "could not configure test job");
+                }
+            }
+            finally {
+                Marshal.FreeHGlobal(memory);
+            }
+            return job;
+        }
+        catch {
+            job.Dispose();
+            throw;
+        }
+    }
+
+    public void Assign(IntPtr processHandle) {
+        if (this.handle == IntPtr.Zero) {
+            throw new ObjectDisposedException("IsolatedValidationKillOnCloseJob");
+        }
+        if (!AssignProcessToJobObject(this.handle, processHandle)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not assign launcher wrapper to test job");
+        }
+    }
+
+    public void Dispose() {
+        if (this.handle != IntPtr.Zero) {
+            CloseHandle(this.handle);
+            this.handle = IntPtr.Zero;
+        }
+        GC.SuppressFinalize(this);
+    }
+}
+'@ -ErrorAction Stop
+    }
+
+    return [IsolatedValidationKillOnCloseJob]::Create()
+}
+
+function Start-LauncherUnderTestJob {
+    param(
+        [Parameter(Mandatory)][string]$Launcher,
+        [Parameter(Mandatory)][string]$FixtureRoot,
+        [Parameter(Mandatory)][string]$ExpectedManifestSha256,
+        [Parameter(Mandatory)][string]$TestRoot
+    )
+
+    $hostExecutable = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    }
+    else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+    if (-not (Test-Path -LiteralPath $hostExecutable -PathType Leaf)) {
+        throw "missing current PowerShell host executable: $hostExecutable"
+    }
+
+    $wrapper = Join-Path $TestRoot 'job-owned-launcher-wrapper.ps1'
+    $startGate = Join-Path $TestRoot 'job-owned-launcher-start-gate'
+    $resultPath = Join-Path $TestRoot 'job-owned-launcher-result.json'
+    $failurePath = Join-Path $TestRoot 'job-owned-launcher-failure.txt'
+    [System.IO.File]::WriteAllText($wrapper, @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$StartGate,
+    [Parameter(Mandatory)][string]$Launcher,
+    [Parameter(Mandatory)][string]$FixtureRoot,
+    [Parameter(Mandatory)][string]$ExpectedManifestSha256,
+    [Parameter(Mandatory)][string]$ResultPath,
+    [Parameter(Mandatory)][string]$FailurePath
+)
+
+$ErrorActionPreference = 'Stop'
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+while (-not (Test-Path -LiteralPath $StartGate -PathType Leaf)) {
+    if ([DateTime]::UtcNow -ge $deadline) {
+        throw 'test job start gate was not released'
+    }
+    Start-Sleep -Milliseconds 10
+}
+
+try {
+    $launchOutput = @(& $Launcher -FixtureRoot $FixtureRoot -ExpectedManifestSha256 $ExpectedManifestSha256)
+    [System.IO.File]::WriteAllText(
+        $ResultPath,
+        ($launchOutput -join [Environment]::NewLine),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+catch {
+    [System.IO.File]::WriteAllText(
+        $FailurePath,
+        $_.Exception.Message,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    exit 1
+}
+'@, [System.Text.UTF8Encoding]::new($false))
+
+    $job = New-IsolatedValidationKillOnCloseJob
+    $wrapperProcess = $null
+    try {
+        $wrapperLease = Start-IsolatedValidationNativeProcess `
+            -Mode Start `
+            -FilePath $hostExecutable `
+            -WorkingDirectory $TestRoot `
+            -Arguments @(
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                $wrapper,
+                '-StartGate',
+                $startGate,
+                '-Launcher',
+                $Launcher,
+                '-FixtureRoot',
+                $FixtureRoot,
+                '-ExpectedManifestSha256',
+                $ExpectedManifestSha256,
+                '-ResultPath',
+                $resultPath,
+                '-FailurePath',
+                $failurePath
+            ) `
+            -RemoveAgentsCommanderEnvironment
+        $wrapperProcess = $wrapperLease.Process
+        if ($null -eq $wrapperProcess) {
+            throw 'job-owned launcher wrapper did not return an original process lease'
+        }
+        $job.Assign($wrapperProcess.Handle)
+        [System.IO.File]::WriteAllText($startGate, 'start', [System.Text.UTF8Encoding]::new($false))
+        if (-not $wrapperProcess.WaitForExit(30000)) {
+            throw 'job-owned launcher wrapper did not exit'
+        }
+        if ($wrapperProcess.ExitCode -ne 0) {
+            $failure = if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
+                [System.IO.File]::ReadAllText($failurePath, [System.Text.UTF8Encoding]::new($false))
+            }
+            else {
+                'no wrapper failure text was written'
+            }
+            throw "job-owned launcher wrapper failed: $failure"
+        }
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'job-owned launcher wrapper did not write a JSON launch result'
+        }
+
+        return [pscustomobject]@{
+            Launch = [System.IO.File]::ReadAllText($resultPath, [System.Text.UTF8Encoding]::new($false)) |
+                ConvertFrom-Json -ErrorAction Stop
+            WrapperProcess = $wrapperProcess
+            Job = $job
+        }
+    }
+    catch {
+        if ($null -ne $wrapperProcess) {
+            try {
+                if (-not $wrapperProcess.HasExited) {
+                    $wrapperProcess.Kill()
+                    $null = $wrapperProcess.WaitForExit(3000)
+                }
+            }
+            finally {
+                $wrapperProcess.Dispose()
+            }
+        }
+        $job.Dispose()
+        throw
+    }
+}
+
+function Invoke-IsolatedValidationTestRootCleanup {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int]$RetryLimit,
+        $PrimaryFailure,
+        [Parameter(Mandatory)][scriptblock]$RemoveAction
+    )
+
+    $succeeded = $false
+    $failureMessage = $null
+    $attempts = 0
+    for ($attempt = 1; $attempt -le $RetryLimit; $attempt++) {
+        $attempts = $attempt
+        try {
+            & $RemoveAction $Path
+            if (-not (Test-Path -LiteralPath $Path)) {
+                $succeeded = $true
+                break
+            }
+            $failureMessage = 'the test root remained after a successful removal call'
+        }
+        catch {
+            $failureMessage = $_.Exception.Message
+        }
+        if ($attempt -lt $RetryLimit) {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+
+    if ($succeeded) {
+        return [pscustomobject]@{
+            Succeeded = $true
+            Attempts = $attempts
+            CleanupMessage = $null
+        }
+    }
+
+    $cleanupMessage = "failed to remove isolated launcher test root after $RetryLimit attempts: $failureMessage"
+    if ($null -ne $PrimaryFailure) {
+        Write-Warning "$cleanupMessage; preserving the primary test failure"
+        return [pscustomobject]@{
+            Succeeded = $false
+            Attempts = $attempts
+            CleanupMessage = $cleanupMessage
+        }
+    }
+
+    throw $cleanupMessage
 }
 
 function Wait-ForProcessExit {
@@ -163,7 +457,8 @@ function Assert-LauncherFailsBeforeChild {
         [Parameter(Mandatory)][string]$ExpectedManifestSha256,
         [Parameter(Mandatory)][string]$ChildSentinel,
         [Parameter(Mandatory)][string]$CaseName,
-        [string]$StatusChildSentinel
+        [string]$StatusChildSentinel,
+        [switch]$ExpectStatusChild
     )
 
     if (Test-Path -LiteralPath $ChildSentinel) {
@@ -180,7 +475,13 @@ function Assert-LauncherFailsBeforeChild {
     if (Test-Path -LiteralPath $ChildSentinel) {
         throw "$CaseName started a child before rejecting the input"
     }
-    if (-not [string]::IsNullOrWhiteSpace($StatusChildSentinel) -and
+    if ($ExpectStatusChild.IsPresent) {
+        if ([string]::IsNullOrWhiteSpace($StatusChildSentinel) -or
+            -not (Test-Path -LiteralPath $StatusChildSentinel)) {
+            throw "$CaseName did not run status before rejecting its dynamic root identity"
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($StatusChildSentinel) -and
         (Test-Path -LiteralPath $StatusChildSentinel)) {
         throw "$CaseName started its status child before rejecting the input"
     }
@@ -679,20 +980,16 @@ try {
 
     $actualValidFixture = Join-Path $testRoot 'actual-copied-handoff-valid-fixture'
     New-Item -ItemType Directory -Path $actualValidFixture | Out-Null
-    $actualValidResult = Invoke-Launcher `
+    $actualValidResult = Start-LauncherUnderTestJob `
         -Launcher $actualLauncher `
         -FixtureRoot $actualValidFixture `
         -ExpectedManifestSha256 $actualHandoff.manifestSha256 `
-        -RetainGuiProcess
-    if (-not $actualValidResult.Succeeded) {
-        throw "real copied handoff launcher/status flow failed: $($actualValidResult.Output)"
-    }
+        -TestRoot $testRoot
 
-    $actualValidGuiProcess = $actualValidResult.GuiProcess
     try {
         $actualValidLaunch = $actualValidResult.Launch
-        if ($null -eq $actualValidLaunch -or $null -eq $actualValidGuiProcess) {
-            throw 'real copied handoff launcher did not start its GUI child'
+        if ($null -eq $actualValidLaunch -or [int]$actualValidLaunch.processId -le 0) {
+            throw 'real copied handoff launcher did not return its JSON launch result'
         }
 
         $actualValidReceiptPath = Join-Path $actualValidFixture 'launch-receipt.json'
@@ -707,18 +1004,11 @@ try {
         }
     }
     finally {
-        if ($null -ne $actualValidGuiProcess) {
-            try {
-                if (-not $actualValidGuiProcess.HasExited) {
-                    $actualValidGuiProcess.Kill()
-                }
-                if (-not $actualValidGuiProcess.WaitForExit(3000) -or -not $actualValidGuiProcess.HasExited) {
-                    throw 'real copied handoff owned GUI child did not exit during cleanup'
-                }
-            }
-            finally {
-                $actualValidGuiProcess.Dispose()
-            }
+        if ($null -ne $actualValidResult.WrapperProcess) {
+            $actualValidResult.WrapperProcess.Dispose()
+        }
+        if ($null -ne $actualValidResult.Job) {
+            $actualValidResult.Job.Dispose()
         }
     }
 
@@ -907,13 +1197,18 @@ try {
             $nearReceiptPath = Join-Path $nearFixture 'launch-receipt.json'
             Write-JsonFile -LiteralPath $nearReceiptPath -Value $nearReceipt
             $beforeReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
-            Assert-LauncherFailsBeforeChild `
-                -Launcher $launcher `
-                -FixtureRoot $nearFixture `
-                -ExpectedManifestSha256 $expectedManifestHash `
-                -ChildSentinel $childSentinel `
-                -StatusChildSentinel $statusChildSentinel `
-                -CaseName "near-valid $dynamicCase dynamic receipt"
+            $nearReceiptFailureArguments = @{
+                Launcher = $launcher
+                FixtureRoot = $nearFixture
+                ExpectedManifestSha256 = $expectedManifestHash
+                ChildSentinel = $childSentinel
+                StatusChildSentinel = $statusChildSentinel
+                CaseName = "near-valid $dynamicCase dynamic receipt"
+            }
+            if ($dynamicCase -in @('foreign', 'mismatching')) {
+                $nearReceiptFailureArguments.ExpectStatusChild = $true
+            }
+            Assert-LauncherFailsBeforeChild @nearReceiptFailureArguments
             $afterReceiptBytes = [System.IO.File]::ReadAllBytes($nearReceiptPath)
             if ([System.BitConverter]::ToString($beforeReceiptBytes) -cne [System.BitConverter]::ToString($afterReceiptBytes)) {
                 throw "near-valid $dynamicCase receipt was changed after rejection"
@@ -944,6 +1239,57 @@ try {
         throw 'receipt-publication failure left a temporary receipt behind'
     }
 
+    $cleanupProbeRoot = Join-Path $testRoot 'forced-cleanup-exhaustion'
+    New-Item -ItemType Directory -Path $cleanupProbeRoot -ErrorAction Stop | Out-Null
+    $probePrimaryFailure = $null
+    $probeObservedFailure = $null
+    $probeCleanupRecords = @()
+    try {
+        try {
+            throw 'test-local forced primary failure'
+        }
+        catch {
+            $probePrimaryFailure = $_
+            throw
+        }
+        finally {
+            $probeCleanupRecords = @(
+                Invoke-IsolatedValidationTestRootCleanup `
+                    -Path $cleanupProbeRoot `
+                    -RetryLimit 3 `
+                    -PrimaryFailure $probePrimaryFailure `
+                    -RemoveAction {
+                        param([string]$Path)
+                        throw 'test-local forced cleanup failure'
+                    } 3>&1
+            )
+        }
+    }
+    catch {
+        $probeObservedFailure = $_
+    }
+
+    $probeCleanupOutcome = @($probeCleanupRecords | Where-Object {
+            $null -ne $_.PSObject.Properties['Succeeded']
+        })
+    $probeWarnings = @($probeCleanupRecords | Where-Object {
+            $_ -is [System.Management.Automation.WarningRecord]
+        })
+    if ($null -eq $probeObservedFailure -or
+        $probeObservedFailure.Exception.Message -cne 'test-local forced primary failure' -or
+        $probeCleanupOutcome.Count -ne 1 -or
+        $probeCleanupOutcome[0].Succeeded -or
+        $probeCleanupOutcome[0].Attempts -ne 3 -or
+        $probeCleanupOutcome[0].CleanupMessage -notlike '*after 3 attempts*' -or
+        $probeWarnings.Count -ne 1 -or
+        $probeWarnings[0].Message -notlike '*preserving the primary test failure*') {
+        throw 'test-local cleanup exhaustion did not preserve the original primary failure'
+    }
+    Remove-Item -LiteralPath $cleanupProbeRoot -Recurse -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $cleanupProbeRoot) {
+        throw 'test-local cleanup exhaustion probe root remained after explicit cleanup'
+    }
+
     [pscustomobject]@{
         result = 'passed'
         host = "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
@@ -954,8 +1300,9 @@ try {
             'real Git suffixes and tauri.cmd invocation',
             'detached build revision preflight',
             'staged artifact receipt immutability and payload integrity',
-            'near-valid receipt rejection before child launch',
-            'receipt-publication original-handle cleanup'
+            'near-valid receipt rejection before GUI launch',
+            'receipt-publication original-handle cleanup',
+            'test-local cleanup exhaustion preserves primary failure'
         )
     } | ConvertTo-Json -Depth 4
 }
@@ -974,32 +1321,13 @@ finally {
         }
     }
     if (Test-Path -LiteralPath $testRoot) {
-        $testRootCleanupSucceeded = $false
-        $cleanupFailureMessage = $null
-        for ($attempt = 1; $attempt -le $testRootCleanupRetryLimit; $attempt++) {
-            try {
-                Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction Stop
-                if (-not (Test-Path -LiteralPath $testRoot)) {
-                    $testRootCleanupSucceeded = $true
-                    break
-                }
-                $cleanupFailureMessage = 'the test root remained after a successful removal call'
-            }
-            catch {
-                $cleanupFailureMessage = $_.Exception.Message
-            }
-            if ($attempt -lt $testRootCleanupRetryLimit) {
-                Start-Sleep -Milliseconds 100
-            }
-        }
-        if (-not $testRootCleanupSucceeded) {
-            $cleanupMessage = "failed to remove isolated launcher test root after $testRootCleanupRetryLimit attempts: $cleanupFailureMessage"
-            if ($null -ne $primaryFailure) {
-                Write-Warning "$cleanupMessage; preserving the primary test failure"
-            }
-            else {
-                throw $cleanupMessage
-            }
-        }
+        Invoke-IsolatedValidationTestRootCleanup `
+            -Path $testRoot `
+            -RetryLimit $testRootCleanupRetryLimit `
+            -PrimaryFailure $primaryFailure `
+            -RemoveAction {
+                param([string]$Path)
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } | Out-Null
     }
 }
