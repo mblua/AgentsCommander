@@ -194,6 +194,7 @@ public struct IsolatedValidationExtractionRenameInfo {
     public Byte ReplaceIfExists;
     public IntPtr RootDirectory;
     public UInt32 FileNameLength;
+    public UInt16 FileNameFirstCharacter;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -313,21 +314,25 @@ function Move-IsolatedValidationExtractionToQuarantine {
     $renameInfo.ReplaceIfExists = [byte]0
     $renameInfo.RootDirectory = $ParentDirectoryLease.handle.DangerousGetHandle()
     $renameInfo.FileNameLength = [uint32]$quarantineNameBytes.Length
-    $renameInfoSize = [Runtime.InteropServices.Marshal]::SizeOf($renameInfo)
-    $renameBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($renameInfoSize + $quarantineNameBytes.Length)
+    $renameFileNameOffset = [Runtime.InteropServices.Marshal]::OffsetOf(
+        [IsolatedValidationExtractionRenameInfo],
+        'FileNameFirstCharacter'
+    ).ToInt32()
+    $renameBufferLength = $renameFileNameOffset + $quarantineNameBytes.Length
+    $renameBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($renameBufferLength)
     try {
         [Runtime.InteropServices.Marshal]::StructureToPtr($renameInfo, $renameBuffer, $false)
         [Runtime.InteropServices.Marshal]::Copy(
             $quarantineNameBytes,
             0,
-            [IntPtr]::Add($renameBuffer, $renameInfoSize),
+            [IntPtr]::Add($renameBuffer, $renameFileNameOffset),
             $quarantineNameBytes.Length
         )
         if (-not [IsolatedValidationExtractionDirectoryIdentity]::SetFileInformationByHandle(
                 $DirectoryLease.handle,
                 3,
                 $renameBuffer,
-                [uint32]($renameInfoSize + $quarantineNameBytes.Length)
+                [uint32]$renameBufferLength
             )) {
             throw 'could not atomically quarantine MSI administrative extraction'
         }
@@ -398,9 +403,14 @@ if (-not (Test-Path -LiteralPath $msiExecutable -PathType Leaf)) {
 }
 $extractionFailure = $null
 $installedRootIdentity = $null
+$installedRootLease = $null
+$releaseDirectoryLease = $null
+$quarantinePath = $null
 try {
 New-Item -ItemType Directory -Path $installedRoot -ErrorAction Stop | Out-Null
-$installedRootIdentity = Get-IsolatedValidationDirectoryIdentity -Path $installedRoot
+$releaseDirectoryLease = Open-IsolatedValidationExtractionDirectoryLease -Path $releaseDirectory -DesiredAccess ([uint32]0x000000A0)
+$installedRootLease = Open-IsolatedValidationExtractionDirectoryLease -Path $installedRoot -DesiredAccess ([uint32]0x00010080)
+$installedRootIdentity = $installedRootLease.identity
 $administrativeInstall = Start-IsolatedValidationNativeProcess `
     -Mode Wait `
     -FilePath $msiExecutable `
@@ -454,32 +464,46 @@ catch {
     throw
 }
 finally {
-    if ($null -ne $installedRootIdentity -and (Test-Path -LiteralPath $installedRoot)) {
-        try {
-            if (-not (Test-Path -LiteralPath $installedRoot -PathType Container)) {
-                throw "MSI administrative extraction is not a directory: $installedRoot"
-            }
-            $currentIdentity = Get-IsolatedValidationDirectoryIdentity -Path $installedRoot
+    $cleanupFailure = $null
+    try {
+        if ($null -ne $installedRootLease -and $null -ne $installedRootIdentity -and $null -ne $releaseDirectoryLease) {
+            $currentIdentity = Get-IsolatedValidationDirectoryIdentityFromHandle -Handle $installedRootLease.handle -Path $installedRoot
             if (-not (Test-IsolatedValidationDirectoryIdentity -Expected $installedRootIdentity -Actual $currentIdentity)) {
                 throw "MSI administrative extraction identity changed before cleanup: $installedRoot"
             }
-            Remove-Item -LiteralPath $installedRoot -Recurse -Force -ErrorAction Stop
-            if (Test-Path -LiteralPath $installedRoot) {
-                throw "MSI administrative extraction remains after cleanup: $installedRoot"
-            }
+
+            $quarantineLeaf = '.isolated-validation-cleanup-' + [Guid]::NewGuid().ToString('N')
+            Move-IsolatedValidationExtractionToQuarantine `
+                -DirectoryLease $installedRootLease `
+                -ParentDirectoryLease $releaseDirectoryLease `
+                -QuarantineLeaf $quarantineLeaf
+            $quarantinePath = Join-Path $releaseDirectory $quarantineLeaf
+
+            Clear-IsolatedValidationQuarantinedDirectoryContents -Path $quarantinePath
+            Remove-IsolatedValidationDirectoryByHandle -DirectoryLease $installedRootLease
         }
-        catch {
-            $cleanupFailure = "could not remove MSI administrative extraction '$installedRoot': $($_.Exception.Message)"
-            if ($null -ne $extractionFailure) {
-                Write-Warning $cleanupFailure
-            }
-            else {
-                throw $cleanupFailure
-            }
+        elseif (Test-Path -LiteralPath $installedRoot) {
+            throw "refusing to remove MSI administrative extraction without its invocation-owned directory handle: $installedRoot"
         }
     }
-    elseif (Test-Path -LiteralPath $installedRoot) {
-        $cleanupFailure = "refusing to remove MSI administrative extraction without its invocation-owned directory identity: $installedRoot"
+    catch {
+        $cleanupFailure = "could not remove MSI administrative extraction '$installedRoot': $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -ne $installedRootLease) {
+            $installedRootLease.handle.Dispose()
+            $installedRootLease = $null
+        }
+        if ($null -ne $releaseDirectoryLease) {
+            $releaseDirectoryLease.handle.Dispose()
+            $releaseDirectoryLease = $null
+        }
+    }
+
+    if ($null -eq $cleanupFailure -and $null -ne $quarantinePath -and (Test-Path -LiteralPath $quarantinePath)) {
+        $cleanupFailure = "MSI administrative extraction remains after handle-bound cleanup: $quarantinePath"
+    }
+    if ($null -ne $cleanupFailure) {
         if ($null -ne $extractionFailure) {
             Write-Warning $cleanupFailure
         }
