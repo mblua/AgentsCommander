@@ -58,6 +58,20 @@ function Get-NativeExecutable {
     return $path
 }
 
+function ConvertFrom-NativeJsonArray {
+    param([Parameter(Mandatory)][string]$Json)
+
+    $decoded = $Json | ConvertFrom-Json
+    if ($decoded -is [System.Array]) {
+        foreach ($item in $decoded) {
+            Write-Output -NoEnumerate $item
+        }
+        return
+    }
+
+    Write-Output -NoEnumerate $decoded
+}
+
 function Assert-NativeProcessFailure {
     param(
         [Parameter(Mandatory)][scriptblock]$Action,
@@ -358,7 +372,7 @@ try {
     if ($argvProbe.ExitCode -ne 0) {
         throw 'native node.exe argv probe failed'
     }
-    $receivedArgv = @($argvProbe.StandardOutput | ConvertFrom-Json)
+    $receivedArgv = @(ConvertFrom-NativeJsonArray -Json $argvProbe.StandardOutput)
     if ($receivedArgv.Count -ne $argvValues.Count) {
         throw 'native node.exe argv probe returned an unexpected argument count'
     }
