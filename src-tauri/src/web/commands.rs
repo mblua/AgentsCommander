@@ -134,6 +134,11 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     }
 
     match cmd {
+        "get_isolated_package_titlebar_identity" => serde_json::to_value(
+            crate::commands::config::get_isolated_package_titlebar_identity(),
+        )
+        .map_err(|error| error.to_string()),
+
         // --- Session commands ---
         "list_sessions" => {
             let mgr = state.session_mgr.read().await;
