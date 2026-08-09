@@ -767,7 +767,6 @@ try {
     }
 
     $fixtureStateRoot = Join-Path $fixture 'app-state'
-    New-Item -ItemType Directory -Path $fixtureStateRoot -Force | Out-Null
     if ($null -eq ('IsolatedValidationFixtureRootIdentity' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -852,12 +851,6 @@ public static class IsolatedValidationFixtureRootIdentity
 }
 '@
     }
-    $fixtureMutexHash = [IsolatedValidationFixtureRootIdentity]::MutexHash(
-        'agentscommander-1271-isolated-gates',
-        $fixtureStateRoot
-    )
-    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_MUTEX_HASH', $fixtureMutexHash)
-
     $profileHash = Get-Sha256 -LiteralPath $profile
     $manifestPath = Join-Path $artifact 'isolated-validation-manifest.json'
     $manifest = [ordered]@{
@@ -897,6 +890,12 @@ public static class IsolatedValidationFixtureRootIdentity
     if (Test-Path -LiteralPath (Join-Path $fixture 'app-state')) {
         throw 'staged-artifact fixture pre-created the isolated app-state root'
     }
+    New-Item -ItemType Directory -Path $fixtureStateRoot | Out-Null
+    $fixtureMutexHash = [IsolatedValidationFixtureRootIdentity]::MutexHash(
+        'agentscommander-1271-isolated-gates',
+        $fixtureStateRoot
+    )
+    [Environment]::SetEnvironmentVariable('ISOLATED_VALIDATION_TEST_MUTEX_HASH', $fixtureMutexHash)
     $stage = 'initial staged-artifact launch'
     $first = Invoke-Launcher -Launcher $launcher -FixtureRoot $fixture -ExpectedManifestSha256 $expectedManifestHash
     if (-not $first.Succeeded) {
