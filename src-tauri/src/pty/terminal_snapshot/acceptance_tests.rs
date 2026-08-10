@@ -1209,8 +1209,310 @@ fn assert_host_finalizer_audit(
     );
 }
 
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn window_screenshot_mounted_router_valid_auth_percent_ff_is_canonical_400() {
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let token = fixture.api_coordinator_token.secret.clone();
+
+    for raw_id in ["%FF", "%30"] {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) => panic!("test API listener must bind: {error}"),
+        };
+        let address = match listener.local_addr() {
+            Ok(address) => address,
+            Err(error) => panic!("test API listener must expose its address: {error}"),
+        };
+        let router = crate::api::build_router(direct_api_state(&fixture));
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+        let response = match reqwest::Client::new()
+            .get(format!(
+                "http://{address}/api/v1/windows/{raw_id}/screenshot"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => panic!("screenshot request must complete: {error}"),
+        };
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => panic!("error response body must be readable: {error}"),
+        };
+        assert!(body.contains("invalid_window_id"));
+        server.abort();
+        let _ = server.await;
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn window_screenshot_mounted_router_invalid_auth_percent_ff_precedes_decode() {
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => listener,
+        Err(error) => panic!("test API listener must bind: {error}"),
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => panic!("test API listener must expose its address: {error}"),
+    };
+    let router = crate::api::build_router(direct_api_state(&fixture));
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+    let response = match reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/windows/%FF/screenshot"))
+        .bearer_auth("invalid-token")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("screenshot request must complete: {error}"),
+    };
+    assert!(response.status().is_client_error());
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) => panic!("error response body must be readable: {error}"),
+    };
+    assert!(!body.contains("invalid_window_id"));
+    let structurally_nonmatching = match reqwest::Client::new()
+        .get(format!(
+            "http://{address}/api/v1/windows/123/screenshot/extra"
+        ))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("nonmatching screenshot request must complete: {error}"),
+    };
+    assert_eq!(
+        structurally_nonmatching.status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+    server.abort();
+    let _ = server.await;
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires an unlocked interactive Windows desktop and visible Notepad"]
+async fn authenticated_live_window_png_capture() {
+    struct ChildGuard(std::process::Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    struct ServerGuard(tokio::task::JoinHandle<()>);
+
+    impl Drop for ServerGuard {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-live-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let token = fixture.api_coordinator_token.secret.clone();
+    let mut notepad = match std::process::Command::new("notepad.exe").spawn() {
+        Ok(child) => ChildGuard(child),
+        Err(error) => panic!("Notepad must start for the interactive capture proof: {error}"),
+    };
+    let notepad_pid = notepad.0.id();
+
+    let mut target_window_id = None;
+    let mut last_snapshot_window_count = 0;
+    let mut matching_process_windows = 0;
+    let mut matching_notepad_title_windows = 0;
+    let mut matching_notepad_app_name_windows = 0;
+    let mut matching_process_zero_ids = 0;
+    let mut matching_process_id_errors = 0;
+    for _ in 0..40 {
+        let windows = match xcap::Window::all() {
+            Ok(windows) => windows,
+            Err(error) => panic!("interactive window enumeration must succeed: {error}"),
+        };
+        last_snapshot_window_count = windows.len();
+        for window in windows {
+            let belongs_to_notepad = match window.pid() {
+                Ok(pid) => pid == notepad_pid,
+                Err(_) => false,
+            };
+            let has_notepad_title = match window.title() {
+                Ok(title) => title.to_ascii_lowercase().contains("notepad"),
+                Err(_) => false,
+            };
+            let has_notepad_app_name = match window.app_name() {
+                Ok(app_name) => app_name.to_ascii_lowercase().contains("notepad"),
+                Err(_) => false,
+            };
+            if belongs_to_notepad || has_notepad_title || has_notepad_app_name {
+                if has_notepad_title {
+                    matching_notepad_title_windows += 1;
+                }
+                if has_notepad_app_name {
+                    matching_notepad_app_name_windows += 1;
+                }
+                matching_process_windows += 1;
+                target_window_id = match window.id() {
+                    Ok(id) if id != 0 => Some(id.to_string()),
+                    Ok(_) => {
+                        matching_process_zero_ids += 1;
+                        None
+                    }
+                    Err(_) => {
+                        matching_process_id_errors += 1;
+                        None
+                    }
+                };
+                if target_window_id.is_some() {
+                    break;
+                }
+            }
+        }
+        if target_window_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let target_window_id = match target_window_id {
+        Some(window_id) => window_id,
+        None => {
+            let child_exited = match notepad.0.try_wait() {
+                Ok(Some(_)) => true,
+                Ok(None) => false,
+                Err(_) => false,
+            };
+            panic!(
+                "Notepad did not expose a nonzero native window ID: last snapshot had \
+                 {last_snapshot_window_count} windows, {matching_process_windows} matched the \
+                 child process, title, or app name, {matching_notepad_title_windows} matched the \
+                 title, {matching_notepad_app_name_windows} matched the app name, \
+                 {matching_process_zero_ids} had zero IDs, {matching_process_id_errors} ID \
+                 inspections failed, and the launched child exited: {child_exited}"
+            )
+        }
+    };
+
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => listener,
+        Err(error) => panic!("test API listener must bind: {error}"),
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => panic!("test API listener must expose its address: {error}"),
+    };
+    let router = crate::api::build_router(direct_api_state(&fixture));
+    let _server = ServerGuard(tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    }));
+
+    let client = reqwest::Client::new();
+    let response = match client
+        .get(format!(
+            "http://{address}/api/v1/windows/{target_window_id}/screenshot"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("interactive screenshot request must complete: {error}"),
+    };
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let png = match response.bytes().await {
+        Ok(png) => png,
+        Err(error) => panic!("interactive PNG response body must be readable: {error}"),
+    };
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    let current_windows = match xcap::Window::all() {
+        Ok(windows) => windows,
+        Err(error) => panic!("interactive absence snapshot must succeed: {error}"),
+    };
+    let absent_window_id = ["18446744073709551615", "18446744073709551614"]
+        .into_iter()
+        .find(|candidate| {
+            !current_windows
+                .iter()
+                .any(|window| matches!(window.id(), Ok(id) if id.to_string() == *candidate))
+        });
+    let absent_window_id = match absent_window_id {
+        Some(window_id) => window_id,
+        None => panic!("interactive absence snapshot unexpectedly contained both sentinel IDs"),
+    };
+    let absent_response = match client
+        .get(format!(
+            "http://{address}/api/v1/windows/{absent_window_id}/screenshot"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("absent-window screenshot request must complete: {error}"),
+    };
+    assert_eq!(absent_response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
 fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiState {
     crate::api::ApiState {
+        window_screenshot_limiter: std::sync::Arc::new(crate::api::WindowScreenshotLimiter::new()),
         store: Arc::new(crate::api::auth::ApiClientStore::new(
             fixture.registry_path.clone(),
         )),

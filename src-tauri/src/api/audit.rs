@@ -142,6 +142,80 @@ pub fn record_terminal_snapshot(metadata: &TerminalSnapshotAuditMetadata) {
     }
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WindowScreenshotAuditStatus {
+    Succeeded,
+    InvalidWindowId,
+    WindowNotFound,
+    CaptureBusy,
+    CaptureTooLarge,
+    CaptureUnavailable,
+}
+
+pub(crate) struct WindowScreenshotAuditResult {
+    pub status: WindowScreenshotAuditStatus,
+}
+
+#[cfg(test)]
+mod window_screenshot_audit_tests {
+    use super::*;
+
+    #[test]
+    fn window_screenshot_statuses_are_redacted_fixed_values() {
+        let cases = [
+            (WindowScreenshotAuditStatus::Succeeded, "succeeded"),
+            (
+                WindowScreenshotAuditStatus::InvalidWindowId,
+                "invalid_window_id",
+            ),
+            (
+                WindowScreenshotAuditStatus::WindowNotFound,
+                "window_not_found",
+            ),
+            (WindowScreenshotAuditStatus::CaptureBusy, "capture_busy"),
+            (
+                WindowScreenshotAuditStatus::CaptureTooLarge,
+                "capture_too_large",
+            ),
+            (
+                WindowScreenshotAuditStatus::CaptureUnavailable,
+                "capture_unavailable",
+            ),
+        ];
+
+        for (status, expected) in cases {
+            let serialized = match serde_json::to_string(&status) {
+                Ok(serialized) => serialized,
+                Err(error) => panic!("audit status must serialize: {error}"),
+            };
+            assert_eq!(serialized, format!("\"{expected}\""));
+        }
+    }
+}
+
+pub(crate) fn record_window_screenshot_result(event: &str, result: &WindowScreenshotAuditResult) {
+    let status = serde_json::to_value(result.status)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "indeterminate".to_string());
+    record_pty_input(&PtyInputAuditMetadata {
+        event: event.to_string(),
+        injection_id: None,
+        op_id: None,
+        sender_fqn: None,
+        target_fqn: None,
+        payload_bytes: None,
+        payload_sha256: None,
+        source_plane: None,
+        selected_session_id: None,
+        selected_backend: None,
+        status,
+        reason_code: None,
+        timestamp: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
+    });
+}
+
 pub fn record_pty_input_result(event: &str, result: &crate::phone::types::PtyInputResult) {
     let source_plane = result.source_plane.map(|source| match source {
         crate::phone::types::PtyInputSourcePlane::HostCli => "host_cli".to_string(),
