@@ -1247,12 +1247,15 @@ fn production_modules() -> BTreeSet<String> {
 
 fn expected_dependencies() -> BTreeSet<DependencyObservation> {
     [
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::config"),
         (TARGET_ROOT_SOURCE, "agentscommander_lib::network"),
         (TARGET_ROOT_SOURCE, OUTPUT_MODULE),
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::telegram::api"),
         (
             TARGET_ROOT_SOURCE,
             "agentscommander_lib::telegram::jsonl_kernel",
         ),
+        (TARGET_ROOT_SOURCE, "agentscommander_lib::telegram::redact"),
     ]
     .into_iter()
     .map(|(source, module)| DependencyObservation {
