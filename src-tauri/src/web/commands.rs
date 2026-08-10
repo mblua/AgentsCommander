@@ -927,6 +927,16 @@ fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
         .unwrap_or_else(|| default.to_vec())
 }
 
+pub(crate) fn broadcast_all<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    broadcaster: &WsBroadcaster,
+    event: &str,
+    payload: &serde_json::Value,
+) {
+    let _ = tauri::Emitter::emit(app, event, payload);
+    broadcaster.broadcast_event(event, payload);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1436,13 +1446,4 @@ mod tests {
         assert_eq!(event["payload"]["profile"], json!("B"));
         assert_eq!(event["payload"]["updatedCount"], json!(1));
     }
-}
-pub(crate) fn broadcast_all<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    broadcaster: &WsBroadcaster,
-    event: &str,
-    payload: &serde_json::Value,
-) {
-    let _ = tauri::Emitter::emit(app, event, payload);
-    broadcaster.broadcast_event(event, payload);
 }

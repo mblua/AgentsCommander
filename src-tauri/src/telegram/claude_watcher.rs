@@ -126,103 +126,6 @@ impl WatcherDiagLogger {
     }
 }
 
-#[cfg(test)]
-mod watcher_output_ownership_tests {
-    use super::{WatcherDiagLogger, WatcherLogger};
-
-    const FAKE_TG_TOKEN: &str = "987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx";
-    const FAKE_GEMINI_KEY: &str = "AIzaSyFakeKeyForTesting1234567890";
-
-    fn open_temp_log(dir: &std::path::Path, name: &str) -> std::fs::File {
-        let path = dir.join(name);
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .expect("open temp log")
-    }
-
-    #[test]
-    fn watcherlogger_log_redacts_telegram_token_in_text() {
-        let temp_dir = tempfile::tempdir().expect("tmp");
-        let path = temp_dir.path().join("telegram-bridge.log");
-        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
-        let mut logger = WatcherLogger { file: Some(file) };
-        let leak_shaped = format!(
-            "error sending request for url (https://api.telegram.org/bot{}/getUpdates?offset=0)",
-            FAKE_TG_TOKEN
-        );
-        logger.log("ERR", "sid-test", &leak_shaped);
-        drop(logger);
-
-        let content = std::fs::read_to_string(&path).expect("read log back");
-        assert!(content.contains("/bot***/getUpdates"));
-        assert!(!content.contains(FAKE_TG_TOKEN));
-    }
-
-    #[test]
-    fn watcherlogger_log_redacts_before_truncating_at_500_bytes() {
-        let temp_dir = tempfile::tempdir().expect("tmp");
-        let path = temp_dir.path().join("telegram-bridge.log");
-        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
-        let mut logger = WatcherLogger { file: Some(file) };
-        let padding = "a".repeat(481);
-        let text = format!("{padding}/bot{FAKE_TG_TOKEN}/getUpdates");
-        assert!(text.len() > 500);
-
-        logger.log("ERR", "sid-test", &text);
-        drop(logger);
-
-        let content = std::fs::read_to_string(&path).expect("read log back");
-        assert!(content.contains("/bot***"));
-        assert!(!content.contains(FAKE_TG_TOKEN));
-        assert!(!content.contains("FAKE_"));
-        assert!(!content.contains("FAKE_TOKEN_FOR_TESTING"));
-    }
-
-    #[test]
-    fn watcherdiaglogger_log_raw_redacts_telegram_token() {
-        let temp_dir = tempfile::tempdir().expect("tmp");
-        let raw_path = temp_dir.path().join("diag-raw.log");
-        let raw = open_temp_log(temp_dir.path(), "diag-raw.log");
-        let mut logger = WatcherDiagLogger {
-            raw_file: Some(raw),
-            sent_file: None,
-        };
-        let row = format!(
-            "POST https://api.telegram.org/bot{}/sendMessage failed",
-            FAKE_TG_TOKEN
-        );
-        logger.log_raw(&row);
-        drop(logger);
-
-        let content = std::fs::read_to_string(&raw_path).expect("read raw log");
-        assert!(content.contains("/bot***/sendMessage"));
-        assert!(!content.contains(FAKE_TG_TOKEN));
-    }
-
-    #[test]
-    fn watcherdiaglogger_log_sent_redacts_gemini_key() {
-        let temp_dir = tempfile::tempdir().expect("tmp");
-        let sent_path = temp_dir.path().join("diag-sent.log");
-        let sent = open_temp_log(temp_dir.path(), "diag-sent.log");
-        let mut logger = WatcherDiagLogger {
-            raw_file: None,
-            sent_file: Some(sent),
-        };
-        let row = format!(
-            "Gemini call: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-            FAKE_GEMINI_KEY
-        );
-        logger.log_sent(&row);
-        drop(logger);
-
-        let content = std::fs::read_to_string(&sent_path).expect("read sent log");
-        assert!(content.contains("?key=***"));
-        assert!(!content.contains(FAKE_GEMINI_KEY));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn flush_watcher_buffer<R: tauri::Runtime>(
     buffer: &mut String,
@@ -538,5 +441,102 @@ async fn watch_loop<R: tauri::Runtime>(
             true,
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod watcher_output_ownership_tests {
+    use super::{WatcherDiagLogger, WatcherLogger};
+
+    const FAKE_TG_TOKEN: &str = "987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx";
+    const FAKE_GEMINI_KEY: &str = "AIzaSyFakeKeyForTesting1234567890";
+
+    fn open_temp_log(dir: &std::path::Path, name: &str) -> std::fs::File {
+        let path = dir.join(name);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open temp log")
+    }
+
+    #[test]
+    fn watcherlogger_log_redacts_telegram_token_in_text() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let path = temp_dir.path().join("telegram-bridge.log");
+        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
+        let mut logger = WatcherLogger { file: Some(file) };
+        let leak_shaped = format!(
+            "error sending request for url (https://api.telegram.org/bot{}/getUpdates?offset=0)",
+            FAKE_TG_TOKEN
+        );
+        logger.log("ERR", "sid-test", &leak_shaped);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&path).expect("read log back");
+        assert!(content.contains("/bot***/getUpdates"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+    }
+
+    #[test]
+    fn watcherlogger_log_redacts_before_truncating_at_500_bytes() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let path = temp_dir.path().join("telegram-bridge.log");
+        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
+        let mut logger = WatcherLogger { file: Some(file) };
+        let padding = "a".repeat(481);
+        let text = format!("{padding}/bot{FAKE_TG_TOKEN}/getUpdates");
+        assert!(text.len() > 500);
+
+        logger.log("ERR", "sid-test", &text);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&path).expect("read log back");
+        assert!(content.contains("/bot***"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+        assert!(!content.contains("FAKE_"));
+        assert!(!content.contains("FAKE_TOKEN_FOR_TESTING"));
+    }
+
+    #[test]
+    fn watcherdiaglogger_log_raw_redacts_telegram_token() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let raw_path = temp_dir.path().join("diag-raw.log");
+        let raw = open_temp_log(temp_dir.path(), "diag-raw.log");
+        let mut logger = WatcherDiagLogger {
+            raw_file: Some(raw),
+            sent_file: None,
+        };
+        let row = format!(
+            "POST https://api.telegram.org/bot{}/sendMessage failed",
+            FAKE_TG_TOKEN
+        );
+        logger.log_raw(&row);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&raw_path).expect("read raw log");
+        assert!(content.contains("/bot***/sendMessage"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+    }
+
+    #[test]
+    fn watcherdiaglogger_log_sent_redacts_gemini_key() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let sent_path = temp_dir.path().join("diag-sent.log");
+        let sent = open_temp_log(temp_dir.path(), "diag-sent.log");
+        let mut logger = WatcherDiagLogger {
+            raw_file: None,
+            sent_file: Some(sent),
+        };
+        let row = format!(
+            "Gemini call: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+            FAKE_GEMINI_KEY
+        );
+        logger.log_sent(&row);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&sent_path).expect("read sent log");
+        assert!(content.contains("?key=***"));
+        assert!(!content.contains(FAKE_GEMINI_KEY));
     }
 }
