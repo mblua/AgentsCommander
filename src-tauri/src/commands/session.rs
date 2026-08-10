@@ -3174,6 +3174,11 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
             }
         }
 
+        // The std-Mutex guard from this `let` initializer is dropped at the `;`
+        // before `runtime_snapshot` re-locks the same pty Mutex below. Moving this
+        // into an `if let`/`match` scrutinee or an inner blocking block would hold
+        // the guard across that re-lock and re-introduce the re-entrant std-Mutex
+        // deadlock fixed in resource_monitor (§1295).
         let kill_result = transaction
             .app()
             .state::<Arc<Mutex<PtyManager>>>()
@@ -3836,6 +3841,11 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
         }
     }
 
+    // The std-Mutex guard from this `let` initializer is dropped at the `;` before
+    // `runtime_snapshot` re-locks the same pty Mutex below. Moving this into an
+    // `if let`/`match` scrutinee or an inner blocking block would hold the guard
+    // across that re-lock and re-introduce the re-entrant std-Mutex deadlock fixed
+    // in resource_monitor (§1295).
     let kill_result = transaction
         .app()
         .state::<Arc<Mutex<PtyManager>>>()

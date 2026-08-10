@@ -858,7 +858,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
 #[test]
 fn claude_launch_materializes_context_without_prompt_file_arg() {
     let mut fixture = make_lifecycle_fixture();
-    let agent_cwd = fixture._temp.path().join(".ac").join("_agent_claude");
+    let agent_cwd = fixture.repo_root.join(".ac").join("_agent_claude");
     std::fs::create_dir_all(&agent_cwd).expect("create claude agent cwd");
     let script_path = agent_cwd.join("claude.ps1");
     write_child_script(&script_path);
