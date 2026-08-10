@@ -2052,6 +2052,79 @@ impl SessionManager {
 
         Ok(result)
     }
+
+    /// §1295 5.6 — remove dormant orphan rows by id (production impl). The
+    /// ORACLE is re-verified right here against the LIVE row: a row is removed
+    /// only if it exists AND `status == Exited(_)` AND it has no pending create.
+    /// This also skips a row that was `Exited` at snapshot time but got restarted
+    /// in between.
+    ///
+    /// The section between acquiring and dropping the interior write lock is
+    /// PURELY SYNCHRONOUS (no awaits), mirroring `destroy_session` (dev-rust
+    /// caveat A). Selection repair mirrors `destroy_session` but with
+    /// `SelectionCause::BackgroundCleanup` (NOT ManualClose): the prune is not
+    /// user-initiated, so the next selection is not attributed to a close.
+    ///
+    /// Missing ids are not an error. Returns the number of rows removed. The
+    /// method never calls any persist helper, never touches the archive, and
+    /// never awaits while holding the interior write. A benign race: a
+    /// concurrent `close-session` that listed an id just before the prune fails
+    /// once with `AppError::SessionNotFound` and reports a now-missing row;
+    /// one-shot, no retry loop (dev-rust caveat B).
+    pub(crate) async fn remove_exited_sessions(&self, ids: &[Uuid]) -> usize {
+        let mut state = self.state.write().await;
+        let mut removed = 0usize;
+        let mut removed_selection = false;
+        let mut removed_ids: Vec<Uuid> = Vec::new();
+        for &id in ids {
+            let Some(session) = state.sessions.get(&id) else {
+                continue;
+            };
+            if !matches!(session.status, SessionStatus::Exited(_)) {
+                continue;
+            }
+            if state.pending_create.contains_key(&id) {
+                continue;
+            }
+            state.sessions.remove(&id);
+            removed += 1;
+            removed_ids.push(id);
+            if state.selection.id() == Some(id) {
+                removed_selection = true;
+            }
+        }
+        if !removed_ids.is_empty() {
+            state
+                .order
+                .retain(|candidate| !removed_ids.contains(candidate));
+        }
+        if removed_selection {
+            state.revision += 1;
+            let next = state
+                .order
+                .iter()
+                .copied()
+                .find(|candidate| !state.pending_create.contains_key(candidate));
+            if let Some(next_id) = next {
+                if let Some(session) = state.sessions.get_mut(&next_id) {
+                    session.status = SessionStatus::Active;
+                }
+                state.selection = SessionSelection::live(
+                    state.epoch,
+                    state.revision,
+                    SelectionCause::BackgroundCleanup,
+                    next_id,
+                );
+            } else {
+                state.selection = SessionSelection::none(
+                    state.epoch,
+                    state.revision,
+                    SelectionCause::BackgroundCleanup,
+                );
+            }
+        }
+        removed
+    }
 }
 
 fn binding_matches(state: &SessionManagerState, binding: PendingCreateBinding) -> bool {
@@ -4622,5 +4695,108 @@ mod tests {
             outcome.is_err(),
             "no CommitResult, therefore no activity records, may reach the caller"
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // §1295 — remove_exited_sessions
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Test 9: of a mixed set (Running, Exited, pending) only the Exited
+    /// non-pending row is removed; the selection is repaired to the next
+    /// non-pending row with `SelectionCause::BackgroundCleanup`; count is
+    /// correct.
+    #[tokio::test]
+    async fn remove_exited_sessions_removes_only_exited_non_pending() {
+        let mgr = SessionManager::new();
+        let a = mgr
+            .create_session(
+                "running".into(),
+                vec![],
+                "C:/x/a".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create running");
+        let b = mgr
+            .create_session(
+                "exited".into(),
+                vec![],
+                "C:/x/b".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create exited");
+        let c_pending = mgr.insert_pending_session_for_test("C:/x/c".into()).await;
+        mgr.mark_exited(b.id, 0).await;
+        // Make the soon-to-remove Exited row the current selection.
+        mgr.set_active_only(b.id).await.expect("select b");
+        assert_eq!(mgr.selection_payload().await.id(), Some(b.id));
+
+        let removed = mgr.remove_exited_sessions(&[a.id, b.id, c_pending]).await;
+        assert_eq!(removed, 1, "only the Exited non-pending row is removed");
+
+        // b gone; a (Running) and c (pending) remain.
+        assert_eq!(mgr.get_session(b.id).await.map(|s| s.name), None);
+        assert!(mgr.get_session(a.id).await.is_some());
+        // Pending rows are hidden from the public read path; assert the pending
+        // create is still present instead.
+        assert!(mgr.contains_public_or_pending(c_pending).await);
+
+        // Selection repaired to the next non-pending row (a) with BackgroundCleanup.
+        let selection = mgr.selection_payload().await;
+        assert_eq!(selection.id(), Some(a.id));
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::BackgroundCleanup
+        );
+    }
+
+    /// Test 10: rows that are live (Running) or pending are never removed.
+    #[tokio::test]
+    async fn remove_exited_sessions_never_removes_live_or_pending() {
+        let mgr = SessionManager::new();
+        let a = mgr
+            .create_session(
+                "running-a".into(),
+                vec![],
+                "C:/x/a".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create a");
+        let b = mgr
+            .create_session(
+                "running-b".into(),
+                vec![],
+                "C:/x/b".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create b");
+        let c_pending = mgr.insert_pending_session_for_test("C:/x/c".into()).await;
+
+        let removed = mgr.remove_exited_sessions(&[a.id, b.id, c_pending]).await;
+        assert_eq!(removed, 0, "no live/pending row is ever removed");
+        assert!(mgr.get_session(a.id).await.is_some());
+        assert!(mgr.get_session(b.id).await.is_some());
+        // Pending rows are hidden from the public read path (by design), so assert
+        // the pending create is still present rather than via get_session.
+        assert!(mgr.contains_public_or_pending(c_pending).await);
     }
 }

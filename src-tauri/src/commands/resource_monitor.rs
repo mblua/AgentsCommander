@@ -93,6 +93,7 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .terminate_job_for_session(session_id)
     };
+
     log::info!(
         "[resource-monitor] job-fire session={} job_present={}",
         session_id,
@@ -114,11 +115,36 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
         // backstop, reaps the child, tears down idle/git/watchers/parser), then flip
         // the tile to Exited. This is the only path that consumes the job.
         {
-            if let Err(error) = pty_mgr
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .kill(session_id)
-            {
+            // Drop the std-Mutex guard before the S1 re-check below: the defer test
+            // proved a re-entrant same-thread relock (`runtime_snapshot` re-locks the
+            // pty) deadlocks. `kill` itself is quick and side-effect-free on the
+            // failure arm, so no lock is held across the re-check.
+            let kill_result = {
+                let guard = pty_mgr
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let r = guard.kill(session_id);
+                drop(guard);
+                r
+            };
+            if let Err(error) = kill_result {
+                // §1295 S1: the PTY `kill` returned Err. Re-check whether the
+                // PTY is still live (`.has_pty` == `pty_mgr.has_session`); if it
+                // is, DEFER the Exited flip for this finalize. A live PTY route
+                // coexisting with `status == Exited` would manufacture a
+                // dormant-orphan row for the persistence prune to act on, so we
+                // keep the row Running and let the watchdog / liveness-reconcile
+                // path re-verify and re-attempt on a later tick. No Exited flip,
+                // publish, or persist happens for this finalize (`result.finalized`
+                // stays false and the FE keeps the modal open for Force/Retry).
+                if transaction.runtime_snapshot(session_id).has_pty {
+                    log::warn!(
+                        "[resource-monitor] PTY teardown failed after verified kill and PTY still live session={}: {}; deferring Exited flip",
+                        session_id,
+                        error
+                    );
+                    return Ok(result);
+                }
                 log::warn!(
                     "[resource-monitor] PTY teardown failed after verified kill session={}: {}",
                     session_id,
@@ -292,6 +318,7 @@ mod tests {
         live: Mutex<HashSet<Uuid>>,
         terminate_count: AtomicUsize,
         kill_count: AtomicUsize,
+        fail_kill: AtomicBool,
     }
 
     #[derive(Default)]
@@ -339,6 +366,13 @@ mod tests {
         fn set_live(&self, id: Uuid) {
             self.live.lock().unwrap().insert(id);
         }
+
+        /// Fixture: when set, `kill` returns Err while `has_session` stays true,
+        /// simulating a PTY teardown failure with a still-live route (S1 defer
+        /// branch).
+        fn set_fail_kill(&self, fail: bool) {
+            self.fail_kill.store(fail, Ordering::SeqCst);
+        }
     }
 
     impl PtyBackend for ResourcePtyBackend {
@@ -377,6 +411,11 @@ mod tests {
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
             self.kill_count.fetch_add(1, Ordering::SeqCst);
+            if self.fail_kill.load(Ordering::SeqCst) {
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic kill failure".into(),
+                ));
+            }
             self.live.lock().unwrap().remove(&id);
             Ok(())
         }
@@ -541,6 +580,127 @@ mod tests {
                 .unwrap()
                 .status,
             SessionStatus::Active
+        );
+    }
+
+    /// Build the 4-state mock app (manager, PtyManager, ResourceMonitorState,
+    /// DetachedSessionsState) with a Group-neutral GatedBackend (supports process
+    /// tree enforcement = true) but NO group registration, so `kill_group` reports
+    /// Terminated immediately with no coordinator/reaper barrier. Used by the S1
+    /// defer-arm test without any coordinator.
+    async fn run_kill_error_branch(
+        fail_kill: bool,
+        keep_pty_live: bool,
+    ) -> (
+        ResourceKillResult,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+        Uuid,
+        Arc<ResourcePtyBackend>,
+        Arc<Mutex<PtyManager>>,
+    ) {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/kill-error-defer".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session");
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5400,
+            creation_time_100ns: 910,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build kill-error app");
+        pty_backend.set_fail_kill(fail_kill);
+        if !keep_pty_live {
+            // Simulate the PTY route already gone while `kill` still errors.
+            pty_backend.live.lock().unwrap().remove(&session.id);
+        }
+        let transaction = SelectionTransaction::for_test(app.handle().clone());
+        let result = execute_resource_kill_transaction(
+            &transaction,
+            session.id,
+            TrustedResourceIntent::Watchdog,
+        )
+        .await
+        .expect("kill transaction");
+        (result, manager, session.id, pty_backend, pty)
+    }
+
+    /// Test 18 (replaces test 17): the S1 defer arm. When the PTY `kill` errors
+    /// while the route is STILL live, the transaction must NOT finalize: no Exited
+    /// flip, no mark_exited commit, no persist, no session_destroyed publish; the
+    /// row stays Running and `result.finalized` is false. When the PTY is already
+    /// gone, the same `kill` error falls through and finalizes as today. Both
+    /// branches call `execute_resource_kill_transaction` DIRECTLY (no coordinator)
+    /// under a hard timeout.
+    #[tokio::test]
+    async fn resource_monitor_kill_error_defers_exited_while_pty_live() {
+        let (result, manager, session_id, _pty_backend, pty) =
+            tokio::time::timeout(Duration::from_secs(10), run_kill_error_branch(true, true))
+                .await
+                .expect("branch 1 (defer) did not complete in time");
+        assert!(
+            !result.finalized,
+            "deferred: not finalized while the PTY route is still live"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row retained on defer branch");
+        assert!(
+            !matches!(row.status, SessionStatus::Exited(_)),
+            "row NOT flipped to Exited while the PTY is live"
+        );
+        assert!(
+            pty.lock().unwrap().has_session(session_id),
+            "PTY route still live on defer branch"
+        );
+
+        let (result, manager, session_id, _pty_backend, _pty) =
+            tokio::time::timeout(Duration::from_secs(10), run_kill_error_branch(true, false))
+                .await
+                .expect("branch 2 (finalize) did not complete in time");
+        assert!(
+            result.finalized,
+            "finalize proceeds when the PTY route is already gone"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row present after finalize");
+        assert!(
+            matches!(row.status, SessionStatus::Exited(_)),
+            "row Exited after the finalize branch"
         );
     }
 

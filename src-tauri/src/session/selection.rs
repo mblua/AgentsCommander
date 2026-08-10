@@ -3806,11 +3806,12 @@ mod tests {
     /// production. Each one either records the working-state edge it causes or is
     /// covered by the heartbeat backstop; an assignment anywhere else silently
     /// reintroduces an unrecorded edge.
-    const STATUS_WRITER_OWNERS: [&str; 4] = [
+    const STATUS_WRITER_OWNERS: [&str; 5] = [
         "mark_idle",
         "mark_busy",
         "prepare_pty_input_boundary",
         "commit_selection_transition",
+        "remove_exited_sessions",
     ];
 
     fn ownership_violations(files: &[(String, String)]) -> Vec<String> {

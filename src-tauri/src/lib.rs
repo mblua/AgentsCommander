@@ -728,7 +728,7 @@ impl ContextPersistSink for ScraperPersist {
             for (id, percent) in &changed {
                 guard.set_context_percent(*id, *percent).await;
             }
-            crate::config::sessions_persistence::persist_current_state(&guard).await;
+            crate::config::sessions_persistence::persist_current_state_prune_dormant(&guard).await;
         })
     }
 }
@@ -1093,7 +1093,8 @@ pub fn run(
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
-                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
+                        .await;
                     if let Some(scheduler) =
                         app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
                     {
@@ -1118,7 +1119,8 @@ pub fn run(
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_busy(id).await;
-                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
+                        .await;
                 });
             }
         },
@@ -2288,6 +2290,23 @@ pub fn run(
                         // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
+                            // §1295 site C (restore-skip): append ONE archive
+                            // record BEFORE the `continue`. The restore task is
+                            // async and holds no `sessions_save_lock` here, so we
+                            // use the locking public variant (S4). The record is
+                            // written before the continue unchanged; it does not
+                            // touch sessions.json (site C leaves the row's disk
+                            // fate to the next persist, §224 G5).
+                            let config_dir = crate::config::config_dir();
+                            if let Some(config_dir) = config_dir {
+                                sessions_persistence::append_orphan_archive_record(
+                                    &config_dir,
+                                    "restoreCwdMissing",
+                                    "archived",
+                                    ps,
+                                )
+                                .await;
+                            }
                             continue;
                         }
 
