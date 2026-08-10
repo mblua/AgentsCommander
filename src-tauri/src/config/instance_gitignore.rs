@@ -102,10 +102,10 @@ fn required_rules(agent_local_dir: &str) -> Result<[String; 14], String> {
     Ok([
         format!(
             "/{}/{}/config.json",
-            super::ROOT_AGENT_DIR_NAME,
+            super::root_agent::ROOT_AGENT_DIR_NAME,
             escaped_agent_local_dir
         ),
-        format!("/{}/config.json", super::ROOT_AGENT_DIR_NAME),
+        format!("/{}/config.json", super::root_agent::ROOT_AGENT_DIR_NAME),
         FIXED_RULES[0].to_string(),
         FIXED_RULES[1].to_string(),
         FIXED_RULES[2].to_string(),
@@ -1059,7 +1059,3 @@ mod tests {
         }
     }
 }
-use crate::config::root_agent::is_root_agent_path;
-
-#[allow(dead_code)]
-const ROOT_AGENT_PATH_PREDICATE: fn(&str) -> bool = is_root_agent_path;

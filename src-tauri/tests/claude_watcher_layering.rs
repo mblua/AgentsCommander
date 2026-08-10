@@ -34,8 +34,8 @@ use syn::{
 const CRATE_ID: &str = "agentscommander_lib";
 const TARGET_MODULE: &str = "agentscommander_lib::telegram::claude_watcher";
 const TARGET_ROOT_SOURCE: &str = "src/telegram/claude_watcher.rs";
-const OUTPUT_MODULE: &str = "agentscommander_lib::telegram::claude_watcher::output";
-const OUTPUT_SOURCE: &str = "src/telegram/claude_watcher/output.rs";
+const OUTPUT_MODULE: &str = "agentscommander_lib::telegram::output";
+const OUTPUT_SOURCE: &str = "src/telegram/output.rs";
 const FOCUSED_RERUN: &str = "cargo test --test claude_watcher_layering -- --nocapture";
 const AUTHORITATIVE_TOPOLOGY: &str = "rust-module-dependency-cycles 1.1.0";
 const SCOPE_TEXT: &str = "SCOPE: this guard is a syntax and compiler module-tree regression net. 1. Macro/proc-macro expansion and include! tokens are not performed. 2. Trait, generic, and receiver dispatch without a syntactic path is not type-resolved. 3. Generated source without a literal mod declaration is outside traversal. 4. Identity available only through an outside re-export chain can exceed the local alias resolver.";
@@ -1253,10 +1253,6 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
             TARGET_ROOT_SOURCE,
             "agentscommander_lib::telegram::jsonl_kernel",
         ),
-        (OUTPUT_SOURCE, "agentscommander_lib::config"),
-        (OUTPUT_SOURCE, "agentscommander_lib::network"),
-        (OUTPUT_SOURCE, "agentscommander_lib::telegram::api"),
-        (OUTPUT_SOURCE, "agentscommander_lib::telegram::redact"),
     ]
     .into_iter()
     .map(|(source, module)| DependencyObservation {
@@ -1276,19 +1272,18 @@ struct SymbolOccurrence {
 
 type SymbolOccurrences = BTreeMap<String, Vec<SymbolOccurrence>>;
 
-#[allow(dead_code)]
 fn expected_moved_symbols() -> BTreeSet<String> {
     [
-        format!("struct {OUTPUT_MODULE}::BridgeLogger"),
-        format!("method {OUTPUT_MODULE}::BridgeLogger::new"),
-        format!("method {OUTPUT_MODULE}::BridgeLogger::log"),
-        format!("struct {OUTPUT_MODULE}::DiagLogger"),
-        format!("method {OUTPUT_MODULE}::DiagLogger::new"),
-        format!("method {OUTPUT_MODULE}::DiagLogger::log_raw"),
-        format!("method {OUTPUT_MODULE}::DiagLogger::log_sent"),
+        "struct agentscommander_lib::telegram::bridge::BridgeLogger".to_owned(),
+        "method agentscommander_lib::telegram::bridge::BridgeLogger::new".to_owned(),
+        "method agentscommander_lib::telegram::bridge::BridgeLogger::log".to_owned(),
+        "struct agentscommander_lib::telegram::bridge::DiagLogger".to_owned(),
+        "method agentscommander_lib::telegram::bridge::DiagLogger::new".to_owned(),
+        "method agentscommander_lib::telegram::bridge::DiagLogger::log_raw".to_owned(),
+        "method agentscommander_lib::telegram::bridge::DiagLogger::log_sent".to_owned(),
         format!("enum {OUTPUT_MODULE}::TelegramErrKind"),
-        format!("fn {OUTPUT_MODULE}::flush_buffer"),
-        format!("fn {OUTPUT_MODULE}::chunk_text"),
+        "fn agentscommander_lib::telegram::bridge::flush_buffer".to_owned(),
+        format!("fn {OUTPUT_MODULE}::prepare_output_chunks"),
         format!("method {OUTPUT_MODULE}::TelegramErrKind::classify"),
         format!("method {OUTPUT_MODULE}::TelegramErrKind::as_str"),
     ]
@@ -1410,7 +1405,7 @@ fn collect_moved_symbol_occurrences(index: &ModuleIndex, crate_id: &str) -> Symb
         "DiagLogger",
         "TelegramErrKind",
         "flush_buffer",
-        "chunk_text",
+        "prepare_output_chunks",
     ]
     .into_iter()
     .collect::<BTreeSet<_>>();
@@ -1492,7 +1487,6 @@ fn collect_moved_symbol_occurrences(index: &ModuleIndex, crate_id: &str) -> Symb
     occurrences
 }
 
-#[allow(dead_code)]
 fn verify_exact_moved_symbols(index: &ModuleIndex, crate_id: &str) -> Result<(), GuardError> {
     let expected = expected_moved_symbols();
     let occurrences = collect_moved_symbol_occurrences(index, crate_id);
@@ -1508,7 +1502,14 @@ fn verify_exact_moved_symbols(index: &ModuleIndex, crate_id: &str) -> Result<(),
         .iter()
         .flat_map(|(symbol, rows)| {
             rows.iter()
-                .filter(|row| row.source != OUTPUT_SOURCE || !row.body_id.contains("::output#"))
+                .filter(|row| {
+                    let (source, body) = if symbol.contains("agentscommander_lib::telegram::bridge::") {
+                        ("src/telegram/bridge.rs", "::bridge#")
+                    } else {
+                        (OUTPUT_SOURCE, "::output#")
+                    };
+                    row.source != source || !row.body_id.contains(body)
+                })
                 .map(|row| (symbol.clone(), row.clone()))
         })
         .collect::<Vec<_>>();
@@ -1599,14 +1600,12 @@ fn require_visibility(
     ))
 }
 
-#[allow(dead_code)]
 fn use_leaves(item_use: &ItemUse) -> Vec<UseLeaf> {
     let mut leaves = Vec::new();
     expand_use_tree(&item_use.tree, &mut Vec::new(), &mut leaves);
     leaves
 }
 
-#[allow(dead_code)]
 fn exact_use_leaf_set(item_use: &ItemUse, prefix: &[&str], names: &[&str]) -> bool {
     let leaves = use_leaves(item_use);
     if leaves.len() != names.len() || leaves.iter().any(|leaf| leaf.glob) {
@@ -1631,7 +1630,6 @@ fn exact_use_leaf_set(item_use: &ItemUse, prefix: &[&str], names: &[&str]) -> bo
     actual == expected
 }
 
-#[allow(dead_code)]
 fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), GuardError> {
     let target_bodies = index
         .bodies
@@ -1663,9 +1661,11 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
     let target_body = target_bodies[0];
     let output_body = output_bodies[0];
     let bridge_body = bridge_bodies[0];
-    let output_declarations = target_body
-        .items
+    let output_declarations = index
+        .bodies
         .iter()
+        .filter(|body| body.module_id == "agentscommander_lib::telegram")
+        .flat_map(|body| &body.items)
         .filter_map(|item| match item {
             Item::Mod(item_mod) if unraw(&item_mod.ident) == "output" => Some(item_mod),
             _ => None,
@@ -1675,113 +1675,101 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
         return Err(GuardError::new(
             "output module declaration",
             format!(
-                "expected one out-of-line output declaration in {TARGET_ROOT_SOURCE}, got {}",
+                "expected one out-of-line output declaration in src/telegram/mod.rs, got {}",
                 output_declarations.len()
             ),
         ));
     }
     require_visibility(
         &output_declarations[0].vis,
-        RequiredVisibility::Super,
-        "claude_watcher::output module",
+        RequiredVisibility::Crate,
+        "telegram::output module",
     )?;
 
-    let telegram_output_declarations = index
-        .bodies
-        .iter()
-        .filter(|body| body.module_id == "agentscommander_lib::telegram")
-        .flat_map(|body| &body.items)
-        .filter(|item| matches!(item, Item::Mod(item_mod) if unraw(&item_mod.ident) == "output"))
-        .count();
-    if telegram_output_declarations != 0 {
-        return Err(GuardError::new(
-            "output module ownership",
-            "telegram/mod.rs declares output; the module must remain nested under Claude",
-        ));
-    }
-
     let mut interface = BTreeSet::new();
-    let aliases = module_item_aliases(output_body, crate_id, &index.declared_modules);
-    for item in &output_body.items {
-        match item {
-            Item::Struct(item_struct)
-                if matches!(
-                    unraw(&item_struct.ident).as_str(),
-                    "BridgeLogger" | "DiagLogger"
-                ) =>
-            {
-                let name = unraw(&item_struct.ident);
-                require_visibility(
-                    &item_struct.vis,
-                    RequiredVisibility::Crate,
-                    &format!("{OUTPUT_MODULE}::{name}"),
-                )?;
-                for field in &item_struct.fields {
+    for body in [bridge_body, output_body] {
+        let aliases = module_item_aliases(body, crate_id, &index.declared_modules);
+        for item in &body.items {
+            match item {
+                Item::Struct(item_struct)
+                    if matches!(
+                        unraw(&item_struct.ident).as_str(),
+                        "BridgeLogger" | "DiagLogger"
+                    ) =>
+                {
+                    let name = unraw(&item_struct.ident);
                     require_visibility(
-                        &field.vis,
-                        RequiredVisibility::Private,
-                        &format!("{OUTPUT_MODULE}::{name} field"),
+                        &item_struct.vis,
+                        RequiredVisibility::Crate,
+                        &format!("{}::{name}", body.module_id),
                     )?;
+                    for field in &item_struct.fields {
+                        require_visibility(
+                            &field.vis,
+                            RequiredVisibility::Private,
+                            &format!("{}::{name} field", body.module_id),
+                        )?;
+                    }
+                    interface.insert(format!("struct {name}"));
                 }
-                interface.insert(format!("struct {name}"));
-            }
-            Item::Enum(item_enum) if unraw(&item_enum.ident) == "TelegramErrKind" => {
-                require_visibility(
-                    &item_enum.vis,
-                    RequiredVisibility::Crate,
-                    &format!("{OUTPUT_MODULE}::TelegramErrKind"),
-                )?;
-                interface.insert("enum TelegramErrKind".to_owned());
-            }
-            Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "flush_buffer" => {
-                require_visibility(
-                    &item_fn.vis,
-                    RequiredVisibility::Crate,
-                    &format!("{OUTPUT_MODULE}::flush_buffer"),
-                )?;
-                interface.insert("fn flush_buffer".to_owned());
-            }
-            Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "chunk_text" => {
-                require_visibility(
-                    &item_fn.vis,
-                    RequiredVisibility::Private,
-                    &format!("{OUTPUT_MODULE}::chunk_text"),
-                )?;
-                interface.insert("fn chunk_text private".to_owned());
-            }
-            Item::Impl(item_impl) => {
-                let Some(self_type) = canonical_impl_self_type(
-                    output_body,
-                    item_impl,
-                    crate_id,
-                    &index.declared_modules,
-                    &aliases,
-                ) else {
-                    continue;
-                };
-                let self_name = self_type.rsplit("::").next().unwrap_or_default();
-                for associated in &item_impl.items {
-                    let syn::ImplItem::Fn(method) = associated else {
+                Item::Enum(item_enum) if unraw(&item_enum.ident) == "TelegramErrKind" => {
+                    require_visibility(
+                        &item_enum.vis,
+                        RequiredVisibility::Crate,
+                        &format!("{}::TelegramErrKind", body.module_id),
+                    )?;
+                    interface.insert("enum TelegramErrKind".to_owned());
+                }
+                Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "flush_buffer" => {
+                    require_visibility(
+                        &item_fn.vis,
+                        RequiredVisibility::Crate,
+                        &format!("{}::flush_buffer", body.module_id),
+                    )?;
+                    interface.insert("fn flush_buffer".to_owned());
+                }
+                Item::Fn(item_fn) if unraw(&item_fn.sig.ident) == "prepare_output_chunks" => {
+                    require_visibility(
+                        &item_fn.vis,
+                        RequiredVisibility::Crate,
+                        &format!("{}::prepare_output_chunks", body.module_id),
+                    )?;
+                    interface.insert("fn prepare_output_chunks".to_owned());
+                }
+                Item::Impl(item_impl) => {
+                    let Some(self_type) = canonical_impl_self_type(
+                        body,
+                        item_impl,
+                        crate_id,
+                        &index.declared_modules,
+                        &aliases,
+                    ) else {
                         continue;
                     };
-                    let method_name = unraw(&method.sig.ident);
-                    let required = matches!(
-                        (self_name, method_name.as_str()),
-                        ("BridgeLogger", "new" | "log")
-                            | ("DiagLogger", "new" | "log_raw" | "log_sent")
-                            | ("TelegramErrKind", "classify" | "as_str")
-                    );
-                    if required {
-                        require_visibility(
-                            &method.vis,
-                            RequiredVisibility::Crate,
-                            &format!("{self_type}::{method_name}"),
-                        )?;
-                        interface.insert(format!("method {self_name}::{method_name}"));
+                    let self_name = self_type.rsplit("::").next().unwrap_or_default();
+                    for associated in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = associated else {
+                            continue;
+                        };
+                        let method_name = unraw(&method.sig.ident);
+                        let required = matches!(
+                            (self_name, method_name.as_str()),
+                            ("BridgeLogger", "new" | "log")
+                                | ("DiagLogger", "new" | "log_raw" | "log_sent")
+                                | ("TelegramErrKind", "classify" | "as_str")
+                        );
+                        if required {
+                            require_visibility(
+                                &method.vis,
+                                RequiredVisibility::Crate,
+                                &format!("{self_type}::{method_name}"),
+                            )?;
+                            interface.insert(format!("method {self_name}::{method_name}"));
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
     let expected_interface = [
@@ -1796,7 +1784,7 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
         "method TelegramErrKind::classify",
         "method TelegramErrKind::as_str",
         "fn flush_buffer",
-        "fn chunk_text private",
+        "fn prepare_output_chunks",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1822,43 +1810,21 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
         .filter(|item_use| {
             exact_use_leaf_set(
                 item_use,
-                &["super", "claude_watcher", "output"],
-                &["flush_buffer", "BridgeLogger", "DiagLogger"],
+                &["super", "output"],
+                &["prepare_output_chunks", "TelegramErrKind"],
             )
         })
         .collect::<Vec<_>>();
     if facade.len() != 1 {
         return Err(GuardError::new(
             "bridge compatibility facade",
-            format!("expected one exact three-item facade, got {}", facade.len()),
+            format!("expected one exact two-item facade, got {}", facade.len()),
         ));
     }
     require_visibility(
         &facade[0].vis,
-        RequiredVisibility::Super,
-        "bridge output compatibility facade",
-    )?;
-    let enum_import = bridge_uses
-        .iter()
-        .copied()
-        .filter(|item_use| {
-            exact_use_leaf_set(
-                item_use,
-                &["super", "claude_watcher", "output"],
-                &["TelegramErrKind"],
-            )
-        })
-        .collect::<Vec<_>>();
-    if enum_import.len() != 1 {
-        return Err(GuardError::new(
-            "bridge private error import",
-            format!("expected one direct enum import, got {}", enum_import.len()),
-        ));
-    }
-    require_visibility(
-        &enum_import[0].vis,
         RequiredVisibility::Private,
-        "bridge TelegramErrKind import",
+        "bridge output import",
     )?;
 
     let claude_import = target_body
@@ -1868,8 +1834,8 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
             Item::Use(item_use)
                 if exact_use_leaf_set(
                     item_use,
-                    &["self", "output"],
-                    &["flush_buffer", "BridgeLogger", "DiagLogger"],
+                    &["crate", "telegram", "output"],
+                    &["prepare_output_chunks", "TelegramErrKind"],
                 ) =>
             {
                 Some(item_use)
@@ -1881,7 +1847,7 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
         return Err(GuardError::new(
             "Claude direct output import",
             format!(
-                "expected one exact three-item import, got {}",
+                "expected one exact two-item import, got {}",
                 claude_import.len()
             ),
         ));
@@ -1920,7 +1886,7 @@ fn require_exact_source_set(
 }
 
 fn require_exact_production_report(report: &GuardReport) -> Result<(), GuardError> {
-    let expected_sources = [TARGET_ROOT_SOURCE.to_owned(), OUTPUT_SOURCE.to_owned()]
+    let expected_sources = [TARGET_ROOT_SOURCE.to_owned()]
         .into_iter()
         .collect::<BTreeSet<_>>();
     let expected_dependencies = expected_dependencies();
@@ -2462,7 +2428,6 @@ fn alias_conflicts_cycles_and_globs_fail_closed() {
 }
 
 #[test]
-#[cfg(any())]
 fn production_moved_symbols_and_all_seven_methods_exist_once_at_the_destination() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
@@ -2472,7 +2437,6 @@ fn production_moved_symbols_and_all_seven_methods_exist_once_at_the_destination(
 }
 
 #[test]
-#[cfg(any())]
 fn production_interface_is_exactly_telegram_internal_and_canonical() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
@@ -2576,13 +2540,13 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     duplicate.write("src/lib.rs", "mod telegram;\n");
     duplicate.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { #[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; } }\n",
+        "#[cfg(unix)] pub mod bridge { pub struct BridgeLogger; } #[cfg(windows)] pub mod bridge { pub struct BridgeLogger; }\n",
     );
     let duplicate_index = duplicate
         .index_as(CRATE_ID)
         .expect("duplicate fixture should index");
     let duplicate_rows = collect_moved_symbol_occurrences(&duplicate_index, CRATE_ID)
-        .remove(&format!("struct {OUTPUT_MODULE}::BridgeLogger"))
+        .remove("struct agentscommander_lib::telegram::bridge::BridgeLogger")
         .expect("duplicate BridgeLogger key should exist");
     assert_eq!(duplicate_rows.len(), 2);
     assert_ne!(duplicate_rows[0].body_id, duplicate_rows[1].body_id);
@@ -2591,14 +2555,14 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     misplaced.write("src/lib.rs", "mod telegram;\n");
     misplaced.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { pub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } } } pub mod bridge { impl crate::telegram::claude_watcher::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
+        "pub mod bridge { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } } pub mod output { impl crate::telegram::bridge::BridgeLogger { pub fn log(&mut self) {} } }\n",
     );
     let misplaced_index = misplaced
         .index_as(CRATE_ID)
         .expect("misplaced fixture should index");
     let misplaced_map = collect_moved_symbol_occurrences(&misplaced_index, CRATE_ID);
     let misplaced_log = misplaced_map
-        .get(&format!("method {OUTPUT_MODULE}::BridgeLogger::log"))
+        .get("method agentscommander_lib::telegram::bridge::BridgeLogger::log")
         .expect("out-of-place method should resolve through its destination self type");
     assert_eq!(misplaced_log.len(), 2);
     assert!(misplaced_log
@@ -2612,14 +2576,14 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     local.write("src/lib.rs", "mod telegram;\n");
     local.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { pub mod output { fn wrapper() { struct BridgeLogger; } } }\n",
+        "pub mod bridge { fn wrapper() { struct BridgeLogger; } }\n",
     );
     let local_index = local
         .index_as(CRATE_ID)
         .expect("local-item fixture should index");
     assert!(
         !collect_moved_symbol_occurrences(&local_index, CRATE_ID)
-            .contains_key(&format!("struct {OUTPUT_MODULE}::BridgeLogger")),
+            .contains_key("struct agentscommander_lib::telegram::bridge::BridgeLogger"),
         "function-local item must not satisfy module-scope destination presence"
     );
 }
@@ -2979,7 +2943,6 @@ fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
 }
 
 #[test]
-#[cfg(any())]
 fn production_guard_observes_the_exact_initial_dependency_set() {
     let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crate_root = manifest_root.join("src/lib.rs");
