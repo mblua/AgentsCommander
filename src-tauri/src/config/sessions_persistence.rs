@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+
+use tauri::Manager;
 
 use uuid::Uuid;
 
@@ -45,6 +48,188 @@ static SAVE_SESSIONS_LOCK: Mutex<()> = Mutex::new(());
 /// prior crashed run. Kept separate from `rename_with_retry`'s `OP_ID` so
 /// the two counters can be reasoned about independently in diagnostics.
 static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
+
+/// §1295 — orphaned-sessions archive store (mechanism C / B1). See §5.4.
+/// NDJSON (one JSON object per line), append-only, never parsed back by any
+/// version (old AC versions ignore it). The EXISTS probe at drop time decides
+/// the disposition label, never whether the recipe is kept.
+pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str = "orphaned-sessions.archive.json";
+
+/// §1295 — soft cap on the ACTIVE archive file before best-effort rotation.
+const ORPHAN_ARCHIVE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// §1295 — number of rotated archive generations kept. Mirrors `logging.rs`
+/// `APP_LOG_KEEP` semantics: the active file, then `.1` .. `.KEEP - 1`; the
+/// oldest `.KEEP` copy is dropped on the next rotation.
+const ORPHAN_ARCHIVE_KEEP: u32 = 3;
+
+/// §1295 — per-process-run dedup registry for orphan WARNs, keyed by
+/// normalized cwd (5.7 / N1 resolution). The first sighting of a cwd this run
+/// logs at WARN; later sightings of the SAME cwd log at DEBUG. Never cleared
+/// mid-run: the run-level semantic is exactly constraint 3 ("same orphan
+/// resolved once; no repeated WARN every 25 s"). Each AC process keeps its own
+/// registry, so multi-instance setups warn at most once per orphan per run.
+/// Tests reset it via `#[cfg(test)]` helpers.
+fn orphan_warned_registry() -> &'static Mutex<HashSet<String>> {
+    static REGISTRY: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// §1295 — shared orphan-sweep WARN dedup + counters. Returns true on the
+/// FIRST sighting of `cwd` this run (caller should have WARNed), false on
+/// repeats (caller should DEBUG instead). Used by all three drop sites (A, B
+/// hot + merge, C) so a persist storm collapses to one WARN per orphan.
+fn note_orphan_cwd(cwd: &str) -> bool {
+    let key = normalized_cwd_key(cwd);
+    let mut registry = orphan_warned_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.insert(key) {
+        #[cfg(test)]
+        bump_orphan_warned();
+        log::warn!(
+            "[sessions] Dropping orphan persisted session at '{}' (outside current projectPaths); one WARN per orphan per run",
+            cwd
+        );
+        true
+    } else {
+        log::debug!(
+            "[sessions] Orphan session at '{}' already warned this run; suppressing repeat WARN",
+            cwd
+        );
+        false
+    }
+}
+
+/// §1295 5.4/5.7 — per-process-run B1-once registry for ARCHIVED orphan
+/// session ids. The FIRST sighting of a dropped session id this run writes the
+/// archive record; every later sighting (e.g. a no-prune site archives it, then
+/// the steady prune site removes it from RAM) is suppressed so no recipe is
+/// appended twice. A row that is still LIVE is never archived at all, so this
+/// registry tracks only ids that were actually archived.
+fn orphan_archived_registry() -> &'static Mutex<HashSet<Uuid>> {
+    static REGISTRY: std::sync::OnceLock<Mutex<HashSet<Uuid>>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Returns true only on the FIRST archive of `uuid` this process run.
+fn note_orphan_archived_id(uuid: &Uuid) -> bool {
+    orphan_archived_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(*uuid)
+}
+
+/// §1295 — clear the B1-once archive registry. Test-only.
+#[cfg(test)]
+pub(crate) fn reset_orphan_archived() {
+    orphan_archived_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+/// §1295 — sweep outcome counters. Production reads them for the summary log
+/// line; `#[cfg(test)]` routes them through accumulating statics for assertions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OrphanSweepCounts {
+    /// Drops recorded with disposition "archived" (cwd exists at drop time).
+    pub archived: usize,
+    /// Drops recorded with disposition "reaped" (cwd missing at drop time).
+    pub reaped: usize,
+    /// Orphan rows that stayed live in RAM (non-Exited or pending) and were
+    /// dropped only from the disk snapshot.
+    pub live_kept: usize,
+    /// Repeat WARNs suppressed this sweep because the cwd was already warned.
+    pub suppressed_repeat: usize,
+}
+
+// §1295 — accumulating sweep counters, used ONLY by `#[cfg(test)]`. These are
+// THREAD-LOCAL (mirroring the `NORMALIZE_CALLS` pattern) so many persistence
+// tests can run in parallel in one process without one test's purge sneaking
+// `reaped++` into another test's assertion. Each `#[tokio::test]` body (and
+// the awaited persist/purge it drives) runs on one thread, so a test resets,
+// drives, and reads its own thread's counters deterministically.
+#[cfg(test)]
+thread_local! {
+    static ORPHAN_SWEEP_COUNTERS: std::cell::Cell<OrphanSweepCounts> = const {
+        std::cell::Cell::new(OrphanSweepCounts {
+            archived: 0,
+            reaped: 0,
+            live_kept: 0,
+            suppressed_repeat: 0,
+        })
+    };
+    static ORPHAN_WARNED_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_orphan_counters() {
+    ORPHAN_SWEEP_COUNTERS.with(|slot| slot.set(OrphanSweepCounts::default()));
+}
+
+#[cfg(test)]
+pub(crate) fn orphan_counters() -> OrphanSweepCounts {
+    ORPHAN_SWEEP_COUNTERS.with(|slot| slot.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_orphan_warned() {
+    ORPHAN_WARNED_COUNT.with(|count| count.set(0));
+    orphan_warned_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+/// §1295 — number of distinct orphan cwds warned on the CURRENT test thread
+/// (`note_orphan_cwd` bumps the thread-local counter on each first sighting).
+#[cfg(test)]
+pub(crate) fn orphan_warned_len() -> usize {
+    ORPHAN_WARNED_COUNT.with(|count| count.get())
+}
+
+#[cfg(test)]
+fn bump_orphan_warned() {
+    ORPHAN_WARNED_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn accumulate_orphan_counters(counts: OrphanSweepCounts) {
+    ORPHAN_SWEEP_COUNTERS.with(|slot| {
+        let current = slot.get();
+        slot.set(OrphanSweepCounts {
+            archived: current.archived + counts.archived,
+            reaped: current.reaped + counts.reaped,
+            live_kept: current.live_kept + counts.live_kept,
+            suppressed_repeat: current.suppressed_repeat + counts.suppressed_repeat,
+        });
+    });
+}
+
+/// §1295 — test-only soft-cap override so a test can force rotation with a
+/// tiny cap (test 8). Process-global but only mutated under `ORPHAN_TEST_LOCK`,
+/// which serializes every archive-sweep counter test.
+#[cfg(test)]
+static TEST_ORPHAN_ARCHIVE_CAP: std::sync::OnceLock<Mutex<Option<u64>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_test_orphan_archive_cap(cap: Option<u64>) {
+    let slot = TEST_ORPHAN_ARCHIVE_CAP.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = cap;
+}
+
+fn orphan_archive_max_bytes() -> u64 {
+    #[cfg(test)]
+    {
+        let slot = TEST_ORPHAN_ARCHIVE_CAP.get_or_init(|| Mutex::new(None));
+        if let Some(cap) = *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+            return cap;
+        }
+    }
+    ORPHAN_ARCHIVE_MAX_BYTES
+}
 
 /// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
 /// its retry budget. Surfaced in the caller's error string so a single
@@ -416,18 +601,24 @@ fn is_root_persisted_session(session: &PersistedSession) -> bool {
         || crate::config::root_agent::is_root_agent_dir_name(&session.working_directory)
 }
 
-fn filter_sessions_for_project_paths(
-    sessions: Vec<PersistedSession>,
-    project_paths: &[String],
-) -> Vec<PersistedSession> {
-    let roots = normalize_project_roots(project_paths);
-    filter_sessions_for_normalized_roots(sessions, &roots)
+/// §1295 5.6 — one orphaned session, already classified as a drop by
+/// `partition_orphaned_sessions`. `cwd_exists` is filled by the caller (a
+/// `Path::exists` probe, one per drop, inside the same blocking chunk) so the
+/// partition itself stays pure (zero fs calls).
+pub(crate) struct OrphanDrop {
+    pub session: PersistedSession,
+    pub cwd_exists: bool,
 }
 
-fn filter_sessions_for_normalized_roots(
+/// §1295 — a single pass that partitions a session snapshot into the kept set
+/// (root-agent keep + under-roots keep, exactly today's filter predicate) and
+/// the orphaned drops. Pure: performs ZERO fs calls (S2/B). The `#[cfg(test)]`
+/// panic hook and `FILTER_PROJECT_PATHS_THREAD_IDS` thread-id recording survive
+/// here so both the keep-set filter and the persist-time prepare inherit them.
+pub(crate) fn partition_orphaned_sessions(
     sessions: Vec<PersistedSession>,
-    roots: &[String],
-) -> Vec<PersistedSession> {
+    normalized_roots: &[String],
+) -> (Vec<PersistedSession>, Vec<OrphanDrop>) {
     #[cfg(test)]
     if sessions
         .iter()
@@ -437,33 +628,43 @@ fn filter_sessions_for_normalized_roots(
     }
 
     let total = sessions.len();
-    let filtered: Vec<PersistedSession> = sessions
-        .into_iter()
-        .filter(|session| {
-            if is_root_persisted_session(session) {
-                return true;
-            }
-            let cwd = normalize_for_project_compare(Path::new(&session.working_directory));
-            let keep = working_directory_under_any_normalized_root(&cwd, roots);
-            if !keep {
-                log::warn!(
-                    "[sessions] Dropping orphan persisted session '{}' at '{}' (outside current projectPaths)",
-                    session.name,
-                    session.working_directory
-                );
-            }
-            keep
-        })
-        .collect();
-
-    if filtered.len() < total {
-        log::info!(
-            "[sessions] Purged {} orphan persisted session(s) outside current projectPaths",
-            total - filtered.len()
-        );
+    let mut kept = Vec::with_capacity(total);
+    let mut drops = Vec::new();
+    for session in sessions {
+        if is_root_persisted_session(&session) {
+            kept.push(session);
+            continue;
+        }
+        let cwd = normalize_for_project_compare(Path::new(&session.working_directory));
+        if working_directory_under_any_normalized_root(&cwd, normalized_roots) {
+            kept.push(session);
+        } else {
+            drops.push(OrphanDrop {
+                session,
+                cwd_exists: false,
+            });
+        }
     }
+    (kept, drops)
+}
 
-    filtered
+fn filter_sessions_for_project_paths(
+    sessions: Vec<PersistedSession>,
+    project_paths: &[String],
+) -> Vec<PersistedSession> {
+    let roots = normalize_project_roots(project_paths);
+    filter_sessions_for_normalized_roots(sessions, &roots)
+}
+
+/// §1295 — keep-set filter (unchanged behavior). It now DELEGATES to
+/// `partition_orphaned_sessions`; the per-row orphan WARN (:450) and the INFO
+/// summary (:461) moved to the shared dedup layer (`note_orphan_cwd` +
+/// `handle_orphan_drops`), which is where drop semantics now live.
+fn filter_sessions_for_normalized_roots(
+    sessions: Vec<PersistedSession>,
+    roots: &[String],
+) -> Vec<PersistedSession> {
+    partition_orphaned_sessions(sessions, roots).0
 }
 
 #[cfg(test)]
@@ -486,6 +687,482 @@ async fn filter_sessions_for_project_paths_blocking(
     })
     .await
     .map_err(|e| format!("session filter task failed: {}", e))
+}
+
+/// §1295 5.4 — one NDJSON record for one orphaned session drop (B1: every drop
+/// writes exactly one record, always). `droppedAt` is RFC3339 UTC.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrphanArchiveRecord<'a> {
+    schema_version: u32,
+    dropped_at: String,
+    reason: &'a str,
+    disposition: &'a str,
+    session: &'a PersistedSession,
+}
+
+/// §1295 5.4 — append archive records are written with one `writeln!` per
+/// record under `sessions_save_lock` (locked variant for site C). Best-effort:
+/// an append failure logs ERROR and NEVER fails the persist (a write failure
+/// must not resurrect the WARN loop). Cross-instance interleaving may produce
+/// torn/chunked lines (accepted, the archive is never parsed).
+fn append_orphan_archive_record_locked(
+    archive_path: &Path,
+    reason: &str,
+    disposition: &str,
+    session: &PersistedSession,
+) {
+    let record = OrphanArchiveRecord {
+        schema_version: 1,
+        dropped_at: chrono::Utc::now().to_rfc3339(),
+        reason,
+        disposition,
+        session,
+    };
+    let line = match serde_json::to_string(&record) {
+        Ok(line) => line,
+        Err(e) => {
+            log::error!(
+                "[sessions] Failed to serialize orphan archive record: {}",
+                e
+            );
+            return;
+        }
+    };
+    let wrote = {
+        let result = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(archive_path)
+            .and_then(|mut file| writeln!(file, "{}", line));
+        if let Err(e) = result {
+            log::error!(
+                "[sessions] Failed to append orphan archive record to {:?}: {}",
+                archive_path,
+                e
+            );
+            false
+        } else {
+            true
+        }
+    };
+    if wrote {
+        rotate_orphan_archive(archive_path);
+    }
+}
+
+/// §1295 S4 — locking public variant used by site C (restore-skip in lib.rs),
+/// which is async and holds no `sessions_save_lock` at that point.
+pub(crate) async fn append_orphan_archive_record(
+    dir: &Path,
+    reason: &str,
+    disposition: &str,
+    session: &PersistedSession,
+) {
+    let _guard = sessions_save_lock().lock().await;
+    append_orphan_archive_record_locked(
+        &dir.join(ORPHAN_ARCHIVE_FILENAME),
+        reason,
+        disposition,
+        session,
+    );
+}
+
+/// §1295 N5 — best-effort rotation of the active archive file, mirroring
+/// `logging::rotate` (logging.rs:275-365): shift `orphaned-sessions.archive.json`
+/// -> `.1` -> `.2` -> `.3`, dropping `.3`, ONLY when the ACTIVE file exceeds the
+/// soft cap. A Windows sharing violation (second instance holding the append
+/// handle without FILE_SHARE_DELETE) fails the rename: log ERROR and continue;
+/// the file may exceed the cap until the next successful rotation. Rotation
+/// failures never fail the persist. Deliberate LOCAL duplicate of the logging
+/// algorithm (logging.rs untouched; documented cross-reference).
+fn rotate_orphan_archive(archive_path: &Path) {
+    let len = match std::fs::metadata(archive_path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => return,
+    };
+    if len < orphan_archive_max_bytes() {
+        return;
+    }
+    let parent = match archive_path.parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => return,
+    };
+    let stem = match archive_path.file_name().and_then(|name| name.to_str()) {
+        Some(stem) => stem.to_string(),
+        None => return,
+    };
+    let numbered = |i: u32| parent.join(format!("{stem}.{i}"));
+
+    if ORPHAN_ARCHIVE_KEEP >= 2 {
+        for i in (1..=ORPHAN_ARCHIVE_KEEP - 1).rev() {
+            let from = numbered(i);
+            if !from.exists() {
+                continue;
+            }
+            let to = numbered(i + 1);
+            if let Err(e) = std::fs::rename(&from, &to) {
+                log::error!(
+                    "[sessions] orphan archive rotation: failed to rename {} to {}: {} (continuing)",
+                    from.display(),
+                    to.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    if let Err(e) = std::fs::rename(archive_path, numbered(1)) {
+        log::error!(
+            "[sessions] orphan archive rotation: failed to rename {} to {}: {} (active file stays in place)",
+            archive_path.display(),
+            numbered(1).display(),
+            e
+        );
+        return;
+    }
+
+    // Recreate a fresh active file so the next append starts clean.
+    if let Err(e) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(archive_path)
+    {
+        log::error!(
+            "[sessions] orphan archive rotation: failed to recreate {}: {}",
+            archive_path.display(),
+            e
+        );
+    }
+}
+
+/// §1295 S2/B — one `spawn_blocking` chunk that (a) partitions the snapshot and
+/// (b) probes `Path::exists` per drop to decide the disposition label.
+///
+/// Runs PRE-LOCK on the hot path so a hung/offline SMB share during classify
+/// stalls NO other persistence writer. The in-lock callers (the #698 atomic
+/// helpers and the startup merge path) accept the bounded stall (S2's allowed
+/// branch): they concern rare user actions and one startup call, never the
+/// ~25 s loop, and B1 guarantees no data loss.
+pub(crate) struct PersistPreparation {
+    pub kept: Vec<PersistedSession>,
+    pub drops: Vec<OrphanDrop>,
+}
+
+/// §1295 (O1-refined) — the typed prune boundary. `PersistMode::PruneDormant`
+/// is the ONLY mode that removes dormant orphan rows from the live manager
+/// (`remove_exited_sessions`); it is used ONLY by the three steady-state
+/// background persist drivers (lib.rs:731/1096/1121). Every other persist site
+/// (all `SelectionTransaction::persist` transitions, mailbox, lifecycle,
+/// app-exit, #698 helpers, purge) is `PersistMode::NoPrune`: it still archives
+/// each dropped recipe once and drops out-of-roots rows from disk, but leaves
+/// transition-owned rows in RAM. The enum is threaded so the compiler forces
+/// every call site to declare its intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PersistMode {
+    PruneDormant,
+    NoPrune,
+}
+
+pub(crate) async fn prepare_persist_snapshot(
+    snapshot: Vec<PersistedSession>,
+    project_paths: &[String],
+) -> Result<PersistPreparation, String> {
+    let project_paths = project_paths.to_vec();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        record_filter_project_paths_thread_id();
+        let roots = normalize_project_roots(&project_paths);
+        let (kept, mut drops) = partition_orphaned_sessions(snapshot, &roots);
+        for drop in &mut drops {
+            drop.cwd_exists = Path::new(&drop.session.working_directory).exists();
+        }
+        PersistPreparation { kept, drops }
+    })
+    .await
+    .map_err(|e| format!("session persistence prepare task failed: {}", e))
+}
+
+/// §1295 — the shared drop handler. The caller MUST already hold
+/// `sessions_save_lock()`.
+///
+/// Distinguishes two drop kinds (behavior §7.6/§7.7): DORMANT orphans (the
+/// row is `Exited` and not pending, or there is no live RAM row) are ARCHIVED
+/// (B1-once: one record per dropped session id per run) and, ONLY under
+/// `PersistMode::PruneDormant`, pruned from the manager; LIVE orphans
+/// (non-Exited or pending) stay running in RAM and are dropped ONLY from the
+/// disk snapshot — they get a WARN and a `live_kept` count, NO archive record
+/// (their recipe is still live in the manager, so B1 does not apply).
+///
+/// Under `PersistMode::NoPrune` (every transition/mailbox/lifecycle site) the
+/// same archive + disk-drop + WARN happen but `remove_exited_sessions` is NOT
+/// called, so a transition-owned dormant row stays in RAM until a later steady
+/// `PruneDormant` persist removes it.
+///
+/// `mgr` is `None` at site A (purge, no live RAM to mutate): every drop is
+/// archived and no row is pruned regardless of mode. Returns the per-sweep
+/// counts.
+async fn handle_orphan_drops(
+    mgr: Option<&SessionManager>,
+    dir: &Path,
+    drops: &[OrphanDrop],
+    mode: PersistMode,
+) -> OrphanSweepCounts {
+    let mut counts = OrphanSweepCounts::default();
+    if drops.is_empty() {
+        return counts;
+    }
+    let archive_path = dir.join(ORPHAN_ARCHIVE_FILENAME);
+
+    // Decide which drop ids are DORMANT (will be archived + pruned) vs LIVE
+    // (kept in RAM). At site A (mgr=None) everything is dormant. At site B this
+    // mirrors the same oracle `remove_exited_sessions` re-verifies (status
+    // Exited AND not pending); `remove_exited_sessions` stays the source of
+    // truth for the actual mutation, this set only decides what gets archived.
+    let dormant: HashSet<Uuid> = match mgr {
+        Some(mgr) => {
+            let snap = mgr.aggregate_snapshot().await;
+            drops
+                .iter()
+                .filter_map(|drop| drop.session.id.as_deref())
+                .filter_map(|id| Uuid::parse_str(id).ok())
+                .filter(|uuid| {
+                    snap.sessions
+                        .iter()
+                        .any(|s| &s.id == uuid && matches!(s.status, SessionStatus::Exited(_)))
+                        && !snap.pending_ids.contains(uuid)
+                })
+                .collect()
+        }
+        None => drops
+            .iter()
+            .filter_map(|drop| drop.session.id.as_deref())
+            .filter_map(|id| Uuid::parse_str(id).ok())
+            .collect(),
+    };
+
+    let mut candidate_ids: Vec<Uuid> = Vec::new();
+    for drop in drops {
+        if !note_orphan_cwd(&drop.session.working_directory) {
+            counts.suppressed_repeat += 1;
+        }
+        let is_dormant = match drop.session.id.as_deref() {
+            Some(id) => Uuid::parse_str(id)
+                .map(|uuid| dormant.contains(&uuid))
+                .unwrap_or(false),
+            // No live row (recipe-only row, e.g. a failed-recoverable merge or
+            // a restore-skipped entry): treat as dormant and record it.
+            None => true,
+        };
+        if is_dormant {
+            // B1-once: append the archive record only on the first sighting of
+            // this session id this run. A row first archived by a no-prune site
+            // is NOT re-appended when the steady site later prunes it from RAM.
+            let first_archive = match drop.session.id.as_deref() {
+                Some(id) => Uuid::parse_str(id)
+                    .map(|uuid| note_orphan_archived_id(&uuid))
+                    .unwrap_or(true),
+                None => true,
+            };
+            if first_archive {
+                if drop.cwd_exists {
+                    counts.archived += 1;
+                    append_orphan_archive_record_locked(
+                        &archive_path,
+                        "outsideRetainedRoots",
+                        "archived",
+                        &drop.session,
+                    );
+                } else {
+                    counts.reaped += 1;
+                    append_orphan_archive_record_locked(
+                        &archive_path,
+                        "outsideRetainedRootsMissing",
+                        "reaped",
+                        &drop.session,
+                    );
+                }
+            }
+            if let Some(id) = drop.session.id.as_deref() {
+                if let Ok(uuid) = Uuid::parse_str(id) {
+                    candidate_ids.push(uuid);
+                }
+            }
+        } else {
+            counts.live_kept += 1;
+        }
+    }
+    if mode == PersistMode::PruneDormant {
+        if let Some(mgr) = mgr {
+            let removed = mgr.remove_exited_sessions(&candidate_ids).await;
+            // A row classified dormant here but not removed by the manager (e.g. it
+            // got restarted between snapshot and prune) stays live: reclassify to
+            // live_kept so the counters stay honest.
+            counts.live_kept += candidate_ids.len().saturating_sub(removed);
+        }
+    }
+    #[cfg(test)]
+    accumulate_orphan_counters(counts);
+    log::info!(
+        "[sessions] orphan sweep: archived={} reaped={} liveKept={} repeatWarnSuppressed={}",
+        counts.archived,
+        counts.reaped,
+        counts.live_kept,
+        counts.suppressed_repeat
+    );
+    counts
+}
+
+/// §1295 — persist a prepared snapshot under a lock the caller already holds.
+/// Archives drops (B1), prunes dormant manager rows, dedups WARNs, then saves
+/// the kept set with the unchanged atomic tmp+rename stack.
+async fn persist_prepared_locked(
+    mgr: Option<&SessionManager>,
+    dir: &Path,
+    prep: PersistPreparation,
+    mode: PersistMode,
+) -> Result<(), String> {
+    handle_orphan_drops(mgr, dir, &prep.drops, mode).await;
+    save_sessions_to_dir(dir, &prep.kept)
+}
+
+/// Structural (non-canonicalizing) form of a raw path for archived-root membership: the
+/// same separator normalization as `normalize_for_project_compare` (long-prefix strip,
+/// `/` separators, trailing-slash trim, Windows case-fold) WITHOUT the `canonicalize`
+/// step. The gate's archived exemption is intentionally existence-independent, so it must
+/// stay deterministic whether or not the archived root (or a symlink it resolves through)
+/// exists on disk.
+fn normalize_archived_root_for_compare(path: &str) -> String {
+    let mut s = strip_long_prefix_str(path).replace('\\', "/");
+    while s.ends_with('/') && s.len() > 1 {
+        s.pop();
+    }
+    if cfg!(windows) {
+        s.make_ascii_lowercase();
+    }
+    s
+}
+
+/// Structural (raw, non-canonicalizing) containment of `path` under one of `roots`,
+/// returning the first matching raw root. Used ONLY by the archived-root gate exemption
+/// (§1295 5.1a rule 2), where membership in the archived list is the retention signal and
+/// must hold regardless of on-disk existence. Canonicalizing here would be wrong: when an
+/// archived root resolves through a symlink/junction but a cwd below it does not yet exist,
+/// `canonicalize(root)` resolves the symlink while `canonicalize(cwd)` falls back to the raw
+/// path, so the canonical root no longer prefixes the raw cwd and the exemption would
+/// falsely fail (CI-observed on Ubuntu with a symlinked temp root).
+fn archived_root_containing_raw(path: &str, roots: &[String]) -> Option<String> {
+    let cwd = normalize_archived_root_for_compare(path);
+    roots.iter().find_map(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let root = normalize_archived_root_for_compare(trimmed);
+        if path_is_under_or_equal(&cwd, &root) {
+            Some(raw.clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// §1295 5.1a — creation-time gate predicate (pure). Rules, in order:
+///   1. Root-agent path -> Ok (the directory is AC-owned).
+///   2. Under an archived root -> Ok with the existence check WAIVED
+///      (temp-unmount / drive-down safety; `enforce_unarchived_for_spawn`
+///      auto-unarchives on an actual spawn). The membership check is structural
+///      (raw-string, non-canonicalizing) so it is deterministic across platforms
+///      and independent of symlink resolution or `Path::exists()`.
+///   3. Outside every registered (active + archived) root -> Err with stable
+///      prefix `sessionCreateBlocked:` and fragment "outside all registered
+///      projects".
+///   4. Registered but the directory does not exist (deleted workgroup or
+///      unmounted dir) -> Err with the same prefix and fragment "does not
+///      exist on disk".
+///   5. Otherwise Ok.
+///
+/// The error strings surface verbatim through the existing String plumbing.
+pub(crate) fn validate_session_creation_cwd(
+    cwd: &str,
+    retained_project_paths: &[String],
+    archived_project_paths: &[String],
+) -> Result<(), String> {
+    // 1. Root-agent path is exempt (the archive-gate exceptions cover it too).
+    if crate::config::root_agent::is_root_agent_path(cwd) {
+        return Ok(());
+    }
+    // 2. Archived root (structural membership; existence deliberately waived for
+    //    unmount/drive-down, so a missing cwd under an archived root is Ok).
+    if archived_root_containing_raw(cwd, archived_project_paths).is_some() {
+        return Ok(());
+    }
+    // 3. Outside every registered (active + archived) root.
+    let retained_roots = normalize_project_roots(retained_project_paths);
+    let cwd_norm = normalize_for_project_compare(Path::new(cwd));
+    if !working_directory_under_any_normalized_root(&cwd_norm, &retained_roots) {
+        return Err(format!(
+            "sessionCreateBlocked: cwd '{}' is outside all registered projects",
+            cwd
+        ));
+    }
+    // 4. Registered but the directory does not exist.
+    if !Path::new(cwd).exists() {
+        return Err(format!(
+            "sessionCreateBlocked: cwd '{}' does not exist on disk",
+            cwd
+        ));
+    }
+    // 5. Ok.
+    Ok(())
+}
+
+/// §1295 5.5 — creation-gate enforcement rides the call stack (S3): NO process-
+/// global toggle. `Skip` is constructed only by test code; production builds
+/// compile only the `Enforce` path via `default_creation_gate_enforcement()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreationGateEnforcement {
+    Enforce,
+    #[allow(dead_code)] // constructed only by test code (§5.5); production sees only Enforce
+    Skip,
+}
+
+/// §1295 5.5 — returns `Skip` under `cfg!(test)` and `Enforce` otherwise, so
+/// existing test fixtures that call the wrappers do not trip the gate while a
+/// concurrent or parallel test can still opt in by calling the impl (or
+/// `with_intent`) directly with `Enforce`.
+pub(crate) fn default_creation_gate_enforcement() -> CreationGateEnforcement {
+    if cfg!(test) {
+        CreationGateEnforcement::Skip
+    } else {
+        CreationGateEnforcement::Enforce
+    }
+}
+
+/// §1295 5.1 — run the creation gate. Reads the settings once (cloned read
+/// guard), computes retained + archived roots, and runs the pure predicate in
+/// `tokio::task::spawn_blocking`. `Skip` short-circuits to Ok.
+pub(crate) async fn enforce_creation_gate<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    cwd: &str,
+    enforcement: CreationGateEnforcement,
+) -> Result<(), String> {
+    match enforcement {
+        CreationGateEnforcement::Skip => Ok(()),
+        CreationGateEnforcement::Enforce => {
+            let settings = app.state::<crate::config::settings::SettingsState>();
+            let cfg = settings.read().await;
+            let retained = session_retention_project_paths(&cfg);
+            let archived = cfg.archived_project_paths.clone();
+            drop(cfg);
+            let cwd = cwd.to_string();
+            tokio::task::spawn_blocking(move || {
+                validate_session_creation_cwd(&cwd, &retained, &archived)
+            })
+            .await
+            .map_err(|e| format!("session creation gate task failed: {}", e))?
+        }
+    }
 }
 
 /// Remove duplicate sessions by name AND working_directory.
@@ -852,11 +1529,16 @@ async fn purge_sessions_outside_project_paths_in_dir_locked(
     let _guard = sessions_save_lock().lock().await;
     let before = load_sessions_from_dir(dir);
     let before_len = before.len();
-    let filtered = filter_sessions_for_project_paths_blocking(before, project_paths).await?;
-    if filtered.len() < before_len {
-        save_sessions_to_dir(dir, &filtered)?;
+    // §1295 site A: prepare runs in-lock (startup/settings-change only, rare
+    // and accepted per S2's allowed branch), then handle(mgr=None) + a GUARDED
+    // save. The explicit `if kept.len() < before_len` guard is what keeps the
+    // second pass byte-identical (AC1).
+    let prep = prepare_persist_snapshot(before, project_paths).await?;
+    handle_orphan_drops(None, dir, &prep.drops, PersistMode::NoPrune).await;
+    if prep.kept.len() < before_len {
+        save_sessions_to_dir(dir, &prep.kept)?;
     }
-    Ok((before_len, filtered))
+    Ok((before_len, prep.kept))
 }
 
 /// Save current sessions to the app config directory (see config_dir()).
@@ -1346,13 +2028,17 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     // as a follow-up.
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
     let snapshot = deduplicate(snapshot);
-    let snapshot = match project_paths {
-        Some(project_paths) => {
-            filter_sessions_for_project_paths_blocking(snapshot, project_paths).await?
-        }
-        None => snapshot,
+    let prep = match project_paths {
+        Some(project_paths) => prepare_persist_snapshot(snapshot, project_paths).await?,
+        None => PersistPreparation {
+            kept: snapshot,
+            drops: Vec::new(),
+        },
     };
-    save_sessions_to_dir(dir, &snapshot)
+    // §1295 site B (merge): startup-only, keeps lock-first; the inline filter
+    // is replaced by the same prepare (in-lock, accepted bounded stall) + handle
+    // + save.
+    persist_prepared_locked(Some(mgr), dir, prep, PersistMode::NoPrune).await
 }
 
 pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
@@ -1366,16 +2052,33 @@ pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), St
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let settings = crate::config::settings::load_settings_for_cli();
     let project_paths = session_retention_project_paths(&settings);
-    persist_current_state_to_dir_for_project_paths_result(mgr, &dir, Some(&project_paths)).await
+    persist_current_state_to_dir_for_project_paths_result(
+        mgr,
+        &dir,
+        Some(&project_paths),
+        PersistMode::NoPrune,
+    )
+    .await
 }
 
 async fn persist_current_state_to_dir_for_project_paths_result(
     mgr: &SessionManager,
     dir: &Path,
     project_paths: Option<&[String]>,
+    mode: PersistMode,
 ) -> Result<(), String> {
+    // §1295 S2: prepare PRE-LOCK so a hung/offline SMB share during classify
+    // stalls no other persistence writer on the hot path.
+    let snapshot = snapshot_sessions(mgr).await;
+    let prep = match project_paths {
+        Some(project_paths) => prepare_persist_snapshot(snapshot, project_paths).await?,
+        None => PersistPreparation {
+            kept: snapshot,
+            drops: Vec::new(),
+        },
+    };
     let _guard = sessions_save_lock().lock().await;
-    snapshot_and_save_locked(mgr, dir, project_paths).await
+    persist_prepared_locked(Some(mgr), dir, prep, mode).await
 }
 
 /// Snapshot the live sessions, apply the project-path filter, and save.
@@ -1387,19 +2090,24 @@ async fn persist_current_state_to_dir_for_project_paths_result(
 /// which take that lock once and run a `SessionManager` mutation plus this save
 /// under it. Splitting it out keeps those helpers from re-acquiring the tokio
 /// mutex (which is not reentrant and would deadlock).
+///
+/// §1295: the body is the same prepare + handle + save as the hot path; its
+/// in-lock prepare is the rare, documented bounded stall (S2's allowed branch)
+/// for the #698 atomic helpers.
 async fn snapshot_and_save_locked(
     mgr: &SessionManager,
     dir: &Path,
     project_paths: Option<&[String]>,
 ) -> Result<(), String> {
     let snapshot = snapshot_sessions(mgr).await;
-    let snapshot = match project_paths {
-        Some(project_paths) => {
-            filter_sessions_for_project_paths_blocking(snapshot, project_paths).await?
-        }
-        None => snapshot,
+    let prep = match project_paths {
+        Some(project_paths) => prepare_persist_snapshot(snapshot, project_paths).await?,
+        None => PersistPreparation {
+            kept: snapshot,
+            drops: Vec::new(),
+        },
     };
-    save_sessions_to_dir(dir, &snapshot)
+    persist_prepared_locked(Some(mgr), dir, prep, PersistMode::NoPrune).await
 }
 
 #[cfg(test)]
@@ -1407,12 +2115,46 @@ async fn persist_current_state_to_dir_result(
     mgr: &SessionManager,
     dir: &Path,
 ) -> Result<(), String> {
-    persist_current_state_to_dir_for_project_paths_result(mgr, dir, None).await
+    // Test-only path preserving the snapshot-INSIDE-lock contract that the
+    // §1295 hot-path PRE-LOCK prepare deliberately weakens (S2): the production
+    // filter/prune hot path snapshots before the lock, but this helper (no
+    // project-path filter/prune) keeps the snapshot under the lock so a parked
+    // persist reflects state that changed while it waited (pinned by
+    // `persist_current_state_captures_snapshot_inside_save_lock`).
+    let _guard = sessions_save_lock().lock().await;
+    snapshot_and_save_locked(mgr, dir, None).await
 }
 
 pub async fn persist_current_state(mgr: &SessionManager) {
     if let Err(e) = persist_current_state_result(mgr).await {
         log::error!("Failed to persist sessions: {}", e);
+    }
+}
+
+/// §1295 (O1-refined) — the ONLY persist entry that prunes dormant orphan rows
+/// from the live `SessionManager` (`PersistMode::PruneDormant`). Used ONLY by
+/// the three steady-state background drivers in lib.rs (context-scraper sink
+/// :731, busy :1096, idle :1121). Every other persist caller is `NoPrune`.
+pub async fn persist_current_state_prune_dormant(mgr: &SessionManager) {
+    let dir = super::config_dir().ok_or("Could not determine home directory");
+    let dir = match dir {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!("Failed to persist sessions (prune): {}", e);
+            return;
+        }
+    };
+    let settings = crate::config::settings::load_settings_for_cli();
+    let project_paths = session_retention_project_paths(&settings);
+    if let Err(e) = persist_current_state_to_dir_for_project_paths_result(
+        mgr,
+        &dir,
+        Some(&project_paths),
+        PersistMode::PruneDormant,
+    )
+    .await
+    {
+        log::error!("Failed to persist sessions (prune): {}", e);
     }
 }
 
@@ -1630,17 +2372,20 @@ async fn write_start_fresh_and_persist_to_dir_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_user_input_transitions_and_persist_to_dir_result,
+        append_orphan_archive_record, clear_user_input_transitions_and_persist_to_dir_result,
         filter_sessions_for_normalized_roots, filter_sessions_for_project_paths,
         filter_sessions_for_project_paths_blocking, is_under_normalized_archived_roots,
         load_sessions_purging_outside_project_paths_in_dir, load_sessions_raw_from_dir_for_test,
-        normalize_project_roots, persist_current_state_result, persist_current_state_to_dir_result,
+        normalize_project_roots, orphan_counters, orphan_warned_len, persist_current_state_result,
+        persist_current_state_to_dir_for_project_paths_result, persist_current_state_to_dir_result,
         purge_sessions_outside_project_paths_in_dir, raise_hand_and_persist_to_dir_result,
-        rename_with_retry, sanitize_failed_recoverable, save_sessions_to_dir,
-        session_retention_project_paths, sessions_save_lock, snapshot_sessions,
-        strip_auto_injected_args, working_directory_under_any_project_path,
-        write_start_fresh_and_persist_to_dir_result, PersistedSession, RaiseHandPersistOutcome,
-        FILTER_PROJECT_PATHS_THREAD_IDS, NORMALIZE_CALLS, RENAME_ATTEMPTS,
+        rename_with_retry, reset_orphan_archived, reset_orphan_counters, reset_orphan_warned,
+        sanitize_failed_recoverable, save_sessions_to_dir, session_retention_project_paths,
+        sessions_save_lock, set_test_orphan_archive_cap, snapshot_sessions,
+        strip_auto_injected_args, validate_session_creation_cwd,
+        working_directory_under_any_project_path, write_start_fresh_and_persist_to_dir_result,
+        PersistMode, PersistedSession, RaiseHandPersistOutcome, FILTER_PROJECT_PATHS_THREAD_IDS,
+        NORMALIZE_CALLS, ORPHAN_ARCHIVE_FILENAME, RENAME_ATTEMPTS,
     };
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
@@ -1649,6 +2394,12 @@ mod tests {
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// §1295 — held for the WHOLE of any test that counts orphan sweeps or
+    /// reads/writes the shared archive, so a concurrently-running test cannot
+    /// pollute the process-global counters / dedup registry or race a tiny-cap
+    /// rotation. Mirrors the `COUNTING_LOCK` pattern in injected_messages.rs.
+    static ORPHAN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// §224 D.2 — the strip drops every runtime field but preserves the recipe
     /// fields needed for the next-startup restore attempt. Since #747 a raised
@@ -4007,5 +4758,719 @@ mod tests {
             tokio::task::yield_now().await;
         }
         writer.await.unwrap();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // §1295 tests: purge persist prune / archive / dedup / gate
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// AC1 loop-regression anchor (test 1): a nonexistent-cwd outside-roots row
+    /// is reaped exactly once, recorded (B1), and a SECOND purge is byte-
+    /// identical with zero WARN movement and frozen counters.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let orphan_agent = temp
+            .path()
+            .join("missing-project")
+            .join("wg-1")
+            .join("__agent_old");
+        let ps = PersistedSession {
+            name: "orphan".into(),
+            working_directory: orphan_agent.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[ps]).expect("seed sessions");
+        let file_path = temp.path().join("sessions.json");
+        let before_bytes = std::fs::read(&file_path).expect("read seed");
+
+        let project_paths = vec![temp.path().join("current").to_string_lossy().to_string()];
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
+            .expect("purge");
+        assert!(filtered.is_empty(), "kept set must drop the orphan");
+        assert!(
+            load_sessions_raw_from_dir_for_test(temp.path()).is_empty(),
+            "orphan removed from sessions.json"
+        );
+
+        // ONE archive record, disposition=reaped, reason=outsideRetainedRootsMissing.
+        let archive = std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME))
+            .expect("read archive");
+        let lines: Vec<&str> = archive.lines().collect();
+        assert_eq!(lines.len(), 1, "B1: exactly one archive record");
+        let record: serde_json::Value = serde_json::from_str(lines[0]).expect("parse record");
+        assert_eq!(record["schemaVersion"], 1);
+        assert_eq!(record["reason"], "outsideRetainedRootsMissing");
+        assert_eq!(record["disposition"], "reaped");
+        assert_eq!(record["session"]["name"], "orphan");
+        let after_bytes = std::fs::read(&file_path).expect("read rewritten");
+        assert_ne!(
+            before_bytes, after_bytes,
+            "first pass rewrites sessions.json"
+        );
+        let first_counts = orphan_counters();
+        assert_eq!(first_counts.archived, 0);
+        assert_eq!(first_counts.reaped, 1);
+        assert_eq!(orphan_warned_len(), 1);
+
+        // Second pass: byte-identical sessions.json, no new archive record, no
+        // counter movement, no new WARN.
+        let after_first_bytes = std::fs::read(&file_path).expect("read after first");
+        let filtered2 = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
+            .expect("second purge");
+        assert!(filtered2.is_empty());
+        let after_second_bytes = std::fs::read(&file_path).expect("read after second");
+        assert_eq!(
+            after_first_bytes, after_second_bytes,
+            "AC1: second purge byte-identical"
+        );
+        let second_counts = orphan_counters();
+        assert_eq!(second_counts.archived, 0);
+        assert_eq!(second_counts.reaped, 1, "counters frozen on second pass");
+        assert_eq!(orphan_warned_len(), 1, "no repeat WARN (run-level dedup)");
+    }
+
+    /// Test 2: an EXISTING-cwd outside-roots row is archived (not reaped) with a
+    /// round-trippable session blob; a second purge is clean and byte-identical.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn purge_archives_existing_cwd_outside_roots() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let orphan_agent = temp.path().join("other").join("wg-1").join("__agent_old");
+        std::fs::create_dir_all(&orphan_agent).expect("create orphan agent");
+        let ps = PersistedSession {
+            name: "orphan".into(),
+            working_directory: orphan_agent.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[ps]).expect("seed sessions");
+        let project_paths = vec![temp.path().join("current").to_string_lossy().to_string()];
+
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
+            .expect("purge");
+        assert!(filtered.is_empty());
+        assert!(load_sessions_raw_from_dir_for_test(temp.path()).is_empty());
+        let archive = std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME))
+            .expect("read archive");
+        let lines: Vec<&str> = archive.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let record: serde_json::Value = serde_json::from_str(lines[0]).expect("parse");
+        assert_eq!(record["reason"], "outsideRetainedRoots");
+        assert_eq!(record["disposition"], "archived");
+        assert_eq!(record["session"]["name"], "orphan");
+        let blob: PersistedSession =
+            serde_json::from_value(record["session"].clone()).expect("session blob round-trip");
+        assert_eq!(
+            blob.working_directory,
+            orphan_agent.to_string_lossy().to_string()
+        );
+
+        // Second purge clean + byte-identical.
+        let b1 = std::fs::read(temp.path().join("sessions.json")).expect("read b1");
+        let filtered2 = purge_sessions_outside_project_paths_in_dir(temp.path(), &project_paths)
+            .await
+            .expect("second purge");
+        assert!(filtered2.is_empty());
+        let b2 = std::fs::read(temp.path().join("sessions.json")).expect("read b2");
+        assert_eq!(b1, b2, "second purge byte-identical");
+    }
+
+    /// Test 3: root-agent and archived-root rows survive both purge cycles and
+    /// produce NO archive records.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn purge_keeps_root_agent_and_archived_root_rows() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        let archived = temp.path().join("archived");
+        std::fs::create_dir_all(&current).expect("create current");
+        std::fs::create_dir_all(&archived).expect("create archived");
+        let root_agent = temp.path().join("root-agent-x");
+        let root_row = PersistedSession {
+            name: "root".into(),
+            working_directory: root_agent.to_string_lossy().to_string(),
+            is_root_agent: true,
+            ..Default::default()
+        };
+        let archived_agent = archived.join("wg-1").join("__agent_archived");
+        std::fs::create_dir_all(&archived_agent).expect("create archived agent");
+        let arch_row = PersistedSession {
+            name: "archived".into(),
+            working_directory: archived_agent.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[root_row.clone(), arch_row.clone()]).expect("seed");
+        let retention = vec![
+            current.to_string_lossy().to_string(),
+            archived.to_string_lossy().to_string(),
+        ];
+
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &retention)
+            .await
+            .expect("purge");
+        let names: Vec<&str> = filtered.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "archived"]);
+        assert!(
+            !temp.path().join(ORPHAN_ARCHIVE_FILENAME).exists(),
+            "no archive records for kept rows"
+        );
+        let filtered2 = purge_sessions_outside_project_paths_in_dir(temp.path(), &retention)
+            .await
+            .expect("second purge");
+        assert_eq!(filtered2.len(), 2, "both rows survive both cycles");
+    }
+
+    /// AC3 (test 4): a dormant orphan leaves the manager + disk on the first
+    /// persist and is recorded; a live orphan keeps running in RAM, is dropped
+    /// from disk, counts live_kept, and is NOT recorded (its recipe is still
+    /// live). A second persist is silent with frozen counters.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        std::fs::create_dir_all(&current).expect("create current");
+        let other = temp.path().join("other");
+        let dormant_cwd = other
+            .join("wg-1")
+            .join("__agent_dormant")
+            .to_string_lossy()
+            .to_string();
+        let live_cwd = other
+            .join("wg-1")
+            .join("__agent_live")
+            .to_string_lossy()
+            .to_string();
+        let mgr = SessionManager::new();
+        let dormant = mgr
+            .create_session(
+                "dormant".into(),
+                vec![],
+                dormant_cwd.clone(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create dormant");
+        let live = mgr
+            .create_session(
+                "live".into(),
+                vec![],
+                live_cwd.clone(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create live");
+        mgr.mark_exited(dormant.id, 0).await;
+
+        let retention = vec![current.to_string_lossy().to_string()];
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::PruneDormant,
+        )
+        .await
+        .expect("persist");
+
+        // (create_session auto-names rows "Session N"; assert by id, not name.)
+        let dormant_id = dormant.id.to_string();
+        let live_id = live.id.to_string();
+        let rows = mgr.list_sessions().await;
+        assert!(
+            !rows.iter().any(|s| s.id == dormant_id),
+            "dormant orphan removed from manager"
+        );
+        assert!(
+            rows.iter().any(|s| s.id == live_id),
+            "live orphan keeps running in manager"
+        );
+        assert!(
+            load_sessions_raw_from_dir_for_test(temp.path()).is_empty(),
+            "both orphans dropped from the disk snapshot"
+        );
+        // ONE archive record (only the dormant one; the live one is kept live).
+        let archive =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        assert_eq!(
+            archive.lines().count(),
+            1,
+            "live orphan is not recorded (B1 applies to dropped rows)"
+        );
+        let record: serde_json::Value =
+            serde_json::from_str(archive.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            record["session"]["name"], "Session 1",
+            "the dormant row is the recorded one"
+        );
+        let first = orphan_counters();
+        assert_eq!(first.reaped, 1);
+        assert_eq!(first.archived, 0);
+        assert_eq!(first.live_kept, 1);
+        let warned_after_first = orphan_warned_len();
+        assert_eq!(
+            warned_after_first, 2,
+            "two distinct orphan cwds warn once each"
+        );
+
+        // Second persist: silent (no archive growth, counters frozen, no new warns).
+        let archive_after_first =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::PruneDormant,
+        )
+        .await
+        .expect("second persist");
+        let archive_after_second =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        assert_eq!(
+            archive_after_first, archive_after_second,
+            "no archive growth on repeat"
+        );
+        let second = orphan_counters();
+        assert_eq!(second.reaped, 1, "no NEW reaping on the repeat sweep");
+        assert_eq!(
+            second.live_kept, 2,
+            "the persistent live orphan is re-seen and kept live"
+        );
+        assert_eq!(
+            orphan_warned_len(),
+            warned_after_first,
+            "no new WARN on repeat sweep"
+        );
+    }
+
+    /// Test 5: a persist with nothing orphaned emits no archive file and moves
+    /// no counters.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn persist_is_silent_when_nothing_orphaned() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        let in_root = current.join("wg-1").join("__agent_keep");
+        std::fs::create_dir_all(&in_root).expect("create in-root agent");
+        let mgr = SessionManager::new();
+        mgr.create_session(
+            "keep".into(),
+            vec![],
+            in_root.to_string_lossy().to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .expect("create kept session");
+        let retention = vec![current.to_string_lossy().to_string()];
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::NoPrune,
+        )
+        .await
+        .expect("persist");
+        assert!(
+            !temp.path().join(ORPHAN_ARCHIVE_FILENAME).exists(),
+            "no archive file when nothing orphaned"
+        );
+        let saved = load_sessions_raw_from_dir_for_test(temp.path());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(orphan_warned_len(), 0);
+        assert_eq!(orphan_counters(), super::OrphanSweepCounts::default());
+    }
+
+    /// Test 6 (dispatch req): the transition border. A NO-PRUNE (transitional)
+    /// persist keeps a dormant orphan in RAM (transition-owned) while archiving
+    /// it once and dropping it from disk; the subsequent STEADY PruneDormant
+    /// persist removes it from RAM but does NOT re-append the archive record
+    /// (B1-once first-sighting tie). warned stays 1 across the boundary.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        reset_orphan_archived();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        std::fs::create_dir_all(&current).expect("create current");
+        let orphan_cwd = temp
+            .path()
+            .join("other")
+            .join("wg-1")
+            .join("__agent_border")
+            .to_string_lossy()
+            .to_string();
+        let mgr = SessionManager::new();
+        let row = mgr
+            .create_session(
+                "border".into(),
+                vec![],
+                orphan_cwd.clone(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create orphan row");
+        mgr.mark_exited(row.id, 0).await;
+        mgr.set_active_only(row.id).await.expect("select row");
+        let id_str = row.id.to_string();
+
+        let retention = vec![current.to_string_lossy().to_string()];
+
+        // No-prune (transitional) persist: row stays in RAM, archived once,
+        // dropped from disk.
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::NoPrune,
+        )
+        .await
+        .expect("no-prune persist");
+        let rows = mgr.list_sessions().await;
+        assert!(
+            rows.iter().any(|s| s.id == id_str),
+            "no-prune persist keeps the dormant row in RAM"
+        );
+        assert_eq!(mgr.selection_payload().await.id(), Some(row.id));
+        let archive =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        assert_eq!(archive.lines().count(), 1, "no-prune persist archives once");
+        assert!(
+            load_sessions_raw_from_dir_for_test(temp.path()).is_empty(),
+            "no-prune persist drops the row from disk"
+        );
+        let counts_no_prune = orphan_counters();
+        assert_eq!(
+            counts_no_prune.live_kept, 0,
+            "a dormant row is archived, not live_kept"
+        );
+        assert_eq!(counts_no_prune.reaped + counts_no_prune.archived, 1);
+        let warned = orphan_warned_len();
+        assert_eq!(warned, 1);
+
+        // Steady prune: row leaves RAM; archive NOT re-appended (B1-once tie).
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::PruneDormant,
+        )
+        .await
+        .expect("steady prune");
+        let rows = mgr.list_sessions().await;
+        assert!(
+            !rows.iter().any(|s| s.id == id_str),
+            "steady prune removes the dormant row from RAM"
+        );
+        let archive_after =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        assert_eq!(
+            archive_after.lines().count(),
+            1,
+            "B1-once: archive not re-appended on the steady prune"
+        );
+        assert_eq!(
+            orphan_warned_len(),
+            warned,
+            "no new WARN from the steady prune"
+        );
+        let counts_prune = orphan_counters();
+        assert_eq!(
+            counts_prune.reaped + counts_prune.archived,
+            1,
+            "exactly one archive total across the boundary"
+        );
+        assert!(
+            counts_prune.suppressed_repeat >= 1,
+            "the repeat cwd sighting is suppressed"
+        );
+        assert_eq!(mgr.get_session(row.id).await.map(|s| s.name), None);
+    }
+
+    /// N4c (test 6): run purge (site A) then persist (site B) in one process for
+    /// the SAME orphan cwd; the run-level registry collapses the second sighting
+    /// (warned stays 1, suppressed_repeat becomes 1).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn cross_site_dedup_purge_then_persist_warns_once() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_orphan_counters();
+        reset_orphan_warned();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current = temp.path().join("current");
+        std::fs::create_dir_all(&current).expect("create current");
+        let orphan_cwd = temp
+            .path()
+            .join("other")
+            .join("wg-1")
+            .join("__agent_old")
+            .to_string_lossy()
+            .to_string();
+        let retention = vec![current.to_string_lossy().to_string()];
+
+        // Disk row (site A).
+        let disk_ps = PersistedSession {
+            name: "disk-orphan".into(),
+            working_directory: orphan_cwd.clone(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[disk_ps]).expect("seed disk row");
+        let filtered = purge_sessions_outside_project_paths_in_dir(temp.path(), &retention)
+            .await
+            .expect("purge");
+        assert!(filtered.is_empty());
+        assert_eq!(orphan_warned_len(), 1, "first sighting warns");
+
+        // Manager row (site B) with the same cwd.
+        let mgr = SessionManager::new();
+        mgr.create_session(
+            "manager-orphan".into(),
+            vec![],
+            orphan_cwd,
+            None,
+            None,
+            Vec::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .expect("create manager row");
+        persist_current_state_to_dir_for_project_paths_result(
+            &mgr,
+            temp.path(),
+            Some(&retention),
+            PersistMode::NoPrune,
+        )
+        .await
+        .expect("persist");
+
+        assert_eq!(
+            orphan_warned_len(),
+            1,
+            "N1: same orphan warns exactly once per run"
+        );
+        let counts = orphan_counters();
+        assert_eq!(
+            counts.suppressed_repeat, 1,
+            "second sighting suppressed across sites"
+        );
+    }
+
+    /// N4a (test 7): the site-C append helper writes the restoreCwdMissing
+    /// record with the locking variant and leaves sessions.json untouched.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn site_c_record_reason_restore_cwd_missing() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ps = PersistedSession {
+            name: "restore-skip".into(),
+            working_directory: "C:/gone/project/.ac/wg-1/__agent_x".to_string(),
+            ..Default::default()
+        };
+        let seed = PersistedSession {
+            name: "keep".into(),
+            working_directory: "C:/here/project".to_string(),
+            ..Default::default()
+        };
+        save_sessions_to_dir(temp.path(), &[seed]).expect("seed");
+        let before_bytes = std::fs::read(temp.path().join("sessions.json")).expect("read before");
+
+        append_orphan_archive_record(temp.path(), "restoreCwdMissing", "archived", &ps).await;
+
+        // sessions.json byte-identical (site C leaves the row's disk fate alone).
+        let after_bytes = std::fs::read(temp.path().join("sessions.json")).expect("read after");
+        assert_eq!(
+            before_bytes, after_bytes,
+            "site C does not touch sessions.json"
+        );
+        let archive =
+            std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+        let lines: Vec<&str> = archive.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let record: serde_json::Value = serde_json::from_str(lines[0]).expect("parse");
+        assert_eq!(record["reason"], "restoreCwdMissing");
+        assert_eq!(record["disposition"], "archived");
+        assert_eq!(record["session"]["name"], "restore-skip");
+    }
+
+    /// N4e/N5 (test 8): append below cap, then with a tiny `#[cfg(test)]` cap
+    /// force rotations so `.1/.2/.3` shift and nothing beyond `.3` is kept;
+    /// appends still work after rotation. Best-effort: a held-open append
+    /// handle during rotation must not panic.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn archive_appends_and_rotates_best_effort() {
+        let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_path_buf();
+        let ps = PersistedSession {
+            name: "rot".into(),
+            working_directory: "C:/x".into(),
+            ..Default::default()
+        };
+        set_test_orphan_archive_cap(Some(200));
+        for _ in 0..40 {
+            append_orphan_archive_record(&dir, "outsideRetainedRoots", "archived", &ps).await;
+        }
+        set_test_orphan_archive_cap(None);
+
+        let base = dir.join(ORPHAN_ARCHIVE_FILENAME);
+        let one = dir.join(format!("{}.1", ORPHAN_ARCHIVE_FILENAME));
+        let four = dir.join(format!("{}.4", ORPHAN_ARCHIVE_FILENAME));
+        assert!(base.exists(), "active archive file exists");
+        assert!(one.exists(), ".1 rotated");
+        // KEEP=3: at most .1/.2/.3 retained; a .4 must never appear.
+        assert!(!four.exists(), "ORPHAN_ARCHIVE_KEEP=3: .4 must not exist");
+        // With the cap restored, an append lands in the active file (no rotation).
+        append_orphan_archive_record(&dir, "outsideRetainedRoots", "archived", &ps).await;
+        assert!(
+            std::fs::metadata(&base)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false),
+            "append still works after rotation"
+        );
+
+        // Best-effort rotation with a held handle (Windows sharing-violation
+        // simulation): must not panic, and appends still work after release.
+        set_test_orphan_archive_cap(Some(200));
+        let handle = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&base)
+            .expect("hold archive handle");
+        append_orphan_archive_record(&dir, "outsideRetainedRoots", "archived", &ps).await;
+        drop(handle);
+        append_orphan_archive_record(&dir, "outsideRetainedRoots", "archived", &ps).await;
+        assert!(base.exists());
+        set_test_orphan_archive_cap(None);
+    }
+
+    /// Test 11 (pure): `validate_session_creation_cwd` accepts a root-agent
+    /// path (even when missing) and an archived-root path (existence waived).
+    #[test]
+    fn validate_session_creation_cwd_accepts_root_agent_and_archived_roots() {
+        let root = crate::config::root_agent::root_agent_dir().expect("root dir resolves");
+        assert!(
+            validate_session_creation_cwd(&root, &[], &[]).is_ok(),
+            "root-agent path allowed even when missing"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let archived_root = temp.path().to_string_lossy().to_string();
+        // A cwd under an archived root that does NOT exist is still Ok.
+        let missing_under_archived = temp.path().join("not-there").to_string_lossy().to_string();
+        assert!(
+            validate_session_creation_cwd(&missing_under_archived, &[], &[archived_root]).is_ok(),
+            "archived-root path allowed with existence waived"
+        );
+    }
+
+    /// Round-3 regression (CI): the archived-root gate exemption must be structural
+    /// and independent of on-disk state. When the archived root resolves through a
+    /// symlink/junction but the cwd below it does not (yet) exist, the OLD
+    /// canonicalizing check failed on Ubuntu (the canonical root no longer prefixed the
+    /// raw cwd), falsely refusing a legitimate archived-root spawn. This pins the fix:
+    /// the cwd is Ok regardless of the symlink resolution or of the missing child.
+    /// Skipped gracefully on hosts that forbid symlink creation (e.g. non-developer
+    /// Windows); runs on Linux CI where the original failure occurred.
+    #[test]
+    fn archived_root_exemption_is_structural_even_when_root_resolves_through_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let link = base.path().join("link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(target.path(), &link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target.path(), &link);
+        if let Err(_error) = made {
+            return;
+        }
+        let archived_root = link.to_string_lossy().to_string();
+        let missing_child = link.join("not-there").to_string_lossy().to_string();
+        assert!(
+            validate_session_creation_cwd(&missing_child, &[], &[archived_root]).is_ok(),
+            "archived-root exemption must hold when the root resolves through a symlink and the cwd does not exist"
+        );
+    }
+
+    /// Test 12 (pure): rejects unregistered and missing cwds; accepts an
+    /// existing registered root; home-dir with empty roots is rejected (S5).
+    #[test]
+    fn validate_session_creation_cwd_rejects_unregistered_and_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        // Derive the root and the missing cwd from the CANONICAL path so the
+        // prefix membership check is robust to Windows Temp-drive junctions
+        // (a real root here canonicalizes to itself; the retained root is
+        // re-canonicalized identically inside the gate).
+        let root = std::fs::canonicalize(temp.path())
+            .expect("canonical root")
+            .to_string_lossy()
+            .to_string();
+        let retained = vec![root.clone()];
+
+        // Outside all registered roots (a sibling of the root).
+        let parent = std::path::Path::new(&root)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap();
+        let outside = format!("{}/elsewhere", parent);
+        let err = validate_session_creation_cwd(&outside, &retained, &[]).unwrap_err();
+        assert!(err.starts_with("sessionCreateBlocked:"), "{err}");
+        assert!(err.contains("outside all registered projects"), "{err}");
+
+        // Registered (root) but the cwd does not exist on disk.
+        let missing = format!("{}/gone/deeper", root);
+        let err = validate_session_creation_cwd(&missing, &retained, &[]).unwrap_err();
+        assert!(err.starts_with("sessionCreateBlocked:"), "{err}");
+        assert!(err.contains("does not exist on disk"), "{err}");
+
+        // Registered existing root -> Ok.
+        assert!(validate_session_creation_cwd(&root, &retained, &[]).is_ok());
+
+        // S5 predicate: a home-dir-like input with empty registered roots is
+        // refused (as the production `create_session` default would be).
+        let home = dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !home.is_empty() {
+            let err = validate_session_creation_cwd(&home, &[], &[]).unwrap_err();
+            assert!(err.starts_with("sessionCreateBlocked:"), "{err}");
+        }
     }
 }
