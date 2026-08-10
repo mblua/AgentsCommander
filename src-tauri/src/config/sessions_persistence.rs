@@ -1026,11 +1026,54 @@ async fn persist_prepared_locked(
     save_sessions_to_dir(dir, &prep.kept)
 }
 
+/// Structural (non-canonicalizing) form of a raw path for archived-root membership: the
+/// same separator normalization as `normalize_for_project_compare` (long-prefix strip,
+/// `/` separators, trailing-slash trim, Windows case-fold) WITHOUT the `canonicalize`
+/// step. The gate's archived exemption is intentionally existence-independent, so it must
+/// stay deterministic whether or not the archived root (or a symlink it resolves through)
+/// exists on disk.
+fn normalize_archived_root_for_compare(path: &str) -> String {
+    let mut s = strip_long_prefix_str(path).replace('\\', "/");
+    while s.ends_with('/') && s.len() > 1 {
+        s.pop();
+    }
+    if cfg!(windows) {
+        s.make_ascii_lowercase();
+    }
+    s
+}
+
+/// Structural (raw, non-canonicalizing) containment of `path` under one of `roots`,
+/// returning the first matching raw root. Used ONLY by the archived-root gate exemption
+/// (§1295 5.1a rule 2), where membership in the archived list is the retention signal and
+/// must hold regardless of on-disk existence. Canonicalizing here would be wrong: when an
+/// archived root resolves through a symlink/junction but a cwd below it does not yet exist,
+/// `canonicalize(root)` resolves the symlink while `canonicalize(cwd)` falls back to the raw
+/// path, so the canonical root no longer prefixes the raw cwd and the exemption would
+/// falsely fail (CI-observed on Ubuntu with a symlinked temp root).
+fn archived_root_containing_raw(path: &str, roots: &[String]) -> Option<String> {
+    let cwd = normalize_archived_root_for_compare(path);
+    roots.iter().find_map(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let root = normalize_archived_root_for_compare(trimmed);
+        if path_is_under_or_equal(&cwd, &root) {
+            Some(raw.clone())
+        } else {
+            None
+        }
+    })
+}
+
 /// §1295 5.1a — creation-time gate predicate (pure). Rules, in order:
 ///   1. Root-agent path -> Ok (the directory is AC-owned).
 ///   2. Under an archived root -> Ok with the existence check WAIVED
 ///      (temp-unmount / drive-down safety; `enforce_unarchived_for_spawn`
-///      auto-unarchives on an actual spawn).
+///      auto-unarchives on an actual spawn). The membership check is structural
+///      (raw-string, non-canonicalizing) so it is deterministic across platforms
+///      and independent of symlink resolution or `Path::exists()`.
 ///   3. Outside every registered (active + archived) root -> Err with stable
 ///      prefix `sessionCreateBlocked:` and fragment "outside all registered
 ///      projects".
@@ -1049,8 +1092,9 @@ pub(crate) fn validate_session_creation_cwd(
     if crate::config::root_agent::is_root_agent_path(cwd) {
         return Ok(());
     }
-    // 2. Archived root (existence deliberately waived for unmount/drive-down).
-    if raw_project_path_containing(cwd, archived_project_paths).is_some() {
+    // 2. Archived root (structural membership; existence deliberately waived for
+    //    unmount/drive-down, so a missing cwd under an archived root is Ok).
+    if archived_root_containing_raw(cwd, archived_project_paths).is_some() {
         return Ok(());
     }
     // 3. Outside every registered (active + archived) root.
@@ -5354,6 +5398,34 @@ mod tests {
         assert!(
             validate_session_creation_cwd(&missing_under_archived, &[], &[archived_root]).is_ok(),
             "archived-root path allowed with existence waived"
+        );
+    }
+
+    /// Round-3 regression (CI): the archived-root gate exemption must be structural
+    /// and independent of on-disk state. When the archived root resolves through a
+    /// symlink/junction but the cwd below it does not (yet) exist, the OLD
+    /// canonicalizing check failed on Ubuntu (the canonical root no longer prefixed the
+    /// raw cwd), falsely refusing a legitimate archived-root spawn. This pins the fix:
+    /// the cwd is Ok regardless of the symlink resolution or of the missing child.
+    /// Skipped gracefully on hosts that forbid symlink creation (e.g. non-developer
+    /// Windows); runs on Linux CI where the original failure occurred.
+    #[test]
+    fn archived_root_exemption_is_structural_even_when_root_resolves_through_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let link = base.path().join("link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(target.path(), &link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target.path(), &link);
+        if let Err(_error) = made {
+            return;
+        }
+        let archived_root = link.to_string_lossy().to_string();
+        let missing_child = link.join("not-there").to_string_lossy().to_string();
+        assert!(
+            validate_session_creation_cwd(&missing_child, &[], &[archived_root]).is_ok(),
+            "archived-root exemption must hold when the root resolves through a symlink and the cwd does not exist"
         );
     }
 
