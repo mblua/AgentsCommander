@@ -1,5 +1,6 @@
 pub mod api;
 pub mod bridge;
+pub(crate) mod output;
 pub mod claude_watcher;
 pub mod codex_watcher;
 pub mod gemini_watcher;

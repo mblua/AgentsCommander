@@ -1059,3 +1059,7 @@ mod tests {
         }
     }
 }
+use crate::config::root_agent::is_root_agent_path;
+
+#[allow(dead_code)]
+const ROOT_AGENT_PATH_PREDICATE: fn(&str) -> bool = is_root_agent_path;

@@ -2,7 +2,6 @@ pub mod auth;
 pub mod broadcast;
 pub mod commands;
 mod embedded;
-pub mod event_broadcast;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

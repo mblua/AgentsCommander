@@ -15,8 +15,256 @@ use crate::pty::manager::PtyManager;
 use crate::telegram::api;
 use crate::telegram::types::BridgeInfo;
 
-use super::claude_watcher::output::TelegramErrKind;
-pub(super) use super::claude_watcher::output::{flush_buffer, BridgeLogger, DiagLogger};
+use super::output::{prepare_output_chunks, TelegramErrKind};
+
+pub(crate) struct BridgeLogger {
+    file: Option<std::fs::File>,
+}
+
+#[cfg(test)]
+mod output_ownership_tests {
+    use super::{BridgeLogger, DiagLogger};
+
+    const FAKE_TG_TOKEN: &str = "987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx";
+    const FAKE_GEMINI_KEY: &str = "AIzaSyFakeKeyForTesting1234567890";
+
+    fn open_temp_log(dir: &std::path::Path, name: &str) -> std::fs::File {
+        let path = dir.join(name);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open temp log")
+    }
+
+    #[test]
+    fn bridgelogger_log_redacts_telegram_token_in_text() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let path = temp_dir.path().join("telegram-bridge.log");
+        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
+        let mut logger = BridgeLogger { file: Some(file) };
+        let leak_shaped = format!(
+            "error sending request for url (https://api.telegram.org/bot{}/getUpdates?offset=0)",
+            FAKE_TG_TOKEN
+        );
+        logger.log("ERR", "sid-test", &leak_shaped);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&path).expect("read log back");
+        assert!(content.contains("/bot***/getUpdates"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+    }
+
+    #[test]
+    fn bridgelogger_log_redacts_before_truncating_at_500_bytes() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let path = temp_dir.path().join("telegram-bridge.log");
+        let file = open_temp_log(temp_dir.path(), "telegram-bridge.log");
+        let mut logger = BridgeLogger { file: Some(file) };
+        let padding = "a".repeat(481);
+        let text = format!("{padding}/bot{FAKE_TG_TOKEN}/getUpdates");
+        assert!(text.len() > 500);
+
+        logger.log("ERR", "sid-test", &text);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&path).expect("read log back");
+        assert!(content.contains("/bot***"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+        assert!(!content.contains("FAKE_"));
+        assert!(!content.contains("FAKE_TOKEN_FOR_TESTING"));
+    }
+
+    #[test]
+    fn diaglogger_log_raw_redacts_telegram_token() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let raw_path = temp_dir.path().join("diag-raw.log");
+        let raw = open_temp_log(temp_dir.path(), "diag-raw.log");
+        let mut logger = DiagLogger {
+            raw_file: Some(raw),
+            sent_file: None,
+        };
+        let row = format!(
+            "POST https://api.telegram.org/bot{}/sendMessage failed",
+            FAKE_TG_TOKEN
+        );
+        logger.log_raw(&row);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&raw_path).expect("read raw log");
+        assert!(content.contains("/bot***/sendMessage"));
+        assert!(!content.contains(FAKE_TG_TOKEN));
+    }
+
+    #[test]
+    fn diaglogger_log_sent_redacts_gemini_key() {
+        let temp_dir = tempfile::tempdir().expect("tmp");
+        let sent_path = temp_dir.path().join("diag-sent.log");
+        let sent = open_temp_log(temp_dir.path(), "diag-sent.log");
+        let mut logger = DiagLogger {
+            raw_file: None,
+            sent_file: Some(sent),
+        };
+        let row = format!(
+            "Gemini call: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+            FAKE_GEMINI_KEY
+        );
+        logger.log_sent(&row);
+        drop(logger);
+
+        let content = std::fs::read_to_string(&sent_path).expect("read sent log");
+        assert!(content.contains("?key=***"));
+        assert!(!content.contains(FAKE_GEMINI_KEY));
+    }
+}
+
+impl BridgeLogger {
+    pub(crate) fn new(session_id: &str) -> Self {
+        let file = crate::config::config_dir().and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = dir.join("telegram-bridge.log");
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()
+        });
+
+        if let Some(ref file) = file {
+            let metadata = file.metadata().ok();
+            log::info!(
+                "Bridge logger active for session {} ({} bytes)",
+                session_id,
+                metadata.map(|metadata| metadata.len()).unwrap_or(0)
+            );
+        }
+
+        Self { file }
+    }
+
+    pub(crate) fn log(&mut self, direction: &str, session_id: &str, text: &str) {
+        if let Some(ref mut file) = self.file {
+            let now = chrono::Utc::now().format("%H:%M:%S%.3f");
+            let text_redacted = crate::telegram::redact::redact(text);
+            let preview = if text_redacted.len() > 500 {
+                let mut end = 500;
+                while !text_redacted.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!(
+                    "{}...[{}b total]",
+                    &text_redacted[..end],
+                    text_redacted.len()
+                )
+            } else {
+                text_redacted
+            };
+            let _ = std::io::Write::write_fmt(
+                file,
+                format_args!("[{}] {} sid={} | {}\n", now, direction, session_id, preview),
+            );
+            let _ = std::io::Write::flush(file);
+        }
+    }
+}
+
+pub(crate) struct DiagLogger {
+    raw_file: Option<std::fs::File>,
+    sent_file: Option<std::fs::File>,
+}
+
+impl DiagLogger {
+    pub(crate) fn new() -> Self {
+        let dir = crate::config::config_dir();
+        let open = |name: &str| -> Option<std::fs::File> {
+            let dir = dir.as_ref()?;
+            std::fs::create_dir_all(dir).ok()?;
+            let path = dir.join(name);
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .ok()
+        };
+
+        let raw_file = open("diag-raw.log");
+        let sent_file = open("diag-sent.log");
+
+        if raw_file.is_some() && sent_file.is_some() {
+            log::info!("Diagnostic logger active: diag-raw.log + diag-sent.log");
+        }
+
+        Self {
+            raw_file,
+            sent_file,
+        }
+    }
+
+    pub(crate) fn log_raw(&mut self, text: &str) {
+        if let Some(ref mut file) = self.raw_file {
+            let now = chrono::Utc::now().format("%H:%M:%S%.3f");
+            let text = crate::telegram::redact::redact(text);
+            let _ = std::io::Write::write_fmt(file, format_args!("--- [{}] ---\n", now));
+            let _ = std::io::Write::write_fmt(file, format_args!("{}\n", text));
+            let _ = std::io::Write::flush(file);
+        }
+    }
+
+    pub(crate) fn log_sent(&mut self, text: &str) {
+        if let Some(ref mut file) = self.sent_file {
+            let now = chrono::Utc::now().format("%H:%M:%S%.3f");
+            let text = crate::telegram::redact::redact(text);
+            let _ = std::io::Write::write_fmt(file, format_args!("--- [{}] ---\n", now));
+            let _ = std::io::Write::write_fmt(file, format_args!("{}\n", text));
+            let _ = std::io::Write::flush(file);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn flush_buffer<R: tauri::Runtime>(
+    buffer: &mut String,
+    network: &crate::network::OutboundNetwork,
+    token: &str,
+    chat_id: i64,
+    session_id: &str,
+    app: &tauri::AppHandle<R>,
+    logger: &mut BridgeLogger,
+    diag: &mut DiagLogger,
+    skip_dedup: bool,
+) {
+    for chunk in prepare_output_chunks(buffer, skip_dedup) {
+        logger.log("SEND_TG", session_id, &chunk);
+        diag.log_sent(&chunk);
+
+        if let Err(error) = crate::telegram::api::send_message(network, token, chat_id, &chunk).await {
+            let message = crate::telegram::redact::redact(&error.to_string());
+            let kind = TelegramErrKind::classify(&message);
+            let process_id = std::process::id();
+            let token_prefix = token.split(':').next().unwrap_or("?");
+            logger.log("SEND_ERR", session_id, &message);
+            log::error!(
+                "[bridge] Telegram send failed - kind={} session_id={} pid={} bot_id={} err={}",
+                kind.as_str(),
+                session_id,
+                process_id,
+                token_prefix,
+                message
+            );
+            let _ = tauri::Emitter::emit(
+                app,
+                "telegram_bridge_error",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "error": message,
+                    "kind": kind.as_str(),
+                }),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(35)).await;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollNetworkLogAction {

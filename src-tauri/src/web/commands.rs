@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -6,11 +7,13 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
+use crate::config::project_settings::{
+    load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
+};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 // #1265: keep private. A `pub use` here would re-expose the emitter under the
 // dispatcher's own path and let the deleted arc come back as an import.
-use crate::web::event_broadcast::broadcast_all;
 
 use super::broadcast::WsBroadcaster;
 
@@ -35,6 +38,26 @@ enum BrowserProjectCommand {
     ArchiveProject,
     UnarchiveProject,
     ListArchivedProjects,
+}
+
+pub(crate) const PROJECT_GROUPS_UPDATED_EVENT: &str = "project_groups_updated";
+
+pub(crate) fn project_groups_updated_payload(
+    project_path: &str,
+    config: &WorkgroupGroupsConfig,
+) -> Value {
+    json!({ "projectPath": project_path, "config": config })
+}
+
+pub(crate) fn get_project_groups_inner(path: &str) -> Result<WorkgroupGroupsConfig, String> {
+    load_workgroup_groups(Path::new(path))
+}
+
+pub(crate) fn update_project_groups_inner(
+    path: &str,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    save_workgroup_groups(Path::new(path), config)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -756,22 +779,19 @@ async fn dispatch_browser_project_command(
 
         BrowserProjectCommand::GetProjectGroups => {
             let path = require_str(args, "path")?;
-            let result = crate::commands::project_settings::get_project_groups_inner(&path)?;
+            let result = get_project_groups_inner(&path)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         BrowserProjectCommand::UpdateProjectGroups => {
             let path = require_str(args, "path")?;
-            let config: crate::config::project_settings::WorkgroupGroupsConfig =
-                require_json(args, "config")?;
-            let result =
-                crate::commands::project_settings::update_project_groups_inner(&path, config)?;
-            let payload =
-                crate::commands::project_settings::project_groups_updated_payload(&path, &result);
+            let config: WorkgroupGroupsConfig = require_json(args, "config")?;
+            let result = update_project_groups_inner(&path, config)?;
+            let payload = project_groups_updated_payload(&path, &result);
             broadcast_all(
                 &state.app_handle,
                 &state.broadcaster,
-                crate::commands::project_settings::PROJECT_GROUPS_UPDATED_EVENT,
+                PROJECT_GROUPS_UPDATED_EVENT,
                 &payload,
             );
             serde_json::to_value(result).map_err(|e| e.to_string())
@@ -929,9 +949,6 @@ fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::project_settings::{
-        get_project_groups_inner, PROJECT_GROUPS_UPDATED_EVENT,
-    };
     use crate::config::project_settings::{WorkgroupGroup, WorkgroupGroupsConfig};
     use crate::config::settings::AppSettings;
     use crate::pty::git_watcher::GitWatcher;
@@ -1438,4 +1455,13 @@ mod tests {
         assert_eq!(event["payload"]["profile"], json!("B"));
         assert_eq!(event["payload"]["updatedCount"], json!(1));
     }
+}
+pub(crate) fn broadcast_all<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    broadcaster: &WsBroadcaster,
+    event: &str,
+    payload: &serde_json::Value,
+) {
+    let _ = tauri::Emitter::emit(app, event, payload);
+    broadcaster.broadcast_event(event, payload);
 }
