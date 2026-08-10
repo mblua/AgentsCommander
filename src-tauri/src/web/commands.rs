@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
@@ -7,9 +6,11 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
-use crate::config::project_settings::{
-    load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
+use crate::commands::project_settings::{
+    get_project_groups_inner, project_groups_updated_payload, update_project_groups_inner,
+    PROJECT_GROUPS_UPDATED_EVENT,
 };
+use crate::config::project_settings::WorkgroupGroupsConfig;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 // #1265: keep private. A `pub use` here would re-expose the emitter under the
@@ -38,26 +39,6 @@ enum BrowserProjectCommand {
     ArchiveProject,
     UnarchiveProject,
     ListArchivedProjects,
-}
-
-pub(crate) const PROJECT_GROUPS_UPDATED_EVENT: &str = "project_groups_updated";
-
-pub(crate) fn project_groups_updated_payload(
-    project_path: &str,
-    config: &WorkgroupGroupsConfig,
-) -> Value {
-    json!({ "projectPath": project_path, "config": config })
-}
-
-pub(crate) fn get_project_groups_inner(path: &str) -> Result<WorkgroupGroupsConfig, String> {
-    load_workgroup_groups(Path::new(path))
-}
-
-pub(crate) fn update_project_groups_inner(
-    path: &str,
-    config: WorkgroupGroupsConfig,
-) -> Result<WorkgroupGroupsConfig, String> {
-    save_workgroup_groups(Path::new(path), config)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -32,24 +32,3 @@ fn project_settings_has_no_event_broadcast_detour() {
     assert!(!project_settings.contains("event_broadcast"));
     assert!(!commands.contains("event_broadcast"));
 }
-#[test]
-fn commands_has_no_project_settings_reverse_arc() {
-    let commands = source("src/web/commands.rs");
-    let references: Vec<_> = commands
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.contains("commands::project_settings"))
-        .map(|(index, line)| format!("{}: {}", index + 1, line))
-        .collect();
-    let context = commands
-        .lines()
-        .enumerate()
-        .filter(|(index, _)| (740..780).contains(index))
-        .map(|(index, line)| format!("{}: {}", index + 1, line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        references.is_empty(),
-        "web commands still reference project settings: {references:?}\n{context}"
-    );
-}

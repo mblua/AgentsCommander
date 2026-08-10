@@ -1,15 +1,36 @@
-use crate::config::project_settings::WorkgroupGroupsConfig;
+use std::path::Path;
+
+use crate::config::project_settings::{
+    load_workgroup_groups, save_workgroup_groups, WorkgroupGroupsConfig,
+};
 use crate::web::broadcast::WsBroadcaster;
 use crate::web::commands::broadcast_all;
-use crate::web::commands::{
-    get_project_groups_inner, project_groups_updated_payload, update_project_groups_inner,
-    PROJECT_GROUPS_UPDATED_EVENT,
-};
+use serde_json::{json, Value};
 use tauri::{AppHandle, State};
+
+pub(crate) const PROJECT_GROUPS_UPDATED_EVENT: &str = "project_groups_updated";
+
+pub(crate) fn project_groups_updated_payload(
+    project_path: &str,
+    config: &WorkgroupGroupsConfig,
+) -> Value {
+    json!({ "projectPath": project_path, "config": config })
+}
+
+pub(crate) fn get_project_groups_inner(path: &str) -> Result<WorkgroupGroupsConfig, String> {
+    load_workgroup_groups(Path::new(path))
+}
 
 #[tauri::command]
 pub async fn get_project_groups(path: String) -> Result<WorkgroupGroupsConfig, String> {
     get_project_groups_inner(&path)
+}
+
+pub(crate) fn update_project_groups_inner(
+    path: &str,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    save_workgroup_groups(Path::new(path), config)
 }
 
 #[tauri::command]
@@ -32,9 +53,8 @@ pub async fn update_project_groups(
 
 #[cfg(test)]
 mod tests {
-    use super::get_project_groups;
+    use super::{get_project_groups, update_project_groups_inner};
     use crate::config::project_settings::{WorkgroupGroup, WorkgroupGroupsConfig};
-    use crate::web::commands::update_project_groups_inner;
 
     fn project_with_workspace() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
