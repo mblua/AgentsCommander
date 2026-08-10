@@ -1218,6 +1218,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
                     false,
                     crate::session::selection::TrustedRestartIntent::Background,
                     None,
+                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
                 )
                 .await
                 {

@@ -9805,6 +9805,9 @@ impl MailboxPoller {
                     true,
                     crate::session::selection::TrustedRestartIntent::Background,
                     carried_communication,
+                    // §1295 6.6 / 5.1b: the mailbox wake-restart passes Enforce
+                    // explicitly, unlike the default-preferring user restart.
+                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
                 )
                 .await;
                 result.map(|info| info.id)
