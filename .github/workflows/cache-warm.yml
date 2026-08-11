@@ -62,7 +62,7 @@ jobs:
       - name: cargo clippy
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test (compile only)
         if: steps.cache.outputs.cache-hit != 'true'
