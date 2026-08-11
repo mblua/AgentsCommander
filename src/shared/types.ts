@@ -627,6 +627,7 @@ export interface AppSettings {
   autoSelfClearByAgent: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
+  activityLogEnabled: boolean;
   screenshotCaptureHotkey?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
