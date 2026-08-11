@@ -1370,7 +1370,6 @@ pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::fr
 /// - `activity_age >= settle` (`idle_threshold + FRESH_IDLE_GUARD`): long-idle -
 ///   InjectNow (no added latency for a genuinely-ready wake).
 /// - otherwise (the `[idle_threshold, settle)` fresh-idle window): Wait.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn live_settle_action(
     activity_age: Option<std::time::Duration>,
     last_resize_age: Option<std::time::Duration>,
@@ -17426,7 +17425,6 @@ mod tests {
         (session.id, session.token)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_self_switch_message(
         cwd: &Path,
         msg_id: &str,
