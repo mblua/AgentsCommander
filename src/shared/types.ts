@@ -608,6 +608,8 @@ export interface AppSettings {
   railCollapsedProjects?: string[];
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
+  gitSweepConcurrency: number;
+  gitSweepMinIntervalSecs: number;
   resourceMonitorEnabled: boolean;
   maxConcurrentAgentProcesses: number;
   resourceWatchdogAction: ResourceWatchdogAction;
