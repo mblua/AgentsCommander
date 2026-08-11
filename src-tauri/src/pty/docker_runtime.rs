@@ -979,7 +979,6 @@ impl DockerRuntime {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn run_command_output_with_context(
         &self,
         spec: DockerCommandSpec,

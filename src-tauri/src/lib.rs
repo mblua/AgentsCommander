@@ -1127,6 +1127,7 @@ pub fn run(
         },
     );
     let session_mgr_for_git = Arc::clone(&session_mgr);
+    let session_mgr_for_git_sweeper = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
     let session_mgr_for_api = Arc::clone(&session_mgr);
@@ -1299,6 +1300,23 @@ pub fn run(
                 session_mgr_for_discovery,
             );
             app.manage(Arc::clone(&discovery_branch_watcher));
+
+            // #1298 - the single global POLLING producer of per-repo git state. Both
+            // watchers read its published snapshot instead of spawning `git` themselves.
+            //
+            // Started HERE and not inside `restore_observer_barrier` for exactly one
+            // reason: that barrier gates observers which mutate session metadata or
+            // persistence, and this one mutates neither, it only publishes into
+            // process-local maps. The construction point buys no head start by itself,
+            // because at this point there is nothing to sweep (sessions are restored
+            // below, discovery is frontend-driven). Cold start is governed by the
+            // empty-round floor instead (plan D3). Do not move this under the barrier, and
+            // do not "restore" a head-start rationale that was never true.
+            let git_sweeper = crate::pty::git_watcher::GitSweeper::new(
+                session_mgr_for_git_sweeper,
+                app.state::<SettingsState>().inner().clone(),
+            );
+            git_sweeper.start(shutdown_for_setup.clone());
 
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(

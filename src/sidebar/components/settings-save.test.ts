@@ -75,6 +75,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    gitSweepConcurrency: 1,
+    gitSweepMinIntervalSecs: 10,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
     resourceWatchdogAction: "warn",

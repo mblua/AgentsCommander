@@ -1104,7 +1104,6 @@ pub(crate) async fn preview_coding_agent_profile_selection_inner(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn apply_coding_agent_profile_selection(
     app: AppHandle,
