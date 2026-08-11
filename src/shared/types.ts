@@ -627,7 +627,6 @@ export interface AppSettings {
   autoSelfClearByAgent: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
-  /** #1299 - when false (default), `activity.jsonl` is not written. Applies on the next launch. */
   activityLogEnabled: boolean;
   screenshotCaptureHotkey?: string;
   /**
