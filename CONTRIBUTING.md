@@ -118,3 +118,8 @@ Filter expressions follow standard `env_logger` syntax (e.g. `info,agentscommand
 ⚠️ **Caveat — malformed filters silently suppress agentscommander logs.** If the value does not parse as a valid env_logger filter (e.g., typo, unrecognized level keyword, single `:` instead of `::`), no matching directives are produced for `agentscommander*` targets and all `agentscommander*` logs are suppressed at runtime. Verify your filter once with `RUST_LOG=<filter> agentscommander_mb.exe` from a terminal before persisting it in `settings.json`. This is the same behavior the binary had pre-#93 for malformed `RUST_LOG` values — Phase 1 of #93 does not change this.
 
 Phase 2 of #93 (if shipped) will surface this in the sidebar UI; Phase 3 (if shipped) will move to live reload via `tracing-subscriber`.
+
+## In-code comments
+
+When you add or update source comments, follow the
+[in-code comment convention](docs/in-code-comments.md).
