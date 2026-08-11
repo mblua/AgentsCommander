@@ -742,6 +742,8 @@ agentscommander_lib::pty::context_scrape -> agentscommander_lib::shutdown
 agentscommander_lib::pty::context_scrape::rows -> agentscommander_lib::pty::context_scrape::pattern
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::errors
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::pty::container_runtime
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::sessions_persistence
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::settings
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::pty::credentials
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::manager
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::session

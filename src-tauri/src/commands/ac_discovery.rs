@@ -1,4 +1,3 @@
-use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -359,26 +358,6 @@ async fn detect_repo_branch(dir: &str) -> Option<String> {
 // --- Discovery Branch Watcher ---
 
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
-const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// #280 §3.3 - per-path counter for `detect_git_status` timeouts (#1028 renamed
-/// the detection; the counter and its policy are unchanged). Mirrors the
-/// `git_watcher.rs` helper but lives in a separate module-local map so the
-/// two watchers track their own paths independently (different scan sets).
-///
-/// #1028 note: this counter stays per-watcher on purpose, unlike
-/// `git_watcher::remember_dirty`'s SHARED map. Sharing would make "1st + every 50th"
-/// fire at the wrong times for both watchers; that reasoning is about a throttle
-/// counter and does not transfer to a fact about a worktree.
-fn note_discovery_timeout(path: &str) -> u64 {
-    use std::sync::OnceLock;
-    static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-    let map = TIMEOUT_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
-    let count = g.entry(path.to_string()).or_insert(0);
-    *count += 1;
-    *count
-}
 
 #[derive(Clone)]
 struct ReplicaBranchEntry {
@@ -510,6 +489,36 @@ impl DiscoveryBranchWatcher {
         })
     }
 
+    /// #1298 - the ONLY way to mutate `replicas`. Owns the lock scope and republishes
+    /// the flattened watched repo-path list to the global git sweeper on the way out,
+    /// so the map cannot be changed without the sweeper learning about it. The
+    /// sweeper is push-fed rather than holding a handle to this watcher so that
+    /// `pty::git_watcher` never imports a `commands::` type.
+    ///
+    /// Structural, not conventional, because the failure mode is silent: a future
+    /// mutator that forgot to republish would leave the sweeper unaware of its paths,
+    /// so `read_git_status` returns `None` for them forever and the surface is a
+    /// permanently violet chip with no failing test and no log line. The guard is
+    /// dropped before the push, inside this helper, where nobody has to remember it.
+    fn with_replicas_mut<R>(
+        &self,
+        f: impl FnOnce(&mut HashMap<String, Vec<ReplicaBranchEntry>>) -> R,
+    ) -> R {
+        let result = {
+            let mut map = self.replicas.lock().unwrap();
+            f(&mut map)
+        };
+        let paths: Vec<String> = {
+            let map = self.replicas.lock().unwrap();
+            map.values()
+                .flatten()
+                .flat_map(|e| e.repos.iter().map(|(_, path)| path.clone()))
+                .collect()
+        };
+        crate::pty::git_watcher::set_discovery_repo_paths(paths);
+        result
+    }
+
     /// Update this project's replicas in the watcher. `project_dir` is the directory
     /// that directly contains the Project AC Root, not a grand-parent from `settings.project_paths`.
     /// See the invariant comment on the `replicas` field.
@@ -577,16 +586,14 @@ impl DiscoveryBranchWatcher {
         );
 
         // Swap in this project's entries; leave other projects alone.
-        let mut map = self.replicas.lock().unwrap();
-        map.insert(canonical_key, entries);
-
-        // Prune cache entries that no longer belong to ANY project.
-        let valid: std::collections::HashSet<String> = map
-            .values()
-            .flatten()
-            .map(|e| e.replica_path.clone())
-            .collect();
-        drop(map);
+        let valid: std::collections::HashSet<String> = self.with_replicas_mut(|map| {
+            map.insert(canonical_key, entries);
+            // Prune cache entries that no longer belong to ANY project.
+            map.values()
+                .flatten()
+                .map(|e| e.replica_path.clone())
+                .collect()
+        });
         self.discovery_cache
             .lock()
             .unwrap()
@@ -602,12 +609,11 @@ impl DiscoveryBranchWatcher {
     /// tick does not iterate stale `source_path`s between a session-level refresh and the
     /// follow-up `discover_project` call that re-registers the replicas with NEW paths.
     pub fn invalidate_replicas(&self, replica_paths: &[String]) {
-        {
-            let mut map = self.replicas.lock().unwrap();
+        self.with_replicas_mut(|map| {
             for entries in map.values_mut() {
                 entries.retain(|e| !replica_paths.iter().any(|p| p == &e.replica_path));
             }
-        }
+        });
         {
             let mut dc = self.discovery_cache.lock().unwrap();
             let mut rc = self.repos_cache.lock().unwrap();
@@ -677,15 +683,15 @@ impl DiscoveryBranchWatcher {
                     }
                 };
 
-                // Parallelize per-repo detection (Grinch #16). Each call individually bounded by
-                // detect_status_with_timeout (2s). Without join_all this was M*N*2s worst case.
-                let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = join_all(
-                    entry
-                        .repos
-                        .iter()
-                        .map(|(_, path)| Self::detect_status_with_timeout(path)),
-                )
-                .await;
+                // #1298 - pure map reads. This loop no longer spawns `git`: the global
+                // `GitSweeper` is the only polling producer, and this poll consumes its
+                // published snapshot. An unpublished path reads `None`, which is the
+                // same "unknown" a failed detection produced before.
+                let statuses: Vec<Option<crate::pty::git_watcher::GitStatus>> = entry
+                    .repos
+                    .iter()
+                    .map(|(_, path)| crate::pty::git_watcher::read_git_status(path))
+                    .collect();
 
                 let refreshed: Vec<SessionRepo> = entry
                     .repos
@@ -962,46 +968,6 @@ impl DiscoveryBranchWatcher {
                     wg_root.display(),
                     e
                 );
-            }
-        }
-    }
-
-    /// #1028 - detection is the shared `git_watcher::detect_git_status`, which replaced
-    /// this watcher's own near-identical `detect_branch` copy. The two copies had already
-    /// diverged (one set a ceiling env, this one did not), and both badge writers must
-    /// compute `dirty` identically.
-    ///
-    /// The timeout wrapper stays here rather than merging with GitWatcher's: this one
-    /// owns `note_discovery_timeout` and the `[DiscoveryBranchWatcher]` tag, which is
-    /// what keeps the two watchers distinguishable in app.log.
-    ///
-    /// Because `timeout` DROPS the future on expiry, `detect_git_status` never returns
-    /// here and cannot remember anything itself: `poll` applies the dirty hold.
-    async fn detect_status_with_timeout(
-        working_dir: &str,
-    ) -> Option<crate::pty::git_watcher::GitStatus> {
-        match tokio::time::timeout(
-            DETECT_TIMEOUT,
-            crate::pty::git_watcher::detect_git_status(working_dir),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                let n = note_discovery_timeout(working_dir);
-                // #280 §3.3 — same dampening policy as git_watcher.rs: log
-                // first sighting + every 50th. Module tag remains
-                // `[DiscoveryBranchWatcher]` so the two watchers stay
-                // distinguishable in app.log.
-                if n == 1 || n.is_multiple_of(50) {
-                    log::warn!(
-                        "[DiscoveryBranchWatcher] detect_git_status timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
-                        working_dir,
-                        DETECT_TIMEOUT.as_secs(),
-                        n
-                    );
-                }
-                None
             }
         }
     }
@@ -5013,19 +4979,6 @@ mod tests {
             extract_task_first_line(content),
             Some("Body line".to_string())
         );
-    }
-
-    /// #280 §3.3 — `note_discovery_timeout` is a monotonic per-path
-    /// counter, mirroring `git_watcher::note_timeout` but isolated to the
-    /// discovery watcher's path set. Two paths get independent counters.
-    #[test]
-    fn note_discovery_timeout_counts_per_path() {
-        let p1 = "/test-280-3-3/ac-discovery/path-a";
-        let p2 = "/test-280-3-3/ac-discovery/path-b";
-        assert_eq!(note_discovery_timeout(p1), 1);
-        assert_eq!(note_discovery_timeout(p1), 2);
-        assert_eq!(note_discovery_timeout(p2), 1);
-        assert_eq!(note_discovery_timeout(p1), 3);
     }
 
     #[test]
