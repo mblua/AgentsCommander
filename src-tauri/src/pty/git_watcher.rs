@@ -82,7 +82,7 @@ pub(crate) struct GitStatus {
 /// handed. "Never remembers an ancestor's dirt" is enforced by the caller,
 /// `detect_git_status`, through its three gates (`.git` metadata check, ceiling,
 /// `status.success()`). Only ever feed this from `detect_git_status`. A caller shaped
-/// like `detect_git_branch_sync` (`commands/ac_discovery.rs`), which has no `.git` guard
+/// like `detect_repo_branch` (`commands/ac_discovery.rs`), which has no `.git` guard
 /// and no ceiling, would silently violate it. Nothing does today.
 pub(crate) fn remember_dirty(path: &str, detected: Option<bool>) -> Option<bool> {
     use std::sync::OnceLock;

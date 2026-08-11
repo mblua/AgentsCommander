@@ -301,30 +301,56 @@ fn projected_path_string(p: &Path) -> String {
     crate::path_utils::path_to_string_without_windows_verbatim_prefix(p)
 }
 
-/// Detect git branch synchronously for a given directory path.
-fn detect_git_branch_sync(dir: &str) -> Option<String> {
+/// #1298 - bound for the one-shot branch detection below. Deliberately its own
+/// constant and not the sweeper's `DETECT_TIMEOUT`: this is a discovery-time
+/// one-shot on the async command body, not the poll loop's per-round bound, and
+/// the two must be able to move independently.
+const BRANCH_DETECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Detect the git branch of a directory without blocking a runtime worker.
+///
+/// #1298 - the previous synchronous version spawned a `std::process::Command`
+/// straight on the async body of `discover_ac_agents` / `discover_project` and
+/// held its Tokio worker for as long as `git` took, with no bound. Now
+/// `tokio::process` under `BRANCH_DETECT_TIMEOUT`, with `kill_on_drop(true)` so
+/// the timeout's drop is what terminates `git.exe` (same mechanism as
+/// `git_watcher.rs`'s detection).
+///
+/// Named `detect_repo_branch`, not `detect_git_branch`, because
+/// `config/session_context.rs` already owns a private `detect_git_branch` that
+/// runs a DIFFERENT command (`git -C <dir> branch --show-current`); two
+/// same-named private detectors would break argv-based triage of `git.exe` peaks.
+///
+/// No `--no-optional-locks` here, unlike `detect_git_status` three functions
+/// away where it IS load-bearing: `rev-parse` neither takes `.git/index.lock`
+/// nor rewrites `.git/index`, so the flag would be cargo-culted noise.
+async fn detect_repo_branch(dir: &str) -> Option<String> {
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    let mut cmd = std::process::Command::new("git");
-    crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
+    let mut cmd = tokio::process::Command::new("git");
+    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
     cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(dir);
+        .current_dir(dir)
+        .kill_on_drop(true);
 
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
 
-    match cmd.output() {
-        Ok(out) if out.status.success() => {
+    match tokio::time::timeout(BRANCH_DETECT_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {
             let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if branch.is_empty() || branch == "HEAD" {
                 None
             } else {
                 Some(branch)
             }
+        }
+        Err(_) => {
+            log::debug!(
+                "[discovery] branch detection timed out after {BRANCH_DETECT_TIMEOUT:?}: {dir}"
+            );
+            None
         }
         _ => None,
     }
@@ -1265,7 +1291,7 @@ pub async fn discover_ac_agents(
 
                                 // Detect git branch for single-repo replicas
                                 let repo_branch = if repo_paths.len() == 1 {
-                                    detect_git_branch_sync(&repo_paths[0])
+                                    detect_repo_branch(&repo_paths[0]).await
                                 } else {
                                     None
                                 };
@@ -1997,7 +2023,7 @@ pub(crate) async fn discover_project_inner(
                             .collect();
 
                         let repo_branch = if repo_paths.len() == 1 {
-                            detect_git_branch_sync(&repo_paths[0])
+                            detect_repo_branch(&repo_paths[0]).await
                         } else {
                             None
                         };
