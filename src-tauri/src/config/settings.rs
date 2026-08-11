@@ -449,10 +449,6 @@ pub struct AppSettings {
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
-    /// #1299 - when false (default), the per-run activity recorder
-    /// (`activity.jsonl`) is not initialized: no `app_start`, no previous-run
-    /// scan, and every heartbeat/busy/idle/shutdown append is inert. Read once
-    /// at startup; takes effect on the next launch.
     #[serde(default)]
     pub activity_log_enabled: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
@@ -2077,9 +2073,6 @@ fn read_activity_log_enabled_from_path(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// See `read_activity_log_enabled_from_path`. Resolves the canonical settings
-/// path and delegates. Missing file, missing key, malformed JSON, unreadable
-/// filesystem: all resolve to `false` (fail-closed: the recorder stays off).
 pub fn read_activity_log_enabled_only() -> bool {
     match settings_path() {
         Some(path) => read_activity_log_enabled_from_path(&path),
@@ -5340,7 +5333,6 @@ mod tests {
     fn read_activity_log_enabled_only_defaults_false_when_settings_missing() {
         let path =
             std::env::temp_dir().join(format!("rale-no-such-file-{}.json", std::process::id()));
-        // Intentionally do not create the file.
         assert!(!super::read_activity_log_enabled_from_path(&path));
     }
 
@@ -6254,7 +6246,6 @@ mod tests {
 
     #[test]
     fn activity_log_enabled_defaults_false_when_missing_from_json() {
-        // Old settings.json without the new field must deserialize to false.
         let json = r#"{
             "defaultShell": "bash",
             "defaultShellArgs": [],

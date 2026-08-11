@@ -652,11 +652,6 @@ fn rotate_if_needed(path: &Path) -> bool {
 ///
 /// Called exactly once, from `lib.rs::run()`, before the Tauri builder exists.
 /// Every append before this call is a no-op.
-///
-/// #1299 - `enabled == false` (the default) stores no sink: no `app_start`,
-/// no previous-run scan, and every later `append` / `append_batch` stays
-/// inert. This is the single cut point for the disable setting; producers
-/// are unchanged. Pre-existing `activity.jsonl` files are never touched.
 pub fn init_run(dir: &Path, run_id: &str, enabled: bool) {
     if !enabled {
         log::info!(
