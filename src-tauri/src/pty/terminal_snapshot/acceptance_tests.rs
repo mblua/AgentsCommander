@@ -1325,20 +1325,39 @@ async fn window_screenshot_mounted_router_invalid_auth_percent_ff_precedes_decod
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires an unlocked interactive Windows desktop and visible Notepad"]
 async fn authenticated_live_window_png_capture() {
-    fn png_artifact_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-        fn collect(root: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
-            let entries = match std::fs::read_dir(root) {
-                Ok(entries) => entries,
-                Err(_) => return,
-            };
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        #[link_name = "GetAsyncKeyState"]
+        fn get_async_key_state(virtual_key: i32) -> i16;
+    }
+
+    fn png_artifact_paths(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+        fn collect(
+            root: &std::path::Path,
+            paths: &mut Vec<std::path::PathBuf>,
+        ) -> Result<(), String> {
+            let entries = std::fs::read_dir(root).map_err(|error| {
+                format!(
+                    "failed to enumerate screenshot artifact directory {}: {error}",
+                    root.display()
+                )
+            })?;
             for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(_) => continue,
-                };
+                let entry = entry.map_err(|error| {
+                    format!(
+                        "failed to enumerate an entry in screenshot artifact directory {}: {error}",
+                        root.display()
+                    )
+                })?;
                 let path = entry.path();
-                if path.is_dir() {
-                    collect(&path, paths);
+                let metadata = std::fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "failed to inspect screenshot artifact candidate {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if metadata.is_dir() {
+                    collect(&path, paths)?;
                 } else if path
                     .extension()
                     .and_then(|extension| extension.to_str())
@@ -1347,12 +1366,13 @@ async fn authenticated_live_window_png_capture() {
                     paths.push(path);
                 }
             }
+            Ok(())
         }
 
         let mut paths = Vec::new();
-        collect(root, &mut paths);
+        collect(root, &mut paths)?;
         paths.sort();
-        paths
+        Ok(paths)
     }
 
     fn native_window_ids() -> std::collections::BTreeSet<String> {
@@ -1362,8 +1382,37 @@ async fn authenticated_live_window_png_capture() {
         };
         windows
             .into_iter()
-            .filter_map(|window| window.id().ok().map(|id| id.to_string()))
+            .map(|window| {
+                let pid = window.pid();
+                let title = window.title();
+                let app_name = window.app_name();
+                match window.id() {
+                    Ok(id) => id.to_string(),
+                    Err(error) => panic!(
+                        "interactive window ID snapshot must succeed for every window; \
+                         context pid={pid:?}, title={title:?}, app_name={app_name:?}: {error}"
+                    ),
+                }
+            })
             .collect()
+    }
+
+    fn screenshot_hotkey_state() -> [i16; 4] {
+        const VK_SNAPSHOT: i32 = 0x2C;
+        const VK_MENU: i32 = 0x12;
+        const VK_CONTROL: i32 = 0x11;
+        const VK_SHIFT: i32 = 0x10;
+
+        // SAFETY: GetAsyncKeyState reads the state of the documented virtual
+        // keys and does not require pointers or ownership from this process.
+        unsafe {
+            [
+                get_async_key_state(VK_SNAPSHOT),
+                get_async_key_state(VK_MENU),
+                get_async_key_state(VK_CONTROL),
+                get_async_key_state(VK_SHIFT),
+            ]
+        }
     }
 
     struct ChildGuard(std::process::Child);
@@ -1383,6 +1432,29 @@ async fn authenticated_live_window_png_capture() {
         }
     }
 
+    async fn start_live_capture_request(
+        address: std::net::SocketAddr,
+        token: &str,
+        window_id: &str,
+    ) -> tokio::net::TcpStream {
+        use tokio::io::AsyncWriteExt;
+
+        let mut stream = match tokio::net::TcpStream::connect(address).await {
+            Ok(stream) => stream,
+            Err(error) => panic!("interactive detached client must connect: {error}"),
+        };
+        let request = format!(
+            "GET /api/v1/windows/{window_id}/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
+        );
+        if let Err(error) = stream.write_all(request.as_bytes()).await {
+            panic!("interactive detached request must write: {error}");
+        }
+        if let Err(error) = stream.flush().await {
+            panic!("interactive detached request must flush: {error}");
+        }
+        stream
+    }
+
     let temporary = match tempfile::Builder::new()
         .prefix("window-screenshot-live-")
         .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
@@ -1391,7 +1463,10 @@ async fn authenticated_live_window_png_capture() {
         Err(error) => panic!("fixture temporary directory must be created: {error}"),
     };
     let artifact_root = temporary.path().to_path_buf();
-    let screenshot_artifacts_before = png_artifact_paths(&artifact_root);
+    let screenshot_artifacts_before = match png_artifact_paths(&artifact_root) {
+        Ok(paths) => paths,
+        Err(error) => panic!("interactive artifact snapshot before capture must succeed: {error}"),
+    };
     let fixture = AcceptanceFixture::new(temporary).await;
     let token = fixture.api_coordinator_token.secret.clone();
     let mut notepad = match std::process::Command::new("notepad.exe").spawn() {
@@ -1474,6 +1549,7 @@ async fn authenticated_live_window_png_capture() {
         }
     };
     let visible_window_ids_before = native_window_ids();
+    let hotkey_state_before = screenshot_hotkey_state();
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
@@ -1483,7 +1559,8 @@ async fn authenticated_live_window_png_capture() {
         Ok(address) => address,
         Err(error) => panic!("test API listener must expose its address: {error}"),
     };
-    let router = crate::api::build_router(direct_api_state(&fixture));
+    let state = direct_api_state(&fixture);
+    let router = crate::api::build_router(state.clone());
     let _server = ServerGuard(tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -1524,9 +1601,14 @@ async fn authenticated_live_window_png_capture() {
         Err(error) => panic!("interactive PNG response body must be readable: {error}"),
     };
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let screenshot_artifacts_after_initial_capture = match png_artifact_paths(&artifact_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            panic!("interactive artifact snapshot after initial capture must succeed: {error}")
+        }
+    };
     assert_eq!(
-        png_artifact_paths(&artifact_root),
-        screenshot_artifacts_before,
+        screenshot_artifacts_after_initial_capture, screenshot_artifacts_before,
         "native window capture must not persist a PNG artifact"
     );
     assert_eq!(
@@ -1534,18 +1616,16 @@ async fn authenticated_live_window_png_capture() {
         visible_window_ids_before,
         "native window capture must not create an overlay or hotkey window"
     );
+    assert_eq!(
+        screenshot_hotkey_state(),
+        hotkey_state_before,
+        "native window capture must not change screenshot hotkey state"
+    );
 
-    let current_windows = match xcap::Window::all() {
-        Ok(windows) => windows,
-        Err(error) => panic!("interactive absence snapshot must succeed: {error}"),
-    };
+    let current_window_ids = native_window_ids();
     let absent_window_id = ["18446744073709551615", "18446744073709551614"]
         .into_iter()
-        .find(|candidate| {
-            !current_windows
-                .iter()
-                .any(|window| matches!(window.id(), Ok(id) if id.to_string() == *candidate))
-        });
+        .find(|candidate| !current_window_ids.contains(*candidate));
     let absent_window_id = match absent_window_id {
         Some(window_id) => window_id,
         None => panic!("interactive absence snapshot unexpectedly contained both sentinel IDs"),
@@ -1572,9 +1652,154 @@ async fn authenticated_live_window_png_capture() {
         "an absent window must return a small JSON error, not a monitor-sized image"
     );
 
-    // The route-local gated-worker test covers the disconnected-client lease:
-    // it closes the active client, observes a fourth-request 429 while the
-    // detached worker owns the lease, then verifies admission after release.
+    // Drive the real native worker through three admitted requests. The first
+    // connection is closed while it is live, so its worker must retain the
+    // lease independently of a client response body.
+    let mut detached_client = start_live_capture_request(address, &token, &target_window_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let queued_client_one = start_live_capture_request(address, &token, &target_window_id).await;
+    let queued_client_two = start_live_capture_request(address, &token, &target_window_id).await;
+    let full_admission_observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if state.window_screenshot_limiter.try_admit().is_err() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if full_admission_observed.is_err() {
+        let observed_limiter_state = match state.window_screenshot_limiter.try_admit() {
+            Ok(admission) => {
+                drop(admission);
+                "admission capacity remained available"
+            }
+            Err(_) => "admission capacity was full",
+        };
+        panic!(
+            "interactive detached-worker setup did not fill the limiter within five seconds; \
+             observed limiter state: {observed_limiter_state}"
+        );
+    }
+
+    let mut delivered_byte = [0_u8; 1];
+    let delivered_before_close = match detached_client.try_read(&mut delivered_byte) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => 0,
+        Err(error) => panic!("interactive detached client must inspect unread bytes: {error}"),
+    };
+    assert_eq!(
+        delivered_before_close, 0,
+        "the manually closed client must receive no response bytes before the native worker finishes"
+    );
+    {
+        use tokio::io::AsyncWriteExt;
+
+        if let Err(error) = detached_client.shutdown().await {
+            panic!("interactive detached client must close its connection: {error}");
+        }
+    }
+    drop(detached_client);
+
+    let busy_response = match client
+        .get(format!(
+            "http://{address}/api/v1/windows/{target_window_id}/screenshot"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("fourth interactive screenshot request must complete: {error}"),
+    };
+    assert_eq!(
+        busy_response.status(),
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "a fourth request must be refused while the detached native worker owns its lease"
+    );
+    let busy_body = match busy_response.bytes().await {
+        Ok(body) => body,
+        Err(error) => panic!("interactive capture-busy body must be readable: {error}"),
+    };
+    assert!(
+        String::from_utf8_lossy(&busy_body).contains("capture_busy"),
+        "the detached-worker refusal must use the typed capture_busy envelope"
+    );
+
+    let released_admission = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => break admission,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    {
+        Ok(admission) => admission,
+        Err(_) => {
+            let observed_limiter_state = match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => {
+                    drop(admission);
+                    "admission capacity became available after the timeout"
+                }
+                Err(_) => "admission capacity remained full",
+            };
+            panic!(
+                "detached native worker did not release an admission permit within ten seconds; \
+                 observed limiter state: {observed_limiter_state}"
+            );
+        }
+    };
+    drop(released_admission);
+
+    let post_release_response = match client
+        .get(format!(
+            "http://{address}/api/v1/windows/{target_window_id}/screenshot"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("post-release interactive screenshot request must complete: {error}"),
+    };
+    assert_eq!(
+        post_release_response.status(),
+        axum::http::StatusCode::OK,
+        "a request must be admitted after the detached native worker releases its lease"
+    );
+    let post_release_png = match post_release_response.bytes().await {
+        Ok(png) => png,
+        Err(error) => panic!("post-release interactive PNG must be readable: {error}"),
+    };
+    assert!(
+        post_release_png.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "the post-release request must receive its own PNG response rather than a retained shared result"
+    );
+    drop(queued_client_one);
+    drop(queued_client_two);
+
+    let screenshot_artifacts_after_detached_capture = match png_artifact_paths(&artifact_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            panic!("interactive artifact snapshot after detached capture must succeed: {error}")
+        }
+    };
+    assert_eq!(
+        screenshot_artifacts_after_detached_capture, screenshot_artifacts_before,
+        "a detached native capture must not persist a PNG artifact"
+    );
+    assert_eq!(
+        native_window_ids(),
+        visible_window_ids_before,
+        "a detached native capture must not create an overlay or hotkey window"
+    );
+    assert_eq!(
+        screenshot_hotkey_state(),
+        hotkey_state_before,
+        "a detached native capture must not change screenshot hotkey state"
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -1967,6 +2192,120 @@ async fn window_screenshot_route_local_factory_result_mappings_are_audited_and_r
         drop(active);
         drop(admission);
     }
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn window_screenshot_full_flow_authenticated_raw_path_validation_is_uncaptured() {
+    use axum::response::IntoResponse;
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let token = fixture.api_coordinator_token.secret.clone();
+    let state = direct_api_state(&fixture);
+    let factory_calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let _audit_capture = crate::api::audit::lock_window_screenshot_audits_for_test();
+
+    // Occupy every admission permit before the table. A malformed raw ID must
+    // still produce its authenticated 400 while no permit can be acquired.
+    let mut held_admissions = Vec::new();
+    while let Ok(admission) = state.window_screenshot_limiter.try_admit() {
+        held_admissions.push(admission);
+    }
+    assert!(
+        !held_admissions.is_empty(),
+        "the screenshot limiter must expose at least one admission permit"
+    );
+
+    for (case, raw_path) in [
+        ("empty", "/api/v1/windows//screenshot"),
+        ("non_digit", "/api/v1/windows/not-a-number/screenshot"),
+        ("signed", "/api/v1/windows/-1/screenshot"),
+        ("whitespace_padded", "/api/v1/windows/%201%20/screenshot"),
+        ("leading_zero", "/api/v1/windows/01/screenshot"),
+        (
+            "twenty_one_digits",
+            "/api/v1/windows/100000000000000000000/screenshot",
+        ),
+        (
+            "u64_overflow",
+            "/api/v1/windows/18446744073709551616/screenshot",
+        ),
+    ] {
+        let mut headers = axum::http::HeaderMap::new();
+        let authorization = match axum::http::HeaderValue::from_str(&format!("Bearer {token}")) {
+            Ok(authorization) => authorization,
+            Err(error) => panic!("valid screenshot authorization header must build: {error}"),
+        };
+        headers.insert(axum::http::header::AUTHORIZATION, authorization);
+        let uri = match axum::http::Uri::from_str(raw_path) {
+            Ok(uri) => uri,
+            Err(error) => panic!("{case} raw screenshot URI must parse: {error}"),
+        };
+        let factory_calls_for_case = std::sync::Arc::clone(&factory_calls);
+        let response = match crate::api::handlers::window_screenshot::get_with_capture_for_test(
+            state.clone(),
+            headers,
+            match "127.0.0.1:49152".parse() {
+                Ok(address) => address,
+                Err(error) => panic!("test client address must parse: {error}"),
+            },
+            axum::extract::OriginalUri(uri),
+            move |_window_id, _lease| {
+                factory_calls_for_case.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    panic!("an invalid raw window ID must never invoke the capture factory")
+                })
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("{case} raw window ID unexpectedly reached a capture response"),
+            Err(error) => error.into_response(),
+        };
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{case} must remain an authenticated invalid-window-ID response"
+        );
+        let body = match axum::body::to_bytes(response.into_body(), 4096).await {
+            Ok(body) => body,
+            Err(error) => panic!("{case} invalid-window-ID body must be readable: {error}"),
+        };
+        assert!(
+            String::from_utf8_lossy(&body).contains("invalid_window_id"),
+            "{case} must use the typed invalid_window_id envelope"
+        );
+        assert_eq!(
+            crate::api::audit::take_window_screenshot_audits_for_test(),
+            vec![crate::api::audit::WindowScreenshotAuditStatus::InvalidWindowId],
+            "{case} must record exactly one final redacted invalid-ID audit"
+        );
+        assert_eq!(
+            factory_calls.load(Ordering::SeqCst),
+            0,
+            "{case} must not invoke the capture factory"
+        );
+        assert!(
+            state.window_screenshot_limiter.try_admit().is_err(),
+            "{case} must not acquire an admission permit before raw-ID validation"
+        );
+    }
+
+    drop(held_admissions);
+    let released_admission = match state.window_screenshot_limiter.try_admit() {
+        Ok(admission) => admission,
+        Err(error) => panic!("all table-held admissions must release: {error:?}"),
+    };
+    drop(released_admission);
 }
 
 #[cfg(target_os = "windows")]
@@ -2391,19 +2730,38 @@ async fn window_screenshot_fresh_guard_is_released_before_queue_wait() {
         "2",
     ));
 
-    let admission_probe = loop {
-        match state.window_screenshot_limiter.try_admit() {
-            Ok(admission) => {
-                if state.window_screenshot_limiter.try_admit().is_err() {
-                    break admission;
+    let admission_probe = match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => {
+                    if state.window_screenshot_limiter.try_admit().is_err() {
+                        break admission;
+                    }
+                    drop(admission);
                 }
-                drop(admission);
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
             }
-            Err(_) => {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    })
+    .await
+    {
+        Ok(admission) => admission,
+        Err(_) => {
+            let observed_limiter_state = match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => {
+                    drop(admission);
+                    "admission capacity was available"
+                }
+                Err(_) => "admission capacity was full",
+            };
+            panic!(
+                "timed out waiting for the queued screenshot request to fill the limiter; \
+                 observed limiter state: {observed_limiter_state}"
+            );
+        }
     };
 
     let registry_parent = match fixture.registry_path.parent() {
@@ -2553,17 +2911,36 @@ async fn window_screenshot_queued_revocation_blocks_launch_revalidation() {
         "2",
     ));
 
-    let admission_probe = loop {
-        match state.window_screenshot_limiter.try_admit() {
-            Ok(admission) => {
-                if state.window_screenshot_limiter.try_admit().is_err() {
-                    break admission;
+    let admission_probe = match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => {
+                    if state.window_screenshot_limiter.try_admit().is_err() {
+                        break admission;
+                    }
+                    drop(admission);
                 }
-                drop(admission);
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
             }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    })
+    .await
+    {
+        Ok(admission) => admission,
+        Err(_) => {
+            let observed_limiter_state = match state.window_screenshot_limiter.try_admit() {
+                Ok(admission) => {
+                    drop(admission);
+                    "admission capacity was available"
+                }
+                Err(_) => "admission capacity was full",
+            };
+            panic!(
+                "timed out waiting for the queued screenshot request to fill the limiter; \
+                 observed limiter state: {observed_limiter_state}"
+            );
+        }
     };
     match crate::api::auth::revoke(&fixture.registry_path, &client_id) {
         Ok(true) => {}

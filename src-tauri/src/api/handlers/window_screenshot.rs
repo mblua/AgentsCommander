@@ -40,6 +40,27 @@ pub(crate) fn mount_window_screenshot_route_for_test(
     mount_window_screenshot_route(capture_factory)
 }
 
+#[cfg(test)]
+pub(crate) async fn get_with_capture_for_test<F>(
+    state: ApiState,
+    headers: HeaderMap,
+    addr: SocketAddr,
+    original_uri: OriginalUri,
+    capture_factory: F,
+) -> Result<Response, ApiError>
+where
+    F: Fn(String, WindowScreenshotLease) -> CaptureFuture + Send + Sync + 'static,
+{
+    get_with_capture(
+        state,
+        headers,
+        addr,
+        original_uri,
+        std::sync::Arc::new(capture_factory),
+    )
+    .await
+}
+
 type CaptureFuture =
     Pin<Box<dyn Future<Output = Result<Vec<u8>, WindowScreenshotCaptureError>> + Send>>;
 type CaptureFactory = Arc<dyn Fn(String, WindowScreenshotLease) -> CaptureFuture + Send + Sync>;
