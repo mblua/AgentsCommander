@@ -2397,6 +2397,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <option value="trace">Trace</option>
           </select>
         </label>
+        <div class="settings-hint">
+          Controls AgentsCommander log verbosity (applies immediately, no
+          restart). Higher levels are noisier. The RUST_LOG env var, if set,
+          overrides this until restart.
+        </div>
         <label class="settings-checkbox-field">
           <input
             type="checkbox"
@@ -2414,11 +2419,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>Record activity log (activity.jsonl)</span>
         </label>
-        <div class="settings-hint">
-          Controls AgentsCommander log verbosity (applies immediately, no
-          restart). Higher levels are noisier. The RUST_LOG env var, if set,
-          overrides this until restart.
-        </div>
         <div
           class="settings-hint"
           data-ac-testid="settings.general.activityLogEnabled.hint"
