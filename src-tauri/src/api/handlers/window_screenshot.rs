@@ -28,6 +28,18 @@ use crate::{
 
 pub(crate) const WINDOW_SCREENSHOT_ROUTE: &str = "/api/v1/windows/{window_id}/screenshot";
 
+#[cfg(test)]
+pub(crate) type WindowScreenshotCaptureFutureForTest = CaptureFuture;
+
+#[cfg(test)]
+pub(crate) fn mount_window_screenshot_route_for_test(
+    capture_factory: std::sync::Arc<
+        dyn Fn(String, WindowScreenshotLease) -> CaptureFuture + Send + Sync,
+    >,
+) -> MethodRouter<ApiState> {
+    mount_window_screenshot_route(capture_factory)
+}
+
 type CaptureFuture =
     Pin<Box<dyn Future<Output = Result<Vec<u8>, WindowScreenshotCaptureError>> + Send>>;
 type CaptureFactory = Arc<dyn Fn(String, WindowScreenshotLease) -> CaptureFuture + Send + Sync>;
