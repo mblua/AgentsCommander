@@ -487,6 +487,24 @@ pub struct AppSettings {
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
     pub spec_board_enabled: bool,
+    /// #1298 - how many repositories the global git sweeper detects at once.
+    /// Default 1, i.e. strictly sequential, which is the property the sweeper
+    /// exists for. Read once per round and clamped to 1..=4 at the read site, which
+    /// keeps the app from rewriting the user's hand-edited settings.json; changing
+    /// it needs a RESTART, since the sweeper reads the in-memory settings state and
+    /// nothing reloads that from disk. Raising it to 2 halves worst-case
+    /// head-of-line blocking (see INV-1) at the cost of reintroducing bounded
+    /// concurrency. No UI: same manual-opt-in shape as `spec_board_enabled`;
+    /// documented in docs/reference/settings.md.
+    #[serde(default = "default_git_sweep_concurrency")]
+    pub git_sweep_concurrency: u8,
+    /// #1298 - lower bound, in seconds, on one sweeper round. GUARD, not an
+    /// optimization: with an empty work list a round takes ~0ms and an unfloored
+    /// loop spins a core. Clamped to 1..=3600 at the read site; 0 is rejected by the
+    /// clamp for that reason. The effective period is max(this, round duration), so
+    /// on a large workgroup set the round duration dominates and this never fires.
+    #[serde(default = "default_git_sweep_min_interval_secs")]
+    pub git_sweep_min_interval_secs: u64,
     #[serde(default = "default_resource_monitor_enabled")]
     pub resource_monitor_enabled: bool,
     #[serde(default = "default_max_concurrent_agent_processes")]
@@ -753,6 +771,14 @@ fn default_main_sidebar_width() -> f64 {
     240.0
 }
 
+fn default_git_sweep_concurrency() -> u8 {
+    1
+}
+
+fn default_git_sweep_min_interval_secs() -> u64 {
+    10
+}
+
 fn default_resource_monitor_enabled() -> bool {
     true
 }
@@ -860,6 +886,8 @@ impl Default for AppSettings {
             rail_collapsed_projects: Vec::new(),
             rail_favorites_collapsed: false,
             spec_board_enabled: false,
+            git_sweep_concurrency: default_git_sweep_concurrency(),
+            git_sweep_min_interval_secs: default_git_sweep_min_interval_secs(),
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
             resource_watchdog_action: default_resource_watchdog_action(),
