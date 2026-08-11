@@ -192,6 +192,15 @@ Each registered project is stored in two forms: a canonical absolute path (the e
 
 **Downgrade.** An older AgentsCommander build ignores the companion fields and reads only the absolute fields, so a downgraded install still opens your projects. The caveat: if a dual-path conflict exists, the old build does not see it (it reads only the absolute side) and therefore loses the newer build's fail-closed protection for that registration. Resolve conflicts before downgrading.
 
+### Git status sweeper
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `gitSweepConcurrency` | number | `1` | How many repositories the global git sweeper inspects at once. Clamped to `1..=4` when read. `1` is strictly sequential, which is what bounds concurrent `git.exe`; raise it to `2` only if one slow repository is delaying the others. |
+| `gitSweepMinIntervalSecs` | number | `10` | Lower bound, in seconds, on one sweeper round. Clamped to `1..=3600` when read; `0` is raised to `1`. The effective period is `max(this, round duration)`, so on a large workgroup set the round duration dominates and this never fires. |
+
+Both are manual-only (no UI) and are read from the in-memory settings, so an edit takes effect on the next **restart**.
+
 ### Window & UI
 
 | Field | Type | Default | Description |

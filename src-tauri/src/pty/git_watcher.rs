@@ -572,9 +572,11 @@ async fn detect_status_with_timeout(working_dir: &str) -> Option<GitStatus> {
 }
 
 /// #1298 - read-site clamp for the two sweeper dials. See plan D1: clamping here
-/// rather than in `validate_and_repair_settings` is what lets a hand edit of
-/// `settings.json` take effect without a restart, and what stops the app from
-/// rewriting the user's file.
+/// rather than in `validate_and_repair_settings` is what stops the app from
+/// rewriting the user's hand-edited `settings.json`. It is NOT a hot-reload
+/// mechanism: the sweeper reads the in-memory settings state, which is loaded once
+/// at startup and never refreshed from disk, so changing either dial takes a
+/// RESTART.
 fn sweep_dials(cfg: &AppSettings) -> (usize, Duration) {
     let concurrency = cfg
         .git_sweep_concurrency
@@ -610,6 +612,19 @@ fn sweep_dials(cfg: &AppSettings) -> (usize, Duration) {
 /// workgroups whose project is not in `settings.projectPaths`; sessions alone
 /// lose dormant replicas, which is `DiscoveryBranchWatcher`'s reason to exist.
 ///
+/// NOT pure and NOT cheap: with a non-empty `archived_roots` this performs one
+/// `std::fs::canonicalize` per distinct candidate, through
+/// `is_under_normalized_archived_roots`. It must therefore be called on the
+/// blocking pool whenever `archived_roots` is non-empty (INV-1). With an empty
+/// `archived_roots` the predicate short-circuits with zero syscalls and the call
+/// is a `HashSet` plus a `sort`.
+///
+/// Dedupe FIRST, filter SECOND. The result is identical either way, because the
+/// predicate is deterministic per path string, so this pays one canonicalize per
+/// DISTINCT path instead of one per occurrence: about 24 instead of about 200 on
+/// this layout, which is the same factor applied to the uncancellable blocking
+/// tail at shutdown. Do not fold it back into one chained `filter`.
+///
 /// Sorting is not cosmetic: at concurrency 1 the order decides who waits behind a
 /// hung repo, so a deterministic order makes that reproducible. Consequence worth
 /// knowing before reading a log: the alphabetically first path sits permanently at
@@ -622,14 +637,14 @@ fn build_work_list(
     let mut paths: Vec<String> = discovery
         .into_iter()
         .chain(sessions)
+        .collect::<HashSet<String>>()
+        .into_iter()
         .filter(|p| {
             !crate::config::sessions_persistence::is_under_normalized_archived_roots(
                 p,
                 archived_roots,
             )
         })
-        .collect::<HashSet<String>>()
-        .into_iter()
         .collect();
     paths.sort();
     paths
@@ -730,26 +745,34 @@ impl GitSweeper {
 
         let discovery = discovery_repo_paths();
 
-        let archived_roots: Vec<String> = if archived.is_empty() {
-            Vec::new()
+        // The WHOLE build, normalization included, runs on the blocking pool
+        // whenever the archived list is non-empty: `build_work_list` canonicalizes
+        // once per distinct candidate, which on this single-worker runtime would
+        // otherwise be unbounded blocking I/O with no await point for the shutdown
+        // `select!` to preempt (INV-1). The empty case short-circuits with zero
+        // syscalls, so it belongs on the async body and saves a task hop.
+        let paths = if archived.is_empty() {
+            build_work_list(discovery, sessions, &[])
         } else {
+            // The closure is `move` and consumes both halves, so the join-failure
+            // arm needs its own copies.
+            let (discovery_fb, sessions_fb) = (discovery.clone(), sessions.clone());
             match tokio::task::spawn_blocking(move || {
-                crate::config::sessions_persistence::normalize_project_roots(&archived)
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                build_work_list(discovery, sessions, &roots)
             })
             .await
             {
-                Ok(roots) => roots,
+                Ok(paths) => paths,
                 Err(e) => {
                     // A superset sweep is a freshness cost, never a correctness one.
                     log::warn!(
-                        "[GitSweeper] archived-root normalization failed ({e}); sweeping without the archive filter this round"
+                        "[GitSweeper] work-list build failed ({e}); sweeping unfiltered this round"
                     );
-                    Vec::new()
+                    build_work_list(discovery_fb, sessions_fb, &[])
                 }
             }
         };
-
-        let paths = build_work_list(discovery, sessions, &archived_roots);
 
         // `detect_status_with_timeout(p).await` is evaluated as an ARGUMENT, before
         // `publish_git_status` takes its std guard. Writing it the other way round
@@ -769,18 +792,36 @@ impl GitSweeper {
             retain_swept_paths(&paths.iter().cloned().collect());
         }
 
-        log::info!(
-            "[GitSweeper] round: {} path(s), concurrency={}, {}ms",
-            paths.len(),
-            concurrency,
-            round_started.elapsed().as_millis()
-        );
-
-        if paths.is_empty() {
+        let applied = if paths.is_empty() {
             Duration::from_secs(SWEEP_MIN_INTERVAL_SECS)
         } else {
             floor
+        };
+
+        // The applied floor is in the line because it is the only way both clamps
+        // are observable at the DEFAULT log level: `sweep_dials`'s clamp lines are
+        // `debug!`. The level split matters too: an empty round floors at 1s, so an
+        // unconditional `info!` would emit 86,400 lines/day in exactly the state
+        // INV-2 exists to protect.
+        if paths.is_empty() {
+            log::debug!(
+                "[GitSweeper] round: {} path(s), concurrency={}, floor={}ms, {}ms",
+                paths.len(),
+                concurrency,
+                applied.as_millis(),
+                round_started.elapsed().as_millis()
+            );
+        } else {
+            log::info!(
+                "[GitSweeper] round: {} path(s), concurrency={}, floor={}ms, {}ms",
+                paths.len(),
+                concurrency,
+                applied.as_millis(),
+                round_started.elapsed().as_millis()
+            );
         }
+
+        applied
     }
 }
 

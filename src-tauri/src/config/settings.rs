@@ -487,10 +487,13 @@ pub struct AppSettings {
     pub spec_board_enabled: bool,
     /// #1298 - how many repositories the global git sweeper detects at once.
     /// Default 1, i.e. strictly sequential, which is the property the sweeper
-    /// exists for. Read once per round and clamped to 1..=4 at the read site, so a
-    /// hand edit takes effect without a restart. Raising it to 2 halves worst-case
+    /// exists for. Read once per round and clamped to 1..=4 at the read site, which
+    /// keeps the app from rewriting the user's hand-edited settings.json; changing
+    /// it needs a RESTART, since the sweeper reads the in-memory settings state and
+    /// nothing reloads that from disk. Raising it to 2 halves worst-case
     /// head-of-line blocking (see INV-1) at the cost of reintroducing bounded
-    /// concurrency. No UI: same manual-opt-in shape as `spec_board_enabled`.
+    /// concurrency. No UI: same manual-opt-in shape as `spec_board_enabled`;
+    /// documented in docs/reference/settings.md.
     #[serde(default = "default_git_sweep_concurrency")]
     pub git_sweep_concurrency: u8,
     /// #1298 - lower bound, in seconds, on one sweeper round. GUARD, not an
