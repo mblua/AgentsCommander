@@ -175,6 +175,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     autoSelfClearByAgent: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };

@@ -118,6 +118,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoSelfClearByAgent: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };

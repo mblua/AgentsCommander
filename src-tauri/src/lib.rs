@@ -1024,7 +1024,11 @@ pub fn run(
     // which the next startup reports as unclean. This is also the last point at
     // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
     // lets the scan tell a dead predecessor from a live sibling.
-    crate::config::activity_log::init_run(&config_dir, &instance_id);
+    // #1299 - gate the activity recorder on the persisted setting. Read-only
+    // disk read (mirror of `read_log_level_only`): the full settings load runs
+    // later. Missing key / malformed file => false => recorder off.
+    let activity_log_enabled = config::settings::read_activity_log_enabled_only();
+    crate::config::activity_log::init_run(&config_dir, &instance_id, activity_log_enabled);
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
