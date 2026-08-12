@@ -117,6 +117,16 @@ const API_CLIENT_EXPIRY_MS: Record<Exclude<ApiClientExpiryOption, "default">, nu
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+/** #1313 - shape-only check: a plausible complete executable path must contain
+ *  a directory separator (`\` or `/`). Bare names like `powershell.exe` or
+ *  `pwsh` warn; anything with a separator is the user's responsibility from
+ *  there on. Empty/whitespace-only values do not warn (an empty field claims
+ *  no executable). Never consult the filesystem. */
+export function isPlausibleCompleteExecutablePath(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === "" || trimmed.includes("/") || trimmed.includes("\\");
+}
+
 const TERMINAL_SNAPSHOT_SETTING_CONFLICT = "terminal_snapshot_setting_conflict";
 const TERMINAL_SNAPSHOT_CONFLICT_MESSAGE =
   "Terminal snapshots changed in another settings window. The current value was reloaded.";
@@ -1750,13 +1760,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       <div class="settings-section">
         <div class="settings-section-title">Shell</div>
         <label class="settings-field">
-          <span class="settings-label">Default Shell</span>
+          <span class="settings-label">Default Shell (Complete path)</span>
           <input
             class="settings-input"
             value={settings.data!.defaultShell}
             onInput={(e) => updateField("defaultShell", e.currentTarget.value)}
+            data-ac-testid="settings.general.defaultShell"
           />
         </label>
+        <Show when={!isPlausibleCompleteExecutablePath(settings.data?.defaultShell ?? "")}>
+          <div
+            class="settings-hint settings-hint-error"
+            data-ac-testid="settings.general.defaultShell.warning"
+          >
+            Not a complete executable path. Enter the complete path to the shell executable,
+            for example C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe.
+          </div>
+        </Show>
         <label class="settings-field">
           <span class="settings-label">Shell Arguments</span>
           <input
