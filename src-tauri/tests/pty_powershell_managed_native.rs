@@ -329,8 +329,9 @@ fn parse_session_id(session: &SessionInfo) -> Uuid {
     Uuid::parse_str(&session.id).expect("session id is uuid")
 }
 
-/// A bare logical program (e.g. `claude` or `ac_argv_reporter`) must resolve
-/// through the spawned session's PATH. portable-pty rebuilds the child PATH
+/// A bare logical program (e.g. `claude` or the test binary's own file stem
+/// used by `ac_1271_reporter_mode`) must resolve through the spawned session's
+/// PATH. portable-pty rebuilds the child PATH
 /// from the registry, so the fixture directory is delivered through the
 /// pre-existing git-guard env path: the session cwd is an agent dir, which
 /// makes `spawn_sync` call `build_git_guard_env` and set the child PATH to
@@ -1414,10 +1415,14 @@ fn configured_powershell_resolved_but_unstartable_application_fails_nonzero() {
 /// filters match nothing. In every other context it returns immediately.
 #[test]
 fn ac_1271_reporter_mode() {
-    if std::env::var("AC_1271_ARGV_REPORTER").as_deref() != Ok("1") {
+    let args: Vec<String> = std::env::args().collect();
+    // Nit 2 hardening: reporter duty requires BOTH the env flag and the fixed
+    // harness prefix in this process's own argv, so the mode can never fire in
+    // the parent (or any other context) even if the flag is exported.
+    let has_prefix = args.len() >= 3 && args[1] == "--exact" && args[2] == "ac_1271_reporter_mode";
+    if std::env::var("AC_1271_ARGV_REPORTER").as_deref() != Ok("1") || !has_prefix {
         return;
     }
-    let args: Vec<String> = std::env::args().collect();
     // argv: [exe, --exact, ac_1271_reporter_mode, <logical args...>]
     let logical = &args[3..];
     let mut stdout = std::io::stdout();
