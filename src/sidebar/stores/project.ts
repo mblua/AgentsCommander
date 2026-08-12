@@ -22,17 +22,13 @@ import {
   normalizeProjectPathForCompare,
 } from "./project-refresh";
 import { deepEqual, mergeDiscoveryResult } from "./project-merge";
+// #1283 baseline cycle break (2026-08-12 plan amendment): the ProjectState
+// interface moved to ./project-merge; the type-only import below creates the
+// local binding used at createSignal<ProjectState[]> and the re-export keeps
+// every existing consumer compiling.
+import type { ProjectState } from "./project-merge";
+export type { ProjectState };
 import { replicaVolatileStore } from "./replica-volatile";
-
-export interface ProjectState {
-  path: string;
-  folderName: string;
-  workgroups: AcWorkgroup[];
-  agents: AcAgentMatrix[];
-  teams: AcTeam[];
-  loops: AcLoopSummary[];
-  contextTemplateUpdates: ContextTemplateUpdate[];
-}
 
 const [projects, setProjects] = createSignal<ProjectState[]>([]);
 const [archivedPaths, setArchivedPaths] = createSignal<string[]>([]);

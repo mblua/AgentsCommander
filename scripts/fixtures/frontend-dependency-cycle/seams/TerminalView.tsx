@@ -1,0 +1,1 @@
+export const fixtureView = "view";
