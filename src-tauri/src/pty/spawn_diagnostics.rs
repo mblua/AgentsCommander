@@ -388,6 +388,8 @@ pub struct SpawnRecord {
     stall_reported: AtomicBool,
     exit_reported: AtomicBool,
     exit_cause: Mutex<Option<ExitCause>>,
+    /// #1271 - last liveness observed by the child monitor before it stopped.
+    final_liveness: Mutex<Option<ChildLiveness>>,
 }
 
 impl SpawnRecord {
@@ -423,11 +425,34 @@ impl SpawnRecord {
             stall_reported: AtomicBool::new(false),
             exit_reported: AtomicBool::new(false),
             exit_cause: Mutex::new(None),
+            final_liveness: Mutex::new(None),
         }
     }
 
     pub fn session_id(&self) -> Uuid {
         self.session_id
+    }
+
+    /// #1271 - the tracked child's OS pid, when the spawn captured one.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// #1271 - the exact argv the child was launched with (the adapter result),
+    /// unredacted. Integration regressions assert the configured host shell was
+    /// selected here.
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    /// #1271 - the last liveness the child monitor observed before it stopped
+    /// polling. `Some(Exited { code, .. })` is the awaited child's exit code;
+    /// `Some(Gone)` means the PTY instance was removed first (AC teardown).
+    pub fn final_liveness(&self) -> Option<ChildLiveness> {
+        self.final_liveness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn thresholds(&self) -> Thresholds {
@@ -625,6 +650,16 @@ impl SpawnRecord {
         // Published last: any thread that sees this flag also sees the source, the
         // timestamp and the pre-stop liveness written above.
         self.ac_stop.store(true, Ordering::SeqCst);
+    }
+
+    /// #1271 - the child monitor's last observation, published before the
+    /// monitor stops polling so integration regressions can read the awaited
+    /// child's exit code.
+    fn record_final_liveness(&self, liveness: &ChildLiveness) {
+        *self
+            .final_liveness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(liveness.clone());
     }
 
     fn record_witness(&self, pre_stop: Option<ChildLiveness>, episode_open: bool) {
@@ -1008,6 +1043,19 @@ pub fn forget(session_id: Uuid) {
         .remove(&session_id);
 }
 
+/// #1271 - read the spawn record for one session, when one exists. Test
+/// postcondition seam (Finding E): lets a test assert that a rejected spawn
+/// never recorded launch provenance, and lets the Windows integration
+/// regression read the exact adapted argv and awaited child exit.
+pub fn record_for(session_id: Uuid) -> Option<Arc<SpawnRecord>> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .records
+        .get(&session_id)
+        .cloned()
+}
+
 /// One monitor thread per local session. It owns two signals the PTY reader cannot
 /// carry: the startup verdict at the deadline, and the exit of a child that dies
 /// without AC asking (ConPTY keeps the pipe open past the death of the child, so reader
@@ -1043,8 +1091,12 @@ where
         };
 
         match liveness {
-            ChildLiveness::Gone => return,
+            ChildLiveness::Gone => {
+                record.record_final_liveness(&liveness);
+                return;
+            }
             ChildLiveness::Exited { .. } => {
+                record.record_final_liveness(&liveness);
                 let cause = record.attribute_exit(stop_before);
                 record.log_child_exit(cause, &liveness, "observed-by-monitor");
                 return;

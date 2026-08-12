@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -15,7 +17,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend, ResolvedAgentHostShell};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
@@ -625,6 +627,14 @@ pub struct LocalProcessBackend {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher>,
+    /// #1271 - per-instance, invocation-scoped pre-PTY attempt observer, test
+    /// builds only. Incremented inside the real `spawn_sync` immediately before
+    /// `native_pty_system()`, so a deterministic invalid-input rejection (which
+    /// happens at the TOP of `spawn_sync`, before any spawn accounting) leaves
+    /// it at zero. Each backend-level test constructs its own instance and reads
+    /// its own observer; there is no global to reset and no cross-test race.
+    #[cfg(test)]
+    pre_pty_attempts: Arc<AtomicUsize>,
 }
 
 fn write_to_local_pty(
@@ -657,12 +667,706 @@ fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Optio
         .remove(&id)
 }
 
+// ---------------------------------------------------------------------------
+// #1271 - Windows host-shell adapter for resolved agent commands.
+//
+// Four supported protocol classes, selected from the lower-cased final path
+// component of the configured default-shell program: Windows PowerShell
+// (`powershell`/`powershell.exe`), PowerShell 7+ (`pwsh`/`pwsh.exe`), Command
+// Prompt (`cmd`/`cmd.exe`), and any other basename as an explicitly declared
+// POSIX-compatible custom shell. The exact configured program string is ALWAYS
+// the launched program; a hard-coded `cmd.exe` is never substituted.
+//
+// PowerShell uses a managed `ProcessStartInfo` child instead of native `&` or
+// `--%` because ordinary native invocation can alter empty values and embedded
+// quotes, and `--%` is a physical-line parser hazard that would destroy the
+// logical-argv boundary. The generated script resolves the agent as an external
+// command only (never an alias/function/cmdlet) and starts a native
+// `Application` with a standard Windows-encoded `Arguments` property; a
+// resolved `.cmd`/`.bat` target runs through one explicit system-cmd child
+// (`/D /V:OFF /S /C`) because a batch file is not a native argv consumer.
+//
+// cmd runs with delayed expansion disabled (`/V:OFF`) so `!` is literal data.
+// All validation happens before any PTY is acquired; the configured host's own
+// parser never sees a token the closed grammar (Section 4.3) did not classify.
+// ---------------------------------------------------------------------------
+
+/// One adapted launch: the exact program and argument vector handed to
+/// `CommandBuilder`, which is also the `exec_argv` diagnostic provenance. Built
+/// from ONE adapter decision so the two representations can never desynchronize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedLaunch {
+    program: String,
+    args: Vec<String>,
+}
+
+impl PreparedLaunch {
+    fn command_builder(&self) -> CommandBuilder {
+        let mut command = CommandBuilder::new(&self.program);
+        for arg in &self.args {
+            command.arg(arg);
+        }
+        command
+    }
+
+    fn exec_argv(&self) -> Vec<String> {
+        let mut argv = Vec::with_capacity(self.args.len() + 1);
+        argv.push(self.program.clone());
+        argv.extend(self.args.iter().cloned());
+        argv
+    }
+}
+
+/// The four #1271 Windows host-shell protocol classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsHostShellKind {
+    PowerShell,
+    Pwsh,
+    Cmd,
+    Posix,
+}
+
+/// True only for a command whose text ends in `.exe` or whose path extension
+/// equals `.exe`, case-insensitively. Direct `.exe` agents never enter the
+/// adapter; everything else on Windows is a candidate.
+fn is_direct_exe(command: &str) -> bool {
+    command.to_lowercase().ends_with(".exe")
+        || std::path::Path::new(command)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+}
+
+/// Selects the adapter protocol from the lower-cased final Windows path
+/// component of the configured program, accepting both extensionless and `.exe`
+/// spellings. A custom path ending in a recognized name uses that adapter.
+fn configured_shell_kind(program: &str) -> WindowsHostShellKind {
+    let basename = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    match basename.as_str() {
+        "powershell" | "powershell.exe" => WindowsHostShellKind::PowerShell,
+        "pwsh" | "pwsh.exe" => WindowsHostShellKind::Pwsh,
+        "cmd" | "cmd.exe" => WindowsHostShellKind::Cmd,
+        _ => WindowsHostShellKind::Posix,
+    }
+}
+
+/// Standard #1271 error shape: names the configured default-shell program, the
+/// offending token, and the rejection category, and states that the agent
+/// adapter owns command execution (Section 4.3.1 item 6).
+fn adapter_error(host_program: &str, token: &str, category: &str) -> AppError {
+    AppError::Other(format!(
+        "Configured default shell '{}' cannot host a resolved agent: token '{}' is {}; \
+         the agent adapter owns command execution for this session",
+        host_program, token, category
+    ))
+}
+
+/// Section 4.3 - the common rule, applied BEFORE adapter selection: NUL, CR,
+/// and LF in the configured program, every configured argument, and every
+/// logical agent argv element, plus the blank-program rejection.
+fn validate_common_adapter_input(
+    command: &str,
+    args: &[String],
+    host_shell: &ResolvedAgentHostShell,
+) -> Result<(), AppError> {
+    if host_shell.program.trim().is_empty() {
+        return Err(adapter_error(
+            &host_shell.program,
+            "(program)",
+            "a blank configured default-shell program",
+        ));
+    }
+    for (value, label) in [
+        (host_shell.program.as_str(), "configured default-shell program"),
+        (command, "logical agent program"),
+    ] {
+        if value.contains('\0') || value.contains('\r') || value.contains('\n') {
+            return Err(adapter_error(
+                &host_shell.program,
+                value,
+                &format!("the {label} contains a forbidden line separator (NUL, CR, or LF)"),
+            ));
+        }
+    }
+    for argument in host_shell.args.iter().chain(args.iter()) {
+        if argument.contains('\0') || argument.contains('\r') || argument.contains('\n') {
+            return Err(adapter_error(
+                &host_shell.program,
+                argument,
+                "contains a forbidden line separator (NUL, CR, or LF)",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Duplicate detection shared by every closed grammar: a permitted option may
+/// appear at most once, because host parsers disagree on duplicate handling
+/// across versions and no configured duplicate is ever needed.
+fn mark_seen(
+    seen: &mut Vec<String>,
+    option: &str,
+    host_program: &str,
+    token: &str,
+) -> Result<(), AppError> {
+    if seen.iter().any(|s| s.eq_ignore_ascii_case(option)) {
+        return Err(adapter_error(host_program, token, "a duplicate configured option"));
+    }
+    seen.push(option.to_string());
+    Ok(())
+}
+
+// --- Section 4.3.2 - PowerShell products -----------------------------------
+
+const POWERSHELL_FLAG_OPTIONS: &[&str] =
+    &["NoLogo", "NoProfile", "NonInteractive", "Sta", "Mta"];
+const POWERSHELL_VALUE_OPTIONS: &[&str] = &[
+    "ExecutionPolicy",
+    "WindowStyle",
+    "InputFormat",
+    "OutputFormat",
+    "PSConsoleFile",
+];
+const PWSH_FLAG_OPTIONS: &[&str] = &["NoLogo", "NoProfile", "NonInteractive"];
+const PWSH_VALUE_OPTIONS: &[&str] = &[
+    "ExecutionPolicy",
+    "InputFormat",
+    "OutputFormat",
+    "WorkingDirectory",
+    "ConfigurationName",
+    "SettingsFile",
+];
+/// Command-ownership, keep-open, terminate-early, server/host-mode, and parser
+/// terminators, rejected conservatively for BOTH PowerShell classes. Each
+/// spelling may appear with `-` or `/`; `--` and `--%` are literal tokens.
+const POWERSHELL_CONFLICTING_OPTIONS: &[&str] = &[
+    "Command", "c", "CommandWithArgs", "cwa", "File", "f", "EncodedCommand", "enc",
+    "e", "NoExit", "noe", "Version", "v", "Help", "h", "?", "SSHServerMode",
+    "ServerMode", "WindowsPowerShell", "Login", "Interactive",
+];
+/// powershell.exe-only spellings that pwsh does not define; rejected for pwsh
+/// with the unknown/ambiguous category.
+const PWSH_UNKNOWN_OPTIONS: &[&str] = &["Sta", "Mta", "WindowStyle", "PSConsoleFile"];
+
+/// Section 4.3.1 - the closed configured-host grammar for PowerShell products.
+/// Exact, case-insensitive spelling matching only; every permitted value-bearing
+/// option binds its operand attached (`-Name:value` / `-Name=value`) or as the
+/// single immediately following non-option token.
+fn validate_powershell_arguments(
+    host_program: &str,
+    args: &[String],
+    is_pwsh: bool,
+) -> Result<(), AppError> {
+    let flags = if is_pwsh {
+        PWSH_FLAG_OPTIONS
+    } else {
+        POWERSHELL_FLAG_OPTIONS
+    };
+    let values = if is_pwsh {
+        PWSH_VALUE_OPTIONS
+    } else {
+        POWERSHELL_VALUE_OPTIONS
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut pending_operand: Option<String> = None;
+    for token in args {
+        if let Some(option) = pending_operand.take() {
+            if token.starts_with('-') || token.starts_with('/') {
+                return Err(adapter_error(
+                    host_program,
+                    token,
+                    "an option-shaped separated operand (value-bearing option has no bound value)",
+                ));
+            }
+            mark_seen(&mut seen, &option, host_program, token)?;
+            continue;
+        }
+        if token == "--" || token == "--%" {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "a conflicting/terminal configured option",
+            ));
+        }
+        if !token.starts_with('-') && !token.starts_with('/') {
+            return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+        }
+        let body = &token[1..];
+        // Conflicting/terminal spellings are matched against the FULL body before
+        // any operand split: `-E:O` is not the `-e` spelling, so an attached
+        // operand can never turn an unknown token into a terminal one.
+        if POWERSHELL_CONFLICTING_OPTIONS
+            .iter()
+            .any(|option| option.eq_ignore_ascii_case(body))
+        {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "a conflicting/terminal configured option",
+            ));
+        }
+        let (name, attached) = match body.find([':', '=']) {
+            Some(idx) => (&body[..idx], Some(&body[idx + 1..])),
+            None => (body, None),
+        };
+        if let Some(flag) = flags.iter().find(|option| option.eq_ignore_ascii_case(name)) {
+            if attached.is_some() {
+                return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+            }
+            mark_seen(&mut seen, flag, host_program, token)?;
+            continue;
+        }
+        if let Some(option) = values.iter().find(|option| option.eq_ignore_ascii_case(name)) {
+            match attached {
+                Some(value) if !value.is_empty() => {
+                    mark_seen(&mut seen, option, host_program, token)?;
+                }
+                Some(_) => {
+                    return Err(adapter_error(
+                        host_program,
+                        token,
+                        "a missing or option-shaped operand",
+                    ));
+                }
+                None => {
+                    pending_operand = Some(option.to_string());
+                }
+            }
+            continue;
+        }
+        if is_pwsh
+            && PWSH_UNKNOWN_OPTIONS
+                .iter()
+                .any(|option| option.eq_ignore_ascii_case(name))
+        {
+            return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+        }
+        return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+    }
+    if let Some(option) = pending_operand {
+        return Err(adapter_error(
+            host_program,
+            &option,
+            "a missing or option-shaped operand (value-bearing option has no operand)",
+        ));
+    }
+    Ok(())
+}
+
+// --- Section 4.3.3 - cmd(.exe) ---------------------------------------------
+
+const CMD_FLAG_OPTIONS: &[&str] = &["A", "U", "Q", "D", "E:ON", "E:OFF", "F:ON", "F:OFF"];
+
+/// Section 4.3.3 - closed configured-host grammar for cmd: `/`-prefixed exact
+/// spellings only, `/T:<value>` as the sole attached-value form, no separated
+/// operands, no `-` prefix.
+fn validate_cmd_arguments(host_program: &str, args: &[String]) -> Result<(), AppError> {
+    let mut seen: Vec<String> = Vec::new();
+    for token in args {
+        if !token.starts_with('/') {
+            return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+        }
+        let body = &token[1..];
+        if body.eq_ignore_ascii_case("C")
+            || body.eq_ignore_ascii_case("K")
+            || body.eq_ignore_ascii_case("S")
+            || body.eq_ignore_ascii_case("?")
+        {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "a conflicting/terminal configured option",
+            ));
+        }
+        if body.eq_ignore_ascii_case("V:OFF") {
+            mark_seen(&mut seen, "V", host_program, token)?;
+            continue;
+        }
+        if body.to_ascii_uppercase().starts_with("V:") {
+            // /V:ON and any other /V: value change `!` expansion semantics.
+            return Err(adapter_error(
+                host_program,
+                token,
+                "a conflicting/terminal configured option",
+            ));
+        }
+        if body.to_ascii_uppercase().starts_with("T:") {
+            let value = &body[2..];
+            if value.is_empty() {
+                return Err(adapter_error(
+                    host_program,
+                    token,
+                    "a missing or option-shaped operand",
+                ));
+            }
+            mark_seen(&mut seen, "T", host_program, token)?;
+            continue;
+        }
+        if let Some(flag) = CMD_FLAG_OPTIONS
+            .iter()
+            .find(|option| option.eq_ignore_ascii_case(body))
+        {
+            let canonical = flag.split(':').next().unwrap_or(flag);
+            mark_seen(&mut seen, canonical, host_program, token)?;
+            continue;
+        }
+        return Err(adapter_error(host_program, token, "an unknown or ambiguous token"));
+    }
+    Ok(())
+}
+// --- Section 4.5 - cmd payload domain --------------------------------------
+
+/// Section 4.5 - the configured-cmd payload is the logical program plus args
+/// joined with single ASCII spaces and NO per-token quoting: portable-pty's
+/// `append_quoted` re-encodes every `CommandBuilder` argument with C-runtime
+/// rules and cmd re-parses that string with its own grammar, so per-token
+/// quoting cannot survive the round trip (plan Finding A). The accepted domain
+/// is exactly the set for which `append_quoted` is inert apart from the outer
+/// pair; every other form is rejected before PTY acquisition.
+fn cmd_payload(command: &str, args: &[String]) -> String {
+    let mut payload = command.to_string();
+    for arg in args {
+        payload.push(' ');
+        payload.push_str(arg);
+    }
+    payload
+}
+
+fn validate_cmd_payload(
+    host_program: &str,
+    command: &str,
+    args: &[String],
+) -> Result<(), AppError> {
+    if command.starts_with('@') {
+        return Err(adapter_error(
+            host_program,
+            command,
+            "an unsupported cmd payload character (program token starts with '@')",
+        ));
+    }
+    for token in std::iter::once(command).chain(args.iter().map(|s| s.as_str())) {
+        if token.is_empty() {
+            return Err(adapter_error(
+                host_program,
+                "(empty)",
+                "an unsupported cmd payload character (empty token)",
+            ));
+        }
+        if token.contains('%') {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "an unsupported cmd payload character ('%' expands in cmd)",
+            ));
+        }
+        if token.chars().any(|c| c.is_whitespace()) {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "an unsupported cmd payload character (whitespace splits tokens in cmd)",
+            ));
+        }
+        if token.contains('"')
+            || token.contains('&')
+            || token.contains('|')
+            || token.contains('<')
+            || token.contains('>')
+            || token.contains('(')
+            || token.contains(')')
+            || token.contains('^')
+            || token.contains('=')
+            || token.contains(',')
+            || token.contains(';')
+        {
+            return Err(adapter_error(
+                host_program,
+                token,
+                "an unsupported cmd payload character (cmd re-parses it as syntax)",
+            ));
+        }
+    }
+    if cmd_payload(command, args).ends_with('\\') {
+        return Err(adapter_error(
+            host_program,
+            "(payload)",
+            "an unsupported cmd payload character (payload-final backslash is doubled by append_quoted)",
+        ));
+    }
+    Ok(())
+}
+
+// --- Section 4.4 - PowerShell/pwsh protocol ---------------------------------
+
+/// Standard Windows command-line-to-argv quote/backslash encoding (Section 4.5):
+/// outer double quotes; `2n+1` backslashes before an embedded double quote; a
+/// run unchanged before any other character; `2*trailing_run` backslashes
+/// before the closing outer quote. An empty value encodes as `""`.
+fn windows_arg(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    let chars: Vec<char> = value.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let mut run = 0;
+        while i < chars.len() && chars[i] == '\\' {
+            run += 1;
+            i += 1;
+        }
+        if i < chars.len() {
+            if chars[i] == '"' {
+                out.extend(std::iter::repeat_n('\\', 2 * run + 1));
+                out.push('"');
+            } else {
+                out.extend(std::iter::repeat_n('\\', run));
+                out.push(chars[i]);
+            }
+            i += 1;
+        } else {
+            out.extend(std::iter::repeat_n('\\', 2 * run));
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Section 4.4 - the native `Application` branch's `ProcessStartInfo.Arguments`
+/// string: logical arguments ONLY (never the resolved program), each
+/// `windows_arg` encoded, joined with one ASCII space. Empty vector -> empty
+/// string; one empty argument -> `""`.
+fn windows_raw_argv(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| windows_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// PowerShell single-quoted literal: wrap in single quotes, double every
+/// embedded single quote. Always ends with `'`, so the generated script can
+/// never end with a backslash (the only generator invariant, plan Finding B).
+fn ps_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// POSIX single-quoted literal: wrap in single quotes, replace an embedded
+/// single quote with the exact fragment `'"'"'`.
+fn posix_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// #1271 - the resolved batch child is launched through one explicit system-cmd
+/// child (`/D /V:OFF /S /C`). Its payload tokens are `'"' + <raw value> + '"'`:
+/// cmd's batch tokenizer is quote-aware but NOT backslash-aware (probe-proven),
+/// so the C-runtime `windows_arg` trailing-run doubling would corrupt a value
+/// ending in a backslash. Values containing `%` or `"` are already rejected
+/// before this branch runs, so the raw quote wrapper is safe for the whole
+/// batch domain.
+/// Section 4.4 - the generated `-Command` script. Resolves the logical program
+/// as an external command only (two-argument `GetCommand` with the
+/// `Application | ExternalScript` filter, never a profile alias/function),
+/// starts a native `Application` through `ProcessStartInfo` with separate
+/// `FileName` and a standard Windows-encoded `Arguments` literal, runs a
+/// resolved `.cmd`/`.bat` through one explicit system-cmd child, and keeps
+/// literal invocation only for an `ExternalScript`. Contains no `--%` token and
+/// never ends with a backslash (the trailing-run invariant).
+fn powershell_script(command: &str, args: &[String]) -> String {
+    let batch_unsupported = args.iter().any(|arg| arg.contains('%') || arg.contains('"'));
+    let mut script = String::new();
+    script.push_str("$global:LASTEXITCODE = $null;\n");
+    script.push_str("$ac_batch_unsupported_logical_arg = $");
+    script.push_str(if batch_unsupported { "true" } else { "false" });
+    script.push_str(";\n");
+    script.push_str(
+        "$ac_kind = [System.Management.Automation.CommandTypes]::Application -bor \
+         [System.Management.Automation.CommandTypes]::ExternalScript;\n",
+    );
+    script.push_str("$ac_command = $ExecutionContext.InvokeCommand.GetCommand(");
+    script.push_str(&ps_literal(command));
+    script.push_str(", $ac_kind);\n");
+    script.push_str("if ($null -eq $ac_command) { exit 1 };\n");
+    script.push_str(
+        "if ($ac_command.CommandType -eq \
+         [System.Management.Automation.CommandTypes]::Application) {\n",
+    );
+    script.push_str(
+        "  if (([System.IO.Path]::GetExtension($ac_command.Path) -ieq '.cmd') -or \
+         ([System.IO.Path]::GetExtension($ac_command.Path) -ieq '.bat')) {\n",
+    );
+    script.push_str(
+        "    if ($ac_batch_unsupported_logical_arg -or $ac_command.Path.Contains('%') -or \
+         $ac_command.Path.Contains([char]34)) { exit 1 };\n",
+    );
+    script.push_str("    $ac_batch_payload = '\"' + $ac_command.Path + '\"'");
+    for arg in args {
+        script.push_str(" + ' ' + '\"' + ");
+        script.push_str(&ps_literal(arg));
+        script.push_str(" + '\"'");
+    }
+    script.push_str(";\n");
+    script.push_str("    $ac_start = New-Object System.Diagnostics.ProcessStartInfo;\n");
+    script.push_str("    $ac_start.UseShellExecute = $false;\n");
+    script.push_str("    $ac_start.RedirectStandardInput = $false;\n");
+    script.push_str("    $ac_start.RedirectStandardOutput = $false;\n");
+    script.push_str("    $ac_start.RedirectStandardError = $false;\n");
+    script.push_str(
+        "    $ac_start.FileName = \
+         [System.IO.Path]::Combine([System.Environment]::SystemDirectory, 'cmd.exe');\n",
+    );
+    script.push_str("    $ac_start.Arguments = '/D /V:OFF /S /C \"' + $ac_batch_payload + '\"';\n");
+    script.push_str("    try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } catch { exit 1 };\n");
+    script.push_str("    if ($null -eq $ac_process) { exit 1 };\n");
+    script.push_str("    $ac_process.WaitForExit();\n");
+    script.push_str("    exit $ac_process.ExitCode\n");
+    script.push_str("  }\n");
+    script.push_str("  $ac_start = New-Object System.Diagnostics.ProcessStartInfo;\n");
+    script.push_str("  $ac_start.UseShellExecute = $false;\n");
+    script.push_str("  $ac_start.RedirectStandardInput = $false;\n");
+    script.push_str("  $ac_start.RedirectStandardOutput = $false;\n");
+    script.push_str("  $ac_start.RedirectStandardError = $false;\n");
+    script.push_str("  $ac_start.FileName = $ac_command.Path;\n");
+    script.push_str("  $ac_start.Arguments = ");
+    script.push_str(&ps_literal(&windows_raw_argv(args)));
+    script.push_str(";\n");
+    script.push_str("  try { $ac_process = [System.Diagnostics.Process]::Start($ac_start) } catch { exit 1 };\n");
+    script.push_str("  if ($null -eq $ac_process) { exit 1 };\n");
+    script.push_str("  $ac_process.WaitForExit();\n");
+    script.push_str("  exit $ac_process.ExitCode\n");
+    script.push_str("}\n");
+    script.push_str("& $ac_command.Path");
+    for arg in args {
+        script.push(' ');
+        script.push_str(&ps_literal(arg));
+    }
+    script.push_str(";\n");
+    script.push_str("$ac_succeeded = $?; $ac_exit_code = $LASTEXITCODE;\n");
+    script.push_str("if ($null -ne $ac_exit_code) { exit $ac_exit_code };\n");
+    script.push_str("if ($ac_succeeded) { exit 0 }; exit 1");
+    script
+}
+
+// --- Section 4.6 - custom POSIX-compatible shell ----------------------------
+
+/// Section 4.6 - one `exec` command, so the custom shell replaces itself with
+/// the agent and the agent owns the PTY child exit code directly.
+fn posix_script(command: &str, args: &[String]) -> String {
+    let mut script = String::from("exec ");
+    script.push_str(&posix_literal(command));
+    for arg in args {
+        script.push(' ');
+        script.push_str(&posix_literal(arg));
+    }
+    script
+}
+
+// --- Section 4.1/4.4/4.5 - entry points ------------------------------------
+
+/// Section 4.4 - a configured logical program that explicitly ends in `.cmd` or
+/// `.bat` rejects `%` or `"` in ANY logical argument in Rust, before any PTY is
+/// acquired. A bare name that resolves to batch only at runtime is handled by
+/// the generated script instead (post-PTY, Section 4.4).
+fn validate_explicit_batch_args(
+    host_program: &str,
+    command: &str,
+    args: &[String],
+) -> Result<(), AppError> {
+    let lower = command.to_ascii_lowercase();
+    let explicit_batch = lower.ends_with(".cmd") || lower.ends_with(".bat");
+    if explicit_batch
+        && args
+            .iter()
+            .any(|arg| arg.contains('%') || arg.contains('"'))
+    {
+        return Err(adapter_error(
+            host_program,
+            "(batch target)",
+            "an unsupported explicit-batch payload character ('%' or '\"' in a logical argument)",
+        ));
+    }
+    Ok(())
+}
+
+/// The single private adapter seam (Section 4.1.4): logical agent argv plus the
+/// optional host-shell snapshot in, executable plus argv and matching provenance
+/// out. On Windows a resolved agent that is not a direct `.exe` enters the
+/// adapter; a no-resolved-agent session keeps the historical `cmd.exe /C`
+/// fallback byte-for-byte; non-Windows and direct `.exe` launches are unchanged.
+fn prepare_launch(
+    command: &str,
+    args: &[String],
+    resolved_agent_host_shell: Option<&ResolvedAgentHostShell>,
+) -> Result<PreparedLaunch, AppError> {
+    if cfg!(windows) && !is_direct_exe(command) {
+        if let Some(host_shell) = resolved_agent_host_shell {
+            return prepare_windows_resolved_agent_launch(command, args, host_shell);
+        }
+        // #1271 - no resolved agent: keep the existing `cmd.exe /C` construction
+        // byte-for-byte (a bare non-direct configured shell on Windows).
+        let mut wrapped = vec!["/C".to_string(), command.to_string()];
+        wrapped.extend(args.iter().cloned());
+        return Ok(PreparedLaunch {
+            program: "cmd.exe".to_string(),
+            args: wrapped,
+        });
+    }
+    Ok(PreparedLaunch {
+        program: command.to_string(),
+        args: args.to_vec(),
+    })
+}
+
+fn prepare_windows_resolved_agent_launch(
+    command: &str,
+    args: &[String],
+    host_shell: &ResolvedAgentHostShell,
+) -> Result<PreparedLaunch, AppError> {
+    validate_common_adapter_input(command, args, host_shell)?;
+    let mut launch_args = host_shell.args.clone();
+    match configured_shell_kind(&host_shell.program) {
+        WindowsHostShellKind::PowerShell => {
+            validate_powershell_arguments(&host_shell.program, &host_shell.args, false)?;
+            validate_explicit_batch_args(&host_shell.program, command, args)?;
+            launch_args.push("-Command".to_string());
+            launch_args.push(powershell_script(command, args));
+        }
+        WindowsHostShellKind::Pwsh => {
+            validate_powershell_arguments(&host_shell.program, &host_shell.args, true)?;
+            validate_explicit_batch_args(&host_shell.program, command, args)?;
+            launch_args.push("-Command".to_string());
+            launch_args.push(powershell_script(command, args));
+        }
+        WindowsHostShellKind::Cmd => {
+            validate_cmd_arguments(&host_shell.program, &host_shell.args)?;
+            validate_cmd_payload(&host_shell.program, command, args)?;
+            launch_args.extend(["/V:OFF".to_string(), "/S".to_string(), "/C".to_string()]);
+            launch_args.push(cmd_payload(command, args));
+        }
+        WindowsHostShellKind::Posix => {
+            if let Some(first) = host_shell.args.first() {
+                return Err(adapter_error(
+                    &host_shell.program,
+                    first,
+                    "a conflicting/terminal configured option (custom shell accepts no arguments)",
+                ));
+            }
+            launch_args.push("-c".to_string());
+            launch_args.push(posix_script(command, args));
+        }
+    }
+    Ok(PreparedLaunch {
+        program: host_shell.program.clone(),
+        args: launch_args,
+    })
+}
 impl Clone for LocalProcessBackend {
     fn clone(&self) -> Self {
         Self {
             ptys: Arc::clone(&self.ptys),
             fanout: self.fanout.clone(),
             git_watcher: Arc::clone(&self.git_watcher),
+            #[cfg(test)]
+            pre_pty_attempts: Arc::clone(&self.pre_pty_attempts),
         }
     }
 }
@@ -678,6 +1382,8 @@ impl LocalProcessBackend {
             ptys: Arc::new(Mutex::new(HashMap::new())),
             fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
+            #[cfg(test)]
+            pre_pty_attempts: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -688,6 +1394,7 @@ impl LocalProcessBackend {
             coding_agent,
             cmd,
             args,
+            resolved_agent_host_shell,
             cwd,
             selected_cwd: _,
             cols,
@@ -704,6 +1411,15 @@ impl LocalProcessBackend {
             container_credential: _,
             container_repo_mounts: _,
         } = spec;
+
+        // #1271 - validate and construct the adapted launch at the TOP of
+        // `spawn_sync`, BEFORE any spawn accounting or PTY resource acquisition
+        // (Grinch Finding 10): a rejected configured-host token is counted
+        // nowhere and never opens a PTY. The same adapter result feeds both
+        // `CommandBuilder` and the `exec_argv` provenance, so the two can never
+        // desynchronize.
+        let launch = prepare_launch(&cmd, &args, resolved_agent_host_shell.as_ref())?;
+
         // #942 - how many sessions were spawned in the window just before this one,
         // and how many of them were the same CLI. Concurrent startups against shared
         // agent state (the global ~/.codex) are a prime suspect for the intermittent
@@ -712,6 +1428,11 @@ impl LocalProcessBackend {
         // codex binary against the same ~/.codex. Counting only, no behavior change.
         let diag_thresholds = spawn_diagnostics::Thresholds::from_env();
         let spawn_window = spawn_diagnostics::note_spawn_attempt(coding_agent, diag_thresholds);
+        // #1271 - accepted spawns only: the increment sits immediately before
+        // `native_pty_system()`, so every invalid-input rejection above left the
+        // per-instance observer at zero.
+        #[cfg(test)]
+        self.pre_pty_attempts.fetch_add(1, Ordering::SeqCst);
         let pty_system = native_pty_system();
         let spawn_cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
@@ -726,40 +1447,13 @@ impl LocalProcessBackend {
             .openpty(size)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        let is_direct_exe = cmd.to_lowercase().ends_with(".exe")
-            || std::path::Path::new(&cmd)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-
-        let mut command = if cfg!(windows) && !is_direct_exe {
-            let mut c = CommandBuilder::new("cmd.exe");
-            c.arg("/C");
-            c.arg(&cmd);
-            for arg in &args {
-                c.arg(arg);
-            }
-            c
-        } else {
-            let mut c = CommandBuilder::new(&cmd);
-            for arg in &args {
-                c.arg(arg);
-            }
-            c
-        };
+        let mut command = launch.command_builder();
         command.cwd(&spawn_cwd);
 
-        // #942 - the argv exactly as executed, cmd.exe wrapper included. Mirrors the
-        // branch above instead of reshaping the CommandBuilder, so the spawn stays
-        // byte-for-byte what it was.
-        let exec_argv: Vec<String> = if cfg!(windows) && !is_direct_exe {
-            let mut argv = vec!["cmd.exe".to_string(), "/C".to_string(), cmd.clone()];
-            argv.extend(args.iter().cloned());
-            argv
-        } else {
-            let mut argv = vec![cmd.clone()];
-            argv.extend(args.iter().cloned());
-            argv
-        };
+        // #942 - the argv exactly as executed, adapted host-shell wrapper
+        // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
+        // came from (one adapter decision), never mirrored by hand.
+        let exec_argv = launch.exec_argv();
 
         // #942 - what the child will really see for CODEX_HOME: an explicit configured
         // value wins, then an explicit removal, then the AC environment the child
@@ -2334,5 +3028,909 @@ mod blocked_writer_teardown_tests {
         assert!(outcome.is_err(), "the broken PTY write must report failure");
         writer.join().expect("join blocked writer thread");
         assert!(!ptys.lock().unwrap().contains_key(&id));
+    }
+}
+
+// #1271 - pure adapter and closed configured-host grammar tests. Platform
+// independent: they exercise the classifier, encoders, and generators directly,
+// not through the real PTY path. The spawn_sync ordering proof lives in
+// `adapter_spawn_sync_tests` (windows-gated, real backend).
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use crate::errors::AppError;
+    use crate::pty::backend::ResolvedAgentHostShell;
+
+    fn host(program: &str, args: &[&str]) -> ResolvedAgentHostShell {
+        ResolvedAgentHostShell {
+            program: program.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn launch_error(launch: Result<PreparedLaunch, AppError>) -> String {
+        match launch {
+            Ok(_) => panic!("expected adapter rejection"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn assert_error_shape(error: &str, host_program: &str, token: &str, category: &str) {
+        assert!(
+            error.contains(host_program),
+            "error must name the configured host '{host_program}': {error}"
+        );
+        assert!(
+            error.contains(token),
+            "error must name the offending token '{token}': {error}"
+        );
+        assert!(
+            error.contains(category),
+            "error must state the category '{category}': {error}"
+        );
+        assert!(
+            error.contains("agent adapter owns command execution"),
+            "error must state that the agent adapter owns command execution: {error}"
+        );
+    }
+
+    // --- Bare agent + configured PowerShell ---------------------------------
+
+    #[test]
+    fn configured_default_shell_powershell_hosts_bare_agent_with_managed_native_script() {
+        let shell = host(
+            r"C:\Program Files\WindowsPowerShell\v1.0\powershell.exe",
+            &["-NoProfile", "-ExecutionPolicy", "Bypass"],
+        );
+        let launch = prepare_windows_resolved_agent_launch("claude", &[], &shell)
+            .expect("valid configured PowerShell host");
+
+        // The adapter program is the exact configured path, never cmd.exe.
+        assert_eq!(
+            launch.program,
+            r"C:\Program Files\WindowsPowerShell\v1.0\powershell.exe"
+        );
+        assert_eq!(
+            launch.args[..3],
+            ["-NoProfile".to_string(), "-ExecutionPolicy".to_string(), "Bypass".to_string()]
+        );
+        assert_eq!(launch.args[3], "-Command");
+        let script = &launch.args[4];
+        assert!(
+            !script.contains("--%"),
+            "generated script must never contain the stop-parsing token"
+        );
+        assert!(
+            !script.contains("cmd.exe /C"),
+            "generated script must not be a configured cmd fallback"
+        );
+        // Two-argument GetCommand application-only lookup, never `$true` third arg.
+        assert!(script.contains("GetCommand('claude', $ac_kind)"));
+        assert!(!script.contains("GetCommand('claude', $ac_kind, $true)"));
+        assert!(script.contains(
+            "[System.Management.Automation.CommandTypes]::Application -bor \
+             [System.Management.Automation.CommandTypes]::ExternalScript"
+        ));
+        // Native branch: separate FileName + ProcessStartInfo with inherited handles.
+        assert!(script.contains("$ac_start.FileName = $ac_command.Path"));
+        assert!(script.contains("$ac_start.UseShellExecute = $false"));
+        assert!(script.contains("$ac_start.RedirectStandardInput = $false"));
+        assert!(script.contains("$ac_start.RedirectStandardOutput = $false"));
+        assert!(script.contains("$ac_start.RedirectStandardError = $false"));
+        assert!(script.contains("$ac_process.WaitForExit()"));
+        assert!(script.contains("exit $ac_process.ExitCode"));
+        // No logical args: Arguments is the empty ps-literal.
+        assert!(script.contains("$ac_start.Arguments = '';"));
+        // Provenance matches the launch exactly (one adapter result).
+        let mut expected_argv = vec![shell.program.clone()];
+        expected_argv.extend(shell.args.iter().cloned());
+        expected_argv.push("-Command".to_string());
+        expected_argv.push(script.clone());
+        assert_eq!(launch.exec_argv(), expected_argv);
+    }
+
+    #[test]
+    fn configured_default_shell_pwsh_full_path_with_spaces_is_used_exactly() {
+        let shell = host(r"C:\Program Files\PowerShell\7\pwsh.exe", &["-NoProfile"]);
+        let args = vec!["agent's tool".to_string(), "a b".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("valid configured pwsh host");
+
+        assert_eq!(launch.program, r"C:\Program Files\PowerShell\7\pwsh.exe");
+        assert_eq!(launch.args[0], "-NoProfile");
+        assert_eq!(launch.args[1], "-Command");
+        let script = &launch.args[2];
+        // The lookup name retains spaces and apostrophes through ps-literal.
+        assert!(script.contains("'claude'"), "bare lookup name: {script}");
+        // The native Arguments value is the standard Windows encoding of the
+        // logical argv through a PowerShell literal.
+        assert!(script.contains(
+            "$ac_start.Arguments = '\"agent''s tool\" \"a b\"';"
+        ));
+        assert!(!script.contains("--%"));
+        // The only cmd.exe mention is the documented nested system-cmd child
+        // for a resolved .cmd/.bat target, never the top-level host.
+        assert!(script.contains("'cmd.exe'"));
+    }
+
+    #[test]
+    fn configured_default_shell_powershell_script_carries_batch_branch_and_raw_argv() {
+        let shell = host("powershell.exe", &[]);
+        let args = vec![
+            "".to_string(),
+            "a\"b".to_string(),
+            "with space".to_string(),
+            "o'clock".to_string(),
+            "tail\\".to_string(),
+            "a%z|p".to_string(),
+            "a\\b\"c".to_string(),
+        ];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("percent and pipe are data in the native branch");
+        let script = &launch.args[1];
+        assert!(script.contains("$ac_batch_unsupported_logical_arg = $true;"));
+        // Batch sub-branch with the system-cmd child.
+        assert!(script.contains(
+            "([System.IO.Path]::GetExtension($ac_command.Path) -ieq '.cmd')"
+        ));
+        assert!(script.contains(
+            "[System.IO.Path]::Combine([System.Environment]::SystemDirectory, 'cmd.exe')"
+        ));
+        assert!(script.contains("'/D /V:OFF /S /C \"' + $ac_batch_payload + '\"'"));
+        assert!(script.contains("$ac_command.Path.Contains([char]34)"));
+        // The native Arguments literal is windows_raw_argv of the logical args.
+        assert!(script.contains(
+            "$ac_start.Arguments = '\"\" \"a\\\"b\" \"with space\" \"o''clock\" \
+             \"tail\\\\\" \"a%z|p\" \"a\\b\\\"c\"';"
+        ));
+        // ExternalScript branch keeps ps-literal invocation.
+        assert!(script.contains(
+            "& $ac_command.Path '' 'a\"b' 'with space' 'o''clock' 'tail\\' 'a%z|p' 'a\\b\"c';"
+        ));
+        assert!(script.contains("$ac_succeeded = $?; $ac_exit_code = $LASTEXITCODE;"));
+        assert!(script.ends_with("if ($ac_succeeded) { exit 0 }; exit 1"));
+        assert!(!script.ends_with('\\'), "trailing-run invariant");
+    }
+
+    #[test]
+    fn configured_default_shell_powershell_script_flags_batch_unsupported_arguments() {
+        let shell = host("powershell.exe", &[]);
+        let args = vec!["ok".to_string(), "bad%value".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("native branch accepts percent");
+        let script = &launch.args[1];
+        assert!(script.contains("$ac_batch_unsupported_logical_arg = $true;"));
+        assert!(script.contains("if ($ac_batch_unsupported_logical_arg -or"));
+    }
+
+    // --- Explicit batch targets through PowerShell --------------------------
+
+    #[test]
+    fn configured_default_shell_powershell_explicit_batch_rejects_percent_or_quote_args() {
+        let shell = host("powershell.exe", &[]);
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            r"C:\tools\claude.cmd",
+            &["a%b".to_string()],
+            &shell,
+        ));
+        assert_error_shape(&err, "powershell.exe", "(batch target)", "unsupported explicit-batch");
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            r"C:\tools\claude.bat",
+            &["a\"b".to_string()],
+            &shell,
+        ));
+        assert_error_shape(&err, "powershell.exe", "(batch target)", "unsupported explicit-batch");
+        // Clean explicit batch argv is accepted (nested system-cmd path).
+        let launch = prepare_windows_resolved_agent_launch(
+            r"C:\tools\claude.cmd",
+            &["flag".to_string(), "bang!".to_string()],
+            &shell,
+        )
+        .expect("explicit batch with clean args is supported");
+        assert!(launch.args[1].contains("$ac_batch_unsupported_logical_arg = $false;"));
+    }
+
+    // --- cmd host -----------------------------------------------------------
+
+    #[test]
+    fn configured_default_shell_cmd_uses_unquoted_single_payload() {
+        let shell = host(r"C:\Windows\System32\cmd.exe", &["/D", "/Q"]);
+        let args = vec!["--flag".to_string(), "bang!".to_string(), r"a\b".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("valid configured cmd host");
+        assert_eq!(launch.program, r"C:\Windows\System32\cmd.exe");
+        assert_eq!(
+            launch.args[..2],
+            ["/D".to_string(), "/Q".to_string()]
+        );
+        assert_eq!(
+            launch.args[2..5],
+            ["/V:OFF".to_string(), "/S".to_string(), "/C".to_string()]
+        );
+        // One single payload: program + args joined with ASCII spaces, no
+        // per-token quoting, no outer quote pair of our own, no %% or caret.
+        assert_eq!(launch.args[5], r"claude --flag bang! a\b");
+        assert_eq!(launch.args.len(), 6);
+        assert_eq!(
+            launch.exec_argv(),
+            vec![
+                shell.program.clone(),
+                "/D".to_string(),
+                "/Q".to_string(),
+                "/V:OFF".to_string(),
+                "/S".to_string(),
+                "/C".to_string(),
+                r"claude --flag bang! a\b".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn configured_default_shell_cmd_payload_rejects_out_of_domain_tokens() {
+        let shell = host("cmd.exe", &[]);
+        let rejected: &[&str] = &[
+            "with space", "a\"b", "a&b", "a|b", "a^b", "a<b", "a>b", "a(b", "a)b",
+            "a%b", "a=b", "a,b", "a;b", "", "a\\",
+        ];
+        for token in rejected {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[token.to_string()],
+                &shell,
+            ));
+            if token.ends_with('\\') {
+                // The payload-final backslash rule reports the payload itself.
+                assert_error_shape(&err, "cmd.exe", "(payload)", "unsupported cmd payload character");
+            } else {
+                assert_error_shape(&err, "cmd.exe", token, "unsupported cmd payload character");
+            }
+        }
+        // Leading '@' on the program token is rejected.
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "@claude",
+            &[],
+            &shell,
+        ));
+        assert_error_shape(&err, "cmd.exe", "@claude", "unsupported cmd payload character");
+        // NUL/CR/LF remain forbidden (common rule).
+        for bad in ["a\0b", "a\rb", "a\nb"] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[bad.to_string()],
+                &shell,
+            ));
+            assert!(err.contains("forbidden line separator"), "{err}");
+        }
+    }
+
+    #[test]
+    fn configured_default_shell_cmd_accepts_flag_style_bang_and_internal_backslashes() {
+        let shell = host("cmd.exe", &[]);
+        let args = vec![
+            "--flag".to_string(),
+            "-x".to_string(),
+            "!bang!".to_string(),
+            r"a\b\c".to_string(),
+            "plain".to_string(),
+        ];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("accepted cmd payload domain");
+        assert_eq!(
+            launch.args[launch.args.len() - 1],
+            r"claude --flag -x !bang! a\b\c plain"
+        );
+    }
+
+    // --- Custom POSIX-compatible shell --------------------------------------
+
+    #[test]
+    fn configured_default_shell_custom_posix_host_gets_exec_script() {
+        let shell = host(r"C:\tools\bash.exe", &[]);
+        let args = vec!["it's".to_string(), "a b".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("custom posix host with empty args");
+        assert_eq!(launch.program, r"C:\tools\bash.exe");
+        assert_eq!(launch.args[0], "-c");
+        assert_eq!(
+            launch.args[1],
+            "exec 'claude' 'it'\"'\"'s' 'a b'"
+        );
+        assert_eq!(launch.args.len(), 2);
+    }
+
+    #[test]
+    fn configured_default_shell_custom_posix_host_rejects_any_configured_args() {
+        let shell = host("bash.exe", &["--norc"]);
+        let err = launch_error(prepare_windows_resolved_agent_launch("claude", &[], &shell));
+        assert_error_shape(&err, "bash.exe", "--norc", "conflicting/terminal");
+    }
+
+    // --- Direct .exe and host-name extraction --------------------------------
+
+    #[test]
+    fn direct_exe_agent_keeps_historical_shape_without_host_context() {
+        let shell = host("powershell.exe", &["-NoProfile"]);
+        for program in ["claude.exe", r"C:\tools\Claude.EXE", "agent.EXE"] {
+            let launch = prepare_launch(program, &["--x".to_string()], Some(&shell))
+                .expect("direct exe must stay direct");
+            assert_eq!(launch.program, program);
+            assert_eq!(launch.args, vec!["--x".to_string()]);
+        }
+    }
+
+    #[test]
+    fn configured_shell_kind_extracts_final_path_component() {
+        for (program, expected) in [
+            ("powershell", WindowsHostShellKind::PowerShell),
+            ("powershell.exe", WindowsHostShellKind::PowerShell),
+            (r"C:\Program Files\WindowsPowerShell\v1.0\powershell.exe", WindowsHostShellKind::PowerShell),
+            (r"\\server\share\POWERSHELL.EXE", WindowsHostShellKind::PowerShell),
+            (r"\\?\C:\tools\pwsh.exe", WindowsHostShellKind::Pwsh),
+            ("pwsh", WindowsHostShellKind::Pwsh),
+            ("cmd", WindowsHostShellKind::Cmd),
+            (r"C:\Program Files (x86)\thing\cmd.exe", WindowsHostShellKind::Cmd),
+            ("cmd.exe", WindowsHostShellKind::Cmd),
+            (r"C:\Program Files\Git\bin\bash.exe", WindowsHostShellKind::Posix),
+            ("/usr/bin/sh", WindowsHostShellKind::Posix),
+        ] {
+            assert_eq!(
+                configured_shell_kind(program),
+                expected,
+                "classification for {program}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_direct_exe_predicate_is_case_insensitive_and_extension_based() {
+        assert!(is_direct_exe("claude.exe"));
+        assert!(is_direct_exe("CLAUDE.EXE"));
+        assert!(is_direct_exe(r"C:\tools\Agent.Exe"));
+        assert!(!is_direct_exe("claude"));
+        assert!(!is_direct_exe("claude.cmd"));
+        assert!(!is_direct_exe("claude.bat"));
+    }
+
+    // --- Encoders -----------------------------------------------------------
+
+    #[test]
+    fn windows_arg_encodes_with_standard_quote_and_backslash_rules() {
+        assert_eq!(windows_arg(""), "\"\"");
+        assert_eq!(windows_arg("a"), "\"a\"");
+        assert_eq!(windows_arg("a\"b"), "\"a\\\"b\"");
+        assert_eq!(windows_arg("with space"), "\"with space\"");
+        assert_eq!(windows_arg("o'clock"), "\"o'clock\"");
+        assert_eq!(windows_arg("tail\\"), "\"tail\\\\\"");
+        assert_eq!(windows_arg("a%z|p"), "\"a%z|p\"");
+        assert_eq!(windows_arg("a\\b\"c"), r#""a\b\"c""#);
+        assert_eq!(windows_arg("a\\\""), r#""a\\\"""#);
+        assert_eq!(windows_arg("a\\\\\"c"), r#""a\\\\\"c""#);
+        assert_eq!(windows_arg("a\\"), "\"a\\\\\"");
+        assert_eq!(windows_arg("\\\\server\\share"), r#""\\server\share""#);
+    }
+    #[test]
+    fn windows_raw_argv_joins_encoded_arguments_only() {
+        assert_eq!(windows_raw_argv(&[]), "");
+        assert_eq!(windows_raw_argv(&["".to_string()]), "\"\"");
+        assert_eq!(
+            windows_raw_argv(&["a b".to_string(), "".to_string()]),
+            "\"a b\" \"\""
+        );
+    }
+
+    #[test]
+    fn ps_and_posix_literals_follow_their_quoting_rules() {
+        assert_eq!(ps_literal("plain"), "'plain'");
+        assert_eq!(ps_literal("o'clock"), "'o''clock'");
+        assert_eq!(ps_literal(""), "''");
+        assert_eq!(ps_literal("a\"b"), "'a\"b'");
+        assert_eq!(ps_literal("a\\"), r"'a\'");
+        assert_eq!(posix_literal("plain"), "'plain'");
+        assert_eq!(posix_literal("it's"), "'it'\"'\"'s'");
+    }
+
+    // --- Closed configured-host grammar: rejected forms ----------------------
+
+    #[test]
+    fn powershell_grammar_rejects_command_ownership_and_terminal_options() {
+        // Every conflicting/terminal spelling, in both - and / prefix spellings.
+        for prefix in ["-", "/"] {
+            for spelling in [
+                "Command", "c", "CommandWithArgs", "cwa", "File", "f", "EncodedCommand",
+                "enc", "e", "NoExit", "noe", "Version", "v", "Help", "h", "?",
+                "SSHServerMode", "ServerMode", "WindowsPowerShell", "Login", "Interactive",
+            ] {
+                for is_pwsh in [false, true] {
+                    let token = format!("{prefix}{spelling}");
+                    let err = launch_error(prepare_windows_resolved_agent_launch(
+                        "claude",
+                        &[],
+                        &host(
+                            if is_pwsh { "pwsh.exe" } else { "powershell.exe" },
+                            &[token.as_str()],
+                        ),
+                    ));
+                    assert_error_shape(
+                        &err,
+                        if is_pwsh { "pwsh.exe" } else { "powershell.exe" },
+                        &token,
+                        "conflicting/terminal configured option",
+                    );
+                }
+            }
+        }
+        // Parser terminators are literal tokens.
+        for token in ["--", "--%"] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host("powershell.exe", &[token]),
+            ));
+            assert_error_shape(&err, "powershell.exe", token, "conflicting/terminal");
+        }
+    }
+
+    #[test]
+    fn pwsh_grammar_rejects_powershell_only_spellings_as_unknown() {
+        for prefix in ["-", "/"] {
+            for spelling in ["Sta", "Mta", "WindowStyle", "PSConsoleFile"] {
+                let token = format!("{prefix}{spelling}");
+                let err = launch_error(prepare_windows_resolved_agent_launch(
+                    "claude",
+                    &[],
+                    &host("pwsh.exe", &[token.as_str()]),
+                ));
+                assert_error_shape(&err, "pwsh.exe", &token, "unknown or ambiguous token");
+            }
+        }
+        // The same spellings remain PERMITTED for powershell.exe.
+        let launch = prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("powershell.exe", &["-Sta", "-WindowStyle", "Hidden"]),
+        )
+        .expect("powershell.exe accepts its own spellings");
+        assert_eq!(launch.args[0], "-Sta");
+    }
+
+    #[test]
+    fn powershell_grammar_rejects_bare_unknown_and_abbreviated_tokens() {
+        for token in ["foo", "echo", "-NoPro", "/NoPro", "-Bogus", "/Bogus", "-noex", "/E:O"] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host("powershell.exe", &[token]),
+            ));
+            assert_error_shape(&err, "powershell.exe", token, "unknown or ambiguous token");
+        }
+    }
+
+    #[test]
+    fn powershell_grammar_rejects_missing_and_option_shaped_operands() {
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("powershell.exe", &["-ExecutionPolicy"]),
+        ));
+        assert_error_shape(&err, "powershell.exe", "ExecutionPolicy", "missing or option-shaped");
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("powershell.exe", &["-ExecutionPolicy", "-NoProfile"]),
+        ));
+        assert_error_shape(
+            &err,
+            "powershell.exe",
+            "-NoProfile",
+            "option-shaped separated operand",
+        );
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("powershell.exe", &["-ExecutionPolicy:"]),
+        ));
+        assert_error_shape(&err, "powershell.exe", "-ExecutionPolicy:", "missing or option-shaped");
+    }
+
+    #[test]
+    fn powershell_grammar_rejects_duplicates() {
+        for (args, offending) in [
+            (vec!["-NoProfile", "-NoProfile"], "-NoProfile"),
+            (vec!["-NoProfile", "/NoProfile"], "/NoProfile"),
+            (vec!["-ExecutionPolicy:Bypass", "-ExecutionPolicy", "RemoteSigned"], "RemoteSigned"),
+        ] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host("powershell.exe", &args),
+            ));
+            assert_error_shape(&err, "powershell.exe", offending, "duplicate configured option");
+        }
+    }
+
+    #[test]
+    fn cmd_grammar_rejects_ownership_terminals_and_unknowns() {
+        for token in ["/C", "/K", "/S", "/V:ON", "/V:", "/V:ZZ", "/?", "-D", "foo", "/help", "/E:O"] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host("cmd.exe", &[token]),
+            ));
+            let category = if matches!(token, "/C" | "/K" | "/S" | "/V:ON" | "/V:" | "/V:ZZ" | "/?") {
+                "conflicting/terminal"
+            } else {
+                "unknown or ambiguous"
+            };
+            assert_error_shape(&err, "cmd.exe", token, category);
+        }
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("cmd.exe", &["/T:"]),
+        ));
+        assert_error_shape(&err, "cmd.exe", "/T:", "missing or option-shaped");
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("cmd.exe", &["/D", "/D"]),
+        ));
+        assert_error_shape(&err, "cmd.exe", "/D", "duplicate configured option");
+    }
+
+    // --- Closed configured-host grammar: accepted forms ----------------------
+
+    #[test]
+    fn powershell_grammar_accepts_permitted_spellings_with_operand_binding() {
+        // Flags + one separated operand + one attached `:` operand, order kept.
+        let launch = prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host(
+                "powershell.exe",
+                &[
+                    "-NoProfile",
+                    "/NoLogo",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                ],
+            ),
+        )
+        .expect("accepted powershell spellings");
+        // Order preserved, every operand bound exactly once, suffix appended.
+        assert_eq!(
+            launch.args[..7],
+            [
+                "-NoProfile".to_string(),
+                "/NoLogo".to_string(),
+                "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-WindowStyle".to_string(),
+                "Hidden".to_string(),
+            ]
+        );
+        assert_eq!(launch.args[7], "-Command");
+
+        // Each attached binding form is a separate accepted spelling.
+        for (token, operand) in [
+            ("-ExecutionPolicy:Bypass", "-ExecutionPolicy:Bypass"),
+            ("-ExecutionPolicy=Bypass", "-ExecutionPolicy=Bypass"),
+            ("/NoProfile", "/NoProfile"),
+        ] {
+            let launch = prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host("powershell.exe", &[token]),
+            )
+            .expect("accepted attached binding form");
+            assert_eq!(launch.args[0], operand);
+            assert_eq!(launch.args[1], "-Command");
+        }
+
+        let launch = prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host(
+                "pwsh.exe",
+                &["-WorkingDirectory", r"C:\Program Files", "-SettingsFile", "x.json"],
+            ),
+        )
+        .expect("accepted pwsh spellings");
+        assert_eq!(
+            launch.args[..4],
+            [
+                "-WorkingDirectory".to_string(),
+                r"C:\Program Files".to_string(),
+                "-SettingsFile".to_string(),
+                "x.json".to_string(),
+            ]
+        );
+        assert_eq!(launch.args[4], "-Command");
+    }
+
+    #[test]
+    fn cmd_grammar_accepts_permitted_spellings_in_order() {
+        let launch = prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("cmd.exe", &["/D", "/Q", "/E:ON", "/T:1F", "/V:OFF", "/A", "/F:OFF"]),
+        )
+        .expect("accepted cmd spellings");
+        assert_eq!(
+            launch.args[..7],
+            [
+                "/D".to_string(),
+                "/Q".to_string(),
+                "/E:ON".to_string(),
+                "/T:1F".to_string(),
+                "/V:OFF".to_string(),
+                "/A".to_string(),
+                "/F:OFF".to_string(),
+            ]
+        );
+        assert_eq!(launch.args[7], "/V:OFF"); // adapter suffix
+        assert_eq!(launch.args[8], "/S");
+        assert_eq!(launch.args[9], "/C");
+    }
+
+    // --- Common validation ---------------------------------------------------
+
+    #[test]
+    fn common_validation_rejects_blank_host_and_line_separators() {
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &[],
+            &host("   ", &[]),
+        ));
+        assert!(err.contains("blank configured default-shell program"), "{err}");
+
+        for bad in ["pow\0er", "pow\rer", "pow\ner"] {
+            let err = launch_error(prepare_windows_resolved_agent_launch(
+                "claude",
+                &[],
+                &host(bad, &[]),
+            ));
+            assert!(err.contains("forbidden line separator"), "{err}");
+        }
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "claude",
+            &["a\nb".to_string()],
+            &host("powershell.exe", &[]),
+        ));
+        assert!(err.contains("forbidden line separator"), "{err}");
+        let err = launch_error(prepare_windows_resolved_agent_launch(
+            "cla\0ude",
+            &[],
+            &host("powershell.exe", &[]),
+        ));
+        assert!(err.contains("forbidden line separator"), "{err}");
+    }
+
+    // --- No-resolved-agent fallback and cross-platform shape ------------------
+
+    #[test]
+    fn prepare_launch_keeps_cmd_exe_fallback_without_host_shell_and_direct_otherwise() {
+        // No host shell + non-direct command: historical cmd.exe /C wrapper.
+        let launch = prepare_launch("claude", &["--x".to_string()], None)
+            .expect("fallback launch");
+        assert_eq!(launch.program, "cmd.exe");
+        assert_eq!(
+            launch.args,
+            vec!["/C".to_string(), "claude".to_string(), "--x".to_string()]
+        );
+        // Direct exe: unchanged program + argv.
+        let launch = prepare_launch("claude.exe", &["--x".to_string()], None)
+            .expect("direct launch");
+        assert_eq!(launch.program, "claude.exe");
+        assert_eq!(launch.args, vec!["--x".to_string()]);
+    }
+
+    #[test]
+    fn powershell_script_never_ends_with_backslash_across_awkward_values() {
+        let shell = host("powershell.exe", &[]);
+        for args in [
+            vec![],
+            vec!["tail\\".to_string()],
+            vec!["a'b".to_string()],
+            vec!["a\\b\"c".to_string(), "x".to_string()],
+        ] {
+            let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+                .expect("accepted native values");
+            let script = launch.args.last().unwrap();
+            assert!(!script.ends_with('\\'), "trailing-run invariant for {args:?}");
+        }
+    }
+
+    #[test]
+    fn command_builder_and_exec_argv_share_one_adapter_result() {
+        let shell = host("powershell.exe", &["-NoProfile"]);
+        let launch = prepare_windows_resolved_agent_launch("claude", &["--x".to_string()], &shell)
+            .expect("adapter launch");
+        let builder = launch.command_builder();
+        let _ = builder; // CommandBuilder has no public argv; exec_argv is the
+                         // provenance, asserted equal to the adapter result above.
+        assert_eq!(launch.exec_argv().len(), 4);
+    }
+}
+
+// #1271 - spawn_sync ordering proof: deterministic invalid-input rejections
+// happen at the TOP of the REAL `spawn_sync` (before `note_spawn_attempt` and
+// before `native_pty_system()`), so the per-instance observer stays at zero,
+// no PTY map entry exists, and no launch provenance was recorded. Each test
+// builds its own backend instance and reads its own observer; there is no
+// global to reset and no cross-test race.
+#[cfg(all(test, windows))]
+mod adapter_spawn_sync_tests {
+    use super::*;
+    use crate::pty::backend::ResolvedAgentHostShell;
+    use crate::session::manager::SessionManager;
+    use std::sync::atomic::Ordering;
+
+    fn test_backend() -> (LocalProcessBackend, tauri::App) {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        // GitWatcher takes a plain (Wry) AppHandle; the pty_lifecycle pattern
+        // builds a default-runtime mock app the same way.
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build adapter spawn-sync test app");
+        let git_watcher = GitWatcher::new(session_mgr, app.handle().clone());
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        (
+            LocalProcessBackend::new(output_senders, idle_detector, git_watcher, None),
+            app,
+        )
+    }
+
+    fn spawn_spec(
+        cmd: &str,
+        args: &[&str],
+        host_shell: Option<ResolvedAgentHostShell>,
+    ) -> BackendSpawnSpec {
+        BackendSpawnSpec {
+            id: Uuid::new_v4(),
+            agent_id: None,
+            coding_agent: None,
+            cmd: cmd.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            resolved_agent_host_shell: host_shell,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            selected_cwd: None,
+            cols: 80,
+            rows: 24,
+            container_image: None,
+            configured_env: Vec::new(),
+            env_remove_keys: Vec::new(),
+            env_unset: Vec::new(),
+            extra_env: Vec::new(),
+            idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
+            output_target: crate::pty::output::PtyOutputTarget::noop(),
+            resource_registration: None,
+            logical_resource_slot: None,
+            container_credential: None,
+            container_repo_mounts: Vec::new(),
+        }
+    }
+
+    fn host(program: &str, args: &[&str]) -> ResolvedAgentHostShell {
+        ResolvedAgentHostShell {
+            program: program.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn invalid_configured_shell_token_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        // A conflicting/terminal configured option for the PowerShell host.
+        let spec = spawn_spec(
+            "claude",
+            &[],
+            Some(host("powershell.exe", &["-NoProfile", "-Command"])),
+        );
+        let id = spec.id;
+
+        let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+        assert!(error.to_string().contains("-Command"), "{error}");
+        assert!(error.to_string().contains("conflicting/terminal"), "{error}");
+        assert_eq!(
+            backend.pre_pty_attempts.load(Ordering::SeqCst),
+            0,
+            "a rejected configured-host token must never count as a spawn attempt"
+        );
+        assert!(
+            backend.ptys.lock().unwrap().is_empty(),
+            "no PTY map entry may exist for a rejected input"
+        );
+        assert!(
+            crate::pty::spawn_diagnostics::record_for(id).is_none(),
+            "no launch provenance may be recorded for a rejected input"
+        );
+        assert!(
+            backend.fanout.get_pty_size(id).is_none(),
+            "no output task may be attached for a rejected input"
+        );
+    }
+
+    #[test]
+    fn invalid_cmd_payload_token_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec(
+            "claude",
+            &["a b".to_string().as_str()],
+            Some(host("cmd.exe", &["/D"])),
+        );
+        let id = spec.id;
+
+        let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+        assert!(error.to_string().contains("unsupported cmd payload character"), "{error}");
+        assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
+        assert!(backend.ptys.lock().unwrap().is_empty());
+        assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    }
+
+    #[test]
+    fn invalid_explicit_batch_argument_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec(
+            r"C:\tools\claude.cmd",
+            &["bad%value".to_string().as_str()],
+            Some(host("powershell.exe", &["-NoProfile"])),
+        );
+        let id = spec.id;
+
+        let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+        assert!(error.to_string().contains("unsupported explicit-batch"), "{error}");
+        assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
+        assert!(backend.ptys.lock().unwrap().is_empty());
+        assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    }
+
+    #[test]
+    fn blank_configured_program_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec("claude", &[], Some(host("   ", &[])));
+        let id = spec.id;
+
+        let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+        assert!(error.to_string().contains("blank configured default-shell program"), "{error}");
+        assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
+        assert!(backend.ptys.lock().unwrap().is_empty());
+        assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    }
+
+    #[test]
+    fn non_empty_custom_shell_args_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec("claude", &[], Some(host("bash.exe", &["--norc"])));
+        let id = spec.id;
+
+        let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+        assert!(error.to_string().contains("conflicting/terminal"), "{error}");
+        assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
+        assert!(backend.ptys.lock().unwrap().is_empty());
+        assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    }
+
+    #[test]
+    fn accepted_spawn_increments_observer_and_registers_session() {
+        let (backend, _app) = test_backend();
+        // Direct .exe configured shell: the ordinary shell-session shape, no
+        // adapter. Proves the observer is not vacuously always-zero.
+        let spec = spawn_spec("cmd.exe", &["/C", "exit", "0"], None);
+        let id = spec.id;
+
+        backend.spawn_sync(spec).expect("valid spawn must succeed");
+        assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 1);
+        assert!(backend.ptys.lock().unwrap().contains_key(&id));
+        assert!(crate::pty::spawn_diagnostics::record_for(id).is_some());
+        assert!(backend.fanout.get_pty_size(id).is_some());
+
+        backend.kill(id).expect("kill spawned child");
+        assert!(!backend.ptys.lock().unwrap().contains_key(&id));
     }
 }

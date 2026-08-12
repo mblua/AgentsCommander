@@ -9,7 +9,9 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::backend::{BackendSpawnSpec, PtyViewport, SessionBackendKind};
+use crate::pty::backend::{
+    BackendSpawnSpec, PtyViewport, ResolvedAgentHostShell, SessionBackendKind,
+};
 use crate::pty::container_paths::{
     claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
     ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
@@ -1226,6 +1228,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     // #973 - the size the view has already fitted to, when the caller has a view at all.
     // `None` keeps AC's historical 120x30. See `PtyViewport`.
     viewport: Option<PtyViewport>,
@@ -1245,6 +1248,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1274,6 +1278,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
@@ -1292,6 +1297,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1321,6 +1327,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     pending_start_fresh: Option<bool>,
     pending_communication: Option<SessionCommunication>,
@@ -1339,6 +1346,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         CreateSelectionIntent::Suppress,
         pending_start_fresh,
@@ -1368,6 +1376,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     mut skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     pending_start_fresh: Option<bool>,
@@ -2315,6 +2324,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             coding_agent: agent_kind,
             cmd: shell.clone(),
             args: shell_args.clone(),
+            // #1271 - the configured host shell paired with a resolved agent
+            // command, carried as one immutable snapshot (never as loose
+            // program/argument fields, so the pairing invariant cannot drift).
+            resolved_agent_host_shell: resolved_agent_host_shell.clone(),
             cwd: spawn_cwd.clone(),
             selected_cwd: if spawn_cwd != cwd {
                 Some(cwd.clone())
@@ -2752,23 +2765,34 @@ pub async fn create_session(
         None
     };
 
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
-        let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
-        let al = agent_id.as_ref().and_then(|aid| {
-            cfg.agents
-                .iter()
-                .find(|a| a.id == *aid)
-                .map(|a| a.label.clone())
-        });
-        (s, sa, al)
-    };
+    let (shell, shell_args, agent_label, resolved_agent_host_shell) =
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            // #1271 - keep the resolved agent executable and its logical argv as
+            // the command-to-run, and carry a copy of the configured default host
+            // shell (program + args from the SAME immutable config snapshot, before
+            // `drop(cfg)`) separately to the backend. The backend launches a
+            // non-direct Windows agent command through this host shell instead of
+            // the unconditional `cmd.exe /C` fallback.
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+                Some(ResolvedAgentHostShell {
+                    program: cfg.default_shell.clone(),
+                    args: cfg.default_shell_args.clone(),
+                }),
+            )
+        } else {
+            let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
+            let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+            let al = agent_id.as_ref().and_then(|aid| {
+                cfg.agents
+                    .iter()
+                    .find(|a| a.id == *aid)
+                    .map(|a| a.label.clone())
+            });
+            (s, sa, al, None)
+        };
 
     log::info!(
         "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
@@ -2795,6 +2819,7 @@ pub async fn create_session(
         // passes Some(false) so the prior conversation resumes.
         effective_create_skip_auto_resume(skip_auto_resume),
         resolved_spawn,
+        resolved_agent_host_shell,
         // #973 - the only caller that has a terminal to measure.
         match (cols, rows) {
             (Some(c), Some(r)) => Some(PtyViewport::from_fit(c, r)),
@@ -4018,8 +4043,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
     // #537 read-side: resolve the launch agent (honoring currentCodingAgent) and
     // build its spawn under a single settings read guard. No await is held across
-    // the guard; it is dropped at the end of this block.
-    let (selected_agent_id, resolved_spawn) = {
+    // the guard; it is dropped at the end of this block. The #1271 host-shell
+    // snapshot is copied from the SAME guard so program and args can never pair
+    // across a configuration change.
+    let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
         let cfg = settings.read().await;
         let selected_agent_id = resolve_restart_selected_agent_id(
             &cfg,
@@ -4037,7 +4064,15 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         } else {
             None
         };
-        (selected_agent_id, resolved_spawn)
+        let resolved_agent_host_shell = if resolved_spawn.is_some() {
+            Some(ResolvedAgentHostShell {
+                program: cfg.default_shell.clone(),
+                args: cfg.default_shell_args.clone(),
+            })
+        } else {
+            None
+        };
+        (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -4094,6 +4129,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         git_repos,
         restart_start_fresh,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         (!is_root_agent).then_some(restart_start_fresh),
@@ -4730,16 +4766,25 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             last_coding_agent.as_deref(),
         )?
     };
-    let resolved_spawn = if let Some(agent_id) = agent_id.as_deref() {
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+        // #1271 - build the spawn and copy the configured default host shell
+        // from the SAME single guard, before any await, so the pair can never
+        // mix across a configuration change (Phase 1 items 1-2; mirrors the
+        // restart pattern).
         let settings = settings.read().await;
-        build_configured_agent_spawn_for_cwd(
+        let spawn = build_configured_agent_spawn_for_cwd(
             &settings,
             agent_id,
             &root_agent_path,
             request.requested_profile.as_deref(),
-        )?
+        )?;
+        let host_shell = Some(ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
+        (spawn, host_shell)
     } else {
-        None
+        (None, None)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -4764,6 +4809,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Vec::new(),
         request.skip_auto_resume_for_new_session,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         None,
@@ -6146,6 +6192,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             intent,
         )
         .await
@@ -6170,6 +6217,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -6251,6 +6299,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::User,
@@ -6942,6 +6991,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             CreateSelectionIntent::User,
@@ -7022,6 +7072,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -7046,6 +7097,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -7067,6 +7119,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::Background,
@@ -7124,6 +7177,7 @@ mod tests {
                 true,
                 Vec::new(),
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -7209,6 +7263,7 @@ mod tests {
                 true,
                 None,
                 None,
+                None,
                 CreateSelectionIntent::User,
             )
             .await
@@ -7273,6 +7328,7 @@ mod tests {
                     true,
                     None,
                     None,
+                    None,
                     CreateSelectionIntent::Background,
                 )
                 .await
@@ -7302,6 +7358,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::Background,
@@ -7368,6 +7425,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             Some(crate::pty::backend::PtyViewport::from_fit(74, 23)),
             CreateSelectionIntent::User,
         )
@@ -7415,6 +7473,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             None, // no view
             CreateSelectionIntent::User,
         )
@@ -7461,6 +7520,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             Some(crate::pty::backend::PtyViewport::from_fit(0, 0)),
             CreateSelectionIntent::User,
@@ -7681,6 +7741,7 @@ mod tests {
             Vec::new(),
             false,       // lib.rs:2362, skip_auto_resume_for_restore(false): RESUME
             Some(spawn), // lib.rs:2363, the rebuilt recipe
+            None,
             None,        // lib.rs:2365, headless caller keeps 120x30
             Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
             None,
@@ -7718,6 +7779,7 @@ mod tests {
             true,
             Vec::new(),
             true, // a fresh create
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -7792,6 +7854,7 @@ mod tests {
             true, // FRESH first: the opposite order from B1
             None,
             None,
+            None,
             CreateSelectionIntent::User,
         )
         .await;
@@ -7814,6 +7877,7 @@ mod tests {
             true,
             Vec::new(),
             false, // the #599 reopen value: this launch RESUMES
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -7935,6 +7999,7 @@ mod tests {
                     Vec::new(),
                     true,
                     None,
+                    None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
                 )
@@ -8017,6 +8082,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
@@ -9848,6 +9914,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::User,
             None,
             None,
@@ -9910,6 +9977,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -10128,6 +10196,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::User,
         )
         .await
@@ -10135,4 +10204,375 @@ mod tests {
         assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
         close_test_coordinator(&app).await;
     }
+
+    // --- #1271 configured default-shell propagation --------------------------
+
+    /// Captures every `BackendSpawnSpec` the PTY manager hands to the backend,
+    /// so tests can assert the resolved-agent host-shell snapshot propagated
+    /// unchanged from the creation seam. Spawned ids count as live sessions so
+    /// the finalized-create path can display them, mirroring
+    /// `ScriptedSpawnBackend`.
+    #[derive(Default)]
+    struct CapturingSpawnBackend {
+        specs: Mutex<Vec<crate::pty::backend::BackendSpawnSpec>>,
+        live: Mutex<HashSet<Uuid>>,
+    }
+
+    impl PtyBackend for CapturingSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                self.specs.lock().unwrap().push(spec);
+                Ok(())
+            })
+        }
+
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            Err(crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_default_shell_snapshot_reaches_backend_for_resolved_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        // Drive the resolved-agent path exactly as `create_session` does: the
+        // resolved agent stays the command-to-run, and the configured host shell
+        // (copied from the same config snapshot) travels separately.
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 propagation".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+        assert_eq!(created.agent_id.as_deref(), Some("claude"));
+
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs
+                .last()
+                .expect("the resolved-agent create reached the backend");
+            assert_eq!(spec.cmd, "claude", "agent program stays the command-to-run");
+            let host = spec
+                .resolved_agent_host_shell
+                .as_ref()
+                .expect("host shell snapshot must reach the backend");
+            assert_eq!(
+                host.program,
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+            );
+            assert_eq!(host.args, vec!["-NoProfile".to_string()]);
+        }
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1271 - the observable session metadata seam (`set_pending_effective_shell_args`,
+    /// surfaced as `effective_shell_args`) keeps the LOGICAL agent argv; the
+    /// configured host-shell arguments travel only in the backend spec's
+    /// `resolved_agent_host_shell`. The two must remain distinct: host-shell args
+    /// are never written into the metadata channel.
+    #[tokio::test]
+    async fn configured_default_shell_metadata_keeps_logical_agent_argv_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 metadata".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+
+        // The claude test agent gets auto-injected logical args (`--session-id`):
+        // metadata must carry exactly that logical argv, never the configured
+        // host-shell args.
+        let effective = created
+            .effective_shell_args
+            .as_deref()
+            .expect("effective args are captured before spawn");
+        assert!(
+            effective.iter().any(|arg| arg.starts_with("--session-id")),
+            "session metadata carries the logical agent argv: {effective:?}"
+        );
+        assert!(
+            !effective.iter().any(|arg| arg == "-NoProfile"),
+            "host-shell args must never leak into session metadata: {effective:?}"
+        );
+        let session = session_mgr
+            .read()
+            .await
+            .get_session(Uuid::parse_str(&created.id).unwrap())
+            .await
+            .expect("session exists");
+        let stored = session
+            .effective_shell_args
+            .as_deref()
+            .expect("stored effective args");
+        assert!(
+            !stored.iter().any(|arg| arg == "-NoProfile"),
+            "the pending-effective metadata channel stays logical: {stored:?}"
+        );
+
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs.last().expect("create reached the backend");
+            assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+            assert_eq!(
+                spec.resolved_agent_host_shell
+                    .as_ref()
+                    .expect("host shell present")
+                    .args,
+                vec!["-NoProfile".to_string()],
+                "host-shell args travel only in the paired snapshot"
+            );
+        }
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1271 - native twin of the web invalid-input postcondition test: the
+    /// adapter rejection happens at the TOP of the REAL `spawn_sync`, before
+    /// any spawn accounting or PTY acquisition, so a rejected configured host
+    /// leaves no session, no pending/metadata record, no spawn record, no PTY
+    /// map entry, and no output task. Windows-only (the adapter is the Windows
+    /// host-shell branch); the backend seam proves the same postcondition with
+    /// a known id in `adapter_spawn_sync_tests`.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn configured_default_shell_invalid_input_leaves_no_session_state_native() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        // A conflicting/terminal configured option must fail before any PTY.
+        settings.default_shell = "powershell.exe".to_string();
+        settings.default_shell_args = vec!["-Command".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        // The real local backend: the invalid-input rejection lives inside its
+        // spawn_sync, so a fake capturing backend would accept the spawn.
+        let git_app = Box::leak(Box::new(
+            tauri::Builder::default()
+                .any_thread()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build native invalid-input git watcher app"),
+        ));
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            git_app.handle().clone(),
+        );
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let output_senders: crate::telegram::manager::OutputSenderMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::new(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            None,
+        ));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let error = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "claude".to_string(),
+            Vec::new(),
+            cwd.clone(),
+            Some("1271 native invalid input".to_string()),
+            None,
+            None,
+            false,
+            Vec::new(),
+            true,
+            None,
+            Some(crate::pty::backend::ResolvedAgentHostShell {
+                program: "powershell.exe".to_string(),
+                args: vec!["-Command".to_string()],
+            }),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect_err("invalid configured host must fail the create");
+        assert!(error.contains("conflicting/terminal"), "{error}");
+        assert!(error.contains("agent adapter owns command execution"), "{error}");
+
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "no session may appear in the session manager"
+        );
+        // The coordinator worker rolls the pending binding back asynchronously;
+        // while it is still visible, the rejected id must show no launch
+        // provenance, no PTY map entry, and no output task.
+        let pending_ids = session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+                "no launch provenance may be recorded for the rejected session"
+            );
+            assert!(
+                !pty_mgr.lock().unwrap().has_session(*id),
+                "no PTY map entry may exist for the rejected session"
+            );
+            assert!(
+                pty_mgr.lock().unwrap().get_pty_size(*id).is_none(),
+                "no output task may be attached for the rejected session"
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        close_test_coordinator(&app).await;
+    }
+
 }
