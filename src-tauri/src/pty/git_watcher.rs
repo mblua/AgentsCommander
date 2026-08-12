@@ -1,17 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use futures::future::join_all;
+use futures::stream::StreamExt;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+use crate::config::settings::AppSettings;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionRepo;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// #1298 - read-site clamp bounds for the two sweeper dials. See plan D1.
+/// `SWEEP_MIN_INTERVAL_SECS` is also the floor an EMPTY round applies, which is
+/// what makes the cold start pick up work about a second after it appears.
+const SWEEP_MIN_CONCURRENCY: u8 = 1;
+const SWEEP_MAX_CONCURRENCY: u8 = 4;
+const SWEEP_MIN_INTERVAL_SECS: u64 = 1;
+const SWEEP_MAX_INTERVAL_SECS: u64 = 3600;
 
 /// #280 §3.3 - per-path counter for `detect_git_status` timeouts (#1028 renamed
 /// the detection; the counter and its policy are unchanged). Used to dampen
@@ -19,8 +28,11 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// 50th thereafter. Process-local: counts reset on restart. Bounded by the
 /// number of distinct repo paths (~150 in production observations), so no
 /// GC is needed.
+///
+/// #1298 - now the sweeper's SINGLE counter rather than one of two: the
+/// per-watcher twin in `commands/ac_discovery.rs` went with its subject when
+/// detection was merged into one producer.
 fn note_timeout(path: &str) -> u64 {
-    use std::sync::OnceLock;
     static TIMEOUT_COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     let map = TIMEOUT_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
@@ -37,7 +49,7 @@ fn note_timeout(path: &str) -> u64 {
 /// locally cached `origin/*` upstream. This detector never performs a remote operation.
 /// It remains deliberately separate from the blocking deletion-safety checks in
 /// `commands/entity_creation.rs`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitStatus {
     /// `None` for a detached HEAD or a mid-rebase, matching what
     /// `rev-parse --abbrev-ref` reported before this replaced it.
@@ -82,13 +94,10 @@ pub(crate) struct GitStatus {
 /// handed. "Never remembers an ancestor's dirt" is enforced by the caller,
 /// `detect_git_status`, through its three gates (`.git` metadata check, ceiling,
 /// `status.success()`). Only ever feed this from `detect_git_status`. A caller shaped
-/// like `detect_git_branch_sync` (`commands/ac_discovery.rs`), which has no `.git` guard
+/// like `detect_repo_branch` (`commands/ac_discovery.rs`), which has no `.git` guard
 /// and no ceiling, would silently violate it. Nothing does today.
 pub(crate) fn remember_dirty(path: &str, detected: Option<bool>) -> Option<bool> {
-    use std::sync::OnceLock;
-    static LAST_DIRTY: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    let map = LAST_DIRTY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = last_dirty_map().lock().unwrap_or_else(|e| e.into_inner());
     match detected {
         Some(d) => {
             g.insert(path.to_string(), d);
@@ -96,6 +105,95 @@ pub(crate) fn remember_dirty(path: &str, detected: Option<bool>) -> Option<bool>
         }
         None => g.get(path).copied(),
     }
+}
+
+/// #1298 - `LAST_DIRTY` is hoisted out of `remember_dirty`'s body so
+/// `retain_swept_paths` can evict from it too. See INV-8: this map and the
+/// published snapshot must gain and lose the same paths, or a dropped path reads
+/// `None` from the snapshot and its last successful `bool` from here, which is a
+/// confident colour sourced from a detection that will never be repeated.
+static LAST_DIRTY: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn last_dirty_map() -> &'static Mutex<HashMap<String, bool>> {
+    LAST_DIRTY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// #1298 - the snapshot the single global sweeper publishes and both poll loops
+/// read instead of spawning `git` themselves. Keyed by the EXACT repo-path string
+/// its two sources handed the sweeper (INV-3): any normalization here silently
+/// turns a consumer read into a miss, which renders as a permanent violet badge
+/// with no error anywhere.
+///
+/// Storing `Option<GitStatus>` rather than removing the key on failure is
+/// deliberate: "never detected" and "last detection failed" stay indistinguishable
+/// to the reader, which is exactly the semantics both consumers already implement
+/// (a `None` status becomes `branch: None` plus `remember_dirty(path, None)`).
+///
+/// Same lock discipline as `remember_dirty`, including
+/// `.unwrap_or_else(|e| e.into_inner())`, which is required for the reason
+/// documented there. GC is `retain_swept_paths`, not absence of one.
+static GIT_STATUS_SNAPSHOT: OnceLock<Mutex<HashMap<String, Option<GitStatus>>>> = OnceLock::new();
+
+fn git_status_snapshot() -> &'static Mutex<HashMap<String, Option<GitStatus>>> {
+    GIT_STATUS_SNAPSHOT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>) {
+    let mut g = git_status_snapshot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    g.insert(path.to_string(), status);
+}
+
+/// `pub(crate)` is FORCED, exactly as it is for `remember_dirty`: one of the two
+/// readers lives in `commands/ac_discovery.rs`.
+pub(crate) fn read_git_status(path: &str) -> Option<GitStatus> {
+    let g = git_status_snapshot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    g.get(path).cloned().flatten()
+}
+
+/// #1298 - the discovery half of the sweeper's work list, PUSHED here by
+/// `DiscoveryBranchWatcher` whenever it mutates its `replicas` map. Push, not
+/// pull: pulling would make `pty::git_watcher` import a `commands::` type, which
+/// is a layering inversion. Duplicates are expected (several replicas name the
+/// same repo) and `build_work_list` dedupes them.
+static DISCOVERY_REPO_PATHS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn discovery_repo_paths_cell() -> &'static Mutex<Vec<String>> {
+    DISCOVERY_REPO_PATHS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn set_discovery_repo_paths(paths: Vec<String>) {
+    *discovery_repo_paths_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = paths;
+}
+
+fn discovery_repo_paths() -> Vec<String> {
+    discovery_repo_paths_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// #1298 - drop every path this sweep no longer covers, from BOTH process-global
+/// maps. See INV-8: evicting only the snapshot leaves `LAST_DIRTY` serving the
+/// last successful bool forever, which is a confident lie rather than an
+/// "unknown".
+///
+/// Takes the two guards SEQUENTIALLY, never nested: nesting them would introduce
+/// the tree's only two-lock order between these maps for no benefit.
+fn retain_swept_paths(live: &HashSet<String>) {
+    {
+        let mut snapshot = git_status_snapshot()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        snapshot.retain(|path, _| live.contains(path));
+    }
+    let mut dirty = last_dirty_map().lock().unwrap_or_else(|e| e.into_inner());
+    dirty.retain(|path, _| live.contains(path));
 }
 
 /// Return whether a successful porcelain header confirms that `HEAD` is reachable
@@ -194,10 +292,15 @@ pub(crate) fn parse_status_porcelain_branch(stdout: &str) -> Option<GitStatus> {
 /// ceiling env, the other did not. Both writers must compute `dirty` identically or the
 /// badge flickers, and duplicating the parse is how that guarantee gets lost.
 ///
-/// Each caller keeps its OWN timeout wrapper. That is required, not stylistic: each owns
-/// its per-path counter and log tag (`note_timeout` / `note_discovery_timeout`,
-/// `[GitWatcher]` / `[DiscoveryBranchWatcher]`), and merging them would collapse the two
-/// tags that keep the watchers distinguishable in app.log.
+/// #1298 - one caller now: the global `GitSweeper`, through the single
+/// `detect_status_with_timeout` free function below, logging under `[GitSweeper]`.
+/// INV-1: that wrapper's `DETECT_TIMEOUT` is the ONLY bound on a sweeper round,
+/// whose worst case is `N * DETECT_TIMEOUT` at concurrency 1. Removing it because
+/// "the loop is sequential now" would let one hung repo (dead share, stale
+/// `index.lock`) freeze freshness for every other repo forever, with no recovery
+/// short of restarting the app. `kill_on_drop(true)` below is part of that
+/// invariant: the timeout is what drops this future, and the drop is what kills
+/// `git.exe`.
 ///
 /// `--no-optional-locks` is LOAD-BEARING, not hygiene. Do not drop it in a cleanup. A
 /// plain `status` takes `.git/index.lock` (a ~13ms window) and rewrites `.git/index`;
@@ -373,15 +476,14 @@ impl GitWatcher {
                 continue;
             }
 
-            // Parallelize per-repo detection (Grinch #16). Each call bounded by 2s
-            // (detect_status_with_timeout). Without join_all, worst-case per poll is
-            // M*N*2s under simultaneous stalls.
-            let statuses: Vec<Option<GitStatus>> = join_all(
-                repos
-                    .iter()
-                    .map(|r| Self::detect_status_with_timeout(&r.source_path)),
-            )
-            .await;
+            // #1298 - pure map reads. This loop no longer spawns `git`: the global
+            // `GitSweeper` is the only polling producer, and this poll consumes its
+            // published snapshot. An unpublished path reads `None`, which is the
+            // same "unknown" a failed detection produced before.
+            let statuses: Vec<Option<GitStatus>> = repos
+                .iter()
+                .map(|r| read_git_status(&r.source_path))
+                .collect();
 
             let refreshed: Vec<SessionRepo> = repos
                 .iter()
@@ -434,39 +536,292 @@ impl GitWatcher {
             }
         }
     }
+}
 
-    /// Detect branch + worktree-dirty via the shared `detect_git_status`, bounded by a
-    /// 2s timeout. On timeout the pending future is dropped; `.kill_on_drop(true)`
-    /// ensures the child `git.exe` is terminated so repeated polls can't leak processes.
-    ///
-    /// #1028 - this wrapper stays private to GitWatcher rather than merging with
-    /// DiscoveryBranchWatcher's: each owns its per-path counter and log tag, and merging
-    /// them would collapse `note_timeout`/`note_discovery_timeout` and the two tags that
-    /// keep the watchers distinguishable in app.log.
-    ///
-    /// Because `timeout` DROPS the future here, `detect_git_status` never returns on this
-    /// path and cannot remember anything itself: the caller applies the dirty hold.
-    async fn detect_status_with_timeout(working_dir: &str) -> Option<GitStatus> {
-        match tokio::time::timeout(DETECT_TIMEOUT, detect_git_status(working_dir)).await {
-            Ok(result) => result,
-            Err(_) => {
-                let n = note_timeout(working_dir);
-                // #280 §3.3 — throttle the per-path WARN. Observed rate is
-                // ~120 timeouts/day/path; logging every one floods app.log.
-                // Log the first sighting (heartbeat) and every 50th
-                // thereafter (still ~2-3 WARN/day/path) — enough signal to
-                // notice persistent slowness without spamming.
-                if n == 1 || n.is_multiple_of(50) {
-                    log::warn!(
-                        "[GitWatcher] detect_git_status timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
-                        working_dir,
-                        DETECT_TIMEOUT.as_secs(),
-                        n
-                    );
-                }
-                None
+/// Detect branch + worktree-dirty via the shared `detect_git_status`, bounded by a
+/// 2s timeout. On timeout the pending future is dropped; `.kill_on_drop(true)`
+/// ensures the child `git.exe` is terminated so repeated polls can't leak processes.
+///
+/// #1298 - was one of two per-watcher methods. It is now the sweeper's single
+/// wrapper, and its `DETECT_TIMEOUT` is INV-1: see `detect_git_status` above for
+/// why it must survive any later cleanup.
+///
+/// Because `timeout` DROPS the future here, `detect_git_status` never returns on this
+/// path and cannot remember anything itself: the caller applies the dirty hold.
+async fn detect_status_with_timeout(working_dir: &str) -> Option<GitStatus> {
+    match tokio::time::timeout(DETECT_TIMEOUT, detect_git_status(working_dir)).await {
+        Ok(result) => result,
+        Err(_) => {
+            let n = note_timeout(working_dir);
+            // #280 §3.3 — throttle the per-path WARN. Observed rate is
+            // ~120 timeouts/day/path; logging every one floods app.log.
+            // Log the first sighting (heartbeat) and every 50th
+            // thereafter (still ~2-3 WARN/day/path) — enough signal to
+            // notice persistent slowness without spamming.
+            if n == 1 || n.is_multiple_of(50) {
+                log::warn!(
+                    "[GitSweeper] detect_git_status timed out for {} (>{}s); occurrence={} (logging 1st + every 50th)",
+                    working_dir,
+                    DETECT_TIMEOUT.as_secs(),
+                    n
+                );
             }
+            None
         }
+    }
+}
+
+/// #1298 - read-site clamp for the two sweeper dials. See plan D1: clamping here
+/// rather than in `validate_and_repair_settings` is what stops the app from
+/// rewriting the user's hand-edited `settings.json`. It is NOT a hot-reload
+/// mechanism: the sweeper reads the in-memory settings state, which is loaded once
+/// at startup and never refreshed from disk, so changing either dial takes a
+/// RESTART.
+fn sweep_dials(cfg: &AppSettings) -> (usize, Duration) {
+    let concurrency = cfg
+        .git_sweep_concurrency
+        .clamp(SWEEP_MIN_CONCURRENCY, SWEEP_MAX_CONCURRENCY);
+    let interval_secs = cfg
+        .git_sweep_min_interval_secs
+        .clamp(SWEEP_MIN_INTERVAL_SECS, SWEEP_MAX_INTERVAL_SECS);
+
+    if concurrency != cfg.git_sweep_concurrency {
+        log::debug!(
+            "[GitSweeper] gitSweepConcurrency {} clamped to {}",
+            cfg.git_sweep_concurrency,
+            concurrency
+        );
+    }
+    if interval_secs != cfg.git_sweep_min_interval_secs {
+        log::debug!(
+            "[GitSweeper] gitSweepMinIntervalSecs {} clamped to {}",
+            cfg.git_sweep_min_interval_secs,
+            interval_secs
+        );
+    }
+
+    (concurrency as usize, Duration::from_secs(interval_secs))
+}
+
+/// #1298 - the sweeper's work list: the UNION of the discovery replicas and the
+/// live sessions, deduplicated by EXACT path string (INV-3, no normalization),
+/// with archived projects dropped (D2), sorted for a deterministic round order.
+/// `archived_roots` are already normalized.
+///
+/// INV-7: neither half may be dropped. Discovery alone misses sessions in
+/// workgroups whose project is not in `settings.projectPaths`; sessions alone
+/// lose dormant replicas, which is `DiscoveryBranchWatcher`'s reason to exist.
+///
+/// NOT pure and NOT cheap: with a non-empty `archived_roots` this performs one
+/// `std::fs::canonicalize` per distinct candidate, through
+/// `is_under_normalized_archived_roots`. It must therefore be called on the
+/// blocking pool whenever `archived_roots` is non-empty (INV-1). With an empty
+/// `archived_roots` the predicate short-circuits with zero syscalls and the call
+/// is a `HashSet` plus a `sort`.
+///
+/// Dedupe FIRST, filter SECOND. The result is identical either way, because the
+/// predicate is deterministic per path string, so this pays one canonicalize per
+/// DISTINCT path instead of one per occurrence: about 24 instead of about 200 on
+/// this layout, which is the same factor applied to the uncancellable blocking
+/// tail at shutdown. Do not fold it back into one chained `filter`.
+///
+/// Sorting is not cosmetic: at concurrency 1 the order decides who waits behind a
+/// hung repo, so a deterministic order makes that reproducible. Consequence worth
+/// knowing before reading a log: the alphabetically first path sits permanently at
+/// the head of every round. That pattern is expected, not a bug.
+fn build_work_list(
+    discovery: Vec<String>,
+    sessions: Vec<String>,
+    archived_roots: &[String],
+) -> Vec<String> {
+    let mut paths: Vec<String> = discovery
+        .into_iter()
+        .chain(sessions)
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .filter(|p| {
+            !crate::config::sessions_persistence::is_under_normalized_archived_roots(
+                p,
+                archived_roots,
+            )
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// #1298 - the single global POLLING producer of per-repo git state. Both watchers
+/// read the snapshot it publishes instead of spawning `git` themselves.
+///
+/// Takes `SettingsState` rather than an `AppHandle` on purpose: the sweeper emits
+/// nothing, so it must not acquire a Tauri transport dependency it does not need.
+/// It unifies DETECTION, not EMISSION (INV-4): the two watchers keep their own
+/// events, keys, cadences and emission gates.
+pub struct GitSweeper {
+    session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: crate::config::settings::SettingsState,
+}
+
+impl GitSweeper {
+    pub fn new(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        settings: crate::config::settings::SettingsState,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            session_manager,
+            settings,
+        })
+    }
+
+    /// A dedicated thread owning its own runtime, like `GitWatcher::start`, so the
+    /// sweep never competes with the Tauri runtime that serves the UI. NOT the same
+    /// runtime FLAVOUR: `Runtime::new()` builds one worker per core (24 on the
+    /// machine in #1298) and production already runs four such runtimes, so a fifth
+    /// to drive a loop whose design point is doing one thing at a time is
+    /// indefensible. One worker is sufficient by construction: `buffer_unordered`
+    /// needs concurrency, not parallelism; the work is process spawning and I/O, and
+    /// `enable_all()` installs the I/O and time drivers a current-thread runtime
+    /// needs; and `spawn_blocking` runs on the separate blocking pool regardless.
+    ///
+    /// The round itself sits inside the shutdown `select!`. Without it, worst-case
+    /// shutdown latency would be `N * DETECT_TIMEOUT`. Cancelling mid-round drops
+    /// the in-flight detection, and `kill_on_drop` terminates its `git.exe`.
+    pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
+        let sweeper = Arc::clone(self);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime for GitSweeper");
+            rt.block_on(async move {
+                loop {
+                    // `started` is taken BEFORE the round, which is what makes the
+                    // period max(floor, round duration) and what keeps the first
+                    // round from being delayed (plan D3).
+                    let started = std::time::Instant::now();
+                    let floor = tokio::select! {
+                        biased;
+                        _ = shutdown.token().cancelled() => break,
+                        floor = sweeper.round() => floor,
+                    };
+                    let remaining = floor.saturating_sub(started.elapsed());
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.token().cancelled() => break,
+                        _ = tokio::time::sleep(remaining) => {}
+                    }
+                }
+                log::info!("[GitSweeper] Shutdown signal received, stopping");
+            });
+        });
+    }
+
+    /// One sweep over the whole work list, returning the floor to apply afterwards
+    /// so both dials are read exactly once per round.
+    ///
+    /// An EMPTY round floors at the clamped minimum instead of the configured floor
+    /// (INV-2): a round with no work takes about 0ms, so an unfloored loop would
+    /// spin a core, and a full-length floor would leave the cold start blind for a
+    /// whole interval. Neither floor may be 0.
+    async fn round(&self) -> Duration {
+        let round_started = std::time::Instant::now();
+
+        // The settings read guard must NOT outlive this block: it is a
+        // `tokio::sync::RwLock`, so holding it across an await compiles fine and
+        // would block every `save_settings` write for the whole round.
+        let (concurrency, floor, archived) = {
+            let cfg = self.settings.read().await;
+            let (concurrency, floor) = sweep_dials(&cfg);
+            (concurrency, floor, cfg.archived_project_paths.clone())
+        };
+
+        let sessions: Vec<String> = {
+            let mgr = self.session_manager.read().await;
+            mgr.get_sessions_repos().await
+        }
+        .into_iter()
+        .flat_map(|(_, repos, _)| repos.into_iter().map(|r| r.source_path))
+        .collect();
+
+        let discovery = discovery_repo_paths();
+
+        // The WHOLE build, normalization included, runs on the blocking pool
+        // whenever the archived list is non-empty: `build_work_list` canonicalizes
+        // once per distinct candidate, which on this single-worker runtime would
+        // otherwise be unbounded blocking I/O with no await point for the shutdown
+        // `select!` to preempt (INV-1). The empty case short-circuits with zero
+        // syscalls, so it belongs on the async body and saves a task hop.
+        let paths = if archived.is_empty() {
+            build_work_list(discovery, sessions, &[])
+        } else {
+            // The closure is `move` and consumes both halves, so the join-failure
+            // arm needs its own copies.
+            let (discovery_fb, sessions_fb) = (discovery.clone(), sessions.clone());
+            match tokio::task::spawn_blocking(move || {
+                let roots = crate::config::sessions_persistence::normalize_project_roots(&archived);
+                build_work_list(discovery, sessions, &roots)
+            })
+            .await
+            {
+                Ok(paths) => paths,
+                Err(e) => {
+                    // A superset sweep is a freshness cost, never a correctness one.
+                    log::warn!(
+                        "[GitSweeper] work-list build failed ({e}); sweeping unfiltered this round"
+                    );
+                    build_work_list(discovery_fb, sessions_fb, &[])
+                }
+            }
+        };
+
+        // `detect_status_with_timeout(p).await` is evaluated as an ARGUMENT, before
+        // `publish_git_status` takes its std guard. Writing it the other way round
+        // would hold a `std::sync::Mutex` guard across an await.
+        futures::stream::iter(paths.iter().map(|p| async move {
+            publish_git_status(p, detect_status_with_timeout(p).await);
+        }))
+        .buffer_unordered(concurrency)
+        .for_each(|_| async {})
+        .await;
+
+        // Defence in depth, and the distinction matters: the tempting justification
+        // (round 1 sweeps an empty list and would wipe everything) is FALSE, since on
+        // round 1 the maps are empty too. Keep the guard anyway, it is free and it
+        // protects a future consumer, but do not defend it with that false mechanism.
+        if !paths.is_empty() {
+            retain_swept_paths(&paths.iter().cloned().collect());
+        }
+
+        let applied = if paths.is_empty() {
+            Duration::from_secs(SWEEP_MIN_INTERVAL_SECS)
+        } else {
+            floor
+        };
+
+        // The applied floor is in the line because it is the only way both clamps
+        // are observable at the DEFAULT log level: `sweep_dials`'s clamp lines are
+        // `debug!`. The level split matters too: an empty round floors at 1s, so an
+        // unconditional `info!` would emit 86,400 lines/day in exactly the state
+        // INV-2 exists to protect.
+        if paths.is_empty() {
+            log::debug!(
+                "[GitSweeper] round: {} path(s), concurrency={}, floor={}ms, {}ms",
+                paths.len(),
+                concurrency,
+                applied.as_millis(),
+                round_started.elapsed().as_millis()
+            );
+        } else {
+            log::info!(
+                "[GitSweeper] round: {} path(s), concurrency={}, floor={}ms, {}ms",
+                paths.len(),
+                concurrency,
+                applied.as_millis(),
+                round_started.elapsed().as_millis()
+            );
+        }
+
+        applied
     }
 }
 
@@ -562,6 +917,115 @@ mod tests {
         // Independent counter for a different path.
         assert_eq!(note_timeout(p2), 1);
         assert_eq!(note_timeout(p1), 4);
+    }
+
+    /// #1298 T1 - the read-site clamp, and the executable form of INV-2: no floor
+    /// may be 0, so a configured 0 becomes the 1s minimum rather than a spin.
+    #[test]
+    fn sweep_dials_clamps_both_dials() {
+        let mut cfg = AppSettings::default();
+        assert_eq!(sweep_dials(&cfg), (1, Duration::from_secs(10)));
+
+        cfg.git_sweep_concurrency = 0;
+        cfg.git_sweep_min_interval_secs = 0;
+        assert_eq!(sweep_dials(&cfg), (1, Duration::from_secs(1)));
+
+        cfg.git_sweep_concurrency = 9;
+        cfg.git_sweep_min_interval_secs = 100_000;
+        assert_eq!(sweep_dials(&cfg), (4, Duration::from_secs(3600)));
+    }
+
+    /// #1298 T2 - INV-7 (both halves survive), INV-3 (dedupe by exact string) and
+    /// D2 (archived dropped from BOTH halves, not just the discovery one).
+    #[test]
+    fn build_work_list_unions_dedupes_and_drops_archived() {
+        let archived = crate::config::sessions_persistence::normalize_project_roots(&[
+            "D:/test-1298/archived-project".to_string(),
+        ]);
+        let discovery = vec![
+            "D:/test-1298/live/repo-shared".to_string(),
+            "D:/test-1298/live/repo-dormant".to_string(),
+            "D:/test-1298/archived-project/repo-gone".to_string(),
+        ];
+        let sessions = vec![
+            "D:/test-1298/live/repo-shared".to_string(),
+            "D:/test-1298/unloaded/repo-session-only".to_string(),
+            "D:/test-1298/archived-project/repo-gone".to_string(),
+        ];
+
+        assert_eq!(
+            build_work_list(discovery, sessions, &archived),
+            vec![
+                "D:/test-1298/live/repo-dormant".to_string(),
+                "D:/test-1298/live/repo-shared".to_string(),
+                "D:/test-1298/unloaded/repo-session-only".to_string(),
+            ]
+        );
+    }
+
+    /// #1298 T3 - the snapshot contract, including INV-6: a published `None`
+    /// overwrites a previous `Some`, so `branch` does not hold across a failure.
+    #[test]
+    fn published_git_status_round_trips_and_unknown_paths_read_none() {
+        // Process-global state: unique-per-test path strings, as the
+        // `remember_dirty` and `note_timeout` tests do for the same reason.
+        let path = "/test-1298/snapshot/path-a";
+        assert!(read_git_status("/test-1298/snapshot/never-published").is_none());
+
+        let status = GitStatus {
+            branch: Some("main".to_string()),
+            dirty: true,
+        };
+        publish_git_status(path, Some(status.clone()));
+        assert_eq!(read_git_status(path), Some(status));
+
+        publish_git_status(path, None);
+        assert!(read_git_status(path).is_none());
+    }
+
+    /// #1298 T4 - the executable form of INV-8. The second half of the assertion is
+    /// the whole point: without the `LAST_DIRTY` eviction a dropped path reads
+    /// `None` from the snapshot and its last successful bool from `remember_dirty`,
+    /// i.e. a confident colour sourced from a detection that will never repeat.
+    ///
+    /// `live` spares every key already in the two process-global maps, because the
+    /// `remember_dirty_*` tests share them and run concurrently with this one; the
+    /// retain under test is the one that drops `path-dropped`.
+    #[test]
+    fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
+        let kept = "/test-1298/retain/path-kept";
+        let dropped = "/test-1298/retain/path-dropped";
+        let status = GitStatus {
+            branch: Some("main".to_string()),
+            dirty: true,
+        };
+
+        publish_git_status(kept, Some(status.clone()));
+        publish_git_status(dropped, Some(status));
+        assert_eq!(remember_dirty(kept, Some(true)), Some(true));
+        assert_eq!(remember_dirty(dropped, Some(true)), Some(true));
+
+        let mut live: HashSet<String> = git_status_snapshot()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        live.extend(
+            last_dirty_map()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned(),
+        );
+        live.remove(dropped);
+
+        retain_swept_paths(&live);
+
+        assert!(read_git_status(kept).is_some());
+        assert_eq!(remember_dirty(kept, None), Some(true));
+        assert!(read_git_status(dropped).is_none());
+        assert_eq!(remember_dirty(dropped, None), None);
     }
 
     // --- #1078: cached-origin parser semantics ---

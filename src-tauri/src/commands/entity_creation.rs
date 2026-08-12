@@ -2810,7 +2810,6 @@ pub async fn create_team(
 /// Create a workgroup from an existing team.
 /// Clones repos async — partial failures are reported but don't rollback the WG.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_workgroup(
     app: AppHandle,

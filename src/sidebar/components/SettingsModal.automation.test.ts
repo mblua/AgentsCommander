@@ -136,6 +136,8 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    gitSweepConcurrency: 1,
+    gitSweepMinIntervalSecs: 10,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
     resourceWatchdogAction: "warn",
@@ -155,6 +157,7 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     autoSelfClearByAgent: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     archivedProjectPaths: overrides.archivedProjectPaths ?? [],
     // #1077: get_settings returns a SettingsSnapshot; SettingsModal ignores the
@@ -337,6 +340,31 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.apiServerEnabled).toBe(true);
+
+    dispose();
+  });
+
+  it("renders the activity log checkbox and persists the toggle", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const toggle = byTestId<HTMLInputElement>("settings.general.activityLogEnabled");
+    expect(toggle.checked).toBe(false);
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.activityLogEnabled).toBe(true);
 
     dispose();
   });

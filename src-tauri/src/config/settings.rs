@@ -449,6 +449,8 @@ pub struct AppSettings {
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
+    #[serde(default)]
+    pub activity_log_enabled: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -485,6 +487,24 @@ pub struct AppSettings {
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
     pub spec_board_enabled: bool,
+    /// #1298 - how many repositories the global git sweeper detects at once.
+    /// Default 1, i.e. strictly sequential, which is the property the sweeper
+    /// exists for. Read once per round and clamped to 1..=4 at the read site, which
+    /// keeps the app from rewriting the user's hand-edited settings.json; changing
+    /// it needs a RESTART, since the sweeper reads the in-memory settings state and
+    /// nothing reloads that from disk. Raising it to 2 halves worst-case
+    /// head-of-line blocking (see INV-1) at the cost of reintroducing bounded
+    /// concurrency. No UI: same manual-opt-in shape as `spec_board_enabled`;
+    /// documented in docs/reference/settings.md.
+    #[serde(default = "default_git_sweep_concurrency")]
+    pub git_sweep_concurrency: u8,
+    /// #1298 - lower bound, in seconds, on one sweeper round. GUARD, not an
+    /// optimization: with an empty work list a round takes ~0ms and an unfloored
+    /// loop spins a core. Clamped to 1..=3600 at the read site; 0 is rejected by the
+    /// clamp for that reason. The effective period is max(this, round duration), so
+    /// on a large workgroup set the round duration dominates and this never fires.
+    #[serde(default = "default_git_sweep_min_interval_secs")]
+    pub git_sweep_min_interval_secs: u64,
     #[serde(default = "default_resource_monitor_enabled")]
     pub resource_monitor_enabled: bool,
     #[serde(default = "default_max_concurrent_agent_processes")]
@@ -751,6 +771,14 @@ fn default_main_sidebar_width() -> f64 {
     240.0
 }
 
+fn default_git_sweep_concurrency() -> u8 {
+    1
+}
+
+fn default_git_sweep_min_interval_secs() -> u64 {
+    10
+}
+
 fn default_resource_monitor_enabled() -> bool {
     true
 }
@@ -851,12 +879,15 @@ impl Default for AppSettings {
             coord_sort_by_activity: false,
             always_show_selected_workgroup: true,
             log_level: None,
+            activity_log_enabled: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: false,
             rail_collapsed_projects: Vec::new(),
             rail_favorites_collapsed: false,
             spec_board_enabled: false,
+            git_sweep_concurrency: default_git_sweep_concurrency(),
+            git_sweep_min_interval_secs: default_git_sweep_min_interval_secs(),
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
             resource_watchdog_action: default_resource_watchdog_action(),
@@ -2056,6 +2087,25 @@ fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
 /// See `read_log_level_from_path`. Resolves the canonical settings path and delegates.
 pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
+}
+
+fn read_activity_log_enabled_from_path(path: &std::path::Path) -> bool {
+    let Some(contents) = std::fs::read_to_string(path).ok() else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    v.get("activityLogEnabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub fn read_activity_log_enabled_only() -> bool {
+    match settings_path() {
+        Some(path) => read_activity_log_enabled_from_path(&path),
+        None => false,
+    }
 }
 
 /// #774: counter feeding the per-call unique temp filename for settings saves.
@@ -5140,6 +5190,17 @@ mod tests {
     }
 
     #[test]
+    fn activity_log_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.activity_log_enabled);
+        s.activity_log_enabled = true;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"activityLogEnabled\":true"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.activity_log_enabled);
+    }
+
+    #[test]
     fn log_level_round_trips_through_serde() {
         let mut s = AppSettings::default();
         assert!(s.log_level.is_none());
@@ -5254,6 +5315,53 @@ mod tests {
         std::fs::write(&path, r#"{"logLevel":"","other":"value"}"#).unwrap();
         assert_eq!(super::read_log_level_from_path(&path), Some(String::new()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_returns_true_when_true() {
+        let dir = std::env::temp_dir().join(format!("rale-present-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"activityLogEnabled":true,"other":"x"}"#).unwrap();
+        assert!(super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_key_missing() {
+        let dir = std::env::temp_dir().join(format!("rale-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"other":"value"}"#).unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_null() {
+        let dir = std::env::temp_dir().join(format!("rale-null-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"activityLogEnabled":null}"#).unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_json_malformed() {
+        let dir = std::env::temp_dir().join(format!("rale-malformed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ invalid json no closing brace").unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_only_defaults_false_when_settings_missing() {
+        let path =
+            std::env::temp_dir().join(format!("rale-no-such-file-{}.json", std::process::id()));
+        assert!(!super::read_activity_log_enabled_from_path(&path));
     }
 
     // ── #778: disk-authoritative project_paths (Design S) ────────────────────
@@ -6162,6 +6270,39 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.coord_sort_by_activity);
+    }
+
+    #[test]
+    fn activity_log_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "startOnlyCoordinators": true,
+            "sidebarAlwaysOnTop": false,
+            "raiseTerminalOnClick": true,
+            "voiceToTextEnabled": false,
+            "geminiApiKey": "",
+            "geminiModel": "gemini-2.5-flash",
+            "voiceAutoExecute": true,
+            "voiceAutoExecuteDelay": 15,
+            "sidebarZoom": 1.0,
+            "terminalZoom": 1.0,
+            "guideZoom": 1.0,
+            "darkfactoryZoom": 1.0,
+            "sidebarGeometry": null,
+            "terminalGeometry": null,
+            "webServerEnabled": false,
+            "webServerPort": 7777,
+            "webServerBind": "127.0.0.1",
+            "projectPath": null,
+            "projectPaths": [],
+            "sidebarStyle": "noir-minimal",
+            "onboardingDismissed": false
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.activity_log_enabled);
     }
 
     #[test]
