@@ -332,7 +332,7 @@ fn parse_session_id(session: &SessionInfo) -> Uuid {
 /// the create call, under a global lock so parallel tests cannot clobber each
 /// other. The spawned child keeps the inherited PATH after the guard restores
 /// the original value.
-static PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
+static PATH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct PathEnvGuard {
     previous: String,
@@ -573,7 +573,7 @@ exit /b 23");
         .expect("tokio runtime");
 
     runtime.block_on(async {
-        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_lock = PATH_ENV_LOCK.lock().await;
         let _path_guard = PathEnvGuard::prepend(&shim_dir);
         let proc_path = std::env::var("PATH").unwrap_or_default();
         assert!(
@@ -584,7 +584,11 @@ exit /b 23");
             &fixture,
             &settings,
             "claude",
-            &temp.join("repo-1271-native").join(".ac").join("_agent_claude").to_string_lossy().to_string(),
+            temp.join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .as_ref(),
             "1271 powershell shim",
         )
         .await;
@@ -673,26 +677,21 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         // The reporter directory is prepended to the spawned session PATH (the
         // session cwd is an agent dir, so the git-guard env carries the process
         // PATH into the child); the logical argv is passed exactly as configured.
-        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_lock = PATH_ENV_LOCK.lock().await;
         let _path_guard = PathEnvGuard::prepend(&reporter_dir);
         let created = create_plain_session(
             &fixture,
             &reporter_name,
-            logical_args
-                .iter()
-                .map(|s| *s)
-                .collect::<Vec<&str>>()
-                .as_slice(),
+            &logical_args[..],
             Some(ResolvedAgentHostShell {
                 program: powershell.clone(),
                 args: vec!["-NoProfile".to_string()],
             }),
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 managed native reporter",
         )
         .await
@@ -786,18 +785,17 @@ fn configured_powershell_batch_regression() {
 
     runtime.block_on(async {
         // Happy path: bare claude resolving to claude.cmd, nested cmd protocol.
-        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_lock = PATH_ENV_LOCK.lock().await;
         let _path_guard = PathEnvGuard::prepend(&shim_dir);
         let created = create_resolved_session(
             &fixture,
             &settings,
             "claude",
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 batch happy path",
         )
         .await;
@@ -825,12 +823,11 @@ fn configured_powershell_batch_regression() {
                 program: powershell.clone(),
                 args: vec!["-NoProfile".to_string()],
             }),
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 explicit batch rejection",
         )
         .await
@@ -856,18 +853,17 @@ fn configured_powershell_batch_regression() {
         // argument resolves to batch, the script rejects, host exits nonzero.
         let mut settings2 = settings.clone();
         settings2.agents = vec![agent_config("claude", "claude \"bad%arg\"")];
-        let _path_lock2 = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_lock2 = PATH_ENV_LOCK.lock().await;
         let _path_guard2 = PathEnvGuard::prepend(&shim_dir);
         let created2 = create_resolved_session(
             &fixture,
             &settings2,
             "claude",
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 batch runtime rejection",
         )
         .await;
@@ -1016,12 +1012,11 @@ fn configured_powershell_nonexistent_agent_fails_nonzero() {
                 program: powershell.clone(),
                 args: vec!["-NoProfile".to_string()],
             }),
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 nonexistent agent",
         )
         .await
@@ -1056,18 +1051,17 @@ fn configured_powershell_host_shutdown_reaps_agent() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
-        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_lock = PATH_ENV_LOCK.lock().await;
         let _path_guard = PathEnvGuard::prepend(&shim_dir);
         let created = create_resolved_session(
             &fixture,
             &settings,
             "claude",
-            &temp
-                .join("repo-1271-native")
+            temp.join("repo-1271-native")
                 .join(".ac")
                 .join("_agent_claude")
                 .to_string_lossy()
-                .to_string(),
+                .as_ref(),
             "1271 long-running host",
         )
         .await;

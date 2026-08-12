@@ -1547,11 +1547,13 @@ mod tests {
     async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web() {
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().to_string_lossy().to_string();
-        let mut settings = AppSettings::default();
-        settings.default_shell = "powershell.exe".to_string();
         // A conflicting/terminal configured option must fail before any PTY.
-        settings.default_shell_args = vec!["-Command".to_string()];
-        settings.agents = vec![test_agent("claude")];
+        let settings = AppSettings {
+            default_shell: "powershell.exe".to_string(),
+            default_shell_args: vec!["-Command".to_string()],
+            agents: vec![test_agent("claude")],
+            ..AppSettings::default()
+        };
         let state = ws_state_for_1271(settings);
 
         let response = dispatch(
@@ -1600,14 +1602,16 @@ mod tests {
     async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_web() {
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().to_string_lossy().to_string();
-        let mut settings = AppSettings::default();
-        settings.default_shell = "cmd.exe".to_string();
-        settings.default_shell_args = vec!["/D".to_string()];
         // The claude agent's logical argv carries a space token, which the cmd
         // payload domain rejects before PTY creation.
         let mut agent = test_agent("claude");
         agent.command = "claude \"a b\"".to_string();
-        settings.agents = vec![agent];
+        let settings = AppSettings {
+            default_shell: "cmd.exe".to_string(),
+            default_shell_args: vec!["/D".to_string()],
+            agents: vec![agent],
+            ..AppSettings::default()
+        };
         let state = ws_state_for_1271(settings);
 
         let response = dispatch(

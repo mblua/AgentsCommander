@@ -1117,15 +1117,15 @@ fn windows_arg(value: &str) -> String {
         }
         if i < chars.len() {
             if chars[i] == '"' {
-                out.extend(std::iter::repeat('\\').take(2 * run + 1));
+                out.extend(std::iter::repeat_n('\\', 2 * run + 1));
                 out.push('"');
             } else {
-                out.extend(std::iter::repeat('\\').take(run));
+                out.extend(std::iter::repeat_n('\\', run));
                 out.push(chars[i]);
             }
             i += 1;
         } else {
-            out.extend(std::iter::repeat('\\').take(2 * run));
+            out.extend(std::iter::repeat_n('\\', 2 * run));
         }
     }
     out.push('"');

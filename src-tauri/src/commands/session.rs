@@ -10340,20 +10340,22 @@ mod tests {
         .expect("resolved-agent create succeeds");
         assert_eq!(created.agent_id.as_deref(), Some("claude"));
 
-        let specs = backend.specs.lock().unwrap();
-        let spec = specs
-            .last()
-            .expect("the resolved-agent create reached the backend");
-        assert_eq!(spec.cmd, "claude", "agent program stays the command-to-run");
-        let host = spec
-            .resolved_agent_host_shell
-            .as_ref()
-            .expect("host shell snapshot must reach the backend");
-        assert_eq!(
-            host.program,
-            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-        );
-        assert_eq!(host.args, vec!["-NoProfile".to_string()]);
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs
+                .last()
+                .expect("the resolved-agent create reached the backend");
+            assert_eq!(spec.cmd, "claude", "agent program stays the command-to-run");
+            let host = spec
+                .resolved_agent_host_shell
+                .as_ref()
+                .expect("host shell snapshot must reach the backend");
+            assert_eq!(
+                host.program,
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+            );
+            assert_eq!(host.args, vec!["-NoProfile".to_string()]);
+        }
         close_test_coordinator(&app).await;
     }
 
@@ -10441,17 +10443,19 @@ mod tests {
             "the pending-effective metadata channel stays logical: {stored:?}"
         );
 
-        let specs = backend.specs.lock().unwrap();
-        let spec = specs.last().expect("create reached the backend");
-        assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
-        assert_eq!(
-            spec.resolved_agent_host_shell
-                .as_ref()
-                .expect("host shell present")
-                .args,
-            vec!["-NoProfile".to_string()],
-            "host-shell args travel only in the paired snapshot"
-        );
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs.last().expect("create reached the backend");
+            assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+            assert_eq!(
+                spec.resolved_agent_host_shell
+                    .as_ref()
+                    .expect("host shell present")
+                    .args,
+                vec!["-NoProfile".to_string()],
+                "host-shell args travel only in the paired snapshot"
+            );
+        }
         close_test_coordinator(&app).await;
     }
 }
