@@ -196,19 +196,31 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             } else {
                 None
             };
-            let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-                (
-                    spawn.shell.clone(),
-                    spawn.shell_args.clone(),
-                    Some(spawn.trusted_agent_label.clone()),
-                )
-            } else {
-                (
-                    str_or(args, "shell", &cfg.default_shell),
-                    str_vec_or(args, "shellArgs", &cfg.default_shell_args),
-                    None,
-                )
-            };
+            let (shell, shell_args, agent_label, resolved_agent_host_shell) =
+                if let Some(spawn) = resolved_spawn.as_ref() {
+                    // #1271 - same snapshot rule as the native path: the resolved
+                    // agent stays the command-to-run; the configured default host
+                    // shell (copied from this same config guard) travels separately
+                    // to the backend.
+                    (
+                        spawn.shell.clone(),
+                        spawn.shell_args.clone(),
+                        Some(spawn.trusted_agent_label.clone()),
+                        Some(
+                            crate::pty::backend::ResolvedAgentHostShell {
+                                program: cfg.default_shell.clone(),
+                                args: cfg.default_shell_args.clone(),
+                            },
+                        ),
+                    )
+                } else {
+                    (
+                        str_or(args, "shell", &cfg.default_shell),
+                        str_vec_or(args, "shellArgs", &cfg.default_shell_args),
+                        None,
+                        None,
+                    )
+                };
             drop(cfg);
 
             let info = crate::commands::session::create_session_inner(
@@ -225,6 +237,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → fresh create, no `--continue` injection
                 resolved_spawn,
+                resolved_agent_host_shell,
                 // #973 - browser-mode create. The browser client pushes its fitted size after
                 // attach, not at create time, so this keeps AC's 120x30 for now.
                 None,
@@ -1437,5 +1450,245 @@ mod tests {
         assert_eq!(event["payload"]["codingAgentId"], json!("codex"));
         assert_eq!(event["payload"]["profile"], json!("B"));
         assert_eq!(event["payload"]["updatedCount"], json!(1));
+    }
+
+    /// #1271 - full create-path harness for the web dispatcher. `ws_state_for`
+    /// lacks the SelectionCoordinator and the other states `create_session_inner`
+    /// requires, so the web-path invalid-input postcondition test builds them
+    /// here, mirroring the pty_lifecycle harness (plan Finding F).
+    fn ws_state_for_1271(settings: AppSettings) -> WsState {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(crate::session::warnings::new_session_warning_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build 1271 web test app");
+        let app_handle = app.handle().clone();
+        let broadcaster = WsBroadcaster::new();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+            None,
+        )));
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(&session_mgr),
+            shutdown.token().clone(),
+        );
+        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+
+        let full_app = tauri::Builder::default()
+            .any_thread()
+            .manage(settings.clone())
+            .manage(Arc::clone(&session_mgr))
+            .manage(Arc::clone(&pty_mgr))
+            .manage(coordinator.clone())
+            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(Arc::new(crate::RestoreInProgress(
+                std::sync::atomic::AtomicBool::new(false),
+            )))
+            .manage(crate::MasterToken::new("1271-web-test".into()))
+            .manage(crate::AppOutbox::new(
+                std::env::temp_dir()
+                    .join("agentscommander-1271-web-outbox")
+                    .to_string_lossy()
+                    .to_string(),
+            ))
+            .manage(crate::DetachedSessionsState::default())
+            .manage(Arc::new(crate::voice::tracker::VoiceTracker::new()))
+            .manage(shutdown)
+            .manage(Arc::new(crate::web::auth::WebAccessToken::new(
+                "1271-web-token".into(),
+            )))
+            .manage(broadcaster.clone())
+            .manage(crate::WebServerHandle::default())
+            .manage(crate::SpecBoardState::default())
+            .manage(crate::ConfigSeedLockState::default())
+            .manage(crate::session::warnings::new_session_warning_state())
+            .manage(Arc::new(tauri::async_runtime::Mutex::new(
+                crate::telegram::manager::TelegramBridgeManager::new(Arc::new(Mutex::new(
+                    HashMap::new(),
+                ))),
+            )))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build 1271 full web test app");
+        let full_handle = full_app.handle().clone();
+        coordinator
+            .start(full_handle.clone())
+            .expect("start selection coordinator");
+        let bootstrap = coordinator.clone();
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                bootstrap
+                    .submit_restore_first()
+                    .await
+                    .expect("open selection coordinator")
+                    .finish();
+            });
+        })
+        .join()
+        .expect("join selection bootstrap");
+        std::mem::forget(full_app);
+
+        WsState {
+            session_mgr,
+            pty_mgr,
+            settings,
+            broadcaster,
+            app_handle: full_handle,
+        }
+    }
+
+    // #1271 - the adapter's deterministic rejections are Windows-only (the
+    // host-shell adapter lives in the Windows spawn branch), so the full
+    // invalid-input postcondition rows are verified on Windows at both the
+    // session layer (here and the native twin) and the backend seam
+    // (adapter_spawn_sync_tests).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        // A conflicting/terminal configured option must fail before any PTY.
+        let settings = AppSettings {
+            default_shell: "powershell.exe".to_string(),
+            default_shell_args: vec!["-Command".to_string()],
+            agents: vec![test_agent("claude")],
+            ..AppSettings::default()
+        };
+        let state = ws_state_for_1271(settings);
+
+        let response = dispatch(
+            &state,
+            7,
+            "create_session",
+            &json!({ "cwd": cwd, "agentId": "claude" }),
+        )
+        .await;
+        let error = response["error"]
+            .as_str()
+            .expect("invalid configured host must fail the create");
+        assert!(error.contains("conflicting/terminal"), "{error}");
+        assert!(error.contains("agent adapter owns command execution"), "{error}");
+
+        // Full no-side-effect postcondition through the web creation path: no
+        // session row and no pending/metadata record survive the rejection.
+        assert!(
+            state.session_mgr.read().await.list_sessions().await.is_empty(),
+            "no session may appear in the session manager"
+        );
+        // The adapter rejection happens at the TOP of spawn_sync, before any
+        // spawn accounting or PTY acquisition, so while the coordinator worker
+        // still holds the pending binding (the rollback is async) the rejected
+        // id must already show no launch provenance, no PTY map entry, and no
+        // output task.
+        let pending_ids = state
+            .session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+                "no launch provenance may be recorded for the rejected session"
+            );
+            assert!(
+                !state.pty_mgr.lock().unwrap().has_session(*id),
+                "no PTY map entry may exist for the rejected session"
+            );
+            assert!(
+                state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none(),
+                "no output task may be attached for the rejected session"
+            );
+        }
+        // The coordinator worker rolls the pending binding back asynchronously
+        // (CreateFinalizationTicket::drop -> RollbackCreate), so poll for it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = state
+                .session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_web() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        // The claude agent's logical argv carries a space token, which the cmd
+        // payload domain rejects before PTY creation.
+        let mut agent = test_agent("claude");
+        agent.command = "claude \"a b\"".to_string();
+        let settings = AppSettings {
+            default_shell: "cmd.exe".to_string(),
+            default_shell_args: vec!["/D".to_string()],
+            agents: vec![agent],
+            ..AppSettings::default()
+        };
+        let state = ws_state_for_1271(settings);
+
+        let response = dispatch(
+            &state,
+            7,
+            "create_session",
+            &json!({ "cwd": cwd, "agentId": "claude" }),
+        )
+        .await;
+        let error = response["error"]
+            .as_str()
+            .expect("invalid cmd payload must fail the create");
+        assert!(error.contains("unsupported cmd payload character"), "{error}");
+        assert!(state.session_mgr.read().await.list_sessions().await.is_empty());
+        let pending_ids = state
+            .session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(crate::pty::spawn_diagnostics::record_for(*id).is_none());
+            assert!(!state.pty_mgr.lock().unwrap().has_session(*id));
+            assert!(state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none());
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = state
+                .session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 }

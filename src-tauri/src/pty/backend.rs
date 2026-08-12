@@ -132,6 +132,20 @@ impl PtyViewport {
     }
 }
 
+/// #1271 - one immutable snapshot of the configured default host shell paired
+/// with a resolved agent command. Internal plumbing only: never serialized,
+/// never an IPC field, never part of the frontend contract. `Some` only for a
+/// resolved agent; the local backend uses it to launch a non-direct Windows
+/// agent command through the configured shell instead of the historical
+/// unconditional `cmd.exe /C` fallback. It must be `pub` (not `pub(crate)`)
+/// because it appears in the signature of the `pub` session-creation family
+/// that the Windows integration regression calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAgentHostShell {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
 pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
@@ -145,6 +159,10 @@ pub(crate) struct BackendSpawnSpec {
     pub coding_agent: Option<CodingAgentKind>,
     pub cmd: String,
     pub args: Vec<String>,
+    /// #1271 - the configured host shell paired with a resolved agent command.
+    /// `Some` only for a resolved agent; `None` for ordinary shell sessions and
+    /// direct `.exe` agents. Backend-facing plumbing only, never an IPC field.
+    pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     pub cwd: String,
     pub selected_cwd: Option<String>,
     pub cols: u16,

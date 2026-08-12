@@ -1382,6 +1382,7 @@ mod tests {
             coding_agent: None,
             cmd: "cmd".to_string(),
             args: Vec::new(),
+            resolved_agent_host_shell: None,
             cwd: ".".to_string(),
             selected_cwd: None,
             cols: 80,
