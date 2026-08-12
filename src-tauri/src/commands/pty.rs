@@ -4,7 +4,10 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::pty::manager::PtyManager;
+use crate::pty::manager::{
+    PtyManager, TerminalOutputActivationResult, TerminalOutputControlState,
+    TerminalRendererMetrics, TerminalRendererMetricsWire,
+};
 use crate::voice::tracker::VoiceTrackingState;
 
 #[derive(Clone, serde::Serialize)]
@@ -516,6 +519,136 @@ pub fn get_screen_snapshot(
         cols: Some(snapshot.cols),
         sequence: snapshot.sequence,
     }))
+}
+
+fn parse_terminal_output_counter(value: &str, error: &'static str) -> Result<u64, String> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(error.to_string());
+    }
+    value.parse::<u64>().map_err(|_| error.to_string())
+}
+
+/// Test-only lock-attempt probe at the sole production manager-lock helper seam
+/// (Section 15.5.5). It counts every attempted `Mutex<PtyManager>` acquisition through
+/// `selected_terminal_output_route`, so a metrics command with an invalid DTO must record
+/// zero attempts while a valid DTO plus a deliberately poisoned manager records exactly one.
+#[cfg(test)]
+static TERMINAL_OUTPUT_LOCK_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn terminal_output_lock_attempts() -> usize {
+    TERMINAL_OUTPUT_LOCK_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+fn reset_terminal_output_lock_attempts() {
+    TERMINAL_OUTPUT_LOCK_ATTEMPTS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn selected_terminal_output_route(
+    pty_mgr: &State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: Uuid,
+) -> Result<Option<crate::pty::manager::PtyTerminalOutputRoute>, String> {
+    #[cfg(test)]
+    TERMINAL_OUTPUT_LOCK_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let manager = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?;
+    Ok(manager.terminal_output_route(session_id).ok())
+}
+
+#[tauri::command]
+pub(crate) fn activate_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+) -> Result<TerminalOutputActivationResult, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let route = {
+        let manager = pty_mgr
+            .lock()
+            .map_err(|_| "PtyManager lock poisoned".to_string())?;
+        manager
+            .terminal_output_route(session_id)
+            .map_err(|error| error.to_string())?
+    };
+    Ok(route.activate_terminal_output())
+}
+
+#[tauri::command]
+pub(crate) fn ready_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    snapshot_sequence: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let snapshot_sequence = parse_terminal_output_counter(
+        &snapshot_sequence,
+        "invalid terminal output snapshot sequence",
+    )?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.ready_terminal_output(generation, snapshot_sequence))
+}
+
+#[tauri::command]
+pub(crate) fn deactivate_terminal_output(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.deactivate_terminal_output(generation))
+}
+
+#[tauri::command]
+pub(crate) fn ack_terminal_output_delivery(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    first_sequence: String,
+    sequence: String,
+) -> Result<TerminalOutputControlState, String> {
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let first_sequence =
+        parse_terminal_output_counter(&first_sequence, "invalid terminal output first sequence")?;
+    let sequence = parse_terminal_output_counter(&sequence, "invalid terminal output sequence")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.ack_terminal_output_delivery(generation, first_sequence, sequence))
+}
+
+#[tauri::command]
+pub(crate) fn report_terminal_renderer_metrics(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    session_id: String,
+    generation: String,
+    metrics: TerminalRendererMetricsWire,
+) -> Result<TerminalOutputControlState, String> {
+    let metrics = TerminalRendererMetrics::try_from(metrics)
+        .map_err(|_| "invalid terminal renderer metrics".to_string())?;
+    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
+    let generation =
+        parse_terminal_output_counter(&generation, "invalid terminal output generation")?;
+    let Some(route) = selected_terminal_output_route(&pty_mgr, session_id)? else {
+        return Ok(TerminalOutputControlState::stale());
+    };
+    Ok(route.report_terminal_renderer_metrics(generation, metrics))
 }
 
 /// #1032 - the last context reading for a session, for a frontend that just mounted and
@@ -1812,5 +1945,536 @@ mod tests {
         assert!(record_fresh(&f).await);
         assert!(mirror_fresh(&f));
         assert!(!inject_continue_after_restore(record_fresh(&f).await));
+    }
+}
+
+/// #1283 R2 - the registered five-head control protocol, exercised through the real
+/// Tauri mock invoke transport with serialized requests/responses.
+///
+/// This module never calls a command head directly and never names `pty::output`
+/// policy in production shape: the manager route selects an injected test backend
+/// that delegates the five controls to a real `SessionIoFanout` sharing one
+/// `TerminalOutputCoordinator`.
+#[cfg(test)]
+mod terminal_output_control_ipc_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::errors::AppError;
+    use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+    use crate::pty::context_scrape::ScreenRowsRead;
+    use crate::pty::idle_detector::IdleDetector;
+    use crate::pty::manager::BackendWriteAuthority;
+    use crate::pty::output::{
+        PtyOutputTarget, PtyOutputTestSink, PtyScreenSnapshot, SessionIoFanout,
+        TerminalOutputActivationResult, TerminalOutputControlState, TerminalOutputCoordinator,
+    };
+    use crate::session::profile::IdleTuning;
+    use crate::telegram::manager::OutputSenderMap;
+
+    /// The controlled backend fixture: a real shared fanout/coordinator behind the
+    /// manager-selected route. The five controls and the legacy snapshot delegate to
+    /// the real fanout, so the registered command transport reaches the actual policy.
+    struct IpcControlBackend {
+        fanout: SessionIoFanout,
+    }
+
+    impl PtyBackend for IpcControlBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn spawn(
+            &self,
+            _spec: BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn write(
+            &self,
+            _authority: &BackendWriteAuthority,
+            _id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn kill(&self, _id: Uuid) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn has_session(&self, _id: Uuid) -> bool {
+            true
+        }
+        fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
+            self.fanout.get_screen_snapshot(id)
+        }
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+        fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+            ScreenRowsRead::Unavailable
+        }
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: PathBuf,
+        ) {
+        }
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+        fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+            self.fanout.activate_terminal_output(id)
+        }
+        fn ready_terminal_output(
+            &self,
+            id: Uuid,
+            generation: u64,
+            snapshot_sequence: u64,
+        ) -> TerminalOutputControlState {
+            self.fanout
+                .ready_terminal_output(id, generation, snapshot_sequence)
+        }
+        fn deactivate_terminal_output(
+            &self,
+            id: Uuid,
+            generation: u64,
+        ) -> TerminalOutputControlState {
+            self.fanout.deactivate_terminal_output(id, generation)
+        }
+        fn ack_terminal_output_delivery(
+            &self,
+            id: Uuid,
+            generation: u64,
+            first_sequence: u64,
+            sequence: u64,
+        ) -> TerminalOutputControlState {
+            self.fanout
+                .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
+        }
+        fn report_terminal_renderer_metrics(
+            &self,
+            id: Uuid,
+            generation: u64,
+            metrics: TerminalRendererMetrics,
+        ) -> TerminalOutputControlState {
+            self.fanout
+                .report_terminal_renderer_metrics(id, generation, metrics)
+        }
+        fn shutdown_terminal_output(&self) {
+            self.fanout.shutdown_terminal_output();
+        }
+    }
+
+    fn control_app(
+        pty_mgr: Arc<Mutex<PtyManager>>,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        tauri::WebviewWindow<tauri::test::MockRuntime>,
+    ) {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                activate_terminal_output,
+                ready_terminal_output,
+                deactivate_terminal_output,
+                ack_terminal_output_delivery,
+                report_terminal_renderer_metrics,
+            ])
+            .manage(pty_mgr)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build terminal-output control IPC app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build terminal-output control IPC webview");
+        (app, webview)
+    }
+
+    /// One registered session behind a real fanout/coordinator with a recorded route,
+    /// plus a shared recorder sink for the deterministic pre-ready zero-effect proof.
+    struct ControlFixture {
+        _app: tauri::App<tauri::test::MockRuntime>,
+        webview: tauri::WebviewWindow<tauri::test::MockRuntime>,
+        session_id: Uuid,
+        _sink: PtyOutputTestSink,
+        fanout: SessionIoFanout,
+        token: crate::pty::output::PtyOutputRegistrationToken,
+        pty_mgr: Arc<Mutex<PtyManager>>,
+    }
+
+    fn fixture_with_sink(sink: PtyOutputTestSink) -> ControlFixture {
+        let session_id = Uuid::new_v4();
+        let coordinator = TerminalOutputCoordinator::new();
+        let fanout = SessionIoFanout::with_coordinator(
+            Arc::new(Mutex::new(HashMap::new())) as OutputSenderMap,
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+            Arc::clone(&coordinator),
+        );
+        let token = fanout
+            .register_session(
+                session_id,
+                IdleTuning::DEFAULT,
+                30,
+                120,
+                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
+            )
+            .expect("register IPC control session");
+        let backend: Arc<dyn PtyBackend> = Arc::new(IpcControlBackend {
+            fanout: fanout.clone(),
+        });
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+        pty_mgr
+            .lock()
+            .expect("lock manager for route")
+            .record_route(session_id, SessionBackendKind::LocalProcess);
+        let (app, webview) = control_app(Arc::clone(&pty_mgr));
+        ControlFixture {
+            _app: app,
+            webview,
+            session_id,
+            _sink: sink,
+            fanout,
+            token,
+            pty_mgr,
+        }
+    }
+
+    fn invoke(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        match tauri::test::get_ipc_response(
+            webview,
+            tauri::webview::InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        ) {
+            Ok(body) => body.deserialize::<serde_json::Value>().map_err(|error| {
+                serde_json::Value::String(format!("response deserialize failed: {error}"))
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn wait_for_sink_events(sink: &PtyOutputTestSink, expected: usize) {
+        let deadline = Instant::now() + Duration::from_millis(2000);
+        while Instant::now() < deadline {
+            if sink.lock().expect("sink").len() >= expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("control sink did not reach {expected} event(s)");
+    }
+
+    /// A complete, valid 25-key renderer metrics payload for the registered head.
+    fn valid_metrics() -> serde_json::Value {
+        serde_json::json!({
+            "retainedTerminalCount": 1,
+            "visibleTerminalCount": 1,
+            "webglContextCount": 1,
+            "webglContextLossCount": 0,
+            "lruEvictionCount": 0,
+            "outputEventsReceived": 0,
+            "inactiveOrStaleEventsRejected": 0,
+            "bytesAccepted": 0,
+            "bytesWritten": 0,
+            "replayPendingBytes": 0,
+            "livePendingBytes": 0,
+            "writeInFlightBytes": 0,
+            "combinedAdmissionHighWaterBytes": 0,
+            "pendingHighWaterBytes": 0,
+            "resyncCount": 0,
+            "activationReadyAcknowledgements": 0,
+            "activationReadyRejections": 0,
+            "activationReadyTimeouts": 0,
+            "generationHealthPollsScheduled": 0,
+            "generationHealthPollsStarted": 0,
+            "generationHealthPollsCancelled": 0,
+            "replayPendingLivenessRecoveries": 0,
+            "snapshotReplayDurationMs": 0,
+            "retiredWriteCallbacksIgnoredAfterDisposal": 0,
+            "maxAnimationFrameLagMs": 0,
+        })
+    }
+
+    /// Serializes the two IPC tests: the shared lock-attempt probe counter is only
+    /// meaningful when no other registered control runs concurrently.
+    static IPC_CONTROL_PROBE_SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn registered_terminal_output_controls_preserve_readiness_boundary() {
+        let _serial = IPC_CONTROL_PROBE_SERIAL
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+        let fixture = fixture_with_sink(Arc::clone(&sink));
+        let id = fixture.session_id.to_string();
+
+        // 1. Activation is a tagged `activated` with the exact session id, a canonical
+        // decimal generation, and a canonical decimal snapshot sequence.
+        let activated = invoke(
+            &fixture.webview,
+            "activate_terminal_output",
+            serde_json::json!({ "sessionId": id }),
+        )
+        .expect("activate succeeds");
+        assert_eq!(activated["kind"], "activated");
+        assert_eq!(activated["activation"]["sessionId"], id);
+        let generation = activated["activation"]["generation"]
+            .as_str()
+            .expect("canonical generation string")
+            .to_string();
+        assert!(generation.bytes().all(|b| b.is_ascii_digit()));
+        let snapshot_sequence = activated["activation"]["snapshot"]["sequence"]
+            .as_str()
+            .expect("canonical snapshot sequence string")
+            .to_string();
+        assert!(snapshot_sequence.bytes().all(|b| b.is_ascii_digit()));
+        assert!(activated["activation"]["snapshot"]["rows"].is_number());
+        assert!(activated["activation"]["snapshot"]["cols"].is_number());
+        assert!(activated["activation"]["snapshot"]["data"].is_array());
+
+        // 2. Before readiness the registered session holds at most its bounded pre-ready
+        // batch with zero normal credit: parsing a chunk emits neither data nor marker.
+        fixture
+            .fanout
+            .handle_output(&fixture.token, &id, b"pre-ready batch".to_vec());
+        assert!(
+            sink.lock().expect("sink").is_empty(),
+            "pre-ready output must not reach the target"
+        );
+
+        // A stale or mismatched readiness must not enable delivery.
+        let stale_ready = invoke(
+            &fixture.webview,
+            "ready_terminal_output",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": "999999",
+                "snapshotSequence": snapshot_sequence,
+            }),
+        )
+        .expect("stale ready returns a state");
+        assert_eq!(stale_ready["kind"], "stale");
+        assert!(
+            sink.lock().expect("sink").is_empty(),
+            "stale readiness must not flush the pre-ready batch"
+        );
+
+        // 3. Exact readiness returns `active` for the exact generation and snapshot S.
+        let active = invoke(
+            &fixture.webview,
+            "ready_terminal_output",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "snapshotSequence": snapshot_sequence,
+            }),
+        )
+        .expect("exact ready returns a state");
+        assert_eq!(active["kind"], "active");
+        assert_eq!(active["sessionId"], id);
+        assert_eq!(active["generation"], generation);
+
+        // The pre-ready batch is the first ordered active delivery.
+        wait_for_sink_events(&sink, 1);
+        let first_event = sink.lock().expect("sink").first().cloned().unwrap();
+        assert_eq!(first_event.0, id);
+        assert_eq!(first_event.1, b"pre-ready batch");
+        let sequence = first_event.2.expect("data event carries its sequence");
+
+        // 4. A wrong acknowledgement cannot release the in-flight credit.
+        let wrong_ack = invoke(
+            &fixture.webview,
+            "ack_terminal_output_delivery",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "firstSequence": sequence.to_string(),
+                "sequence": (sequence + 1).to_string(),
+            }),
+        )
+        .expect("wrong ack returns a state");
+        assert_eq!(wrong_ack["kind"], "stale");
+
+        // The exact canonical first/final sequence releases the credit and stays active.
+        let exact_ack = invoke(
+            &fixture.webview,
+            "ack_terminal_output_delivery",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "firstSequence": sequence.to_string(),
+                "sequence": sequence.to_string(),
+            }),
+        )
+        .expect("exact ack returns a state");
+        assert_eq!(exact_ack["kind"], "active");
+        assert_eq!(exact_ack["generation"], generation);
+
+        // 5. Both a valid and an invalid metrics request exercise the registered head:
+        // the valid DTO reaches the route (active control state), the invalid DTO is
+        // rejected with the exact error before any route/lock work.
+        let metrics_ok = invoke(
+            &fixture.webview,
+            "report_terminal_renderer_metrics",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "metrics": valid_metrics(),
+            }),
+        )
+        .expect("valid metrics returns a state");
+        assert_eq!(metrics_ok["kind"], "active");
+
+        let metrics_err = invoke(
+            &fixture.webview,
+            "report_terminal_renderer_metrics",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "metrics": { "retainedTerminalCount": 1 },
+            }),
+        )
+        .expect_err("invalid metrics DTO is rejected");
+        assert_eq!(
+            metrics_err,
+            serde_json::Value::String("invalid terminal renderer metrics".to_string())
+        );
+
+        // 6. Exact deactivation returns `inactive`; every later control for the retired
+        // generation is inert and returns stale.
+        let inactive = invoke(
+            &fixture.webview,
+            "deactivate_terminal_output",
+            serde_json::json!({ "sessionId": id, "generation": generation }),
+        )
+        .expect("deactivate returns a state");
+        assert_eq!(inactive["kind"], "inactive");
+        assert_eq!(inactive["sessionId"], id);
+        assert_eq!(inactive["generation"], generation);
+
+        let later_ready = invoke(
+            &fixture.webview,
+            "ready_terminal_output",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "snapshotSequence": snapshot_sequence,
+            }),
+        )
+        .expect("later ready returns a state");
+        assert_eq!(later_ready["kind"], "stale");
+        let later_ack = invoke(
+            &fixture.webview,
+            "ack_terminal_output_delivery",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": generation,
+                "firstSequence": sequence.to_string(),
+                "sequence": sequence.to_string(),
+            }),
+        )
+        .expect("later ack returns a state");
+        assert_eq!(later_ack["kind"], "stale");
+        let later_deactivate = invoke(
+            &fixture.webview,
+            "deactivate_terminal_output",
+            serde_json::json!({ "sessionId": id, "generation": generation }),
+        )
+        .expect("later deactivate returns a state");
+        assert_eq!(later_deactivate["kind"], "stale");
+    }
+
+    /// DTO validation precedence and the poisoned-manager lock probe (Sections 9.15
+    /// and 15.5.5): an invalid DTO wins with zero manager-lock attempts, while a valid
+    /// DTO plus a deliberately poisoned manager attempts the lock exactly once and
+    /// returns the exact poison error with no route/coordinator call.
+    #[test]
+    fn invalid_metrics_dto_wins_before_a_poisoned_manager_lock() {
+        let _serial = IPC_CONTROL_PROBE_SERIAL
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        reset_terminal_output_lock_attempts();
+
+        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+        let fixture = fixture_with_sink(Arc::clone(&sink));
+        let id = fixture.session_id.to_string();
+
+        // Poison the outer manager mutex while a live guard is held: lock it on this
+        // thread, hand the guard to a worker that drops it while panicking, which is the
+        // only way to poison a `std::sync::Mutex` from outside the guard holder.
+        let poisoned = {
+            let poisoned_mgr = Arc::clone(&fixture.pty_mgr);
+            std::thread::spawn(move || {
+                let _guard = poisoned_mgr
+                    .lock()
+                    .expect("acquire manager guard to poison it");
+                panic!("deliberate test poison");
+            })
+            .join()
+        };
+        assert!(poisoned.is_err());
+        assert!(fixture.pty_mgr.is_poisoned());
+
+        let lock_before = terminal_output_lock_attempts();
+
+        // Invalid DTO + poisoned manager: the metrics error wins with zero lock attempts.
+        let invalid = invoke(
+            &fixture.webview,
+            "report_terminal_renderer_metrics",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": "1",
+                "metrics": serde_json::json!({ "retainedTerminalCount": -1 }),
+            }),
+        )
+        .expect_err("invalid metrics DTO is rejected");
+        assert_eq!(
+            invalid,
+            serde_json::Value::String("invalid terminal renderer metrics".to_string())
+        );
+        assert_eq!(
+            terminal_output_lock_attempts(),
+            lock_before,
+            "invalid DTO must not attempt the manager lock"
+        );
+
+        // Valid DTO + poisoned manager: exactly one lock attempt, exact poison error,
+        // and no route/coordinator call after the lock (the manager never answers).
+        let valid = invoke(
+            &fixture.webview,
+            "report_terminal_renderer_metrics",
+            serde_json::json!({
+                "sessionId": id,
+                "generation": "1",
+                "metrics": valid_metrics(),
+            }),
+        )
+        .expect_err("poisoned manager rejects the control");
+        assert_eq!(
+            valid,
+            serde_json::Value::String("PtyManager lock poisoned".to_string())
+        );
+        assert_eq!(
+            terminal_output_lock_attempts(),
+            lock_before + 1,
+            "valid DTO must attempt the manager lock exactly once"
+        );
     }
 }

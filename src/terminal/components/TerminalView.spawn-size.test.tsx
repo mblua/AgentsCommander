@@ -43,6 +43,7 @@ import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/sessio
 interface FakeTerminalInstance {
   cols: number;
   rows: number;
+  element: HTMLElement | null;
   resizes: { cols: number; rows: number }[];
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
@@ -85,8 +86,11 @@ vi.mock("@xterm/xterm", () => ({
     dispose(): void {
       this.resizeHandlers.clear();
     }
-    write(data: unknown): void {
+    write(data: unknown, callback?: () => void): void {
       this.writes.push(data);
+      // Real xterm fires the write callback when the write completes; the
+      // #1283 admission uses it to settle the replay/write gate.
+      callback?.();
     }
     reset(): void {}
     scrollToBottom(): void {}
@@ -180,9 +184,49 @@ function setupTerminalTransport(fake: FakeTransport): void {
   ]);
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
-  fake.resolve("get_screen_snapshot", null);
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
+
+  // #1283: the selection path drives the activation protocol instead of the
+  // legacy getScreenSnapshot fetch. The snapshot reports the PTY size the
+  // terminal was created at (backend truth), so no snapshot resize fires and
+  // the resize/viewport behavior under test is untouched.
+  fake.onInvoke("activate_terminal_output", (args) => {
+    const sessionId = String(args.sessionId);
+    const instance = xterm.instances.find(
+      (candidate) =>
+        candidate.element?.getAttribute("data-ac-session-id") === sessionId,
+    );
+    return {
+      kind: "activated",
+      activation: {
+        sessionId,
+        generation: "1",
+        snapshot: {
+          data: [],
+          rows: instance?.rows ?? 24,
+          cols: instance?.cols ?? 80,
+          sequence: "0",
+        },
+      },
+    };
+  });
+  fake.onInvoke("ready_terminal_output", (args) => ({
+    kind: "active",
+    sessionId: String(args.sessionId),
+    generation: String(args.generation),
+  }));
+  fake.onInvoke("deactivate_terminal_output", (args) => ({
+    kind: "inactive",
+    sessionId: String(args.sessionId),
+    generation: String(args.generation),
+  }));
+  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
+  fake.onInvoke("report_terminal_renderer_metrics", (args) => ({
+    kind: "active",
+    sessionId: String(args.sessionId),
+    generation: String(args.generation),
+  }));
 }
 
 function resizesFor(fake: FakeTransport, sessionId: string) {
