@@ -12,6 +12,12 @@
 //!    the UTF-8 byte lengths of all arguments, modulo 256. The test computes
 //!    the same value, so the exit-code assertion is exact.
 //!
+//! The echo loop additionally stops when it has observed the control line
+//! `AC_1271_STOP` (with any line ending): in a PTY the child's stdin is the
+//! ConPTY pipe, which never reaches EOF while the app holds the master, so the
+//! regression sends this control line through the normal `PtyManager::write`
+//! path to end the reporter deterministically.
+//!
 //! Cargo auto-discovers `src/bin/*.rs`, so no `Cargo.toml` entry is needed. The
 //! integration test locates the built binary at compile time through the
 //! Cargo-provided `CARGO_BIN_EXE_ac_argv_reporter` environment variable.
@@ -27,12 +33,24 @@ fn main() {
         let _ = stdout.flush();
     }
     let mut buf = [0u8; 4096];
+    let mut pending: Vec<u8> = Vec::new();
+    const STOP: &[u8] = b"AC_1271_STOP";
     loop {
         match std::io::stdin().read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let _ = stdout.write_all(&buf[..n]);
                 let _ = stdout.flush();
+                pending.extend_from_slice(&buf[..n]);
+                if pending.windows(STOP.len()).any(|w| w == STOP) {
+                    break;
+                }
+                // Keep only the last STOP.len()-1 bytes so a marker split across
+                // two reads still matches, while a trailing CR (ConPTY cooked
+                // input turns LF into CR) cannot displace the marker bytes.
+                if pending.len() >= STOP.len() {
+                    pending.drain(..pending.len() - (STOP.len() - 1));
+                }
             }
         }
     }

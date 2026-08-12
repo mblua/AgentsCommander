@@ -24,7 +24,7 @@ use agentscommander_lib::commands::session::{
 };
 use agentscommander_lib::config::agent_command::build_agent_spawn_command;
 use agentscommander_lib::config::settings::{
-    save_settings_with_project_paths, AppSettings, CodingAgentEnv, SettingsState,
+    save_settings_with_project_paths, AppSettings, SettingsState,
 };
 use agentscommander_lib::pty::backend::ResolvedAgentHostShell;
 use agentscommander_lib::pty::git_watcher::GitWatcher;
@@ -47,7 +47,7 @@ use agentscommander_lib::{
     SpecBoardState, WebServerHandle,
 };
 use serde::Deserialize;
-use tauri::{Listener, Manager};
+use tauri::Listener;
 use uuid::Uuid;
 
 const OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -117,8 +117,8 @@ struct Fixture {
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
     captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>>,
-    captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     listener_errors: Arc<Mutex<Vec<String>>>,
+    tracked_sessions: Arc<Mutex<Vec<Uuid>>>,
     _temp: tempfile::TempDir,
     _env_guard: TestConfigEnvGuard,
     _env_lock: std::sync::MutexGuard<'static, ()>,
@@ -138,10 +138,20 @@ impl Fixture {
         self.listener_errors.lock().unwrap().clone()
     }
 
-    /// Best-effort teardown of a session's PTY when the test ends while the
-    /// session may still be running.
-    fn cleanup_session(&self, pty_mgr: &Arc<Mutex<PtyManager>>, id: Uuid) {
-        let _ = pty_mgr.lock().unwrap().kill(id);
+    /// Register a session for best-effort PTY teardown at fixture drop. The
+    /// kill path forgets the spawn record, so tests must assert provenance and
+    /// exit codes BEFORE the fixture is dropped.
+    fn track_session(&self, id: Uuid) {
+        self.tracked_sessions.lock().unwrap().push(id);
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let ids: Vec<Uuid> = self.tracked_sessions.lock().unwrap().clone();
+        for id in ids {
+            let _ = self.pty_mgr.lock().unwrap().kill(id);
+        }
     }
 }
 
@@ -185,7 +195,6 @@ fn make_fixture() -> Fixture {
     .expect("seed isolated settings");
 
     let captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>> = Arc::new(Mutex::new(HashMap::new()));
     let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -227,7 +236,6 @@ fn make_fixture() -> Fixture {
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown_signal.token().clone());
 
     let captured = Arc::clone(&captured_output);
-    let seq_capture = Arc::clone(&captured_sequences);
     let error_capture = Arc::clone(&listener_errors);
     let app = tauri::Builder::default()
         .any_thread()
@@ -283,17 +291,11 @@ fn make_fixture() -> Fixture {
                     .entry(payload.session_id.clone())
                     .or_default()
                     .extend(payload.data);
-                match payload.sequence {
-                    Some(sequence) => seq_capture
+                if payload.sequence.is_none() {
+                    error_capture
                         .lock()
                         .unwrap()
-                        .entry(payload.session_id)
-                        .or_default()
-                        .push(sequence),
-                    None => error_capture
-                        .lock()
-                        .unwrap()
-                        .push(format!("pty_output payload missing sequence; raw={raw}")),
+                        .push(format!("pty_output payload missing sequence; raw={raw}"));
                 }
             }
             Err(err) => error_capture.lock().unwrap().push(format!(
@@ -307,8 +309,8 @@ fn make_fixture() -> Fixture {
         session_mgr,
         pty_mgr,
         captured_output,
-        captured_sequences,
         listener_errors,
+        tracked_sessions: Arc::new(Mutex::new(Vec::new())),
         _temp: temp,
         _env_guard: env_guard,
         _env_lock: env_lock,
@@ -323,12 +325,35 @@ fn parse_session_id(session: &SessionInfo) -> Uuid {
     Uuid::parse_str(&session.id).expect("session id is uuid")
 }
 
-/// Agent config with a PATH row that prepends `dir`, so a bare logical program
-/// (e.g. `claude` or `ac_argv_reporter`) resolves through the spawned session's
-/// PATH. `AppSettings` carries a crate-private hidden field, so out-of-crate
-/// struct literals are not permitted; mutate a Default value instead.
-fn agent_with_path(id: &str, command: &str, dir: &Path) -> agentscommander_lib::config::settings::AgentConfig {
-    let mut agent = agentscommander_lib::config::settings::AgentConfig {
+/// A bare logical program (e.g. `claude` or `ac_argv_reporter`) must resolve
+/// through the spawned session's PATH, which the child inherits from this
+/// process. Agent env rows cannot carry PATH (it is a reserved key), so the
+/// tests prepend the fixture directory to the process PATH for the duration of
+/// the create call, under a global lock so parallel tests cannot clobber each
+/// other. The spawned child keeps the inherited PATH after the guard restores
+/// the original value.
+static PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct PathEnvGuard {
+    previous: String,
+}
+
+impl PathEnvGuard {
+    fn prepend(dir: &Path) -> Self {
+        let previous = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{};{}", path_to_string(dir), previous));
+        Self { previous }
+    }
+}
+
+impl Drop for PathEnvGuard {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.previous);
+    }
+}
+
+fn agent_config(id: &str, command: &str) -> agentscommander_lib::config::settings::AgentConfig {
+    agentscommander_lib::config::settings::AgentConfig {
         id: id.to_string(),
         label: id.to_string(),
         command: command.to_string(),
@@ -339,19 +364,7 @@ fn agent_with_path(id: &str, command: &str, dir: &Path) -> agentscommander_lib::
         config_seed: None,
         context_regex: None,
         backend: Default::default(),
-    };
-    let path_value = format!(
-        "{};{}",
-        path_to_string(dir),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    agent.envs.push(CodingAgentEnv {
-        key: "PATH".to_string(),
-        value: path_value,
-        source: agentscommander_lib::config::settings::CodingAgentEnvSource::User,
-        enabled: true,
-    });
-    agent
+    }
 }
 
 fn base_settings(host_program: &str, host_args: &[&str], project: &Path) -> AppSettings {
@@ -504,18 +517,6 @@ fn process_exists(pid: u32) -> bool {
     matches!(status, Ok(status) if status.success())
 }
 
-fn stop_process(pid: u32) -> std::io::Result<()> {
-    Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!("Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"),
-        ])
-        .status()
-        .map(|_| ())
-}
-
 fn write_cmd_shim(path: &Path, body: &str) {
     std::fs::write(path, format!("@echo off\r\n{body}\r\n")).expect("write cmd shim");
 }
@@ -557,10 +558,14 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
     let shim_path = write_claude_shim(&shim_dir, "AC_SHIM_MARKER", 23);
     assert!(shim_path.is_file());
+    // DIAGNOSTIC: dump PATH for this run.
+    write_cmd_shim(&shim_path, "echo AC_SHIM_MARKER
+echo PATHDUMP=[%PATH%]
+exit /b 23");
 
     let powershell = powershell_required_host();
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    settings.agents = vec![agent_with_path("claude", "claude", &shim_dir)];
+    settings.agents = vec![agent_config("claude", "claude")];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -568,16 +573,25 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
+        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = PathEnvGuard::prepend(&shim_dir);
+        let proc_path = std::env::var("PATH").unwrap_or_default();
+        assert!(
+            proc_path.starts_with(&path_to_string(&shim_dir)),
+            "PATH guard must prepend the shim dir: {proc_path}"
+        );
         let created = create_resolved_session(
             &fixture,
             &settings,
             "claude",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &temp.join("repo-1271-native").join(".ac").join("_agent_claude").to_string_lossy().to_string(),
             "1271 powershell shim",
         )
         .await;
+        drop(_path_guard);
+        drop(_path_lock);
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
 
         // Provenance: the configured PowerShell path, not cmd.exe.
         let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
@@ -649,8 +663,6 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
     ];
 
     let powershell = powershell_required_host();
-    let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    settings.agents = vec![agent_with_path("reporter", &reporter_name, &reporter_dir)];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -658,16 +670,37 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
-        let created = create_resolved_session(
+        // The reporter directory is prepended to the spawned session PATH (the
+        // session cwd is an agent dir, so the git-guard env carries the process
+        // PATH into the child); the logical argv is passed exactly as configured.
+        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = PathEnvGuard::prepend(&reporter_dir);
+        let created = create_plain_session(
             &fixture,
-            &settings,
-            "reporter",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &reporter_name,
+            logical_args
+                .iter()
+                .map(|s| *s)
+                .collect::<Vec<&str>>()
+                .as_slice(),
+            Some(ResolvedAgentHostShell {
+                program: powershell.clone(),
+                args: vec!["-NoProfile".to_string()],
+            }),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 managed native reporter",
         )
-        .await;
+        .await
+        .expect("reporter session create must succeed");
+        drop(_path_guard);
+        drop(_path_lock);
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
 
         let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
         let argv = record.argv();
@@ -713,7 +746,7 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id)
             .await
             .expect("acquire input writer for stop");
-        PtyManager::write_with_permit(&permit, b"AC_1271_STOP\n")
+        PtyManager::write_with_permit(&permit, b"AC_1271_STOP\r\n")
             .expect("write stop control line");
         drop(permit);
         let expected_code = reporter_exit_code(&logical_args);
@@ -744,7 +777,7 @@ fn configured_powershell_batch_regression() {
 
     let powershell = powershell_required_host();
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    settings.agents = vec![agent_with_path("claude", "claude", &shim_dir)];
+    settings.agents = vec![agent_config("claude", "claude")];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -753,16 +786,25 @@ fn configured_powershell_batch_regression() {
 
     runtime.block_on(async {
         // Happy path: bare claude resolving to claude.cmd, nested cmd protocol.
+        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = PathEnvGuard::prepend(&shim_dir);
         let created = create_resolved_session(
             &fixture,
             &settings,
             "claude",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 batch happy path",
         )
         .await;
+        drop(_path_guard);
+        drop(_path_lock);
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
         wait_for_output(&fixture, &created.id, "AC_BATCH_MARKER", OUTPUT_TIMEOUT)
             .await
             .expect("batch shim marker must arrive through PTY output");
@@ -783,7 +825,12 @@ fn configured_powershell_batch_regression() {
                 program: powershell.clone(),
                 args: vec!["-NoProfile".to_string()],
             }),
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 explicit batch rejection",
         )
         .await
@@ -808,17 +855,26 @@ fn configured_powershell_batch_regression() {
         // Post-lookup runtime rejection: bare claude + unsupported logical
         // argument resolves to batch, the script rejects, host exits nonzero.
         let mut settings2 = settings.clone();
-        settings2.agents = vec![agent_with_path("claude", "claude \"bad%arg\"", &shim_dir)];
+        settings2.agents = vec![agent_config("claude", "claude \"bad%arg\"")];
+        let _path_lock2 = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard2 = PathEnvGuard::prepend(&shim_dir);
         let created2 = create_resolved_session(
             &fixture,
             &settings2,
             "claude",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 batch runtime rejection",
         )
         .await;
+        drop(_path_guard2);
+        drop(_path_lock2);
         let id2 = parse_session_id(&created2);
-        fixture.cleanup_session(&fixture.pty_mgr, id2);
+        fixture.track_session(id2);
         let code2 = wait_for_exit_code(&fixture, id2, EXIT_TIMEOUT)
             .await
             .expect("runtime batch rejection must exit nonzero");
@@ -870,7 +926,7 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
         .await
         .expect("cmd-host shim launch must succeed");
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
 
         let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
         let argv = record.argv();
@@ -941,11 +997,10 @@ fn configured_powershell_nonexistent_agent_fails_nonzero() {
     let fixture = make_fixture();
     let temp = fixture._temp.path().to_path_buf();
     let powershell = powershell_required_host();
-    let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    // A bare name that resolves nowhere: no claude.cmd in the shim dir.
-    let empty_dir = temp.join("empty-dir");
-    std::fs::create_dir_all(&empty_dir).expect("create empty dir");
-    settings.agents = vec![agent_with_path("claude", "claude", &empty_dir)];
+    // A bare name that resolves nowhere on any PATH: no such executable or shim
+    // exists on this machine, so the application-only lookup must fail and the
+    // script must exit 1 (never a stale-LASTEXITCODE success).
+    let missing_name = "ac_1271_missing_agent_xyz";
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -953,16 +1008,26 @@ fn configured_powershell_nonexistent_agent_fails_nonzero() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
-        let created = create_resolved_session(
+        let created = create_plain_session(
             &fixture,
-            &settings,
-            "claude",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            missing_name,
+            &[],
+            Some(ResolvedAgentHostShell {
+                program: powershell.clone(),
+                args: vec!["-NoProfile".to_string()],
+            }),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 nonexistent agent",
         )
-        .await;
+        .await
+        .expect("create with missing agent must succeed at the PTY level");
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("lookup failure must produce a host exit");
@@ -983,7 +1048,7 @@ fn configured_powershell_host_shutdown_reaps_agent() {
 
     let powershell = powershell_required_host();
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    settings.agents = vec![agent_with_path("claude", "claude", &shim_dir)];
+    settings.agents = vec![agent_config("claude", "claude")];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -991,14 +1056,23 @@ fn configured_powershell_host_shutdown_reaps_agent() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
+        let _path_lock = PATH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = PathEnvGuard::prepend(&shim_dir);
         let created = create_resolved_session(
             &fixture,
             &settings,
             "claude",
-            &temp.join("repo-1271-native").to_string_lossy().to_string(),
+            &temp
+                .join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .to_string(),
             "1271 long-running host",
         )
         .await;
+        drop(_path_guard);
+        drop(_path_lock);
         let id = parse_session_id(&created);
         wait_for_output(&fixture, &created.id, "AC_LONG_MARKER", OUTPUT_TIMEOUT)
             .await
@@ -1093,7 +1167,7 @@ fn configured_missing_host_and_incompatible_custom_shell_cleanup() {
         .await
         .expect("custom host spawn itself must succeed");
         let id = parse_session_id(&created);
-        fixture.cleanup_session(&fixture.pty_mgr, id);
+        fixture.track_session(id);
         // The reporter prints its argv: `-c` and the exec script.
         wait_for_output(&fixture, &created.id, "-c", OUTPUT_TIMEOUT)
             .await
@@ -1101,6 +1175,13 @@ fn configured_missing_host_and_incompatible_custom_shell_cleanup() {
         wait_for_output(&fixture, &created.id, "exec 'claude'", OUTPUT_TIMEOUT)
             .await
             .expect("custom host must receive the exec script");
+        // The reporter host blocks echoing stdin until the control line; send it
+        // so the host exits with its own derived (nonzero) code.
+        let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id)
+            .await
+            .expect("acquire input writer for custom host");
+        PtyManager::write_with_permit(&permit, b"AC_1271_STOP\r\n").expect("stop custom host");
+        drop(permit);
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("custom host must exit");

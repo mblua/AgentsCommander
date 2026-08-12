@@ -1199,12 +1199,12 @@ fn powershell_script(command: &str, args: &[String]) -> String {
         "    if ($ac_batch_unsupported_logical_arg -or $ac_command.Path.Contains('%') -or \
          $ac_command.Path.Contains([char]34)) { exit 1 };\n",
     );
-    script.push_str("    $ac_batch_payload = ");
-    let mut payload_parts = vec!["ac_1271_windows_arg $ac_command.Path".to_string()];
+    script.push_str("    $ac_batch_payload = (ac_1271_windows_arg $ac_command.Path)");
     for arg in args {
-        payload_parts.push(format!("ac_1271_windows_arg {}", ps_literal(arg)));
+        script.push_str(" + ' ' + (ac_1271_windows_arg ");
+        script.push_str(&ps_literal(arg));
+        script.push(')');
     }
-    script.push_str(&payload_parts.join(" + ' ' + "));
     script.push_str(";\n");
     script.push_str("    $ac_start = New-Object System.Diagnostics.ProcessStartInfo;\n");
     script.push_str("    $ac_start.UseShellExecute = $false;\n");
