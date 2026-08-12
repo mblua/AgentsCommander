@@ -10206,4 +10206,252 @@ mod tests {
         assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
         close_test_coordinator(&app).await;
     }
+
+    // --- #1271 configured default-shell propagation --------------------------
+
+    /// Captures every `BackendSpawnSpec` the PTY manager hands to the backend,
+    /// so tests can assert the resolved-agent host-shell snapshot propagated
+    /// unchanged from the creation seam. Spawned ids count as live sessions so
+    /// the finalized-create path can display them, mirroring
+    /// `ScriptedSpawnBackend`.
+    #[derive(Default)]
+    struct CapturingSpawnBackend {
+        specs: Mutex<Vec<crate::pty::backend::BackendSpawnSpec>>,
+        live: Mutex<HashSet<Uuid>>,
+    }
+
+    impl PtyBackend for CapturingSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                self.specs.lock().unwrap().push(spec);
+                Ok(())
+            })
+        }
+
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            Err(crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_default_shell_snapshot_reaches_backend_for_resolved_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        // Drive the resolved-agent path exactly as `create_session` does: the
+        // resolved agent stays the command-to-run, and the configured host shell
+        // (copied from the same config snapshot) travels separately.
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 propagation".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+        assert_eq!(created.agent_id.as_deref(), Some("claude"));
+
+        let specs = backend.specs.lock().unwrap();
+        let spec = specs
+            .last()
+            .expect("the resolved-agent create reached the backend");
+        assert_eq!(spec.cmd, "claude", "agent program stays the command-to-run");
+        let host = spec
+            .resolved_agent_host_shell
+            .as_ref()
+            .expect("host shell snapshot must reach the backend");
+        assert_eq!(
+            host.program,
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        );
+        assert_eq!(host.args, vec!["-NoProfile".to_string()]);
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1271 - the observable session metadata seam (`set_pending_effective_shell_args`,
+    /// surfaced as `effective_shell_args`) keeps the LOGICAL agent argv; the
+    /// configured host-shell arguments travel only in the backend spec's
+    /// `resolved_agent_host_shell`. The two must remain distinct: host-shell args
+    /// are never written into the metadata channel.
+    #[tokio::test]
+    async fn configured_default_shell_metadata_keeps_logical_agent_argv_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 metadata".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+
+        // The claude test agent gets auto-injected logical args (`--session-id`):
+        // metadata must carry exactly that logical argv, never the configured
+        // host-shell args.
+        let effective = created
+            .effective_shell_args
+            .as_deref()
+            .expect("effective args are captured before spawn");
+        assert!(
+            effective.iter().any(|arg| arg.starts_with("--session-id")),
+            "session metadata carries the logical agent argv: {effective:?}"
+        );
+        assert!(
+            !effective.iter().any(|arg| arg == "-NoProfile"),
+            "host-shell args must never leak into session metadata: {effective:?}"
+        );
+        let session = session_mgr
+            .read()
+            .await
+            .get_session(Uuid::parse_str(&created.id).unwrap())
+            .await
+            .expect("session exists");
+        let stored = session
+            .effective_shell_args
+            .as_deref()
+            .expect("stored effective args");
+        assert!(
+            !stored.iter().any(|arg| arg == "-NoProfile"),
+            "the pending-effective metadata channel stays logical: {stored:?}"
+        );
+
+        let specs = backend.specs.lock().unwrap();
+        let spec = specs.last().expect("create reached the backend");
+        assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+        assert_eq!(
+            spec.resolved_agent_host_shell
+                .as_ref()
+                .expect("host shell present")
+                .args,
+            vec!["-NoProfile".to_string()],
+            "host-shell args travel only in the paired snapshot"
+        );
+        close_test_coordinator(&app).await;
+    }
 }

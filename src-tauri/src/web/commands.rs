@@ -1451,4 +1451,195 @@ mod tests {
         assert_eq!(event["payload"]["profile"], json!("B"));
         assert_eq!(event["payload"]["updatedCount"], json!(1));
     }
+
+    /// #1271 - full create-path harness for the web dispatcher. `ws_state_for`
+    /// lacks the SelectionCoordinator and the other states `create_session_inner`
+    /// requires, so the web-path invalid-input postcondition test builds them
+    /// here, mirroring the pty_lifecycle harness (plan Finding F).
+    fn ws_state_for_1271(settings: AppSettings) -> WsState {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(crate::session::warnings::new_session_warning_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build 1271 web test app");
+        let app_handle = app.handle().clone();
+        let broadcaster = WsBroadcaster::new();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+            None,
+        )));
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(&session_mgr),
+            shutdown.token().clone(),
+        );
+        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+
+        let full_app = tauri::Builder::default()
+            .any_thread()
+            .manage(settings.clone())
+            .manage(Arc::clone(&session_mgr))
+            .manage(Arc::clone(&pty_mgr))
+            .manage(coordinator.clone())
+            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(Arc::new(crate::RestoreInProgress(
+                std::sync::atomic::AtomicBool::new(false),
+            )))
+            .manage(crate::MasterToken::new("1271-web-test".into()))
+            .manage(crate::AppOutbox::new(
+                std::env::temp_dir()
+                    .join("agentscommander-1271-web-outbox")
+                    .to_string_lossy()
+                    .to_string(),
+            ))
+            .manage(crate::DetachedSessionsState::default())
+            .manage(Arc::new(crate::voice::tracker::VoiceTracker::new()))
+            .manage(shutdown)
+            .manage(Arc::new(crate::web::auth::WebAccessToken::new(
+                "1271-web-token".into(),
+            )))
+            .manage(broadcaster.clone())
+            .manage(crate::WebServerHandle::default())
+            .manage(crate::SpecBoardState::default())
+            .manage(crate::ConfigSeedLockState::default())
+            .manage(crate::session::warnings::new_session_warning_state())
+            .manage(Arc::new(tauri::async_runtime::Mutex::new(
+                crate::telegram::manager::TelegramBridgeManager::new(Arc::new(Mutex::new(
+                    HashMap::new(),
+                ))),
+            )))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build 1271 full web test app");
+        let full_handle = full_app.handle().clone();
+        coordinator
+            .start(full_handle.clone())
+            .expect("start selection coordinator");
+        let bootstrap = coordinator.clone();
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                bootstrap
+                    .submit_restore_first()
+                    .await
+                    .expect("open selection coordinator")
+                    .finish();
+            });
+        })
+        .join()
+        .expect("join selection bootstrap");
+        std::mem::forget(full_app);
+
+        WsState {
+            session_mgr,
+            pty_mgr,
+            settings,
+            broadcaster,
+            app_handle: full_handle,
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = AppSettings::default();
+        settings.default_shell = "powershell.exe".to_string();
+        // A conflicting/terminal configured option must fail before any PTY.
+        settings.default_shell_args = vec!["-Command".to_string()];
+        settings.agents = vec![test_agent("claude")];
+        let state = ws_state_for_1271(settings);
+
+        let response = dispatch(
+            &state,
+            7,
+            "create_session",
+            &json!({ "cwd": cwd, "agentId": "claude" }),
+        )
+        .await;
+        let error = response["error"]
+            .as_str()
+            .expect("invalid configured host must fail the create");
+        assert!(error.contains("conflicting/terminal"), "{error}");
+        assert!(error.contains("agent adapter owns command execution"), "{error}");
+
+        // Full no-side-effect postcondition through the web creation path: no
+        // session row and no pending/metadata record survive the rejection.
+        assert!(
+            state.session_mgr.read().await.list_sessions().await.is_empty(),
+            "no session may appear in the session manager"
+        );
+        // The coordinator worker rolls the pending binding back asynchronously
+        // (CreateFinalizationTicket::drop -> RollbackCreate), so poll for it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = state
+                .session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_web() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = AppSettings::default();
+        settings.default_shell = "cmd.exe".to_string();
+        settings.default_shell_args = vec!["/D".to_string()];
+        // The claude agent's logical argv carries a space token, which the cmd
+        // payload domain rejects before PTY creation.
+        let mut agent = test_agent("claude");
+        agent.command = "claude \"a b\"".to_string();
+        settings.agents = vec![agent];
+        let state = ws_state_for_1271(settings);
+
+        let response = dispatch(
+            &state,
+            7,
+            "create_session",
+            &json!({ "cwd": cwd, "agentId": "claude" }),
+        )
+        .await;
+        let error = response["error"]
+            .as_str()
+            .expect("invalid cmd payload must fail the create");
+        assert!(error.contains("unsupported cmd payload character"), "{error}");
+        assert!(state.session_mgr.read().await.list_sessions().await.is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = state
+                .session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }

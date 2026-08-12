@@ -433,6 +433,11 @@ impl SpawnRecord {
         self.session_id
     }
 
+    /// #1271 - the tracked child's OS pid, when the spawn captured one.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
     /// #1271 - the exact argv the child was launched with (the adapter result),
     /// unredacted. Integration regressions assert the configured host shell was
     /// selected here.
@@ -1038,10 +1043,11 @@ pub fn forget(session_id: Uuid) {
         .remove(&session_id);
 }
 
-/// #1271 - read the spawn record for one session, when one exists. Test-only
+/// #1271 - read the spawn record for one session, when one exists. Test
 /// postcondition seam (Finding E): lets a test assert that a rejected spawn
-/// never recorded launch provenance.
-pub(crate) fn record_for(session_id: Uuid) -> Option<Arc<SpawnRecord>> {
+/// never recorded launch provenance, and lets the Windows integration
+/// regression read the exact adapted argv and awaited child exit.
+pub fn record_for(session_id: Uuid) -> Option<Arc<SpawnRecord>> {
     registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
