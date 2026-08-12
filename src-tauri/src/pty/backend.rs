@@ -7,7 +7,10 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use crate::pty::output::{CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::output::{
+    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputActivationResult,
+    TerminalOutputControlState, TerminalRendererMetrics,
+};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
@@ -129,7 +132,21 @@ impl PtyViewport {
     }
 }
 
-pub struct BackendSpawnSpec {
+/// #1271 - one immutable snapshot of the configured default host shell paired
+/// with a resolved agent command. Internal plumbing only: never serialized,
+/// never an IPC field, never part of the frontend contract. `Some` only for a
+/// resolved agent; the local backend uses it to launch a non-direct Windows
+/// agent command through the configured shell instead of the historical
+/// unconditional `cmd.exe /C` fallback. It must be `pub` (not `pub(crate)`)
+/// because it appears in the signature of the `pub` session-creation family
+/// that the Windows integration regression calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAgentHostShell {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
     /// opaque string like `agent_1782513272568_0`), or None. It is NOT the CLI:
@@ -142,6 +159,10 @@ pub struct BackendSpawnSpec {
     pub coding_agent: Option<CodingAgentKind>,
     pub cmd: String,
     pub args: Vec<String>,
+    /// #1271 - the configured host shell paired with a resolved agent command.
+    /// `Some` only for a resolved agent; `None` for ordinary shell sessions and
+    /// direct `.exe` agents. Backend-facing plumbing only, never an IPC field.
+    pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     pub cwd: String,
     pub selected_cwd: Option<String>,
     pub cols: u16,
@@ -163,7 +184,7 @@ pub struct BackendSpawnSpec {
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 }
 
-pub trait PtyBackend: Any + Send + Sync {
+pub(crate) trait PtyBackend: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 
     fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>>;
@@ -248,6 +269,53 @@ pub trait PtyBackend: Any + Send + Sync {
     /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
     /// backends with no local child (container transport).
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
+
+    /// Terminal-output controls are deliberately defaulted so all existing test-only backends
+    /// remain source-compatible. Only the two production adapters forward to their fanouts.
+    fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+        TerminalOutputActivationResult::recovery(
+            id,
+            crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,
+        )
+    }
+
+    fn ready_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _snapshot_sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn deactivate_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn ack_terminal_output_delivery(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _first_sequence: u64,
+        _sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn report_terminal_renderer_metrics(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _metrics: TerminalRendererMetrics,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn shutdown_terminal_output(&self) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
 }

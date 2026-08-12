@@ -266,7 +266,9 @@ fn maximum_capture_evidence() -> (usize, AllocationStats) {
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
     let fanout = SessionIoFanout::new(output_senders, IdleDetector::new(|_| {}, |_| {}), None);
     let accepted = Uuid::new_v4();
-    fanout.register_session(accepted, IdleTuning::DEFAULT, 200, 200);
+    fanout
+        .register_session_for_test(accepted, IdleTuning::DEFAULT, 200, 200)
+        .expect("register accepted test session");
 
     let epoch = AllocationEpoch::start();
     let copied = match fanout.copy_terminal_screen(accepted) {
@@ -287,7 +289,9 @@ fn maximum_capture_evidence() -> (usize, AllocationStats) {
     let stats = epoch.finish();
 
     let rejected = Uuid::new_v4();
-    fanout.register_session(rejected, IdleTuning::DEFAULT, 201, 200);
+    fanout
+        .register_session_for_test(rejected, IdleTuning::DEFAULT, 201, 200)
+        .expect("register rejected test session");
     assert!(matches!(
         fanout.copy_terminal_screen(rejected),
         TerminalScreenCopyRead::TooLarge

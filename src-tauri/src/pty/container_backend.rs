@@ -184,7 +184,6 @@ struct AttachingSession {
 }
 
 struct ActiveSession {
-    output_target: PtyOutputTarget,
     sender: mpsc::Sender<HostToBridgeFrame>,
     rows: u16,
     cols: u16,
@@ -1469,9 +1468,32 @@ impl ContainerTransportBackend {
         lifecycle_sender: Option<ContainerLifecycleSender>,
         tuning: ContainerTransportTuning,
     ) -> Self {
+        Self::with_tuning_and_coordinator(
+            output_senders,
+            idle_detector,
+            ws_broadcaster,
+            lifecycle_sender,
+            tuning,
+            crate::pty::output::TerminalOutputCoordinator::new(),
+        )
+    }
+
+    pub(crate) fn with_tuning_and_coordinator(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        lifecycle_sender: Option<ContainerLifecycleSender>,
+        tuning: ContainerTransportTuning,
+        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
+    ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
+            fanout: SessionIoFanout::with_coordinator(
+                output_senders,
+                idle_detector,
+                ws_broadcaster,
+                coordinator,
+            ),
             lifecycle_sender,
             route_remover: Arc::new(Mutex::new(None)),
             tuning,
@@ -1495,12 +1517,33 @@ impl ContainerTransportBackend {
         runtime: Arc<dyn ContainerRuntime>,
         token_manager: Option<ContainerApiTokenManager>,
     ) -> Self {
-        let mut backend = Self::with_tuning(
+        Self::with_runtime_and_coordinator(
+            output_senders,
+            idle_detector,
+            ws_broadcaster,
+            lifecycle_sender,
+            runtime,
+            token_manager,
+            crate::pty::output::TerminalOutputCoordinator::new(),
+        )
+    }
+
+    pub(crate) fn with_runtime_and_coordinator(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        lifecycle_sender: Option<ContainerLifecycleSender>,
+        runtime: Arc<dyn ContainerRuntime>,
+        token_manager: Option<ContainerApiTokenManager>,
+        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
+    ) -> Self {
+        let mut backend = Self::with_tuning_and_coordinator(
             output_senders,
             idle_detector,
             ws_broadcaster,
             lifecycle_sender,
             ContainerTransportTuning::default(),
+            coordinator,
         );
         backend.runtime = Some(runtime);
         backend.token_manager = token_manager;
@@ -1626,33 +1669,48 @@ impl ContainerTransportBackend {
                 return Err(TransportAttachError::Invalid);
             }
 
-            let output_target = attach.output_target.clone();
-            let idle_tuning = attach.idle_tuning;
-            let rows = attach.rows;
-            let cols = attach.cols;
-            let attach_notify = attach.attach_notify.clone();
-            sessions.insert(
+            attach
+        };
+
+        let AttachingSession {
+            output_target,
+            idle_tuning,
+            rows,
+            cols,
+            runtime_handle,
+            api_client_id,
+            credential_binding,
+            logical_resource_slot,
+            attach_notify,
+            container_credential_path,
+            ..
+        } = attach;
+        if self
+            .fanout
+            .register_session(session_id, idle_tuning, rows, cols, output_target)
+            .is_err()
+        {
+            return Err(TransportAttachError::Invalid);
+        }
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
-                    output_target,
                     sender,
                     rows,
                     cols,
-                    runtime_handle: attach.runtime_handle,
-                    api_client_id: attach.api_client_id,
-                    credential_binding: attach.credential_binding,
-                    logical_resource_slot: attach.logical_resource_slot,
-                    container_credential_path: attach.container_credential_path,
+                    runtime_handle,
+                    api_client_id,
+                    credential_binding,
+                    logical_resource_slot,
+                    container_credential_path,
                 }),
             );
-            if let Some(notify) = attach_notify {
-                notify.notify_waiters();
-            }
-            (idle_tuning, rows, cols)
-        };
-
-        self.fanout
-            .register_session(session_id, attach.0, attach.1, attach.2);
+        if let Some(notify) = attach_notify {
+            notify.notify_waiters();
+        }
         log::info!(
             "[container-transport] attached bridge for session {}",
             session_id
@@ -1671,17 +1729,23 @@ impl ContainerTransportBackend {
             ));
         }
 
-        let output_target = {
+        let active = {
             let sessions = self.sessions.lock().unwrap();
             match sessions.get(&session_id) {
-                Some(ContainerSessionState::Active(active)) => active.output_target.clone(),
+                Some(ContainerSessionState::Active(_)) => true,
                 _ => return Err(AppError::SessionNotFound(session_id.to_string())),
             }
         };
+        if !active {
+            return Err(AppError::SessionNotFound(session_id.to_string()));
+        }
+        let token = self
+            .fanout
+            .registration_token_for_session(session_id)
+            .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
 
         let session_id_str = session_id.to_string();
-        self.fanout
-            .handle_output(&output_target, session_id, &session_id_str, data);
+        self.fanout.handle_output(&token, &session_id_str, data);
         Ok(())
     }
 
@@ -2016,6 +2080,7 @@ impl ContainerTransportBackend {
             coding_agent: _,
             cmd,
             args,
+            resolved_agent_host_shell: _,
             cwd,
             selected_cwd,
             cols,
@@ -2978,7 +3043,6 @@ impl ContainerTransportBackend {
             .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
-                    output_target: PtyOutputTarget::noop(),
                     sender,
                     rows: 30,
                     cols: 120,
@@ -3008,7 +3072,6 @@ impl ContainerTransportBackend {
             .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
-                    output_target: PtyOutputTarget::noop(),
                     sender,
                     rows,
                     cols,
@@ -3019,12 +3082,16 @@ impl ContainerTransportBackend {
                     container_credential_path: None,
                 }),
             );
-        self.fanout.register_session(
-            session_id,
-            crate::session::profile::IdleTuning::DEFAULT,
-            rows,
-            cols,
-        );
+        let target = PtyOutputTarget::noop();
+        self.fanout
+            .register_session(
+                session_id,
+                crate::session::profile::IdleTuning::DEFAULT,
+                rows,
+                cols,
+                target,
+            )
+            .expect("register protocol snapshot session");
         self.handle_bridge_output(session_id, output)
             .expect("protocol snapshot test output");
         receiver
@@ -3201,6 +3268,56 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         self.fanout.get_screen_snapshot(id)
+    }
+
+    fn activate_terminal_output(
+        &self,
+        id: Uuid,
+    ) -> crate::pty::output::TerminalOutputActivationResult {
+        self.fanout.activate_terminal_output(id)
+    }
+
+    fn ready_terminal_output(
+        &self,
+        id: Uuid,
+        generation: u64,
+        snapshot_sequence: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .ready_terminal_output(id, generation, snapshot_sequence)
+    }
+
+    fn deactivate_terminal_output(
+        &self,
+        id: Uuid,
+        generation: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout.deactivate_terminal_output(id, generation)
+    }
+
+    fn ack_terminal_output_delivery(
+        &self,
+        id: Uuid,
+        generation: u64,
+        first_sequence: u64,
+        sequence: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
+    }
+
+    fn report_terminal_renderer_metrics(
+        &self,
+        id: Uuid,
+        generation: u64,
+        metrics: crate::pty::output::TerminalRendererMetrics,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .report_terminal_renderer_metrics(id, generation, metrics)
+    }
+
+    fn shutdown_terminal_output(&self) {
+        self.fanout.shutdown_terminal_output();
     }
 
     #[allow(private_interfaces)]
@@ -3490,6 +3607,7 @@ mod tests {
     use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
     use crate::pty::container_runtime::{ContainerCleanupReport, RETAINED_OWNER_REPORT_CAPACITY};
     use crate::pty::manager::PtyManager;
+    use crate::pty::output::{TerminalOutputActivationResult, TerminalOutputControlState};
     use crate::session::manager::SessionManager;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3748,6 +3866,7 @@ mod tests {
             coding_agent: None,
             cmd: "container".to_string(),
             args: Vec::new(),
+            resolved_agent_host_shell: None,
             cwd: root.to_string(),
             selected_cwd: None,
             cols: 120,
@@ -3889,7 +4008,6 @@ mod tests {
         backend.sessions.lock().unwrap().insert(
             id,
             ContainerSessionState::Active(ActiveSession {
-                output_target: PtyOutputTarget::noop(),
                 sender: tx,
                 rows: 30,
                 cols: 120,
@@ -5115,7 +5233,6 @@ mod tests {
         backend.sessions.lock().unwrap().insert(
             id,
             ContainerSessionState::Active(ActiveSession {
-                output_target: PtyOutputTarget::noop(),
                 sender: tx,
                 rows: 30,
                 cols: 120,
@@ -5158,7 +5275,6 @@ mod tests {
         backend.sessions.lock().unwrap().insert(
             id,
             ContainerSessionState::Active(ActiveSession {
-                output_target: PtyOutputTarget::noop(),
                 sender: tx,
                 rows: 30,
                 cols: 120,
@@ -5488,11 +5604,31 @@ mod tests {
             .expect("spawn");
         let ticket = backend.last_issued_ticket_for_test(id).unwrap();
         let _rx = attach(&backend, id, root, &ticket);
+        let activation = match backend.activate_terminal_output(id) {
+            TerminalOutputActivationResult::Activated { activation } => activation,
+            other => panic!("expected activation, got {other:?}"),
+        };
+        let activation = serde_json::to_value(activation).expect("serialize activation");
+        let generation = activation["generation"]
+            .as_str()
+            .expect("generation")
+            .parse()
+            .expect("numeric generation");
+        let snapshot_sequence = activation["snapshot"]["sequence"]
+            .as_str()
+            .expect("snapshot sequence")
+            .parse()
+            .expect("numeric snapshot sequence");
+        assert!(matches!(
+            backend.ready_terminal_output(id, generation, snapshot_sequence),
+            TerminalOutputControlState::Active { .. }
+        ));
 
         backend
             .handle_bridge_output(id, b"hello".to_vec())
             .expect("output");
 
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let got = captured.lock().unwrap().clone();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, id.to_string());

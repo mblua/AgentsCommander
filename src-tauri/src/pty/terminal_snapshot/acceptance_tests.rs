@@ -20,7 +20,7 @@ use crate::pty::backend::{
 };
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::manager::BackendWriteAuthority;
-use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot, SessionIoFanout};
+use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
 use crate::session::manager::SessionManager;
 use crate::session::session::{Session, SessionRepo};
 use crate::telegram::manager::OutputSenderMap;
@@ -123,13 +123,14 @@ impl FixtureBackend {
     fn install(&self, id: Uuid, output: &[u8]) {
         self.live.lock().expect("fixture live lock").insert(id);
         self.fanout
-            .register_session(id, crate::session::profile::IdleTuning::DEFAULT, 4, 40);
-        self.fanout.handle_output(
-            &PtyOutputTarget::noop(),
-            id,
-            &id.to_string(),
-            output.to_vec(),
-        );
+            .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 4, 40)
+            .expect("register fixture session");
+        let token = self
+            .fanout
+            .registration_token_for_session(id)
+            .expect("fixture token");
+        self.fanout
+            .handle_output(&token, &id.to_string(), output.to_vec());
     }
 
     fn counts(&self, id: Uuid) -> BackendLookupCounts {

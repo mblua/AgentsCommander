@@ -2129,6 +2129,19 @@ pub fn run(
                                     } else {
                                         None
                                     };
+                                    // #1271 - the host shell is rebuilt at restore
+                                    // time from the SAME settings snapshot that
+                                    // re-resolved the agent command (no persistence:
+                                    // a persisted shell could pair with a freshly
+                                    // re-resolved command across a config change).
+                                    let resolved_agent_host_shell = if resolved_spawn.is_some() {
+                                        Some(crate::pty::backend::ResolvedAgentHostShell {
+                                            program: settings_snapshot.default_shell.clone(),
+                                            args: settings_snapshot.default_shell_args.clone(),
+                                        })
+                                    } else {
+                                        None
+                                    };
                                     if !rebuild_failed {
                                     let (shell, shell_args, agent_label) =
                                         if let Some(spawn) = resolved_spawn.as_ref() {
@@ -2158,6 +2171,7 @@ pub fn run(
                                         ps.git_repos.clone(),
                                         false,
                                         resolved_spawn,
+                                        resolved_agent_host_shell,
                                         // #973 - headless caller: no terminal to measure, keep 120x30.
                                         None,
                                         Some(ps.start_fresh_on_restore),
@@ -2422,6 +2436,17 @@ pub fn run(
                         } else {
                             None
                         };
+                        // #1271 - rebuilt at restore time from the SAME settings
+                        // snapshot that re-resolved the agent command (no
+                        // persistence, same rationale as the root-agent restore).
+                        let resolved_agent_host_shell = if resolved_spawn.is_some() {
+                            Some(crate::pty::backend::ResolvedAgentHostShell {
+                                program: settings_snapshot.default_shell.clone(),
+                                args: settings_snapshot.default_shell_args.clone(),
+                            })
+                        } else {
+                            None
+                        };
                         let (shell, shell_args, agent_label) =
                             if let Some(spawn) = resolved_spawn.as_ref() {
                                 (
@@ -2452,6 +2477,7 @@ pub fn run(
                             ps.git_repos.clone(),
                             skip_auto_resume_for_restore(ps.start_fresh_on_restore), // (#630/#631) resume unless restarted fresh
                             resolved_spawn,
+                            resolved_agent_host_shell,
                             // #973 - headless caller: no terminal to measure, keep 120x30.
                             None,
                             Some(ps.start_fresh_on_restore),
@@ -2638,9 +2664,14 @@ pub fn run(
             commands::task::task_set_title,
               commands::task::task_clean,
             commands::task::task_clean_at,
-                        commands::pty::pty_write,
+            commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
+            commands::pty::activate_terminal_output,
+            commands::pty::ready_terminal_output,
+            commands::pty::deactivate_terminal_output,
+            commands::pty::ack_terminal_output_delivery,
+            commands::pty::report_terminal_renderer_metrics,
             commands::pty::get_session_context,
             commands::pty::get_watcher_activity,
             commands::pty::preview_watcher_pattern,
