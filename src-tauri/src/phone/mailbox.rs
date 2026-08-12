@@ -5579,6 +5579,7 @@ impl MailboxPoller {
             exited.is_none(),
             Some(spawn),
             None,
+            None,
             crate::commands::session::CreateSelectionIntent::Background,
             target_ownership,
         )
@@ -7498,6 +7499,10 @@ impl MailboxPoller {
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
             resolved_spawn,
+            // #1271 - mailbox wakes that resolve an agent propagate the
+            // configured host-shell snapshot; this call site predates that and
+            // carries None (no adapter on the mailbox path).
+            None,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             crate::commands::session::CreateSelectionIntent::Background,
@@ -10826,6 +10831,7 @@ impl MailboxPoller {
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → CLI session-request is a fresh create
                 resolved_spawn,
+                None,
                 // #973 - headless caller: no terminal to measure, keep 120x30.
                 None,
                 crate::commands::session::CreateSelectionIntent::Background,

@@ -508,6 +508,7 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::User,
         )
         .await
@@ -617,6 +618,7 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -1200,6 +1202,7 @@ async fn run_pi_logical_clear(cfg: &HarnessConfig, ctx: &HarnessCtx) -> Result<(
             Vec::new(),
             true,
             None,
+            None,
             Some(PtyViewport::from_fit(120, 120)),
             CreateSelectionIntent::User,
         )
@@ -1337,6 +1340,7 @@ async fn measure_wake_consumption_signals() {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,

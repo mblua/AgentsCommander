@@ -2158,6 +2158,7 @@ pub fn run(
                                         ps.git_repos.clone(),
                                         false,
                                         resolved_spawn,
+                                        None,
                                         // #973 - headless caller: no terminal to measure, keep 120x30.
                                         None,
                                         Some(ps.start_fresh_on_restore),
@@ -2452,6 +2453,7 @@ pub fn run(
                             ps.git_repos.clone(),
                             skip_auto_resume_for_restore(ps.start_fresh_on_restore), // (#630/#631) resume unless restarted fresh
                             resolved_spawn,
+                            None,
                             // #973 - headless caller: no terminal to measure, keep 120x30.
                             None,
                             Some(ps.start_fresh_on_restore),

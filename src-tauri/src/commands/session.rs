@@ -9,7 +9,9 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::backend::{BackendSpawnSpec, PtyViewport, SessionBackendKind};
+use crate::pty::backend::{
+    BackendSpawnSpec, PtyViewport, ResolvedAgentHostShell, SessionBackendKind,
+};
 use crate::pty::container_paths::{
     claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
     ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
@@ -1226,6 +1228,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     // #973 - the size the view has already fitted to, when the caller has a view at all.
     // `None` keeps AC's historical 120x30. See `PtyViewport`.
     viewport: Option<PtyViewport>,
@@ -1245,6 +1248,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1274,6 +1278,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
@@ -1292,6 +1297,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1321,6 +1327,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     pending_start_fresh: Option<bool>,
     pending_communication: Option<SessionCommunication>,
@@ -1339,6 +1346,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         CreateSelectionIntent::Suppress,
         pending_start_fresh,
@@ -1368,6 +1376,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     mut skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     pending_start_fresh: Option<bool>,
@@ -2315,6 +2324,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             coding_agent: agent_kind,
             cmd: shell.clone(),
             args: shell_args.clone(),
+            // #1271 - the configured host shell paired with a resolved agent
+            // command, carried as one immutable snapshot (never as loose
+            // program/argument fields, so the pairing invariant cannot drift).
+            resolved_agent_host_shell: resolved_agent_host_shell.clone(),
             cwd: spawn_cwd.clone(),
             selected_cwd: if spawn_cwd != cwd {
                 Some(cwd.clone())
@@ -2752,23 +2765,34 @@ pub async fn create_session(
         None
     };
 
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
-        let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
-        let al = agent_id.as_ref().and_then(|aid| {
-            cfg.agents
-                .iter()
-                .find(|a| a.id == *aid)
-                .map(|a| a.label.clone())
-        });
-        (s, sa, al)
-    };
+    let (shell, shell_args, agent_label, resolved_agent_host_shell) =
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            // #1271 - keep the resolved agent executable and its logical argv as
+            // the command-to-run, and carry a copy of the configured default host
+            // shell (program + args from the SAME immutable config snapshot, before
+            // `drop(cfg)`) separately to the backend. The backend launches a
+            // non-direct Windows agent command through this host shell instead of
+            // the unconditional `cmd.exe /C` fallback.
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+                Some(ResolvedAgentHostShell {
+                    program: cfg.default_shell.clone(),
+                    args: cfg.default_shell_args.clone(),
+                }),
+            )
+        } else {
+            let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
+            let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+            let al = agent_id.as_ref().and_then(|aid| {
+                cfg.agents
+                    .iter()
+                    .find(|a| a.id == *aid)
+                    .map(|a| a.label.clone())
+            });
+            (s, sa, al, None)
+        };
 
     log::info!(
         "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
@@ -2795,6 +2819,7 @@ pub async fn create_session(
         // passes Some(false) so the prior conversation resumes.
         effective_create_skip_auto_resume(skip_auto_resume),
         resolved_spawn,
+        resolved_agent_host_shell,
         // #973 - the only caller that has a terminal to measure.
         match (cols, rows) {
             (Some(c), Some(r)) => Some(PtyViewport::from_fit(c, r)),
@@ -4018,8 +4043,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
     // #537 read-side: resolve the launch agent (honoring currentCodingAgent) and
     // build its spawn under a single settings read guard. No await is held across
-    // the guard; it is dropped at the end of this block.
-    let (selected_agent_id, resolved_spawn) = {
+    // the guard; it is dropped at the end of this block. The #1271 host-shell
+    // snapshot is copied from the SAME guard so program and args can never pair
+    // across a configuration change.
+    let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
         let cfg = settings.read().await;
         let selected_agent_id = resolve_restart_selected_agent_id(
             &cfg,
@@ -4037,7 +4064,15 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         } else {
             None
         };
-        (selected_agent_id, resolved_spawn)
+        let resolved_agent_host_shell = if resolved_spawn.is_some() {
+            Some(ResolvedAgentHostShell {
+                program: cfg.default_shell.clone(),
+                args: cfg.default_shell_args.clone(),
+            })
+        } else {
+            None
+        };
+        (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -4094,6 +4129,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         git_repos,
         restart_start_fresh,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         (!is_root_agent).then_some(restart_start_fresh),
@@ -4741,6 +4777,17 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
     } else {
         None
     };
+    // #1271 - copy the configured default host shell from the same guard that
+    // built the spawn, only when an agent was actually resolved.
+    let resolved_agent_host_shell = if resolved_spawn.is_some() {
+        let settings = settings.read().await;
+        Some(ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        })
+    } else {
+        None
+    };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
             spawn.shell.clone(),
@@ -4764,6 +4811,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Vec::new(),
         request.skip_auto_resume_for_new_session,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         None,
@@ -6146,6 +6194,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             intent,
         )
         .await
@@ -6170,6 +6219,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -6251,6 +6301,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::User,
@@ -6942,6 +6993,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             CreateSelectionIntent::User,
@@ -7022,6 +7074,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -7046,6 +7099,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -7067,6 +7121,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::Background,
@@ -7124,6 +7179,7 @@ mod tests {
                 true,
                 Vec::new(),
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -7209,6 +7265,7 @@ mod tests {
                 true,
                 None,
                 None,
+                None,
                 CreateSelectionIntent::User,
             )
             .await
@@ -7273,6 +7330,7 @@ mod tests {
                     true,
                     None,
                     None,
+                    None,
                     CreateSelectionIntent::Background,
                 )
                 .await
@@ -7302,6 +7360,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::Background,
@@ -7368,6 +7427,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             Some(crate::pty::backend::PtyViewport::from_fit(74, 23)),
             CreateSelectionIntent::User,
         )
@@ -7415,6 +7475,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             None, // no view
             CreateSelectionIntent::User,
         )
@@ -7461,6 +7522,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             Some(crate::pty::backend::PtyViewport::from_fit(0, 0)),
             CreateSelectionIntent::User,
@@ -7681,6 +7743,7 @@ mod tests {
             Vec::new(),
             false,       // lib.rs:2362, skip_auto_resume_for_restore(false): RESUME
             Some(spawn), // lib.rs:2363, the rebuilt recipe
+            None,
             None,        // lib.rs:2365, headless caller keeps 120x30
             Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
             None,
@@ -7718,6 +7781,7 @@ mod tests {
             true,
             Vec::new(),
             true, // a fresh create
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -7792,6 +7856,7 @@ mod tests {
             true, // FRESH first: the opposite order from B1
             None,
             None,
+            None,
             CreateSelectionIntent::User,
         )
         .await;
@@ -7814,6 +7879,7 @@ mod tests {
             true,
             Vec::new(),
             false, // the #599 reopen value: this launch RESUMES
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -7935,6 +8001,7 @@ mod tests {
                     Vec::new(),
                     true,
                     None,
+                    None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
                 )
@@ -8017,6 +8084,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
@@ -9848,6 +9916,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::User,
             None,
             None,
@@ -9910,6 +9979,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -10126,6 +10196,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,

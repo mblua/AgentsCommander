@@ -196,19 +196,31 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             } else {
                 None
             };
-            let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-                (
-                    spawn.shell.clone(),
-                    spawn.shell_args.clone(),
-                    Some(spawn.trusted_agent_label.clone()),
-                )
-            } else {
-                (
-                    str_or(args, "shell", &cfg.default_shell),
-                    str_vec_or(args, "shellArgs", &cfg.default_shell_args),
-                    None,
-                )
-            };
+            let (shell, shell_args, agent_label, resolved_agent_host_shell) =
+                if let Some(spawn) = resolved_spawn.as_ref() {
+                    // #1271 - same snapshot rule as the native path: the resolved
+                    // agent stays the command-to-run; the configured default host
+                    // shell (copied from this same config guard) travels separately
+                    // to the backend.
+                    (
+                        spawn.shell.clone(),
+                        spawn.shell_args.clone(),
+                        Some(spawn.trusted_agent_label.clone()),
+                        Some(
+                            crate::pty::backend::ResolvedAgentHostShell {
+                                program: cfg.default_shell.clone(),
+                                args: cfg.default_shell_args.clone(),
+                            },
+                        ),
+                    )
+                } else {
+                    (
+                        str_or(args, "shell", &cfg.default_shell),
+                        str_vec_or(args, "shellArgs", &cfg.default_shell_args),
+                        None,
+                        None,
+                    )
+                };
             drop(cfg);
 
             let info = crate::commands::session::create_session_inner(
@@ -225,6 +237,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → fresh create, no `--continue` injection
                 resolved_spawn,
+                resolved_agent_host_shell,
                 // #973 - browser-mode create. The browser client pushes its fitted size after
                 // attach, not at create time, so this keeps AC's 120x30 for now.
                 None,

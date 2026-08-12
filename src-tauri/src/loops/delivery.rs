@@ -378,6 +378,9 @@ async fn spawn_coordinator_session(
         Vec::<SessionRepo>::new(),
         loop_spawn_skip_auto_resume(had_existing_match),
         command.resolved_spawn,
+        // #1271 - delivery loop wakes resolve no agent command of their own;
+        // the resolved-agent host-shell snapshot stays None here.
+        None,
         // #973 - headless caller: no terminal to measure, keep 120x30.
         None,
         crate::commands::session::CreateSelectionIntent::Background,
