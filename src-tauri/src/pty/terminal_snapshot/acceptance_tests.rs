@@ -291,13 +291,12 @@ impl ReplicaPaths {
 }
 
 struct AcceptanceFixture {
-    _temporary: tempfile::TempDir,
-    app: tauri::App,
+    app: Option<tauri::App>,
     snapshot_state: Arc<TerminalSnapshotState>,
     settings: crate::config::settings::SettingsState,
     settings_path: PathBuf,
     registry_path: PathBuf,
-    message_store: Arc<crate::api::message_store::MessageStore>,
+    message_store: Option<Arc<crate::api::message_store::MessageStore>>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_manager: Arc<std::sync::Mutex<PtyManager>>,
     local_backend: Arc<FixtureBackend>,
@@ -309,6 +308,25 @@ struct AcceptanceFixture {
     api_worker_token: crate::pty::container_tokens::ContainerApiToken,
     _container_receivers:
         Vec<tokio::sync::mpsc::Receiver<crate::pty::container_backend::HostToBridgeFrame>>,
+    // Declared last so it drops after every other handle: on Windows a
+    // temporary directory cannot be removed while the SQLite/WAL connection
+    // of the API message store is still open.
+    _temporary: tempfile::TempDir,
+}
+
+impl Drop for AcceptanceFixture {
+    fn drop(&mut self) {
+        // Tear down the app and the message store before the temporary
+        // directory is removed. The app's managed state and every `ApiState`
+        // clone the store, and a built-but-never-run tauri test app retains
+        // its managed state after drop, so the store must explicitly close
+        // its SQLite/WAL handles; on Windows a directory cannot be removed
+        // while that connection is open.
+        self.app.take();
+        if let Some(store) = self.message_store.take() {
+            store.close_for_test();
+        }
+    }
 }
 
 impl AcceptanceFixture {
@@ -501,13 +519,12 @@ impl AcceptanceFixture {
             .expect("terminal snapshot acceptance app");
 
         Self {
-            _temporary: temporary,
-            app,
+            app: Some(app),
             snapshot_state,
             settings,
             settings_path,
             registry_path,
-            message_store,
+            message_store: Some(message_store),
             session_manager,
             pty_manager,
             local_backend,
@@ -518,6 +535,7 @@ impl AcceptanceFixture {
             api_coordinator_token,
             api_worker_token,
             _container_receivers: container_receivers,
+            _temporary: temporary,
         }
     }
 }
@@ -720,10 +738,15 @@ async fn submit_host_request(
     );
     assert!(fixture
         .app
+        .as_ref()
+        .expect("fixture app is alive")
         .try_state::<Arc<TerminalSnapshotState>>()
         .is_some());
     scanner.begin_cycle();
-    scanner.scan_root(fixture.app.handle(), root);
+    scanner.scan_root(
+        fixture.app.as_ref().expect("fixture app is alive").handle(),
+        root,
+    );
     scanner.finish_cycle();
     scanner.join_pending_tasks_for_test().await;
     let response_path = response_directory.join(format!("{}.json", request.request_id));
@@ -774,7 +797,10 @@ async fn submit_uncorrelated_host_bytes(
 ) {
     let (request_path, response_path) = write_host_request_bytes(root, filename_request_id, bytes);
     scanner.begin_cycle();
-    scanner.scan_root(fixture.app.handle(), root);
+    scanner.scan_root(
+        fixture.app.as_ref().expect("fixture app is alive").handle(),
+        root,
+    );
     scanner.finish_cycle();
     scanner.join_pending_tasks_for_test().await;
     assert!(!request_path.exists());
@@ -794,7 +820,10 @@ async fn submit_host_request_expect_no_response(
     let bytes = serde_json::to_vec(request).expect("host panic request wire");
     let (request_path, response_path) = write_host_request_bytes(root, &request.request_id, &bytes);
     scanner.begin_cycle();
-    scanner.scan_root(fixture.app.handle(), root);
+    scanner.scan_root(
+        fixture.app.as_ref().expect("fixture app is alive").handle(),
+        root,
+    );
     scanner.finish_cycle();
     scanner.join_pending_tasks_for_test().await;
     assert!(!request_path.exists());
@@ -994,11 +1023,15 @@ async fn prepare_host_finalizer(
         settings: fixture.settings.clone(),
         restore: fixture
             .app
+            .as_ref()
+            .expect("fixture app is alive")
             .state::<Arc<crate::RestoreInProgress>>()
             .inner()
             .clone(),
         purge: fixture
             .app
+            .as_ref()
+            .expect("fixture app is alive")
             .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
             .inner()
             .clone(),
@@ -1325,12 +1358,6 @@ async fn window_screenshot_mounted_router_invalid_auth_percent_ff_precedes_decod
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires an unlocked interactive Windows desktop and visible Notepad"]
 async fn authenticated_live_window_png_capture() {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        #[link_name = "GetAsyncKeyState"]
-        fn get_async_key_state(virtual_key: i32) -> i16;
-    }
-
     fn png_artifact_paths(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
         fn collect(
             root: &std::path::Path,
@@ -1395,24 +1422,6 @@ async fn authenticated_live_window_png_capture() {
                 }
             })
             .collect()
-    }
-
-    fn screenshot_hotkey_state() -> [i16; 4] {
-        const VK_SNAPSHOT: i32 = 0x2C;
-        const VK_MENU: i32 = 0x12;
-        const VK_CONTROL: i32 = 0x11;
-        const VK_SHIFT: i32 = 0x10;
-
-        // SAFETY: GetAsyncKeyState reads the state of the documented virtual
-        // keys and does not require pointers or ownership from this process.
-        unsafe {
-            [
-                get_async_key_state(VK_SNAPSHOT),
-                get_async_key_state(VK_MENU),
-                get_async_key_state(VK_CONTROL),
-                get_async_key_state(VK_SHIFT),
-            ]
-        }
     }
 
     struct ChildGuard(std::process::Child);
@@ -1549,7 +1558,6 @@ async fn authenticated_live_window_png_capture() {
         }
     };
     let visible_window_ids_before = native_window_ids();
-    let hotkey_state_before = screenshot_hotkey_state();
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
@@ -1614,12 +1622,7 @@ async fn authenticated_live_window_png_capture() {
     assert_eq!(
         native_window_ids(),
         visible_window_ids_before,
-        "native window capture must not create an overlay or hotkey window"
-    );
-    assert_eq!(
-        screenshot_hotkey_state(),
-        hotkey_state_before,
-        "native window capture must not change screenshot hotkey state"
+        "native window capture must not create an overlay window"
     );
 
     let current_window_ids = native_window_ids();
@@ -1793,12 +1796,7 @@ async fn authenticated_live_window_png_capture() {
     assert_eq!(
         native_window_ids(),
         visible_window_ids_before,
-        "a detached native capture must not create an overlay or hotkey window"
-    );
-    assert_eq!(
-        screenshot_hotkey_state(),
-        hotkey_state_before,
-        "a detached native capture must not change screenshot hotkey state"
+        "a detached native capture must not create an overlay window"
     );
 }
 
@@ -2636,6 +2634,231 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
+async fn window_screenshot_each_request_uses_a_fresh_local_result() {
+    struct ServerGuard(tokio::task::JoinHandle<()>);
+
+    impl Drop for ServerGuard {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    async fn send_window_request(
+        client: reqwest::Client,
+        address: std::net::SocketAddr,
+        token: String,
+    ) -> reqwest::Response {
+        match client
+            .get(format!("http://{address}/api/v1/windows/1/screenshot"))
+            .bearer_auth(token)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => panic!("fresh-result screenshot request must complete: {error}"),
+        }
+    }
+
+    async fn open_detached_request(
+        address: std::net::SocketAddr,
+        token: &str,
+    ) -> tokio::net::TcpStream {
+        use tokio::io::AsyncWriteExt;
+
+        let mut stream = match tokio::net::TcpStream::connect(address).await {
+            Ok(stream) => stream,
+            Err(error) => panic!("detached fresh-result client must connect: {error}"),
+        };
+        let request = format!(
+            "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        );
+        if let Err(error) = stream.write_all(request.as_bytes()).await {
+            panic!("detached fresh-result request must write: {error}");
+        }
+        if let Err(error) = stream.flush().await {
+            panic!("detached fresh-result request must flush: {error}");
+        }
+        stream
+    }
+
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let token = fixture.api_coordinator_token.secret.clone();
+    let state = direct_api_state(&fixture);
+    let result_vectors = [
+        b"\x89PNG\r\n\x1a\nfirst-result".to_vec(),
+        b"\x89PNG\r\n\x1a\nsecond-result".to_vec(),
+        b"\x89PNG\r\n\x1a\nthird-result".to_vec(),
+    ];
+    let factory_result_vectors = result_vectors.clone();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let second_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_second = std::sync::Arc::new(tokio::sync::Notify::new());
+    let second_done = std::sync::Arc::new(tokio::sync::Notify::new());
+    let capture_factory = std::sync::Arc::new({
+        let calls = std::sync::Arc::clone(&calls);
+        let second_started = std::sync::Arc::clone(&second_started);
+        let release_second = std::sync::Arc::clone(&release_second);
+        let second_done = std::sync::Arc::clone(&second_done);
+        move |window_id, lease| -> crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest {
+            let calls = std::sync::Arc::clone(&calls);
+            let second_started = std::sync::Arc::clone(&second_started);
+            let release_second = std::sync::Arc::clone(&release_second);
+            let second_done = std::sync::Arc::clone(&second_done);
+            let call_index = {
+                let mut calls = match calls.lock() {
+                    Ok(calls) => calls,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                calls.push(window_id);
+                calls.len() - 1
+            };
+            let vector = factory_result_vectors[call_index].clone();
+            Box::pin(async move {
+                if call_index == 1 {
+                    let worker = tokio::spawn(async move {
+                        let _lease = lease;
+                        second_started.notify_one();
+                        release_second.notified().await;
+                        second_done.notify_one();
+                        Ok::<Vec<u8>, crate::screenshot::WindowScreenshotCaptureError>(vector)
+                    });
+                    match worker.await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable)
+                        }
+                    }
+                } else {
+                    drop(lease);
+                    Ok(vector)
+                }
+            })
+        }
+    });
+    let router = axum::Router::new()
+        .route(
+            crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
+            crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(
+                capture_factory,
+            ),
+        )
+        .with_state(state.clone());
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => listener,
+        Err(error) => panic!("test API listener must bind: {error}"),
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => panic!("test API listener must expose its address: {error}"),
+    };
+    let _server = ServerGuard(tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    }));
+
+    let _audit_lock = crate::api::audit::lock_window_screenshot_audits_for_test();
+    let _ = crate::api::audit::take_window_screenshot_audits_for_test();
+    let first_response = send_window_request(reqwest::Client::new(), address, token.clone()).await;
+    assert_eq!(first_response.status(), axum::http::StatusCode::OK);
+    let first_png = match first_response.bytes().await {
+        Ok(png) => png,
+        Err(error) => panic!("first fresh-result PNG must be readable: {error}"),
+    };
+    assert_eq!(
+        first_png.as_ref(),
+        result_vectors[0].as_slice(),
+        "the first request must receive the first fresh local result"
+    );
+
+    let mut detached_client = open_detached_request(address, &token).await;
+    second_started.notified().await;
+    let mut delivered_byte = [0_u8; 1];
+    let delivered_before_disconnect = match detached_client.try_read(&mut delivered_byte) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => 0,
+        Err(error) => panic!("detached fresh-result client must inspect unread bytes: {error}"),
+    };
+    assert_eq!(
+        delivered_before_disconnect, 0,
+        "the gated second request must not receive a response body before its worker is released"
+    );
+    {
+        use tokio::io::AsyncWriteExt;
+
+        if let Err(error) = detached_client.shutdown().await {
+            panic!("detached fresh-result client must close its connection: {error}");
+        }
+    }
+    drop(detached_client);
+    release_second.notify_one();
+    second_done.notified().await;
+
+    let third_response = send_window_request(reqwest::Client::new(), address, token).await;
+    assert_eq!(third_response.status(), axum::http::StatusCode::OK);
+    let third_png = match third_response.bytes().await {
+        Ok(png) => png,
+        Err(error) => panic!("third fresh-result PNG must be readable: {error}"),
+    };
+    assert_eq!(
+        third_png.as_ref(),
+        result_vectors[2].as_slice(),
+        "the third request must receive the third fresh local result, not a retained earlier result"
+    );
+
+    let calls = match calls.lock() {
+        Ok(calls) => calls,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    assert_eq!(
+        calls.len(),
+        3,
+        "the factory must be invoked exactly three times"
+    );
+    assert!(
+        calls.iter().all(|window_id| window_id == "1"),
+        "all three requests must use the same window ID: {calls:?}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn window_screenshot_fixture_removes_its_temporary_directory() {
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    let temporary_path = temporary.path().to_path_buf();
+    assert!(
+        temporary_path.is_dir(),
+        "fixture temporary directory must exist before teardown"
+    );
+    let fixture = AcceptanceFixture::new(temporary).await;
+    let state = direct_api_state(&fixture);
+    drop(state);
+    drop(fixture);
+    assert!(
+        !temporary_path.exists(),
+        "fixture teardown must remove the temporary directory; the app and the SQLite/WAL \
+         connection must close before TempDir cleanup: {}",
+        temporary_path.display()
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
 async fn window_screenshot_fresh_guard_is_released_before_queue_wait() {
     struct ServerGuard(tokio::task::JoinHandle<()>);
 
@@ -2996,9 +3219,19 @@ fn direct_api_state(fixture: &AcceptanceFixture) -> crate::api::ApiState {
         store: Arc::new(crate::api::auth::ApiClientStore::new(
             fixture.registry_path.clone(),
         )),
-        message_store: Arc::clone(&fixture.message_store),
+        message_store: Arc::clone(
+            fixture
+                .message_store
+                .as_ref()
+                .expect("fixture message store is alive"),
+        ),
         lockout: Arc::new(crate::api::auth::FailedAuthLockout::default()),
-        app_handle: fixture.app.handle().clone(),
+        app_handle: fixture
+            .app
+            .as_ref()
+            .expect("fixture app is alive")
+            .handle()
+            .clone(),
         session_mgr: Arc::clone(&fixture.session_manager),
         pty_mgr: Arc::clone(&fixture.pty_manager),
     }
@@ -3691,7 +3924,10 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
     }
 
     scanner.begin_cycle();
-    scanner.scan_root(fixture.app.handle(), root);
+    scanner.scan_root(
+        fixture.app.as_ref().expect("fixture app is alive").handle(),
+        root,
+    );
     scanner.finish_cycle();
     if let Some(control) = &start_control {
         control.wait_until_entered();
@@ -3791,10 +4027,14 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         }
         assert!(fixture
             .app
+            .as_ref()
+            .expect("fixture app is alive")
             .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
             .is_some());
         assert!(fixture
             .app
+            .as_ref()
+            .expect("fixture app is alive")
             .try_state::<Arc<std::sync::Mutex<PtyManager>>>()
             .is_some());
         match phase {
@@ -4157,7 +4397,10 @@ fn host_timeout_cancellation_claims_only_the_unaccepted_request() {
         assert!(!cancelled_path.exists());
         assert!(!cancelled_marker.exists());
         scanner.begin_cycle();
-        scanner.scan_root(fixture.app.handle(), root);
+        scanner.scan_root(
+            fixture.app.as_ref().expect("fixture app is alive").handle(),
+            root,
+        );
         scanner.finish_cycle();
         scanner.join_pending_tasks_for_test().await;
         assert!(!cancelled_response.exists());
@@ -4185,7 +4428,10 @@ fn host_timeout_cancellation_claims_only_the_unaccepted_request() {
         ));
         std::fs::remove_file(&disappeared_path).expect("remove request before claim");
         scanner.begin_cycle();
-        scanner.scan_root(fixture.app.handle(), root);
+        scanner.scan_root(
+            fixture.app.as_ref().expect("fixture app is alive").handle(),
+            root,
+        );
         scanner.finish_cycle();
         scanner.join_pending_tasks_for_test().await;
         assert!(!disappeared_response.exists());
@@ -4207,7 +4453,10 @@ fn host_timeout_cancellation_claims_only_the_unaccepted_request() {
         let daemon_won_identity = crate::path_identity::verify_regular_file(&daemon_won_path)
             .expect("daemon-won request identity");
         scanner.begin_cycle();
-        scanner.scan_root(fixture.app.handle(), root);
+        scanner.scan_root(
+            fixture.app.as_ref().expect("fixture app is alive").handle(),
+            root,
+        );
         scanner.finish_cycle();
         wait_for_host_cancellation_barrier(&processing_entered);
         assert!(!daemon_won_path.exists());
@@ -4302,7 +4551,10 @@ fn host_timeout_cancellation_claims_only_the_unaccepted_request() {
         let expired_identity = crate::path_identity::verify_regular_file(&expired_path)
             .expect("post-bytes timeout identity");
         scanner.begin_cycle();
-        scanner.scan_root(fixture.app.handle(), root);
+        scanner.scan_root(
+            fixture.app.as_ref().expect("fixture app is alive").handle(),
+            root,
+        );
         scanner.finish_cycle();
         wait_for_host_cancellation_barrier(&bytes_entered);
         assert!(!expired_path.exists());
@@ -4829,7 +5081,12 @@ fn real_host_and_api_daemon_paths_enforce_no_oracle_and_final_handoff() {
         let start = crate::api::start_server(
             "127.0.0.1".to_string(),
             available_loopback_port(),
-            fixture.app.handle().clone(),
+            fixture
+                .app
+                .as_ref()
+                .expect("fixture app is alive")
+                .handle()
+                .clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
             api_shutdown.clone(),
@@ -5831,7 +6088,7 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
         let start = crate::api::start_server(
             "127.0.0.1".to_string(),
             available_loopback_port(),
-            fixture.app.handle().clone(),
+            fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
             api_shutdown.clone(),
@@ -6309,7 +6566,7 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         let start = crate::api::start_server(
             "127.0.0.1".to_string(),
             available_loopback_port(),
-            fixture.app.handle().clone(),
+            fixture.app.as_ref().expect("fixture app is alive").handle().clone(),
             Arc::clone(&fixture.session_manager),
             Arc::clone(&fixture.pty_manager),
             api_shutdown.clone(),

@@ -85,6 +85,23 @@ pub(crate) async fn get(
     get_with_capture(state, headers, addr, original_uri, capture_factory).await
 }
 
+/// Full screenshot route flow. The strict-freshness check runs twice and its
+/// credential-registry lock is dropped before every await:
+///
+/// 1. Preflight authentication runs before raw-ID validation, admission, or
+///    any await; its guard is dropped immediately, so no lock is held while
+///    queued.
+/// 2. The raw window ID is validated, then the request is admitted into the
+///    bounded limiter. An admitted request may wait for the single active slot
+///    without holding the registry lock, so revocation stays possible while it
+///    queues.
+/// 3. Launch revalidation runs the second strict-freshness check only after
+///    the active slot is acquired. A revocation completed while the request
+///    waited blocks launch; a capture launched after the second check is
+///    authorized as of launch and is not retroactively cancelled.
+///
+/// A request future dropped while waiting releases its admission permit; a
+/// started worker keeps its `WindowScreenshotLease` until native work ends.
 async fn get_with_capture(
     state: ApiState,
     headers: HeaderMap,

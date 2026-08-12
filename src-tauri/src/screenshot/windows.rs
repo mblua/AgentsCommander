@@ -593,6 +593,14 @@ fn capture_window_worker<T: TargetWindowCaptureOps>(
     ops.encode_png_bounded(&image)
 }
 
+/// Captures the live native window selected by `window_id` inside one
+/// `spawn_blocking` task and returns the encoded PNG bytes.
+///
+/// Lease protocol: `lease` is moved into the blocking closure and lives there
+/// until enumeration, capture, and bounded PNG encoding finish. The handler's
+/// request future may be dropped (client disconnect) while the task runs; the
+/// lease still bounds capacity for the full native lifetime, and the dropped
+/// request can neither publish a response nor retain the result.
 pub(crate) async fn capture_window_png(
     window_id: String,
     lease: crate::api::WindowScreenshotLease,

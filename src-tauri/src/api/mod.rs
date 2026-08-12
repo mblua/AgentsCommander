@@ -54,11 +54,35 @@ pub(crate) enum WindowScreenshotAdmissionError {
     CaptureBusy,
 }
 
+/// Process-local admission and active-slot limiter for native window
+/// screenshots. Two permits gate every request:
+///
+/// - `admission` (capacity `WINDOW_SCREENSHOT_MAX_ADMITTED`) bounds the
+///   requests that are queued or running at once. `try_admit` acquires it
+///   synchronously and returns `CaptureBusy` when full, so the handler refuses
+///   with 429 before any native work starts.
+/// - `active` (capacity `WINDOW_SCREENSHOT_MAX_ACTIVE`) bounds the single
+///   native capture worker. `acquire_active` awaits a free slot, so admitted
+///   requests queue here instead of launching concurrent captures.
+///
+/// Permit ownership protocol: the handler holds the admission permit while it
+/// awaits the active slot, then moves both permits into a
+/// `WindowScreenshotLease` and into the worker. A request future dropped
+/// while waiting drops its admission permit and frees that slot; a dropped
+/// request whose worker already started keeps the lease until the native work
+/// ends, so detached workers cannot exceed the one-active, three-admitted
+/// bound. Covered by `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
+/// and the route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`.
 pub(crate) struct WindowScreenshotLimiter {
     admission: std::sync::Arc<tokio::sync::Semaphore>,
     active: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
+/// Owned admission and active permit pair. Created only after both permits are
+/// held, moved into the capture worker, and released together when the
+/// worker's native capture and PNG encoding finish. Holding both for the full
+/// worker lifetime keeps the limiter bounds intact even when the requesting
+/// HTTP client disconnects and the route future is dropped.
 pub(crate) struct WindowScreenshotLease {
     _admission: tokio::sync::OwnedSemaphorePermit,
     _active: tokio::sync::OwnedSemaphorePermit,
