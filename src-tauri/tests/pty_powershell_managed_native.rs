@@ -25,6 +25,7 @@
 #![cfg(target_os = "windows")]
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -535,17 +536,62 @@ fn write_claude_shim(dir: &Path, marker: &str, exit_code: u32) -> PathBuf {
     path
 }
 
-/// The reporter binary is built by Cargo as part of any `cargo test` run (bin
-/// targets are compiled for integration tests) and located at compile time
-/// through `CARGO_BIN_EXE_ac_argv_reporter`.
-fn reporter_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ac_argv_reporter"))
+/// The managed native child is the integration test binary itself (architect
+/// option 1, F8): the repository-owned helper is the `ac_1271_reporter_mode`
+/// test, selected in the child by the fixed harness prefix `--exact
+/// ac_1271_reporter_mode` plus the `AC_1271_ARGV_REPORTER=1` env flag. This
+/// keeps the package single-bin, so tauri's `mainBinaryName` rename can no
+/// longer capture an auto-discovered helper.
+fn test_binary_stem() -> String {
+    std::env::current_exe()
+        .expect("test binary path")
+        .file_stem()
+        .expect("test binary file stem")
+        .to_string_lossy()
+        .into_owned()
 }
 
+fn test_binary_dir() -> PathBuf {
+    std::env::current_exe()
+        .expect("test binary path")
+        .parent()
+        .expect("test binary parent dir")
+        .to_path_buf()
+}
+
+/// Fixed harness prefix for the self-exec child: libtest accepts `--exact
+/// <name>` plus extra positional filters, so the logical argv follows at a
+/// deterministic index and the child runs only the single mode test.
+const REPORTER_MODE_PREFIX: [&str; 2] = ["--exact", "ac_1271_reporter_mode"];
+
 /// Expected reporter exit code: sum of UTF-8 byte lengths of the logical args,
-/// modulo 256 (the reporter's deterministic derivation).
+/// modulo 256 (the mode test's deterministic derivation).
 fn reporter_exit_code(args: &[&str]) -> u32 {
     (args.iter().map(|arg| arg.len()).sum::<usize>() % 256) as u32
+}
+
+/// Scoped guard that sets `AC_1271_ARGV_REPORTER=1` for the duration of the
+/// create call so the spawned child (this same test binary) enters reporter
+/// mode. Restores the previous value on drop.
+struct ReporterEnvGuard {
+    previous: Option<String>,
+}
+
+impl ReporterEnvGuard {
+    fn set() -> Self {
+        let previous = std::env::var("AC_1271_ARGV_REPORTER").ok();
+        std::env::set_var("AC_1271_ARGV_REPORTER", "1");
+        Self { previous }
+    }
+}
+
+impl Drop for ReporterEnvGuard {
+    fn drop(&mut self) {
+        match self.previous.as_ref() {
+            Some(previous) => std::env::set_var("AC_1271_ARGV_REPORTER", previous),
+            None => std::env::remove_var("AC_1271_ARGV_REPORTER"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -645,22 +691,22 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
     });
 }
 
-/// Section 6.2 item 7: the repository-owned `ac_argv_reporter` launched as a
-/// bare native application through the generated `-Command`/`ProcessStartInfo`
-/// branch. Empty arg, quote, apostrophe, space, terminal backslash, percent,
-/// pipeline, and backslash-before-quote values are delivered exactly once;
-/// a distinct marker sent through `PtyManager::write` is acknowledged through
-/// the normal PTY output; the derived exit code propagates. Runs against the
-/// system `powershell.exe`; fails rather than skips when that host exists.
+/// Section 6.2 item 7: the repository-owned native child is the integration
+/// test binary itself (this file's `ac_1271_reporter_mode` test, selected by
+/// `--exact ac_1271_reporter_mode` plus the `AC_1271_ARGV_REPORTER=1` env
+/// flag), launched as a bare native application through the generated
+/// `-Command`/`ProcessStartInfo` branch. Empty arg, quote, apostrophe, space,
+/// terminal backslash, percent, pipeline, and backslash-before-quote values
+/// are delivered exactly once; a distinct marker sent through
+/// `PtyManager::write` is acknowledged through the normal PTY output; the
+/// derived exit code propagates. Runs against the system `powershell.exe`;
+/// fails rather than skips when that host exists.
 #[test]
 fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
     let fixture = make_fixture();
     let temp = fixture._temp.path().to_path_buf();
-    let reporter_dir = reporter_bin()
-        .parent()
-        .expect("reporter parent dir")
-        .to_path_buf();
-    let reporter_name = "ac_argv_reporter".to_string();
+    let reporter_dir = test_binary_dir();
+    let reporter_name = test_binary_stem();
     let logical_args: Vec<&str> = vec![
         "",
         "a\"b",
@@ -686,15 +732,20 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         .expect("tokio runtime");
 
     runtime.block_on(async {
-        // The reporter directory is prepended to the spawned session PATH (the
-        // session cwd is an agent dir, so the git-guard env carries the process
-        // PATH into the child); the logical argv is passed exactly as configured.
+        // The test-binary directory is prepended to the spawned session PATH
+        // (the session cwd is an agent dir, so the git-guard env carries the
+        // process PATH into the child); the logical argv is passed exactly as
+        // configured, after the fixed `--exact <mode>` harness prefix.
         let _path_lock = PATH_ENV_LOCK.lock().await;
         let _path_guard = PathEnvGuard::prepend(&reporter_dir);
+        let _reporter_guard = ReporterEnvGuard::set();
+        let mut child_args: Vec<&str> = Vec::new();
+        child_args.extend(REPORTER_MODE_PREFIX);
+        child_args.extend(logical_args.iter().copied());
         let created = create_plain_session(
             &fixture,
             &reporter_name,
-            &logical_args[..],
+            &child_args,
             Some(ResolvedAgentHostShell {
                 program: powershell.clone(),
                 args: vec!["-NoProfile".to_string()],
@@ -708,6 +759,7 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         )
         .await
         .expect("reporter session create must succeed");
+        drop(_reporter_guard);
         drop(_path_guard);
         drop(_path_lock);
         let id = parse_session_id(&created);
@@ -1200,10 +1252,11 @@ fn configured_powershell_host_shutdown_reaps_agent() {
 }
 
 /// Section 6.2 item 9: a missing configured host executable fails after the PTY
-/// pair exists and leaves no session state; an incompatible custom `-c` host is
-/// characterized (the host receives `-c` + script) and exits nonzero.
+/// pair exists and leaves no session state; an incompatible host (configured
+/// cmd.exe cannot launch the unresolvable logical agent) starts, exits nonzero,
+/// and leaves no stale session/PTY state.
 #[test]
-fn configured_missing_host_and_incompatible_custom_shell_cleanup() {
+fn configured_missing_host_and_incompatible_host_cleanup() {
     let fixture = make_fixture();
     let temp = fixture._temp.path().to_path_buf();
     let cwd = temp.join("repo-1271-native").to_string_lossy().to_string();
@@ -1242,56 +1295,54 @@ fn configured_missing_host_and_incompatible_custom_shell_cleanup() {
             "no session may survive a missing host"
         );
 
-        // Incompatible custom shell: the ac_argv_reporter does not honor -c, so
-        // the spawn succeeds but the agent never runs; the host receives
-        // `-c <script>` as its argv and exits with its own derived code (nonzero).
-        let reporter_dir = reporter_bin()
-            .parent()
-            .expect("reporter parent dir")
-            .to_path_buf();
-        let reporter_path = path_to_string(&reporter_bin());
+        // Incompatible host: a configured cmd.exe host cannot launch the
+        // logical agent (the agent name resolves nowhere), so the host starts,
+        // exits nonzero, and leaves no stale session/PTY/registry/injection/
+        // output state. The `-c` + `exec` script-shape proof lives in the pure
+        // `posix_script` adapter rows (the test binary itself cannot serve as
+        // the custom-shell host: libtest rejects a bare `-c`, empirically
+        // confirmed).
+        let cmd_host = std::env::var("ComSpec")
+            .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
+        let incompatible_agent = "ac_1271_missing_agent_xyz";
         let created = create_plain_session(
             &fixture,
-            "claude",
+            incompatible_agent,
             &[],
             Some(ResolvedAgentHostShell {
-                program: reporter_path.clone(),
+                program: cmd_host.clone(),
                 args: Vec::new(),
             }),
             &cwd,
-            "1271 custom shell",
+            "1271 incompatible host",
         )
         .await
-        .expect("custom host spawn itself must succeed");
+        .expect("incompatible host spawn itself must succeed");
         let id = parse_session_id(&created);
         fixture.track_session(id);
-        // The reporter prints its argv: `-c` and the exec script.
-        wait_for_output(&fixture, &created.id, "-c", OUTPUT_TIMEOUT)
-            .await
-            .expect("custom host must receive -c");
-        wait_for_output(&fixture, &created.id, "exec 'claude'", OUTPUT_TIMEOUT)
-            .await
-            .expect("custom host must receive the exec script");
-        // The reporter host blocks echoing stdin until the control line; send it
-        // so the host exits with its own derived (nonzero) code.
-        let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id)
-            .await
-            .expect("acquire input writer for custom host");
-        PtyManager::write_with_permit(&permit, b"AC_1271_STOP\r\n").expect("stop custom host");
-        drop(permit);
+        // The host started: provenance names the configured cmd with the
+        // adapter suffix.
+        let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
+        let argv = record.argv();
+        assert_eq!(
+            argv.first().map(String::as_str),
+            Some(cmd_host.as_str()),
+            "provenance must name the configured host: {argv:?}"
+        );
+        assert_eq!(argv.get(1).map(String::as_str), Some("/V:OFF"));
+        assert_eq!(argv.get(2).map(String::as_str), Some("/S"));
+        assert_eq!(argv.get(3).map(String::as_str), Some("/C"));
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
-            .expect("custom host must exit");
-        assert_ne!(code, 0, "an incompatible -c host must exit nonzero");
+            .expect("incompatible host must exit");
+        assert_ne!(code, 0, "an incompatible host must exit nonzero");
 
-        let _ = reporter_dir;
-        let _ = code;
         destroy_session_inner(fixture.app.handle(), id)
             .await
-            .expect("destroy custom-shell session");
+            .expect("destroy incompatible-host session");
         wait_for_session_gone(&fixture, id, EXIT_TIMEOUT)
             .await
-            .expect("no stale PTY may survive the custom-shell session");
+            .expect("no stale PTY may survive the incompatible-host session");
     });
 }
 
@@ -1350,4 +1401,54 @@ fn configured_powershell_resolved_but_unstartable_application_fails_nonzero() {
             .expect("Process.Start failure must produce a host exit");
         assert_ne!(code, 0, "a failed Process.Start must never report success");
     });
+}
+
+/// #1271 - reporter mode for the managed native argv+PTY-I/O regression
+/// (architect option 1, F8). When `AC_1271_ARGV_REPORTER=1` is set, this test
+/// acts as the repository-owned native child: it prints each argv element
+/// after the fixed `--exact <mode>` harness prefix on its own length-prefixed
+/// line, echoes stdin until the `AC_1271_STOP` control line or EOF, and exits
+/// with the derived code (sum of the logical argv byte lengths modulo 256) via
+/// `process::exit`. libtest runs only this single test in the child because
+/// the harness prefix is `--exact ac_1271_reporter_mode`; the extra positional
+/// filters match nothing. In every other context it returns immediately.
+#[test]
+fn ac_1271_reporter_mode() {
+    if std::env::var("AC_1271_ARGV_REPORTER").as_deref() != Ok("1") {
+        return;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    // argv: [exe, --exact, ac_1271_reporter_mode, <logical args...>]
+    let logical = &args[3..];
+    let mut stdout = std::io::stdout();
+    for arg in logical {
+        let line = format!("{}:{}\n", arg.len(), arg);
+        let _ = stdout.write_all(line.as_bytes());
+        let _ = stdout.flush();
+    }
+    // Echo stdin until the stop control line (ConPTY never reaches EOF while
+    // the app holds the master) or EOF. Keeps a rolling window so a marker
+    // split across reads still matches, and a trailing CR (ConPTY cooked
+    // input turns LF into CR) cannot displace the marker bytes.
+    let mut buf = [0u8; 4096];
+    let mut pending: Vec<u8> = Vec::new();
+    const STOP: &[u8] = b"AC_1271_STOP";
+    loop {
+        match std::io::stdin().read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let _ = stdout.write_all(&buf[..n]);
+                let _ = stdout.flush();
+                pending.extend_from_slice(&buf[..n]);
+                if pending.windows(STOP.len()).any(|w| w == STOP) {
+                    break;
+                }
+                if pending.len() >= STOP.len() {
+                    pending.drain(..pending.len() - (STOP.len() - 1));
+                }
+            }
+        }
+    }
+    let exit_code = (logical.iter().map(|arg| arg.len()).sum::<usize>() % 256) as i32;
+    std::process::exit(exit_code);
 }
