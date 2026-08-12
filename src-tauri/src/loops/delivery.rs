@@ -35,6 +35,9 @@ struct ResolvedLoopAgentCommand {
     agent_id: Option<String>,
     agent_label: Option<String>,
     resolved_spawn: Option<AgentSpawnCommand>,
+    /// #1271 - the configured host shell paired with the resolved agent, built
+    /// from the same settings snapshot that produced the spawn.
+    resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
 
 pub async fn deliver_loop_prompt(
@@ -378,9 +381,10 @@ async fn spawn_coordinator_session(
         Vec::<SessionRepo>::new(),
         loop_spawn_skip_auto_resume(had_existing_match),
         command.resolved_spawn,
-        // #1271 - delivery loop wakes resolve no agent command of their own;
-        // the resolved-agent host-shell snapshot stays None here.
-        None,
+        // #1271 - the configured host shell paired with the resolved agent,
+        // carried through ResolvedLoopAgentCommand from the same settings
+        // snapshot that built the spawn.
+        command.resolved_agent_host_shell,
         // #973 - headless caller: no terminal to measure, keep 120x30.
         None,
         crate::commands::session::CreateSelectionIntent::Background,
@@ -473,19 +477,28 @@ async fn resolve_loop_agent_command(
 
     if let Some(agent) = settings.agents.first() {
         let spawn = build_agent_spawn_command(&settings, &agent.id, Some(replica_dir), None)?;
-        return Ok(resolved_loop_command_from_spawn(spawn));
+        return Ok(resolved_loop_command_from_spawn(spawn, &settings));
     }
 
     Err("No coding agent is configured for Loop coordinator wake".to_string())
 }
 
-fn resolved_loop_command_from_spawn(spawn: AgentSpawnCommand) -> ResolvedLoopAgentCommand {
+fn resolved_loop_command_from_spawn(
+    spawn: AgentSpawnCommand,
+    settings: &AppSettings,
+) -> ResolvedLoopAgentCommand {
     ResolvedLoopAgentCommand {
         shell: spawn.shell.clone(),
         shell_args: spawn.shell_args.clone(),
         agent_id: Some(spawn.trusted_agent_id.clone()),
         agent_label: Some(spawn.trusted_agent_label.clone()),
         resolved_spawn: Some(spawn),
+        // #1271 - same-snapshot host shell: `settings` is the exact snapshot
+        // the caller used to build the spawn.
+        resolved_agent_host_shell: Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        }),
     }
 }
 
@@ -498,7 +511,7 @@ fn command_for_agent(
         return Ok(None);
     };
     let spawn = build_agent_spawn_command(settings, &agent.id, Some(replica_dir), None)?;
-    Ok(Some(resolved_loop_command_from_spawn(spawn)))
+    Ok(Some(resolved_loop_command_from_spawn(spawn, settings)))
 }
 
 fn read_last_coding_agent(replica_dir: &Path) -> Option<String> {

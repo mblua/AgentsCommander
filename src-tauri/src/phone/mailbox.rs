@@ -552,6 +552,9 @@ struct ResolvedWakeSpawnPlan {
     spawn_args: Vec<String>,
     spawn_label: Option<String>,
     configured_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    /// #1271 - the configured host shell paired with the resolved agent, built
+    /// from the same settings guard that produced the spawn.
+    resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
 
 fn normalize_agent_for_wake(
@@ -5480,6 +5483,13 @@ impl MailboxPoller {
             }
         }
         let (agent_id, spawn) = resolved.ok_or(C::UnsupportedProfile)?;
+        // #1271 - same-snapshot host shell: built from the SAME cloned
+        // AppSettings that resolved the spawn above (mailbox.rs:5420), before
+        // any await, so the pair can never mix across a configuration change.
+        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
         let expected_backend = SessionBackendKind::from(&spawn.backend);
         let carried = exited.map(|session| {
             (
@@ -5578,7 +5588,7 @@ impl MailboxPoller {
             Vec::new(),
             exited.is_none(),
             Some(spawn),
-            None,
+            resolved_agent_host_shell,
             None,
             crate::commands::session::CreateSelectionIntent::Background,
             target_ownership,
@@ -6587,6 +6597,7 @@ impl MailboxPoller {
             spawn_args,
             spawn_label,
             configured_spawn,
+            resolved_agent_host_shell,
         } = plan;
         let spawn_source = resolved_command.source.clone();
         let spawn_raw = resolved_command.raw_command.clone();
@@ -6615,6 +6626,7 @@ impl MailboxPoller {
                 spawn_args.clone(),
                 spawn_label,
                 configured_spawn,
+                resolved_agent_host_shell,
             )
             .await
             .map_err(|e| {
@@ -6848,6 +6860,14 @@ impl MailboxPoller {
             let snapshot = settings.read().await.clone();
             snapshot
         };
+        // #1271 - copy the configured default host shell from the SAME snapshot
+        // that builds the spawn below, before the snapshot moves into the
+        // resolution task (Phase 1 items 1-2: never read one half of the pair
+        // after configuration has changed).
+        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings_snapshot.default_shell.clone(),
+            args: settings_snapshot.default_shell_args.clone(),
+        });
         let spawn_agent_id = agent_id.to_string();
         let spawn_cwd = cwd.clone();
         let resolved_spawn = tokio::task::spawn_blocking(move || {
@@ -6912,6 +6932,7 @@ impl MailboxPoller {
             resolved_spawn.shell_args.clone(),
             Some(resolved_spawn.trusted_agent_label.clone()),
             Some(resolved_spawn),
+            resolved_agent_host_shell,
         );
         tokio::pin!(spawn);
         let spawn_result = tokio::select! {
@@ -7422,6 +7443,7 @@ impl MailboxPoller {
         spawn_args: Vec<String>,
         spawn_label: Option<String>,
         resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+        resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
     ) -> Result<SessionInfo, String> {
         #[cfg(not(test))]
         let _ = msg;
@@ -7499,10 +7521,9 @@ impl MailboxPoller {
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
             resolved_spawn,
-            // #1271 - mailbox wakes that resolve an agent propagate the
-            // configured host-shell snapshot; this call site predates that and
-            // carries None (no adapter on the mailbox path).
-            None,
+            // #1271 - the configured host shell paired with the resolved agent,
+            // built from the same settings snapshot that produced the spawn.
+            resolved_agent_host_shell,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             crate::commands::session::CreateSelectionIntent::Background,
@@ -10516,15 +10537,27 @@ impl MailboxPoller {
             let (_, local) = crate::config::teams::split_project_prefix(&msg.to);
             local.to_string()
         };
-        let configured_spawn = if let Some(agent_id) = resolved_command.agent_id.as_deref() {
-            let settings = app.state::<SettingsState>();
-            let cfg = settings.read().await;
-            crate::commands::session::resolve_configured_agent_spawn_for_cwd(
-                &cfg, agent_id, &cwd, None,
-            )?
-        } else {
-            None
-        };
+        let (configured_spawn, resolved_agent_host_shell) =
+            if let Some(agent_id) = resolved_command.agent_id.as_deref() {
+                let settings = app.state::<SettingsState>();
+                let cfg = settings.read().await;
+                let spawn = crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+                    &cfg, agent_id, &cwd, None,
+                )?;
+                // #1271 - same-guard host shell: copied from the exact snapshot
+                // that built the spawn, before any await.
+                let host_shell = if spawn.is_some() {
+                    Some(crate::pty::backend::ResolvedAgentHostShell {
+                        program: cfg.default_shell.clone(),
+                        args: cfg.default_shell_args.clone(),
+                    })
+                } else {
+                    None
+                };
+                (spawn, host_shell)
+            } else {
+                (None, None)
+            };
         let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = configured_spawn.as_ref()
         {
             (
@@ -10548,6 +10581,7 @@ impl MailboxPoller {
             spawn_args,
             spawn_label,
             configured_spawn,
+            resolved_agent_host_shell,
         })
     }
 
@@ -10786,7 +10820,7 @@ impl MailboxPoller {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
             let cwd = crate::path_utils::normalize_windows_verbatim_path(&request.cwd);
-            let resolved_spawn = {
+            let (resolved_spawn, resolved_agent_host_shell) = {
                 let settings = app.state::<SettingsState>();
                 let cfg = settings.read().await;
                 match crate::commands::session::build_configured_agent_spawn_for_cwd(
@@ -10795,7 +10829,16 @@ impl MailboxPoller {
                     &cwd,
                     request.requested_profile.as_deref(),
                 ) {
-                    Ok(spawn) => spawn,
+                    Ok(Some(spawn)) => (
+                        Some(spawn),
+                        // #1271 - same-guard host shell: copied from the same
+                        // config snapshot that built the spawn, before any await.
+                        Some(crate::pty::backend::ResolvedAgentHostShell {
+                            program: cfg.default_shell.clone(),
+                            args: cfg.default_shell_args.clone(),
+                        }),
+                    ),
+                    Ok(None) => (None, None),
                     Err(e) => {
                         log::error!(
                             "[session-requests] Failed to rebuild configured agent command for '{}': {}",
@@ -10831,7 +10874,7 @@ impl MailboxPoller {
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → CLI session-request is a fresh create
                 resolved_spawn,
-                None,
+                resolved_agent_host_shell,
                 // #973 - headless caller: no terminal to measure, keep 120x30.
                 None,
                 crate::commands::session::CreateSelectionIntent::Background,

@@ -9,6 +9,18 @@
 //! reporter behavior is a test FAILURE, never a skip. Only when the canonical
 //! file is absent may the test print the reason and return, and that path is
 //! visible in the run output.
+//!
+//! TEST-ONLY PATH DELIVERY (recorded deviation): portable-pty 0.8.1 rebuilds
+//! the spawned child's PATH from the registry (HKLM+HKCU Environment) instead
+//! of inheriting the process env, so a process-level `set_var` never reaches
+//! the child. The tests therefore use an agent-dir session cwd
+//! (`.ac/_agent_claude`), which triggers the pre-existing git-guard env path in
+//! `spawn_sync` (`build_git_guard_env`), and that guard carries the process
+//! PATH (with the fixture directory prepended) into the child. This depends on
+//! `git.exe` being resolvable on the runner; if it is not, the PATH-prepend
+//! leg silently degrades to the registry PATH and only the git leg is
+//! environment-sensitive - the PowerShell leg (canonical host present) still
+//! runs its full assertion set and never skips.
 
 #![cfg(target_os = "windows")]
 
@@ -67,17 +79,8 @@ fn system_powershell_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn powershell_required_host() -> String {
-    match system_powershell_path() {
-        Some(path) => path.to_string_lossy().to_string(),
-        None => {
-            eprintln!(
-                "[1271] SKIP-PRINT: canonical system powershell.exe is absent; \
-                 the full assertion set cannot run on this machine"
-            );
-            std::process::exit(0);
-        }
-    }
+fn powershell_required_host() -> Option<String> {
+    system_powershell_path().map(|path| path.to_string_lossy().to_string())
 }
 
 static TEST_CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -326,12 +329,16 @@ fn parse_session_id(session: &SessionInfo) -> Uuid {
 }
 
 /// A bare logical program (e.g. `claude` or `ac_argv_reporter`) must resolve
-/// through the spawned session's PATH, which the child inherits from this
-/// process. Agent env rows cannot carry PATH (it is a reserved key), so the
-/// tests prepend the fixture directory to the process PATH for the duration of
-/// the create call, under a global lock so parallel tests cannot clobber each
-/// other. The spawned child keeps the inherited PATH after the guard restores
-/// the original value.
+/// through the spawned session's PATH. portable-pty rebuilds the child PATH
+/// from the registry, so the fixture directory is delivered through the
+/// pre-existing git-guard env path: the session cwd is an agent dir, which
+/// makes `spawn_sync` call `build_git_guard_env` and set the child PATH to
+/// `guard_dir;process_PATH`. Agent env rows cannot carry PATH (reserved key),
+/// so the tests prepend the fixture directory to the process PATH for the
+/// duration of the create call, under a global lock so parallel tests cannot
+/// clobber each other. The spawned child keeps the inherited PATH after the
+/// guard restores the original value. See the module docs for the git
+/// dependency boundary.
 static PATH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct PathEnvGuard {
@@ -558,12 +565,12 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
     let shim_path = write_claude_shim(&shim_dir, "AC_SHIM_MARKER", 23);
     assert!(shim_path.is_file());
-    // DIAGNOSTIC: dump PATH for this run.
-    write_cmd_shim(&shim_path, "echo AC_SHIM_MARKER
-echo PATHDUMP=[%PATH%]
-exit /b 23");
-
-    let powershell = powershell_required_host();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the shim regression cannot run on this machine"
+        );
+        return;
+    };
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
     settings.agents = vec![agent_config("claude", "claude")];
 
@@ -666,7 +673,12 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         "a\\\\\"c",
     ];
 
-    let powershell = powershell_required_host();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the managed native reporter regression cannot run on this machine"
+        );
+        return;
+    };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -772,11 +784,72 @@ fn configured_powershell_batch_regression() {
     let temp = fixture._temp.path().to_path_buf();
     let shim_dir = temp.join("shim-batch");
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
-    write_claude_shim(&shim_dir, "AC_BATCH_MARKER", 17);
+    // Section 6.1 cmd-safe values delivered through the nested system-cmd
+    // branch: empty, whitespace, apostrophe, terminal backslash, &, |, ^, !,
+    // <, >, parenthesized. '%' and '"' stay rejected for batch targets.
+    let cmd_safe_args: Vec<&str> = vec![
+        "",
+        "with space",
+        "o'clock",
+        r"tail\",
+        "a&b",
+        "a|b",
+        "a^b",
+        "a!b",
+        "a<b",
+        "a>b",
+        "(x)",
+    ];
+    // The shim echoes one bracketed line per known argument (the injected
+    // --session-id pair lands after the known values and is not echoed), then
+    // exits with a deterministic code.
+    // The shim echoes one quoted bracketed line per known argument (the quoted
+    // echo keeps cmd metacharacters in the expanded value inert; the injected
+    // --session-id pair lands after the known values and is not echoed), then
+    // exits with a deterministic code. `%~N` strips the command-line quotes;
+    // cmd batch can only expand %0-%9, so `shift` brings args 10+ into %1.
+    let mut shim_body = String::from("echo AC_BATCH_MARKER
+");
+    let mut shifted = 0usize;
+    for i in 1..=cmd_safe_args.len() {
+        if i <= 9 {
+            shim_body.push_str(&format!("echo \"V{i}=[%~{i}]\"
+"));
+        } else {
+            // `shift` moves every parameter one position left; before reading
+            // arg i (i > 9), shift it down to %1.
+            while shifted < i - 1 {
+                shim_body.push_str("shift
+");
+                shifted += 1;
+            }
+            shim_body.push_str(&format!("echo \"V{i}=[%~1]\"
+"));
+        }
+    }
+    shim_body.push_str("exit /b 17
+");
+    write_cmd_shim(&shim_dir.join("claude.cmd"), &shim_body);
 
-    let powershell = powershell_required_host();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the batch regression cannot run on this machine"
+        );
+        return;
+    };
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    settings.agents = vec![agent_config("claude", "claude")];
+    // The command-language tokenizer treats a backslash before the closing
+    // quote as an escape, so a value ending in a backslash is written with the
+    // backslash doubled; the resolved token is the single-backslash value.
+    let command = format!(
+        "claude {}",
+        cmd_safe_args
+            .iter()
+            .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    settings.agents = vec![agent_config("claude", &command)];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -806,6 +879,26 @@ fn configured_powershell_batch_regression() {
         wait_for_output(&fixture, &created.id, "AC_BATCH_MARKER", OUTPUT_TIMEOUT)
             .await
             .expect("batch shim marker must arrive through PTY output");
+        // Per-argument delivery through the nested system-cmd route: every
+        // cmd-safe value arrives exactly once, in order, as one literal
+        // argument each.
+        let expected_lines: Vec<String> = cmd_safe_args
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| format!("\"V{}=[{}]\"", i + 1, arg))
+            .collect();
+        for line in &expected_lines {
+            wait_for_output(&fixture, &created.id, line, OUTPUT_TIMEOUT)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{e}
+argument line missing: {line:?}
+output={:?}",
+                        fixture.output_text(&created.id)
+                    )
+                });
+        }
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("batch shim exit code must propagate");
@@ -992,7 +1085,12 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
 fn configured_powershell_nonexistent_agent_fails_nonzero() {
     let fixture = make_fixture();
     let temp = fixture._temp.path().to_path_buf();
-    let powershell = powershell_required_host();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the nonexistent-agent regression cannot run on this machine"
+        );
+        return;
+    };
     // A bare name that resolves nowhere on any PATH: no such executable or shim
     // exists on this machine, so the application-only lookup must fail and the
     // script must exit 1 (never a stale-LASTEXITCODE success).
@@ -1041,7 +1139,12 @@ fn configured_powershell_host_shutdown_reaps_agent() {
     let shim_path = shim_dir.join("claude.cmd");
     write_cmd_shim(&shim_path, "echo AC_LONG_MARKER\r\nping -n 60 127.0.0.1 > nul");
 
-    let powershell = powershell_required_host();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the host-shutdown regression cannot run on this machine"
+        );
+        return;
+    };
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
     settings.agents = vec![agent_config("claude", "claude")];
 
@@ -1189,5 +1292,62 @@ fn configured_missing_host_and_incompatible_custom_shell_cleanup() {
         wait_for_session_gone(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("no stale PTY may survive the custom-shell session");
+    });
+}
+
+/// Section 6.1 "PowerShell nonzero, missing-agent, and shadowing behavior" row:
+/// a resolved-but-unstartable Application target makes the nested
+/// `Process.Start` throw, and the script exits 1 (never a stale success). A
+/// zero-byte `claude.exe` in the PATH-prepended dir resolves through
+/// `GetCommand` (Application) but cannot be started.
+#[test]
+fn configured_powershell_resolved_but_unstartable_application_fails_nonzero() {
+    let fixture = make_fixture();
+    let temp = fixture._temp.path().to_path_buf();
+    let Some(powershell) = powershell_required_host() else {
+        eprintln!(
+            "[1271] SKIP-PRINT: canonical system powershell.exe is absent; the unstartable-application regression cannot run on this machine"
+        );
+        return;
+    };
+    let bad_dir = temp.join("bad-exe-dir");
+    std::fs::create_dir_all(&bad_dir).expect("create bad exe dir");
+    // Zero bytes: GetCommand resolves the name as an Application, but
+    // Process.Start throws (not a valid image), so the script's catch exits 1.
+    std::fs::write(bad_dir.join("claude.exe"), b"").expect("write zero-byte claude.exe");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async {
+        let _path_lock = PATH_ENV_LOCK.lock().await;
+        let _path_guard = PathEnvGuard::prepend(&bad_dir);
+        let created = create_plain_session(
+            &fixture,
+            "claude",
+            &[],
+            Some(ResolvedAgentHostShell {
+                program: powershell.clone(),
+                args: vec!["-NoProfile".to_string()],
+            }),
+            temp.join("repo-1271-native")
+                .join(".ac")
+                .join("_agent_claude")
+                .to_string_lossy()
+                .as_ref(),
+            "1271 unstartable application",
+        )
+        .await
+        .expect("create with a resolved-but-unstartable target must reach the PTY");
+        drop(_path_guard);
+        drop(_path_lock);
+        let id = parse_session_id(&created);
+        fixture.track_session(id);
+        let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
+            .await
+            .expect("Process.Start failure must produce a host exit");
+        assert_ne!(code, 0, "a failed Process.Start must never report success");
     });
 }

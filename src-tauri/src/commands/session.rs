@@ -4766,27 +4766,25 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             last_coding_agent.as_deref(),
         )?
     };
-    let resolved_spawn = if let Some(agent_id) = agent_id.as_deref() {
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+        // #1271 - build the spawn and copy the configured default host shell
+        // from the SAME single guard, before any await, so the pair can never
+        // mix across a configuration change (Phase 1 items 1-2; mirrors the
+        // restart pattern).
         let settings = settings.read().await;
-        build_configured_agent_spawn_for_cwd(
+        let spawn = build_configured_agent_spawn_for_cwd(
             &settings,
             agent_id,
             &root_agent_path,
             request.requested_profile.as_deref(),
-        )?
-    } else {
-        None
-    };
-    // #1271 - copy the configured default host shell from the same guard that
-    // built the spawn, only when an agent was actually resolved.
-    let resolved_agent_host_shell = if resolved_spawn.is_some() {
-        let settings = settings.read().await;
-        Some(ResolvedAgentHostShell {
+        )?;
+        let host_shell = Some(ResolvedAgentHostShell {
             program: settings.default_shell.clone(),
             args: settings.default_shell_args.clone(),
-        })
+        });
+        (spawn, host_shell)
     } else {
-        None
+        (None, None)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -10458,4 +10456,123 @@ mod tests {
         }
         close_test_coordinator(&app).await;
     }
+
+    /// #1271 - native twin of the web invalid-input postcondition test: the
+    /// adapter rejection happens at the TOP of the REAL `spawn_sync`, before
+    /// any spawn accounting or PTY acquisition, so a rejected configured host
+    /// leaves no session, no pending/metadata record, no spawn record, no PTY
+    /// map entry, and no output task. Windows-only (the adapter is the Windows
+    /// host-shell branch); the backend seam proves the same postcondition with
+    /// a known id in `adapter_spawn_sync_tests`.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn configured_default_shell_invalid_input_leaves_no_session_state_native() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        // A conflicting/terminal configured option must fail before any PTY.
+        settings.default_shell = "powershell.exe".to_string();
+        settings.default_shell_args = vec!["-Command".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        // The real local backend: the invalid-input rejection lives inside its
+        // spawn_sync, so a fake capturing backend would accept the spawn.
+        let git_app = Box::leak(Box::new(
+            tauri::Builder::default()
+                .any_thread()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build native invalid-input git watcher app"),
+        ));
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            git_app.handle().clone(),
+        );
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let output_senders: crate::telegram::manager::OutputSenderMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::new(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            None,
+        ));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let error = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "claude".to_string(),
+            Vec::new(),
+            cwd.clone(),
+            Some("1271 native invalid input".to_string()),
+            None,
+            None,
+            false,
+            Vec::new(),
+            true,
+            None,
+            Some(crate::pty::backend::ResolvedAgentHostShell {
+                program: "powershell.exe".to_string(),
+                args: vec!["-Command".to_string()],
+            }),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect_err("invalid configured host must fail the create");
+        assert!(error.contains("conflicting/terminal"), "{error}");
+        assert!(error.contains("agent adapter owns command execution"), "{error}");
+
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "no session may appear in the session manager"
+        );
+        // The coordinator worker rolls the pending binding back asynchronously;
+        // while it is still visible, the rejected id must show no launch
+        // provenance, no PTY map entry, and no output task.
+        let pending_ids = session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+                "no launch provenance may be recorded for the rejected session"
+            );
+            assert!(
+                !pty_mgr.lock().unwrap().has_session(*id),
+                "no PTY map entry may exist for the rejected session"
+            );
+            assert!(
+                pty_mgr.lock().unwrap().get_pty_size(*id).is_none(),
+                "no output task may be attached for the rejected session"
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        close_test_coordinator(&app).await;
+    }
+
 }

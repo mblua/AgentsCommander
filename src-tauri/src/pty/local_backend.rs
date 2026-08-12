@@ -1156,13 +1156,13 @@ fn posix_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-/// PowerShell-side equivalent of `windows_arg`, defined once inside every
-/// generated script so the runtime-resolved batch path can encode its own path
-/// (which is unknown to the Rust generator). `[char]92` is `\` and `[char]34`
-/// is `"`, written that way to avoid coercion ambiguity in comparisons.
-const POWERSHELL_WINDOWS_ARG_FN: &str = r#"function ac_1271_windows_arg([string]$ac_v) { $ac_o = New-Object System.Text.StringBuilder; [void]$ac_o.Append('"'); $ac_n = $ac_v.Length; $ac_i = 0; while ($ac_i -lt $ac_n) { $ac_run = 0; while (($ac_i -lt $ac_n) -and ($ac_v[$ac_i] -eq [char]92)) { $ac_run += 1; $ac_i += 1 }; if ($ac_i -lt $ac_n) { if ($ac_v[$ac_i] -eq [char]34) { [void]$ac_o.Append('\' * ($ac_run * 2 + 1)); [void]$ac_o.Append('"') } else { [void]$ac_o.Append('\' * $ac_run); [void]$ac_o.Append($ac_v[$ac_i]) }; $ac_i += 1 } else { [void]$ac_o.Append('\' * ($ac_run * 2)) } }; [void]$ac_o.Append('"'); return $ac_o.ToString() }
-"#;
-
+/// #1271 - the resolved batch child is launched through one explicit system-cmd
+/// child (`/D /V:OFF /S /C`). Its payload tokens are `'"' + <raw value> + '"'`:
+/// cmd's batch tokenizer is quote-aware but NOT backslash-aware (probe-proven),
+/// so the C-runtime `windows_arg` trailing-run doubling would corrupt a value
+/// ending in a backslash. Values containing `%` or `"` are already rejected
+/// before this branch runs, so the raw quote wrapper is safe for the whole
+/// batch domain.
 /// Section 4.4 - the generated `-Command` script. Resolves the logical program
 /// as an external command only (two-argument `GetCommand` with the
 /// `Application | ExternalScript` filter, never a profile alias/function),
@@ -1175,7 +1175,6 @@ fn powershell_script(command: &str, args: &[String]) -> String {
     let batch_unsupported = args.iter().any(|arg| arg.contains('%') || arg.contains('"'));
     let mut script = String::new();
     script.push_str("$global:LASTEXITCODE = $null;\n");
-    script.push_str(POWERSHELL_WINDOWS_ARG_FN);
     script.push_str("$ac_batch_unsupported_logical_arg = $");
     script.push_str(if batch_unsupported { "true" } else { "false" });
     script.push_str(";\n");
@@ -1199,11 +1198,11 @@ fn powershell_script(command: &str, args: &[String]) -> String {
         "    if ($ac_batch_unsupported_logical_arg -or $ac_command.Path.Contains('%') -or \
          $ac_command.Path.Contains([char]34)) { exit 1 };\n",
     );
-    script.push_str("    $ac_batch_payload = (ac_1271_windows_arg $ac_command.Path)");
+    script.push_str("    $ac_batch_payload = '\"' + $ac_command.Path + '\"'");
     for arg in args {
-        script.push_str(" + ' ' + (ac_1271_windows_arg ");
+        script.push_str(" + ' ' + '\"' + ");
         script.push_str(&ps_literal(arg));
-        script.push(')');
+        script.push_str(" + '\"'");
     }
     script.push_str(";\n");
     script.push_str("    $ac_start = New-Object System.Diagnostics.ProcessStartInfo;\n");

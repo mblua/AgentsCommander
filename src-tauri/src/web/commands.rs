@@ -1543,6 +1543,12 @@ mod tests {
         }
     }
 
+    // #1271 - the adapter's deterministic rejections are Windows-only (the
+    // host-shell adapter lives in the Windows spawn branch), so the full
+    // invalid-input postcondition rows are verified on Windows at both the
+    // session layer (here and the native twin) and the backend seam
+    // (adapter_spawn_sync_tests).
+    #[cfg(windows)]
     #[tokio::test]
     async fn configured_default_shell_invalid_input_leaves_no_session_state_via_web() {
         let temp = tempfile::tempdir().unwrap();
@@ -1575,6 +1581,32 @@ mod tests {
             state.session_mgr.read().await.list_sessions().await.is_empty(),
             "no session may appear in the session manager"
         );
+        // The adapter rejection happens at the TOP of spawn_sync, before any
+        // spawn accounting or PTY acquisition, so while the coordinator worker
+        // still holds the pending binding (the rollback is async) the rejected
+        // id must already show no launch provenance, no PTY map entry, and no
+        // output task.
+        let pending_ids = state
+            .session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+                "no launch provenance may be recorded for the rejected session"
+            );
+            assert!(
+                !state.pty_mgr.lock().unwrap().has_session(*id),
+                "no PTY map entry may exist for the rejected session"
+            );
+            assert!(
+                state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none(),
+                "no output task may be attached for the rejected session"
+            );
+        }
         // The coordinator worker rolls the pending binding back asynchronously
         // (CreateFinalizationTicket::drop -> RollbackCreate), so poll for it.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1598,6 +1630,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_web() {
         let temp = tempfile::tempdir().unwrap();
@@ -1626,6 +1659,18 @@ mod tests {
             .expect("invalid cmd payload must fail the create");
         assert!(error.contains("unsupported cmd payload character"), "{error}");
         assert!(state.session_mgr.read().await.list_sessions().await.is_empty());
+        let pending_ids = state
+            .session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(crate::pty::spawn_diagnostics::record_for(*id).is_none());
+            assert!(!state.pty_mgr.lock().unwrap().has_session(*id));
+            assert!(state.pty_mgr.lock().unwrap().get_pty_size(*id).is_none());
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let pending_empty = state
