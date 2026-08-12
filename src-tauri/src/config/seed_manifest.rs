@@ -3541,7 +3541,6 @@ fn log_record_failure(scope: &str, error: &SeedManifestError) {
 
 #[cfg(test)]
 // The shared test module deliberately precedes the cfg-gated Windows implementation it exercises.
-#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};

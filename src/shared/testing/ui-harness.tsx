@@ -156,6 +156,8 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     agentTemplatesPath: null,
     themeLight: false,
     specBoardEnabled: false,
+    gitSweepConcurrency: 1,
+    gitSweepMinIntervalSecs: 10,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
     resourceWatchdogAction: "warn",
@@ -175,6 +177,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     autoSelfClearByAgent: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };

@@ -2402,6 +2402,32 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           restart). Higher levels are noisier. The RUST_LOG env var, if set,
           overrides this until restart.
         </div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.activityLogEnabled}
+            disabled={saving()}
+            onChange={(e) =>
+              updateField("activityLogEnabled", e.currentTarget.checked)
+            }
+            data-ac-testid="settings.general.activityLogEnabled"
+            data-ac-role="checkbox"
+            data-ac-state={
+              settings.data!.activityLogEnabled ? "checked" : "unchecked"
+            }
+          />
+          <span>Record activity log (activity.jsonl)</span>
+        </label>
+        <div
+          class="settings-hint"
+          data-ac-testid="settings.general.activityLogEnabled.hint"
+        >
+          Writes a diagnostic timeline (app start/stop, heartbeat, session busy/idle
+          edges) that no other feature reads. Applies on the next launch; the current
+          session is unaffected. Existing activity.jsonl files are left untouched.
+          Disabled by default.
+        </div>
       </div>
 
     </>

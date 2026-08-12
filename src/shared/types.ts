@@ -608,6 +608,8 @@ export interface AppSettings {
   railCollapsedProjects?: string[];
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
+  gitSweepConcurrency: number;
+  gitSweepMinIntervalSecs: number;
   resourceMonitorEnabled: boolean;
   maxConcurrentAgentProcesses: number;
   resourceWatchdogAction: ResourceWatchdogAction;
@@ -627,6 +629,7 @@ export interface AppSettings {
   autoSelfClearByAgent: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
+  activityLogEnabled: boolean;
   screenshotCaptureHotkey?: string;
   /**
    * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust

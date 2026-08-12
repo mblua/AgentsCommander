@@ -75,6 +75,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    gitSweepConcurrency: 1,
+    gitSweepMinIntervalSecs: 10,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
     resourceWatchdogAction: "warn",
@@ -94,6 +96,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoSelfClearByAgent: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };

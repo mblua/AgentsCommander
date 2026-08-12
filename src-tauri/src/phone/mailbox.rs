@@ -1370,7 +1370,6 @@ pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::fr
 /// - `activity_age >= settle` (`idle_threshold + FRESH_IDLE_GUARD`): long-idle -
 ///   InjectNow (no added latency for a genuinely-ready wake).
 /// - otherwise (the `[idle_threshold, settle)` fresh-idle window): Wait.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn live_settle_action(
     activity_age: Option<std::time::Duration>,
     last_resize_age: Option<std::time::Duration>,
@@ -9805,6 +9804,9 @@ impl MailboxPoller {
                     true,
                     crate::session::selection::TrustedRestartIntent::Background,
                     carried_communication,
+                    // §1295 6.6 / 5.1b: the mailbox wake-restart passes Enforce
+                    // explicitly, unlike the default-preferring user restart.
+                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
                 )
                 .await;
                 result.map(|info| info.id)
@@ -17423,7 +17425,6 @@ mod tests {
         (session.id, session.token)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_self_switch_message(
         cwd: &Path,
         msg_id: &str,

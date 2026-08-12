@@ -742,6 +742,8 @@ agentscommander_lib::pty::context_scrape -> agentscommander_lib::shutdown
 agentscommander_lib::pty::context_scrape::rows -> agentscommander_lib::pty::context_scrape::pattern
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::errors
 agentscommander_lib::pty::docker_runtime -> agentscommander_lib::pty::container_runtime
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::sessions_persistence
+agentscommander_lib::pty::git_watcher -> agentscommander_lib::config::settings
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::pty::credentials
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::manager
 agentscommander_lib::pty::git_watcher -> agentscommander_lib::session::session
@@ -893,7 +895,6 @@ agentscommander_lib::telegram::api -> agentscommander_lib::network
 agentscommander_lib::telegram::api -> agentscommander_lib::telegram::redact
 agentscommander_lib::telegram::bridge -> agentscommander_lib::commands::pty
 agentscommander_lib::telegram::bridge -> agentscommander_lib::commands::voice
-agentscommander_lib::telegram::bridge -> agentscommander_lib::config
 agentscommander_lib::telegram::bridge -> agentscommander_lib::config::settings
 agentscommander_lib::telegram::bridge -> agentscommander_lib::network
 agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::inject
@@ -901,13 +902,18 @@ agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::manager
 agentscommander_lib::telegram::bridge -> agentscommander_lib::session::manager
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::claude_watcher
+agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::claude_watcher::output
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::codex_watcher
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::gemini_watcher
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::redact
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::types
 agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::network
-agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::bridge
+agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::claude_watcher::output
 agentscommander_lib::telegram::claude_watcher -> agentscommander_lib::telegram::jsonl_kernel
+agentscommander_lib::telegram::claude_watcher::output -> agentscommander_lib::config
+agentscommander_lib::telegram::claude_watcher::output -> agentscommander_lib::network
+agentscommander_lib::telegram::claude_watcher::output -> agentscommander_lib::telegram::api
+agentscommander_lib::telegram::claude_watcher::output -> agentscommander_lib::telegram::redact
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::codex_resolver
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::bridge

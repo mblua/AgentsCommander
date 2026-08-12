@@ -728,7 +728,7 @@ impl ContextPersistSink for ScraperPersist {
             for (id, percent) in &changed {
                 guard.set_context_percent(*id, *percent).await;
             }
-            crate::config::sessions_persistence::persist_current_state(&guard).await;
+            crate::config::sessions_persistence::persist_current_state_prune_dormant(&guard).await;
         })
     }
 }
@@ -1024,7 +1024,8 @@ pub fn run(
     // which the next startup reports as unclean. This is also the last point at
     // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
     // lets the scan tell a dead predecessor from a live sibling.
-    crate::config::activity_log::init_run(&config_dir, &instance_id);
+    let activity_log_enabled = config::settings::read_activity_log_enabled_only();
+    crate::config::activity_log::init_run(&config_dir, &instance_id, activity_log_enabled);
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
@@ -1093,7 +1094,8 @@ pub fn run(
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_idle(id).await;
-                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
+                        .await;
                     if let Some(scheduler) =
                         app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
                     {
@@ -1118,12 +1120,14 @@ pub fn run(
                 tauri::async_runtime::spawn(async move {
                     let mgr = mgr_clone.read().await;
                     mgr.mark_busy(id).await;
-                    crate::config::sessions_persistence::persist_current_state(&mgr).await;
+                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
+                        .await;
                 });
             }
         },
     );
     let session_mgr_for_git = Arc::clone(&session_mgr);
+    let session_mgr_for_git_sweeper = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
     let session_mgr_for_api = Arc::clone(&session_mgr);
@@ -1296,6 +1300,23 @@ pub fn run(
                 session_mgr_for_discovery,
             );
             app.manage(Arc::clone(&discovery_branch_watcher));
+
+            // #1298 - the single global POLLING producer of per-repo git state. Both
+            // watchers read its published snapshot instead of spawning `git` themselves.
+            //
+            // Started HERE and not inside `restore_observer_barrier` for exactly one
+            // reason: that barrier gates observers which mutate session metadata or
+            // persistence, and this one mutates neither, it only publishes into
+            // process-local maps. The construction point buys no head start by itself,
+            // because at this point there is nothing to sweep (sessions are restored
+            // below, discovery is frontend-driven). Cold start is governed by the
+            // empty-round floor instead (plan D3). Do not move this under the barrier, and
+            // do not "restore" a head-start rationale that was never true.
+            let git_sweeper = crate::pty::git_watcher::GitSweeper::new(
+                session_mgr_for_git_sweeper,
+                app.state::<SettingsState>().inner().clone(),
+            );
+            git_sweeper.start(shutdown_for_setup.clone());
 
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
@@ -2288,6 +2309,23 @@ pub fn run(
                         // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
+                            // §1295 site C (restore-skip): append ONE archive
+                            // record BEFORE the `continue`. The restore task is
+                            // async and holds no `sessions_save_lock` here, so we
+                            // use the locking public variant (S4). The record is
+                            // written before the continue unchanged; it does not
+                            // touch sessions.json (site C leaves the row's disk
+                            // fate to the next persist, §224 G5).
+                            let config_dir = crate::config::config_dir();
+                            if let Some(config_dir) = config_dir {
+                                sessions_persistence::append_orphan_archive_record(
+                                    &config_dir,
+                                    "restoreCwdMissing",
+                                    "archived",
+                                    ps,
+                                )
+                                .await;
+                            }
                             continue;
                         }
 
