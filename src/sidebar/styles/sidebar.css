@@ -3216,6 +3216,18 @@ html.light-theme .settings-hint-warning {
   color: #b45309;
 }
 
+/* Red variant of the settings hint (#1313): clearly stronger than the amber
+   .settings-hint-warning. Reuses the base .settings-hint layout; colors match
+   the existing .settings-api-client-error precedent (#f87171 dark, #b91c1c
+   light), with the same per-theme override convention as the warning variant. */
+.settings-hint-error {
+  color: #f87171;
+}
+
+html.light-theme .settings-hint-error {
+  color: #b91c1c;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
