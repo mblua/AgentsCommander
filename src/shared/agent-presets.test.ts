@@ -59,7 +59,7 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
     for (const def of FALLBACK_CODING_AGENTS) {
       expect(def.autoUpdate).toBe(false);
       if (def.key === "claude") {
-        expect(def.updateCommands).toEqual(["claude", "--update"]);
+        expect(def.updateCommands).toEqual(["claude --update"]);
       } else {
         expect(def.updateCommands).toEqual([]);
       }

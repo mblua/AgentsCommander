@@ -490,7 +490,11 @@ export interface CodingAgentDefinition {
   isolatedHome: boolean;
   configSeed?: ConfigSeedConfig;
   removable: boolean;
-  /** #1318 - per-agent update-command sequence seeded by AC (e.g. ["claude", "--update"]). Empty = no update command. Inert until the follow-up update-check feature reads it. */
+  /** #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
+   * array of COMPLETE command strings, each executed sequentially (e.g.
+   * ["claude --update"] or ["claude --update", "npm i -g @scope/cli"]).
+   * NOT argv tokens. Empty = no update command. Inert until the follow-up
+   * update-check feature reads it. */
   updateCommands: string[];
   /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdate / agentUpdateDontAskAgain. Inert until the follow-up feature reads it. */
   autoUpdate: boolean;

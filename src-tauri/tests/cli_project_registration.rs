@@ -655,7 +655,7 @@ fn new_project_seeds_catalog_into_ac() {
         .expect("claude entry");
     assert_eq!(
         claude["updateCommands"],
-        serde_json::json!(["claude", "--update"]),
+        serde_json::json!(["claude --update"]),
         "claude carries its update command in the seeded file"
     );
     // Masters seeded per built-in dest.

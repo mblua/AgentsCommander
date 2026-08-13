@@ -13,7 +13,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     removable: true,
     // #1318 - mirror of the embedded default: only claude ships the update
     // command; every entry defaults autoUpdate to false.
-    updateCommands: ["claude", "--update"],
+    updateCommands: ["claude --update"],
     autoUpdate: false,
   },
   {

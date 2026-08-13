@@ -101,11 +101,15 @@ pub struct CodingAgentDefinition {
     /// deletable.
     #[serde(default = "default_true")]
     pub removable: bool,
-    /// #1318 - per-agent update-command sequence seeded by AC and executed to
-    /// install a new agent version, e.g. `["claude", "--update"]`. If a vendor
-    /// changes its update command, updates stop working until a new release or
-    /// the user edits the seeded file. Empty = no update command (agent cannot
-    /// auto-update). Consumed by the follow-up update-check feature only.
+    /// #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
+    /// array of COMPLETE command strings, each executed sequentially
+    /// (updateCommands[0], then [1], ...) to install a new agent version, e.g.
+    /// `["claude --update"]` or `["claude --update", "npm i -g @scope/cli"]`.
+    /// NOT argv tokens: each element is one full shell command passed as-is,
+    /// in array order. If a vendor changes its update command, updates stop
+    /// working until a new release or the user edits the seeded file. Empty =
+    /// no update command (agent cannot auto-update). Consumed by the
+    /// follow-up update-check feature only.
     #[serde(default)]
     pub update_commands: Vec<String>,
     /// #1318 - stable catalog default for auto-update. Newly registered agents
@@ -1753,12 +1757,12 @@ mod tests {
         assert!(!loaded[0].auto_update);
 
         let mut def = loaded[0].clone();
-        def.update_commands = vec!["claude".to_string(), "--update".to_string()];
+        def.update_commands = vec!["claude --update".to_string()];
         def.auto_update = true;
         let round = serde_json::to_value(&def).expect("serialize def");
         assert_eq!(
             round["updateCommands"],
-            serde_json::json!(["claude", "--update"])
+            serde_json::json!(["claude --update"])
         );
         assert_eq!(round["autoUpdate"], serde_json::json!(true));
     }
@@ -1776,10 +1780,7 @@ mod tests {
                 def.key
             );
             if def.key == "claude" {
-                assert_eq!(
-                    def.update_commands,
-                    vec!["claude".to_string(), "--update".to_string()]
-                );
+                assert_eq!(def.update_commands, vec!["claude --update".to_string()]);
             } else {
                 assert!(
                     def.update_commands.is_empty(),
