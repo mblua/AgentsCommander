@@ -29,10 +29,11 @@ use crate::config::coding_agent_mutations::{
     self as ops, AgentPatch, CodingAgentOp, CodingAgentOpOutcome, CodingAgentRequest,
     CodingAgentResult, DEFAULT_CUSTOM_COLOR,
 };
-use crate::config::coding_agents_catalog::{load_catalog, CodingAgentDefinition};
+use crate::config::coding_agents_catalog::{load_catalog_for_settings, CodingAgentDefinition};
 use crate::config::settings::{
-    load_settings_for_cli_strict, normalize_container_image_input, save_settings,
-    validate_user_env_key, AgentConfig, CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
+    load_settings_for_cli, load_settings_for_cli_strict, normalize_container_image_input,
+    save_settings, validate_user_env_key, AgentConfig, CodingAgentEnv, CodingAgentEnvSource,
+    ConfigSeedConfig,
 };
 use crate::pty::backend::SessionBackendKind;
 
@@ -238,8 +239,12 @@ fn cmd_show(a: ShowArgs) -> Result<(), String> {
 }
 
 fn cmd_catalog() -> Result<(), String> {
-    let dir = crate::config::config_dir().ok_or("Could not resolve config dir")?;
-    let catalog = load_catalog(&dir);
+    // #1318 - the catalog resolves against the primary registered project's
+    // `.ac/coding-agents`; with no registered project it falls back to the legacy
+    // `<config_dir>/coding-agents` catalog when one exists, else the embedded
+    // default (never an Err for file reasons).
+    let settings = load_settings_for_cli();
+    let catalog = load_catalog_for_settings(&settings);
     print_json(&catalog)
 }
 
@@ -259,8 +264,10 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
 
     // Seed from the catalog (Rust port of definitionToSeed) or start blank.
     let mut agent = if let Some(key) = &a.from_catalog {
-        let dir = crate::config::config_dir().ok_or("Could not resolve config dir")?;
-        let catalog = load_catalog(&dir);
+        // #1318 - resolve the catalog like `cmd_catalog` (primary project first,
+        // legacy config-dir fallback, embedded default last).
+        let settings = load_settings_for_cli();
+        let catalog = load_catalog_for_settings(&settings);
         let def = catalog.iter().find(|d| &d.key == key).ok_or_else(|| {
             let keys: Vec<&str> = catalog.iter().map(|d| d.key.as_str()).collect();
             format!(

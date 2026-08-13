@@ -25,6 +25,8 @@ function def(key: string, label: string, command: string, dest?: string): Coding
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
     ...(dest ? { configSeed: { enabled: true, dest } } : {}),
   };
 }

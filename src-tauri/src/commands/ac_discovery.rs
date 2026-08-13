@@ -1601,7 +1601,13 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
                     on_publication,
                 )
             },
-        )
+        )?;
+        // #1318 - a fresh `.ac` root seeds the catalog + masters immediately
+        // (no restart needed). INSIDE this blocking closure, so the gate acquire
+        // runs on the blocking thread. Fail-soft: any error is logged and the
+        // boot loop covers the project at the next boot.
+        crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&path));
+        Ok(())
     })
     .await
     .map_err(|error| format!("AC project blocking preparation failed: {error}"))?
@@ -2496,6 +2502,24 @@ async fn open_project_inner_with_event_and_settings_path<R: tauri::Runtime>(
             None,
         );
     }
+    // #1318 - a first open of an unseeded project seeds the catalog + masters
+    // immediately (no restart needed). The gate acquire (kernel lock, up to
+    // DEFAULT_LOCK_TIMEOUT 10s polling) must run on a blocking thread, never on
+    // the async executor, hence run_blocking_owned. Fail-soft: any error is
+    // logged and the boot loop covers the project at the next boot.
+    if result.registered {
+        let path = result.path.clone();
+        if let Err(error) = crate::config::seed_manifest::run_blocking_owned(move || {
+            crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&path));
+        })
+        .await
+        {
+            log::warn!(
+                "[ac-discovery] catalog seed after open-project failed: {}",
+                error
+            );
+        }
+    }
     Ok(result)
 }
 
@@ -2694,7 +2718,17 @@ async fn new_project_inner_with_settings_path_and_hooks(
         }
         let archived_changed = before_archived != current.archived_project_paths;
         drop(current);
+        // #1318 - capture the project root BEFORE release (`abs` is private;
+        // `workspace_dir()` returns the `.ac` dir).
+        let project_root = prepared.workspace_dir().parent().map(Path::to_path_buf);
         prepared.release();
+        // #1318 - a fresh registration seeds the catalog + masters immediately
+        // (no restart needed). INSIDE this blocking closure, so the gate acquire
+        // runs on the blocking thread. Fail-soft: any error is logged and the
+        // boot loop covers the project at the next boot.
+        if let Some(root) = project_root {
+            crate::config::coding_agents_catalog::ensure_seeded_for_project(&root);
+        }
         Ok((result, archived_changed))
     })
     .await
@@ -2918,6 +2952,21 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
                 ArchiveChangeReason::Unarchive,
                 None,
             );
+            // #1318 - the rollback re-registered the project; seed its catalog
+            // now so reads target the project `.ac` without a restart.
+            let seed_path = path.clone();
+            if let Err(error) = crate::config::seed_manifest::run_blocking_owned(move || {
+                crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(
+                    &seed_path,
+                ));
+            })
+            .await
+            {
+                log::warn!(
+                    "[ac-discovery] catalog seed after archive rollback failed: {}",
+                    error
+                );
+            }
             Err(archive_blocked_message(&late))
         }
         Err(e) => {
@@ -2970,6 +3019,22 @@ pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
         ArchiveChangeReason::Unarchive,
         None,
     );
+    // #1318 - unarchive is a re-registration; seed the catalog + masters now so
+    // reads target the project `.ac` without a restart (the boot loop covers it
+    // at the next boot either way). Fail-soft; gate acquire on a blocking thread.
+    if result.registered {
+        let path = result.path.clone();
+        if let Err(error) = crate::config::seed_manifest::run_blocking_owned(move || {
+            crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&path));
+        })
+        .await
+        {
+            log::warn!(
+                "[ac-discovery] catalog seed after unarchive failed: {}",
+                error
+            );
+        }
+    }
     Ok(result)
 }
 

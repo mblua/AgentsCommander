@@ -554,6 +554,17 @@ pub struct AppSettings {
     /// while the global master is on; absent = use the class default.
     #[serde(default)]
     pub auto_self_clear_by_agent: std::collections::BTreeMap<String, bool>,
+    /// #1318 - per-user auto-update choice per registered coding agent, keyed by
+    /// agent id (same keying pattern as `auto_self_clear_by_agent`). Absent entry
+    /// = use the catalog default (`autoUpdate`, false for new agents). Per-agent
+    /// only, never global. Consumed by the follow-up update-check feature.
+    #[serde(default)]
+    pub agent_auto_update: std::collections::BTreeMap<String, bool>,
+    /// #1318 - per-agent "don't ask again" flags for the follow-up auto-update
+    /// dialog, keyed by agent id ("NO y no volver a preguntar" / "SI y siempre
+    /// actualizar automáticamente" are per-agent only). Absent = ask.
+    #[serde(default)]
+    pub agent_update_dont_ask_again: std::collections::BTreeMap<String, bool>,
     /// #930 - when true (default), container coding-agent sessions copy the host
     /// user's credential file for that agent into the replica config dir at spawn
     /// and delete it on teardown. When false, the user supplies credentials
@@ -905,6 +916,8 @@ impl Default for AppSettings {
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
+            agent_auto_update: std::collections::BTreeMap::new(),
+            agent_update_dont_ask_again: std::collections::BTreeMap::new(),
             container_credentials_from_host: true,
             watchers: BTreeMap::new(),
             watchers_geometry: None,
@@ -5082,6 +5095,42 @@ mod tests {
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(!back.auto_self_clear_enabled);
         assert_eq!(back.auto_self_clear_by_agent.get("dev-rust"), Some(&true));
+    }
+
+    #[test]
+    fn agent_auto_update_maps_default_empty_and_round_trip_camel_case() {
+        // #1318: the two per-agent override maps default to empty on a fresh
+        // settings object AND survive the serde round trip with camelCase keys.
+        let defaults = AppSettings::default();
+        assert!(defaults.agent_auto_update.is_empty());
+        assert!(defaults.agent_update_dont_ask_again.is_empty());
+
+        let mut s = AppSettings::default();
+        s.agent_auto_update.insert("claude".to_string(), true);
+        s.agent_auto_update.insert("codex".to_string(), false);
+        s.agent_update_dont_ask_again
+            .insert("claude".to_string(), true);
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"agentAutoUpdate\":{\"claude\":true,\"codex\":false}"));
+        assert!(json.contains("\"agentUpdateDontAskAgain\":{\"claude\":true}"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.agent_auto_update.get("claude"), Some(&true));
+        assert_eq!(back.agent_auto_update.get("codex"), Some(&false));
+        assert_eq!(back.agent_update_dont_ask_again.get("claude"), Some(&true));
+    }
+
+    #[test]
+    fn agent_auto_update_maps_absent_keys_deserialize_empty() {
+        // An old settings.json without the #1318 keys deserializes to empty
+        // maps (serde default), never an error.
+        let mut value =
+            serde_json::to_value(AppSettings::default()).expect("serialize default to value");
+        let obj = value.as_object_mut().expect("settings object");
+        obj.remove("agentAutoUpdate");
+        obj.remove("agentUpdateDontAskAgain");
+        let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
+        assert!(back.agent_auto_update.is_empty());
+        assert!(back.agent_update_dont_ask_again.is_empty());
     }
 
     #[test]

@@ -3,9 +3,17 @@
 //! The catalog is the "built-in coding agents you can add" list (display name,
 //! command, color, instructions filename, ...). Before #769 it was hardcoded in
 //! the frontend (`src/shared/agent-presets.ts`). This module makes it a
-//! backend-owned, on-disk, user-editable JSON manifest at
-//! `config_dir()/coding-agents/agents.json`, seeded once from an embedded default
-//! and user-owned thereafter.
+//! backend-owned, on-disk, user-editable JSON manifest, seeded once from an
+//! embedded default and user-owned thereafter.
+//!
+//! #1318 - the catalog now lives in the project tree at
+//! `<project>/.ac/coding-agents/agents.json` (same relative layout as before,
+//! including the `_seed/` masters tree), seeded per registered project at boot
+//! and on every registration route, with a deterministic migration that copies a
+//! legacy `<config_dir>/coding-agents/` catalog byte-for-byte into each
+//! registered project. All module paths take the project's `.ac` directory as
+//! their parameter; the legacy config-dir location is only ever a read/seed
+//! SOURCE, never a target.
 //!
 //! Phase 1 scope (see `_plans/769-...` §14.2): the manifest scalars + one read
 //! command, only. NO per-agent config folders, NO #598 seed tier, NO provenance
@@ -22,12 +30,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::agent_command::is_safe_instructions_filename;
+use crate::config::seed_manifest::{
+    acquire_project_gate_soft, ManifestActivationToken, ManifestPathIdentity,
+    ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
+};
 use crate::config::settings::{
-    validate_agent_command_text, validate_config_seed_dest, validate_env_rows, CodingAgentEnv,
-    ConfigSeedConfig,
+    validate_agent_command_text, validate_config_seed_dest, validate_env_rows, AppSettings,
+    CodingAgentEnv, ConfigSeedConfig,
 };
 
 /// Subdirectory of the config dir holding the catalog artifacts.
@@ -88,6 +101,19 @@ pub struct CodingAgentDefinition {
     /// deletable.
     #[serde(default = "default_true")]
     pub removable: bool,
+    /// #1318 - per-agent update-command sequence seeded by AC and executed to
+    /// install a new agent version, e.g. `["claude", "--update"]`. If a vendor
+    /// changes its update command, updates stop working until a new release or
+    /// the user edits the seeded file. Empty = no update command (agent cannot
+    /// auto-update). Consumed by the follow-up update-check feature only.
+    #[serde(default)]
+    pub update_commands: Vec<String>,
+    /// #1318 - stable catalog default for auto-update. Newly registered agents
+    /// default to false ("No"). The per-user choice lives in
+    /// `AppSettings.agent_auto_update` + `agent_update_dont_ask_again`, keyed by
+    /// agent id. Inert until the follow-up feature reads it.
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 /// The manifest file shape: a schema version plus the ordered agent list.
@@ -100,12 +126,13 @@ pub struct CodingAgentCatalog {
     pub agents: Vec<CodingAgentDefinition>,
 }
 
-fn catalog_dir(config_dir: &Path) -> PathBuf {
-    config_dir.join(CATALOG_DIR_NAME)
+/// The catalog subdirectory of a project's `.ac` dir.
+fn catalog_dir(ac_dir: &Path) -> PathBuf {
+    ac_dir.join(CATALOG_DIR_NAME)
 }
 
-fn manifest_path(config_dir: &Path) -> PathBuf {
-    catalog_dir(config_dir).join(CATALOG_MANIFEST_FILENAME)
+fn manifest_path(ac_dir: &Path) -> PathBuf {
+    catalog_dir(ac_dir).join(CATALOG_MANIFEST_FILENAME)
 }
 
 /// Parse the compiled-in default catalog. The content is authored valid and a
@@ -202,8 +229,11 @@ fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
 /// manifest parses; a valid empty list is honored verbatim (the user removed all
 /// built-ins). A **missing** or **unparseable** manifest self-heals to the
 /// embedded default IN MEMORY only, never writing to disk (G3 corrupt-preserve).
-pub fn load_catalog(config_dir: &Path) -> Vec<CodingAgentDefinition> {
-    let path = manifest_path(config_dir);
+/// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
+/// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
+/// through the same relative layout).
+pub fn load_catalog(ac_dir: &Path) -> Vec<CodingAgentDefinition> {
+    let path = manifest_path(ac_dir);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -235,24 +265,97 @@ pub fn load_catalog(config_dir: &Path) -> Vec<CodingAgentDefinition> {
     }
 }
 
+/// The first non-empty trimmed entry of `project_paths`, else the legacy
+/// `project_path` (non-empty trimmed), else `None`. Single deterministic head
+/// rule, mirroring the canonical `selected_head: project_paths.first()`
+/// semantics (`settings.rs`). No canonicalization: a stale raw path simply
+/// self-heals at read time (absent file -> embedded default, absent dir ->
+/// fail-soft seed skip). Archived projects are never the primary.
+pub(crate) fn primary_project_root(settings: &AppSettings) -> Option<PathBuf> {
+    for entry in &settings.project_paths {
+        let trimmed = entry.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    settings
+        .project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Every non-empty trimmed `project_paths` entry (order preserved); when the
+/// list is empty, the legacy `project_path` alone (non-empty). Archived projects
+/// are never seeded.
+pub(crate) fn registered_project_roots(settings: &AppSettings) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = settings
+        .project_paths
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if roots.is_empty() {
+        if let Some(path) = settings
+            .project_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            roots.push(PathBuf::from(path));
+        }
+    }
+    roots
+}
+
+/// The catalog read root for the UI/CLI read commands. With a primary project
+/// root the primary project's `.ac/coding-agents` catalog is served and the
+/// legacy location is NEVER consulted (a user who deletes the primary file to
+/// reset gets the embedded default, not the legacy copy). With NO registered
+/// project the LEGACY `<config_dir>/coding-agents` catalog is served when one
+/// exists (read-only, never written; pre-migration installs with zero projects
+/// keep today's read behavior), self-healing to the embedded default when
+/// absent/unparseable.
+pub fn load_catalog_for_settings(settings: &AppSettings) -> Vec<CodingAgentDefinition> {
+    match primary_project_root(settings) {
+        Some(root) => load_catalog(&root.join(".ac")),
+        None => crate::config::config_dir()
+            .map(|dir| load_catalog(&dir))
+            .unwrap_or_else(validated_embedded_default),
+    }
+}
+
 /// Seed the manifest ONCE at boot: write the embedded default iff `agents.json`
 /// is absent, then never touch it (§14.1 whole-file seed-once). Fail-soft: logs
-/// and returns on any error; it must never panic or abort boot.
-pub fn ensure_seeded(config_dir: &Path) {
-    let dir = catalog_dir(config_dir);
-    let path = manifest_path(config_dir);
+/// and returns `None` on any error; it must never panic or abort boot.
+///
+/// #1318 - `ac_dir` is the project's `.ac` directory; `legacy_catalog_dir` is
+/// the legacy `<config_dir>/coding-agents` directory (the migration source). On
+/// a first seed with the project file ABSENT and a legacy REGULAR-file catalog
+/// present, the legacy bytes are copied VERBATIM (a present-but-corrupt legacy
+/// file is copied too: corrupt content is user data, the read path self-heals;
+/// the legacy original is never touched). Any other legacy shape (absent,
+/// dir/symlink) seeds the embedded default. Returns the `Utc::now()` publication
+/// time sampled at the commit point of the atomic write, or `None` when nothing
+/// was written.
+pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
+    let dir = catalog_dir(ac_dir);
+    let path = manifest_path(ac_dir);
 
     // Seed-once: any existing entry (file, dir, or link) means the catalog is
     // user-owned; leave it strictly alone.
     match std::fs::symlink_metadata(&path) {
-        Ok(_) => return,
+        Ok(_) => return None,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             log::warn!(
                 "[coding-agents] cannot stat {} ({e}); skipping catalog seed",
                 path.display()
             );
-            return;
+            return None;
         }
     }
 
@@ -261,15 +364,67 @@ pub fn ensure_seeded(config_dir: &Path) {
             "[coding-agents] failed to create {} ({e}); skipping catalog seed",
             dir.display()
         );
-        return;
+        return None;
     }
 
-    match write_manifest_atomic(&path, EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes()) {
-        Ok(()) => log::info!(
-            "[coding-agents] seeded default catalog at {}",
-            path.display()
-        ),
-        Err(e) => log::warn!("[coding-agents] failed to seed {} ({e})", path.display()),
+    // #1318 migration: absent project file + legacy REGULAR-file catalog ->
+    // verbatim copy; anything else -> embedded default.
+    let mut legacy_source: Option<PathBuf> = None;
+    let bytes: Vec<u8> = match legacy_catalog_dir {
+        Some(legacy) => {
+            let legacy_path = legacy.join(CATALOG_MANIFEST_FILENAME);
+            match std::fs::symlink_metadata(&legacy_path) {
+                Ok(meta) if meta.is_file() => match std::fs::read(&legacy_path) {
+                    Ok(bytes) => {
+                        legacy_source = Some(legacy_path);
+                        bytes
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[coding-agents] failed to read legacy catalog {} ({e}); seeding embedded default",
+                            legacy_path.display()
+                        );
+                        EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec()
+                    }
+                },
+                // Absent, a directory, or a symlink: not a regular file -> the
+                // embedded default wins.
+                _ => EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec(),
+            }
+        }
+        None => EMBEDDED_DEFAULT_CATALOG_JSON.as_bytes().to_vec(),
+    };
+
+    // A verbatim legacy copy is log-checked, never a decision: corrupt content
+    // is user data and was copied deliberately; the read path self-heals and
+    // deleting the project file re-seeds the embedded default at the next boot.
+    if let Some(ref legacy_path) = legacy_source {
+        if serde_json::from_slice::<CodingAgentCatalog>(&bytes).is_err() {
+            log::warn!(
+                "[coding-agents] migrated a legacy catalog that does not parse: {} -> {}; project reads serve the embedded default until the file is fixed or deleted",
+                legacy_path.display(),
+                path.display()
+            );
+        }
+    }
+
+    match write_manifest_atomic(&path, &bytes) {
+        Ok(()) => {
+            log::info!(
+                "[coding-agents] seeded {} catalog at {}",
+                if legacy_source.is_some() {
+                    "migrated legacy"
+                } else {
+                    "default"
+                },
+                path.display()
+            );
+            Some(Utc::now())
+        }
+        Err(e) => {
+            log::warn!("[coding-agents] failed to seed {} ({e})", path.display());
+            None
+        }
     }
 }
 
@@ -398,11 +553,9 @@ pub struct ReseedResult {
 /// racy state).
 static RESEED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Absolute path to the dest-keyed master: `<config>/coding-agents/_seed/<dest>/`.
-pub fn master_dir_for_dest(config_dir: &Path, dest: &str) -> PathBuf {
-    catalog_dir(config_dir)
-        .join(SEED_MASTERS_DIR_NAME)
-        .join(dest)
+/// Absolute path to the dest-keyed master: `<ac_dir>/coding-agents/_seed/<dest>/`.
+pub fn master_dir_for_dest(ac_dir: &Path, dest: &str) -> PathBuf {
+    catalog_dir(ac_dir).join(SEED_MASTERS_DIR_NAME).join(dest)
 }
 
 fn embedded_master_for_command_basename(basename: &str) -> Option<&'static EmbeddedSeedMaster> {
@@ -463,9 +616,21 @@ fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<
 /// and atomically rename it into place (first-writer-wins across a first-run
 /// race). Present masters are user-owned and never touched. Fail-soft: logs and
 /// continues; never panics or aborts boot.
-pub fn ensure_seeded_masters(config_dir: &Path) {
+///
+/// #1318 - `ac_dir` is the project's `.ac` directory; `legacy_catalog_dir` is
+/// the legacy `<config_dir>/coding-agents` directory. When the project master is
+/// ABSENT and the legacy `<legacy>/_seed/<dest>/` is a real directory, the tree
+/// is copied VERBATIM (`copy_tree`, substitution OFF, symlinks skipped); an
+/// EMPTY legacy master dir is copied verbatim too (present-but-empty master:
+/// the spawn tier stays inert and the embedded default is NOT seeded, per the
+/// present = user-owned rule; the Settings re-seed button restores it). On a
+/// legacy-copy ERROR the partial destination is removed and the embedded master
+/// is staged instead (a partial copy must never win). No size cap: a large
+/// legacy master is copied into every registered project (the verbatim promise
+/// wins).
+pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     for master in EMBEDDED_SEED_MASTERS {
-        let dir = master_dir_for_dest(config_dir, master.dest);
+        let dir = master_dir_for_dest(ac_dir, master.dest);
         match std::fs::symlink_metadata(&dir) {
             Ok(_) => continue, // present (any form) -> user-owned, leave alone
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -477,6 +642,49 @@ pub fn ensure_seeded_masters(config_dir: &Path) {
                 continue;
             }
         }
+
+        // #1318 migration: absent project master + legacy REAL-directory master
+        // -> verbatim tree copy.
+        let mut copied_from_legacy = false;
+        if let Some(legacy) = legacy_catalog_dir {
+            let legacy_master = legacy.join(SEED_MASTERS_DIR_NAME).join(master.dest);
+            match std::fs::symlink_metadata(&legacy_master) {
+                Ok(meta) if meta.is_dir() => {
+                    match crate::config::config_seed::copy_tree(
+                        &legacy_master,
+                        &dir,
+                        0,
+                        None,
+                        false,
+                    ) {
+                        Ok(()) => {
+                            copied_from_legacy = true;
+                            let bytes = tree_byte_count(&dir);
+                            log::info!(
+                                "[coding-agents] migrated legacy master tree {} -> {} ({} bytes verbatim, no size cap)",
+                                legacy_master.display(),
+                                dir.display(),
+                                bytes
+                            );
+                        }
+                        Err(e) => {
+                            // A partial copy must never win over the embedded
+                            // default; the legacy tree itself is never touched.
+                            let _ = std::fs::remove_dir_all(&dir);
+                            log::warn!(
+                                "[coding-agents] failed to copy legacy master {} ({e}); falling back to the embedded default",
+                                legacy_master.display()
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if copied_from_legacy {
+            continue;
+        }
+
         let sfx = unique_suffix();
         let staging = staging_sibling(&dir, "seedtmp", &sfx);
         let _ = std::fs::remove_dir_all(&staging);
@@ -498,19 +706,168 @@ pub fn ensure_seeded_masters(config_dir: &Path) {
     }
 }
 
+/// Seed the catalog + masters for one registered project root, then record the
+/// catalog publication in that project's seed manifest.
+///
+/// Preconditions (enforced before ANY filesystem effect, in both entry points):
+/// a non-absolute root (a hand-edited relative settings entry must never seed
+/// relative to the process CWD) or a missing root (a deleted/stale registered
+/// root must never be resurrected by the seed's `create_dir_all`) is logged and
+/// skipped. Steady-state pre-check BEFORE gate acquisition: when the catalog
+/// manifest AND every built-in master dir exist, return immediately (no lock,
+/// no canonicalize, no manifest read, no write), keeping boot cheap and free of
+/// gate contention for the common already-seeded case; masters self-heal is
+/// preserved (the pre-check covers masters too).
+pub(crate) fn ensure_seeded_for_project(project_root: &Path) {
+    #[cfg(not(test))]
+    let activation = Some(ManifestActivationToken::production());
+    #[cfg(test)]
+    let activation: Option<ManifestActivationToken> = None;
+    ensure_seeded_for_project_with_token(project_root, activation.as_ref());
+}
+
+/// Token-injectable twin of [`ensure_seeded_for_project`], mirroring
+/// `perform_config_seed_recorded` (`config_seed.rs`): a `None` activation runs
+/// the plain ungated seeds; under the soft project gate the Held arm runs BOTH
+/// seeds FIRST and records the catalog row only when `ensure_seeded` actually
+/// published (the permit auto-downgrades a held-but-degraded guard to
+/// `PublishedUnrecorded`, so no false rows over guaranteed completeness).
+/// `DegradedUntracked` runs both seeds ungated (published, unrecorded);
+/// `Unavailable` logs and skips (never race a cooperating writer).
+pub(crate) fn ensure_seeded_for_project_with_token(
+    project_root: &Path,
+    activation: Option<&ManifestActivationToken>,
+) {
+    if !project_root.is_absolute() {
+        log::warn!(
+            "[coding-agents] skipping seed for non-absolute registered project root {}",
+            project_root.display()
+        );
+        return;
+    }
+    if !project_root.is_dir() {
+        log::warn!(
+            "[coding-agents] skipping seed for missing registered project root {}",
+            project_root.display()
+        );
+        return;
+    }
+    let ac_dir = project_root.join(crate::config::workspace::CANONICAL_WORKSPACE_DIR);
+
+    // Steady-state pre-check: everything already seeded -> nothing to publish;
+    // no lock file, no canonicalize, no bounded manifest read, no write.
+    if std::fs::symlink_metadata(manifest_path(&ac_dir)).is_ok()
+        && EMBEDDED_SEED_MASTERS.iter().all(|master| {
+            std::fs::symlink_metadata(master_dir_for_dest(&ac_dir, master.dest)).is_ok()
+        })
+    {
+        return;
+    }
+
+    let legacy = crate::config::config_dir().map(|dir| dir.join(CATALOG_DIR_NAME));
+    let Some(token) = activation else {
+        ensure_seeded(&ac_dir, legacy.as_deref());
+        ensure_seeded_masters(&ac_dir, legacy.as_deref());
+        return;
+    };
+
+    match acquire_project_gate_soft(project_root) {
+        SoftProjectGate::Held(mut guard) => {
+            let published_at = ensure_seeded(&ac_dir, legacy.as_deref());
+            ensure_seeded_masters(&ac_dir, legacy.as_deref());
+            if let Some(published_at) = published_at {
+                record_catalog_publication(&mut guard, token, published_at);
+            }
+            guard.release();
+        }
+        SoftProjectGate::DegradedUntracked => {
+            ensure_seeded(&ac_dir, legacy.as_deref());
+            ensure_seeded_masters(&ac_dir, legacy.as_deref());
+        }
+        SoftProjectGate::Unavailable(error) => {
+            log::warn!(
+                "[coding-agents] project gate unavailable for {}: {}; skipping seed to avoid racing a cooperating writer",
+                project_root.display(),
+                error
+            );
+        }
+    }
+}
+
+/// Record a catalog publication into the project seed manifest under an
+/// already-held gate, mirroring `session_context::record_project_context_publication`
+/// step for step. `published_at` is the `Utc::now()` sampled inside
+/// `ensure_seeded` at the commit point of the atomic write; the recorder never
+/// re-samples a later clock. The row records the WRITE, not content validity.
+/// Fail-soft (log-only) on every error path; never blocks or retracts the seed.
+pub(crate) fn record_catalog_publication(
+    guard: &mut ProjectSeedManifestGuard,
+    activation: &ManifestActivationToken,
+    published_at: DateTime<Utc>,
+) {
+    let identity = match ManifestPathIdentity::from_relative_path(Path::new(
+        ".ac/coding-agents/agents.json",
+    )) {
+        Ok(identity) => identity,
+        Err(error) => {
+            log::warn!(
+                "[coding-agents] seed-manifest catalog row rejected path error={}",
+                error
+            );
+            return;
+        }
+    };
+    let row = match PublishedManifestRow::coding_agent_catalog(identity, published_at) {
+        Ok(row) => row,
+        Err(error) => {
+            log::warn!(
+                "[coding-agents] seed-manifest catalog row rejected error={}",
+                error
+            );
+            return;
+        }
+    };
+    let outcome = guard.publication_permit().record_file(activation, row);
+    log::debug!(
+        "[coding-agents] seed-manifest catalog publication outcome={:?}",
+        outcome
+    );
+}
+
+fn tree_byte_count(dir: &Path) -> u64 {
+    fn walk(dir: &Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&entry.path(), total);
+            } else if meta.is_file() {
+                *total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    let mut total = 0_u64;
+    walk(dir, &mut total);
+    total
+}
+
 /// Re-seed the master for `command` back to AC's embedded default (the Settings
 /// button). Gating is re-checked server-side: `command`'s executable basename must
 /// EXACTLY equal a built-in that ships a master (never `starts_with`, so `pi` and
 /// `agent` cannot false-match). On success: a timestamped `.bak` of the current
 /// master is made FIRST, then a trash-first atomic swap installs the embedded
 /// default. On failure the prior master is restored; never a partial state.
-pub fn reseed_master_for_command(config_dir: &Path, command: &str) -> Result<ReseedResult, String> {
+pub fn reseed_master_for_command(ac_dir: &Path, command: &str) -> Result<ReseedResult, String> {
     let basename = command_executable_basename(command)
         .ok_or_else(|| format!("'{command}' is not a valid coding-agent command"))?;
     let master = embedded_master_for_command_basename(&basename).ok_or_else(|| {
         format!("'{command}' is not a recognized built-in with a shipped default config folder")
     })?;
-    let dir = master_dir_for_dest(config_dir, master.dest);
+    let dir = master_dir_for_dest(ac_dir, master.dest);
 
     let _guard = RESEED_LOCK
         .lock()
@@ -853,7 +1210,7 @@ mod tests {
         let path = manifest_path(dir.path());
         assert!(!path.exists());
 
-        ensure_seeded(dir.path());
+        ensure_seeded(dir.path(), None);
         assert!(path.exists(), "seed writes the manifest when absent");
         assert_eq!(load_catalog(dir.path()).len(), 6);
 
@@ -863,7 +1220,7 @@ mod tests {
             r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
         );
         std::fs::write(&path, &custom).unwrap();
-        ensure_seeded(dir.path());
+        ensure_seeded(dir.path(), None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);
         let loaded = load_catalog(dir.path());
         assert_eq!(loaded.len(), 1);
@@ -873,7 +1230,7 @@ mod tests {
     #[test]
     fn seeded_manifest_leaves_no_temp_residue() {
         let dir = seed_dir();
-        ensure_seeded(dir.path());
+        ensure_seeded(dir.path(), None);
         let catalog = catalog_dir(dir.path());
         let residue: Vec<_> = std::fs::read_dir(&catalog)
             .unwrap()
@@ -935,7 +1292,7 @@ mod tests {
     #[test]
     fn ensure_seeded_masters_creates_nonempty_masters_and_preserves_edits() {
         let dir = seed_dir();
-        ensure_seeded_masters(dir.path());
+        ensure_seeded_masters(dir.path(), None);
         for cmd in ["claude", "codex", "opencode"] {
             let m = master(cmd);
             let md = master_dir_for_dest(dir.path(), m.dest);
@@ -952,14 +1309,14 @@ mod tests {
         let m = master("claude");
         let file = master_dir_for_dest(dir.path(), m.dest).join(m.files[0].rel_path);
         std::fs::write(&file, b"USER EDIT").unwrap();
-        ensure_seeded_masters(dir.path());
+        ensure_seeded_masters(dir.path(), None);
         assert_eq!(std::fs::read(&file).unwrap(), b"USER EDIT");
     }
 
     #[test]
     fn reseed_installs_embedded_default_and_backs_up_current() {
         let dir = seed_dir();
-        ensure_seeded_masters(dir.path());
+        ensure_seeded_masters(dir.path(), None);
         let m = master("claude");
         let master_dir = master_dir_for_dest(dir.path(), m.dest);
         let file = master_dir.join(m.files[0].rel_path);
@@ -998,7 +1355,7 @@ mod tests {
     #[test]
     fn reseed_gating_is_exact_basename_never_startswith() {
         let dir = seed_dir();
-        ensure_seeded_masters(dir.path());
+        ensure_seeded_masters(dir.path(), None);
         // `pi` and `agent` are real built-in commands but ship NO master; `pip`
         // and `clau` must not match `pi`/`claude` via any prefix rule; empty and
         // unknown are rejected.
@@ -1034,5 +1391,402 @@ mod tests {
                 .join("_seed")
                 .join(".claude")
         );
+    }
+
+    // ---- #1318 relocation, migration, per-project seeding ----------------
+
+    fn legacy_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    /// A hand-authored legacy catalog (custom entry, byte-distinct from the
+    /// embedded default). The tempdir IS the legacy `<config_dir>/coding-agents`
+    /// directory.
+    fn legacy_catalog_json() -> Vec<u8> {
+        manifest_json(
+            r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn legacy_catalog_is_copied_verbatim_when_project_file_absent() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_bytes = legacy_catalog_json();
+        std::fs::write(legacy.path().join("agents.json"), &legacy_bytes).unwrap();
+
+        let published = ensure_seeded(project.path(), Some(legacy.path()));
+        assert!(published.is_some(), "a first seed publishes");
+        let project_file = manifest_path(project.path());
+        assert_eq!(
+            std::fs::read(&project_file).unwrap(),
+            legacy_bytes,
+            "legacy catalog must be copied byte-for-byte"
+        );
+        // The legacy original is untouched.
+        assert_eq!(
+            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            legacy_bytes
+        );
+        // Second seed run is a no-op (seed-once), even if the legacy differs.
+        std::fs::write(legacy.path().join("agents.json"), b"CHANGED LATER").unwrap();
+        assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
+        assert_eq!(std::fs::read(&project_file).unwrap(), legacy_bytes);
+    }
+
+    #[test]
+    fn legacy_absent_or_not_a_file_seeds_embedded_default() {
+        // Absent legacy dir -> embedded default.
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        ensure_seeded(project.path(), Some(legacy.path()));
+        assert_eq!(load_catalog(project.path()).len(), 6);
+
+        // Legacy agents.json is a DIRECTORY -> not a regular file -> embedded.
+        let project = seed_dir();
+        std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
+        ensure_seeded(project.path(), Some(legacy.path()));
+        assert_eq!(load_catalog(project.path()).len(), 6);
+
+        // No legacy at all -> embedded default.
+        let project = seed_dir();
+        ensure_seeded(project.path(), None);
+        assert_eq!(load_catalog(project.path()).len(), 6);
+    }
+
+    #[test]
+    fn project_file_present_never_touched_even_when_legacy_differs() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        std::fs::write(legacy.path().join("agents.json"), legacy_catalog_json()).unwrap();
+
+        // First seed from legacy, then hand-edit the PROJECT file.
+        ensure_seeded(project.path(), Some(legacy.path()));
+        let project_file = manifest_path(project.path());
+        let custom = manifest_json(
+            r##"[{"key":"hand","label":"Hand","description":"d","color":"#222","command":"hand","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        std::fs::write(&project_file, &custom).unwrap();
+
+        // A present project file is user-owned: a differing legacy must not win.
+        ensure_seeded(project.path(), Some(legacy.path()));
+        assert_eq!(std::fs::read_to_string(&project_file).unwrap(), custom);
+    }
+
+    #[test]
+    fn legacy_masters_tree_copied_per_builtin_dest_and_embedded_fallback() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_seed = legacy.path().join("_seed");
+        // .claude and .codex masters exist in the legacy tree (one file each,
+        // distinct bytes); .opencode does NOT (embedded default must win).
+        std::fs::create_dir_all(legacy_seed.join(".claude")).unwrap();
+        std::fs::create_dir_all(legacy_seed.join(".codex")).unwrap();
+        std::fs::write(legacy_seed.join(".claude/settings.json"), b"LEGACY CLAUDE").unwrap();
+        std::fs::write(legacy_seed.join(".codex/config.toml"), b"LEGACY CODEX").unwrap();
+
+        ensure_seeded_masters(project.path(), Some(legacy.path()));
+
+        let claude_dir = master_dir_for_dest(project.path(), ".claude");
+        assert_eq!(
+            std::fs::read(claude_dir.join("settings.json")).unwrap(),
+            b"LEGACY CLAUDE"
+        );
+        let codex_dir = master_dir_for_dest(project.path(), ".codex");
+        assert_eq!(
+            std::fs::read(codex_dir.join("config.toml")).unwrap(),
+            b"LEGACY CODEX"
+        );
+        // .opencode: no legacy master -> embedded default staged.
+        let opencode_dir = master_dir_for_dest(project.path(), ".opencode");
+        let opencode_master = master("opencode");
+        assert_eq!(
+            std::fs::read(opencode_dir.join(opencode_master.files[0].rel_path)).unwrap(),
+            opencode_master.files[0].bytes
+        );
+        // The legacy tree is untouched and re-running is a no-op (present).
+        assert_eq!(
+            std::fs::read(legacy_seed.join(".claude/settings.json")).unwrap(),
+            b"LEGACY CLAUDE"
+        );
+        std::fs::write(legacy_seed.join(".claude/settings.json"), b"CHANGED").unwrap();
+        ensure_seeded_masters(project.path(), Some(legacy.path()));
+        assert_eq!(
+            std::fs::read(claude_dir.join("settings.json")).unwrap(),
+            b"LEGACY CLAUDE"
+        );
+    }
+
+    #[test]
+    fn primary_project_root_first_entry_wins_legacy_fallback_none() {
+        let mut settings = AppSettings::default();
+        assert_eq!(primary_project_root(&settings), None);
+
+        // project_paths first non-empty trimmed entry wins, whitespace padded.
+        settings.project_paths = vec![
+            "  ".to_string(),
+            "  C:\\first\\project  ".to_string(),
+            "C:\\second\\project".to_string(),
+        ];
+        assert_eq!(
+            primary_project_root(&settings),
+            Some(PathBuf::from("C:\\first\\project"))
+        );
+
+        // Empty project_paths -> legacy project_path fallback.
+        settings.project_paths.clear();
+        assert_eq!(primary_project_root(&settings), None);
+        settings.project_path = Some("  C:\\legacy\\project ".to_string());
+        assert_eq!(
+            primary_project_root(&settings),
+            Some(PathBuf::from("C:\\legacy\\project"))
+        );
+
+        // Whitespace-only legacy path -> None.
+        settings.project_path = Some("   ".to_string());
+        assert_eq!(primary_project_root(&settings), None);
+    }
+
+    #[test]
+    fn registered_project_roots_multi_and_legacy_only() {
+        let mut settings = AppSettings::default();
+        assert!(registered_project_roots(&settings).is_empty());
+
+        settings.project_paths = vec![
+            "  ".to_string(),
+            "C:\\one".to_string(),
+            "C:\\two".to_string(),
+        ];
+        assert_eq!(
+            registered_project_roots(&settings),
+            vec![PathBuf::from("C:\\one"), PathBuf::from("C:\\two")]
+        );
+
+        // Empty project_paths -> legacy project_path alone.
+        settings.project_paths.clear();
+        settings.project_path = Some("C:\\legacy".to_string());
+        assert_eq!(
+            registered_project_roots(&settings),
+            vec![PathBuf::from("C:\\legacy")]
+        );
+        // Whitespace-only legacy path -> no roots.
+        settings.project_path = Some(" ".to_string());
+        assert!(registered_project_roots(&settings).is_empty());
+    }
+
+    #[test]
+    fn load_catalog_for_settings_primary_wins_and_self_heals() {
+        let primary = seed_dir();
+        let ac_dir = primary.path().join(".ac");
+        let settings = AppSettings {
+            project_paths: vec![primary.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+
+        // Primary file absent -> embedded default (self-heal).
+        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+
+        // Hand-edited primary file is observable (primary wins over everything).
+        let custom = manifest_json(
+            r##"[{"key":"custom","label":"Custom","description":"d","color":"#333","command":"custom","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        std::fs::create_dir_all(manifest_path(&ac_dir).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(&ac_dir), &custom).unwrap();
+        let loaded = load_catalog_for_settings(&settings);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].key, "custom");
+
+        // Primary file DELETED -> embedded default, never a legacy copy.
+        std::fs::remove_file(manifest_path(&ac_dir)).unwrap();
+        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+    }
+
+    #[test]
+    fn ensure_seeded_for_project_skips_missing_or_relative_root_without_writes() {
+        let base = seed_dir();
+        // Missing root: nothing must be created.
+        let missing = base.path().join("does-not-exist");
+        ensure_seeded_for_project(&missing);
+        assert!(!missing.exists());
+
+        // Relative root: nothing must be created relative to the process CWD.
+        let relative = Path::new("some-relative-project");
+        ensure_seeded_for_project(relative);
+        assert!(!relative.exists());
+    }
+
+    #[test]
+    fn ensure_seeded_for_project_steady_state_precheck_skips_gate_and_writes() {
+        let project = seed_dir();
+        let root = project.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        // First run seeds everything under the (test) ungated path.
+        ensure_seeded_for_project(&root);
+        assert!(manifest_path(&root.join(".ac")).is_file());
+        for m in EMBEDDED_SEED_MASTERS {
+            assert!(master_dir_for_dest(&root.join(".ac"), m.dest).is_dir());
+        }
+        let manifest_bytes = std::fs::read(manifest_path(&root.join(".ac"))).unwrap();
+
+        // Steady state: re-running must not touch a byte (and must not even
+        // need the manifest to parse; the pre-check is existence-only).
+        ensure_seeded_for_project(&root);
+        assert_eq!(
+            std::fs::read(manifest_path(&root.join(".ac"))).unwrap(),
+            manifest_bytes
+        );
+
+        // A missing master dir is re-seeded by the next run (masters self-heal).
+        let claude_dir = master_dir_for_dest(&root.join(".ac"), ".claude");
+        std::fs::remove_dir_all(&claude_dir).unwrap();
+        ensure_seeded_for_project(&root);
+        assert!(claude_dir.is_dir());
+    }
+
+    #[test]
+    fn legacy_catalog_corrupt_is_copied_verbatim_and_reads_self_heal() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let garbage = b"{ this is not valid json".to_vec();
+        std::fs::write(legacy.path().join("agents.json"), &garbage).unwrap();
+
+        ensure_seeded(project.path(), Some(legacy.path()));
+        let project_file = manifest_path(project.path());
+        assert_eq!(
+            std::fs::read(&project_file).unwrap(),
+            garbage,
+            "corrupt legacy content is user data and is copied verbatim"
+        );
+        // The read path self-heals to the embedded default in memory.
+        assert_eq!(load_catalog(project.path()).len(), 6);
+        // Recovery: deleting the project file re-seeds the embedded default.
+        std::fs::remove_file(&project_file).unwrap();
+        ensure_seeded(project.path(), Some(legacy.path()));
+        assert_eq!(load_catalog(project.path()).len(), 6);
+    }
+
+    #[test]
+    fn legacy_masters_empty_dir_copied_verbatim_and_inert() {
+        let project = seed_dir();
+        let legacy = legacy_dir();
+        let legacy_seed = legacy.path().join("_seed");
+        std::fs::create_dir_all(legacy_seed.join(".claude")).unwrap(); // EMPTY
+
+        ensure_seeded_masters(project.path(), Some(legacy.path()));
+        let claude_dir = master_dir_for_dest(project.path(), ".claude");
+        assert!(
+            claude_dir.is_dir(),
+            "empty legacy master is copied verbatim"
+        );
+        assert!(
+            !crate::config::config_seed::is_nonempty_seed_dir(&claude_dir),
+            "present-but-empty master stays inert for the spawn tier"
+        );
+        assert_eq!(std::fs::read_dir(&claude_dir).unwrap().count(), 0);
+        // The embedded default is NOT seeded (present = user-owned rule); the
+        // Settings re-seed button restores it.
+        reseed_master_for_command(project.path(), "claude").unwrap();
+        assert!(crate::config::config_seed::is_nonempty_seed_dir(
+            &claude_dir
+        ));
+    }
+
+    #[test]
+    fn reseed_with_no_primary_targets_legacy_config_dir() {
+        // The Settings re-seed button must keep working on pre-migration
+        // installs with zero registered projects: no primary root -> the legacy
+        // `<config_dir>/coding-agents/_seed/<dest>` masters are the target.
+        let Some(config_dir) = crate::config::config_dir() else {
+            return;
+        };
+        let legacy_master = config_dir
+            .join("coding-agents")
+            .join("_seed")
+            .join(".claude");
+        let _ = std::fs::remove_dir_all(config_dir.join("coding-agents"));
+        std::fs::create_dir_all(&legacy_master).unwrap();
+        std::fs::write(legacy_master.join("marker"), b"x").unwrap();
+
+        let result = reseed_master_for_command(&config_dir, "claude");
+        assert!(result.is_ok(), "legacy reseed works: {result:?}");
+        let m = master("claude");
+        assert_eq!(
+            std::fs::read(legacy_master.join(m.files[0].rel_path)).unwrap(),
+            m.files[0].bytes
+        );
+        let _ = std::fs::remove_dir_all(config_dir.join("coding-agents"));
+    }
+
+    #[test]
+    fn definition_defaults_update_commands_empty_auto_update_false_when_absent() {
+        // An old agents.json (no new fields) parses with the documented
+        // defaults: empty update commands, auto-update off.
+        let json = r##"
+        {
+            "schemaVersion": 1,
+            "agents": [
+                {
+                    "key": "old",
+                    "label": "Old",
+                    "description": "d",
+                    "color": "#000",
+                    "command": "old",
+                    "envs": [],
+                    "isolatedHome": false,
+                    "removable": true
+                }
+            ]
+        }
+        "##;
+        let parsed: CodingAgentCatalog = serde_json::from_str(json).expect("old manifest parses");
+        let def = &parsed.agents[0];
+        assert!(def.update_commands.is_empty());
+        assert!(!def.auto_update);
+
+        // camelCase round-trip: always serialize both fields.
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), json).unwrap();
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded[0].update_commands.len(), 0);
+        assert!(!loaded[0].auto_update);
+
+        let mut def = loaded[0].clone();
+        def.update_commands = vec!["claude".to_string(), "--update".to_string()];
+        def.auto_update = true;
+        let round = serde_json::to_value(&def).expect("serialize def");
+        assert_eq!(
+            round["updateCommands"],
+            serde_json::json!(["claude", "--update"])
+        );
+        assert_eq!(round["autoUpdate"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn embedded_default_ships_claude_update_command_only() {
+        // #1318 drift guard: only claude ships the update command; the other
+        // five ship none; every entry defaults autoUpdate to false.
+        let catalog = embedded_default_catalog();
+        assert_eq!(catalog.agents.len(), 6);
+        for def in &catalog.agents {
+            assert!(
+                !def.auto_update,
+                "{} autoUpdate must default false",
+                def.key
+            );
+            if def.key == "claude" {
+                assert_eq!(
+                    def.update_commands,
+                    vec!["claude".to_string(), "--update".to_string()]
+                );
+            } else {
+                assert!(
+                    def.update_commands.is_empty(),
+                    "{} must ship no update command",
+                    def.key
+                );
+            }
+        }
     }
 }

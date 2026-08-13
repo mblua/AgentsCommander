@@ -11,6 +11,10 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    // #1318 - mirror of the embedded default: only claude ships the update
+    // command; every entry defaults autoUpdate to false.
+    updateCommands: ["claude", "--update"],
+    autoUpdate: false,
   },
   {
     key: "codex",
@@ -22,6 +26,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   },
   {
     key: "hermes",
@@ -33,6 +39,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   },
   {
     key: "cursor",
@@ -44,6 +52,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   },
   {
     key: "pi",
@@ -55,6 +65,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   },
   {
     key: "opencode",
@@ -66,6 +78,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   },
 ];
 

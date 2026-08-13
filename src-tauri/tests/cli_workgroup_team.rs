@@ -1690,6 +1690,9 @@ fn workgroup_creation_and_scopeless_removal_leave_no_manifest() {
 /// Write a valid v1 seed manifest that records a single replica config-folder scope
 /// under `<workgroup>/__agent_<agent>/.claude`, exactly as a real config-seed spawn
 /// would have. Used to prove Stage F lifecycle removal prunes a recorded scope.
+///
+/// The literal is a v1 manifest on purpose: the upgrade path must prove it
+/// handles a pre-upgrade manifest written by an old build.
 fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: &str) {
     let manifest = format!(
         concat!(

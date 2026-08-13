@@ -11,7 +11,7 @@ or delete anything.
 
 The manifest has one row per project-relative **logical destination**, and each
 row carries the UTC wall-clock time of that file's most recent successful physical
-publication by AgentsCommander. Two publisher families write rows:
+publication by AgentsCommander. Three publisher families write rows:
 
 - **Project context templates** - `.ac/Context.AgentsCommander.md` (scope
   `context:agentscommander`) and `.ac/Context.coordinator.md` (scope
@@ -21,18 +21,23 @@ publication by AgentsCommander. Two publisher families write rows:
 - **Replica config folders** - the `.claude`/`.codex`/... folder that
   [config seed](config-seed.md) copies into a workgroup replica at spawn. Each
   installed regular file is one row under a single `config:<dest>` scope.
+- **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.json` (scope
+  `catalog:coding-agents`, source `builtin`), published once per project when the
+  catalog is first seeded (embedded default or a byte-for-byte migration of the
+  legacy `<config_dir>/coding-agents/agents.json`). The `_seed/` masters tree is
+  not rowed: one row per catalog publication.
 
 Everything else is deliberately **out of scope**: the manifest does not track
 files you create by hand, the `.agentscommander-context-templates.json` ownership
 state, agent memory, role files, repos, or anything outside `.ac`.
 
-## Schema (v1)
+## Schema (v2)
 
 ```toml
 # Managed by AgentsCommander. Diagnostic only; never grants file ownership.
 schema_version = 1
-coverage_version = 1
-coverage = ["project_context_templates", "replica_config_folders"]
+coverage_version = 2
+coverage = ["project_context_templates", "replica_config_folders", "coding_agent_catalog"]
 
 [[files]]
 path = ".ac/Context.AgentsCommander.md"
@@ -49,6 +54,14 @@ kind = "replica_config_file"
 scope = "config:.ac/wg-14-dev-team/__agent_architect/.claude"
 source = "workspace_base"
 last_seeded_at = "2026-07-16T19:41:12.456Z"
+
+[[files]]
+path = ".ac/coding-agents/agents.json"
+path_encoding = "utf8"
+kind = "coding_agent_catalog"
+scope = "catalog:coding-agents"
+source = "builtin"
+last_seeded_at = "2026-07-16T19:43:00.000Z"
 ```
 
 An empty manifest is written as `files = []`. The file is always UTF-8 with LF line
@@ -68,6 +81,19 @@ path)`, so re-serialization is deterministic and Git-friendly.
 
 The schema intentionally omits content hashes, file size, source paths, host, user,
 process id, and any operation history.
+
+## v1 to v2 upgrade
+
+Coverage grew to v2 with the `coding_agent_catalog` kind (#1318); the wire shape
+is unchanged (schema_version stays 1). A **v1 manifest upgrades in place on the
+first `ProjectSeedManifestGuard::acquire`** (read or write) under the project
+lock: the parse is substitution-only (the coverage declaration is replaced, every
+row and timestamp is preserved verbatim) and reuses every existing strict row
+check. The upgrade is one-shot (a successful upgrade parses strictly on the next
+acquire) and lossless. Any other degraded shape (future schema, bounds
+violations, external edits, corrupt bytes) stays byte-preserved with the writer
+disabled, exactly as before. A v2 manifest written by this build is NOT readable
+by an older build; the old build preserves its bytes and disables its writer.
 
 ## Time semantics
 

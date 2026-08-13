@@ -24,6 +24,8 @@ function def(key: string, label: string, command: string): CodingAgentDefinition
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   };
 }
 

@@ -379,6 +379,10 @@ export interface CodingAgentDefinition {
   isolatedHome: boolean;
   configSeed?: ConfigSeedConfig;
   removable: boolean;
+  /** #1318 - per-agent update-command sequence seeded by AC (e.g. ["claude", "--update"]). Empty = no update command. Inert until the follow-up update-check feature reads it. */
+  updateCommands: string[];
+  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdate / agentUpdateDontAskAgain. Inert until the follow-up feature reads it. */
+  autoUpdate: boolean;
 }
 
 export interface ReseedResult {
@@ -627,6 +631,10 @@ export interface AppSettings {
   npmUpdateNotificationsEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
+  /** #1318 - per-user auto-update choice per registered coding agent, keyed by agent id. Absent entry = use the catalog default. Inert until the follow-up feature reads it. */
+  agentAutoUpdate: Record<string, boolean>;
+  /** #1318 - per-agent "don't ask again" flags for the follow-up auto-update dialog, keyed by agent id. Absent = ask. */
+  agentUpdateDontAskAgain: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;

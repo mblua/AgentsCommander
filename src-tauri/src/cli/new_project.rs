@@ -7,7 +7,7 @@
 //! Same GUI concurrency caveat as `open-project` — see that file.
 
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::register_new_project;
@@ -79,6 +79,10 @@ pub fn execute(args: NewProjectArgs) -> i32 {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
+        // #1318 - a CLI registration seeds the catalog + masters immediately
+        // (no restart needed). Fail-soft: any error is logged and the boot loop
+        // covers the project at the next boot.
+        crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&result.path));
         write_project_registration_refresh(&PathBuf::from(&result.path), "projectRegistered");
     }
     if result.created {

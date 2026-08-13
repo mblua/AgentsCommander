@@ -900,19 +900,34 @@ pub(crate) fn resolve_agent_spawn_command(
                 placeholder_context.as_ref(),
             );
             if let Some(r) = resolved.as_mut() {
-                // #769 P2: append the absent-only, non-empty CatalogDefault tier
-                // LAST (lowest precedence). Pure path math here; perform_config_seed
-                // gates it on absent-dest + non-empty master, so it never overwrites
-                // an existing replica config. The master exists only for built-ins
-                // that ship one; for any other dest the candidate path is absent and
-                // the tier is inert.
-                if let Some(config_dir) = crate::config::config_dir() {
+                // #769 P2 + #1318: append the absent-only, non-empty CatalogDefault
+                // tier LAST (lowest precedence). Pure path math here;
+                // perform_config_seed gates it on absent-dest + non-empty master,
+                // so it never overwrites an existing replica config. The master
+                // lives in the session workspace's `.ac/coding-agents/_seed/<dest>`
+                // (replicas always have a workspace); a session without a workspace
+                // falls back to the legacy `<config_dir>/coding-agents/_seed/<dest>`
+                // location. The master exists only for built-ins that ship one; for
+                // any other dest the candidate path is absent and the tier is inert.
+                let dest = cfg.dest.trim();
+                let master_dir = placeholder_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.workspace_root.as_ref())
+                    .map(|workspace| {
+                        crate::config::coding_agents_catalog::master_dir_for_dest(workspace, dest)
+                    })
+                    .or_else(|| {
+                        crate::config::config_dir().map(|config_dir| {
+                            crate::config::coding_agents_catalog::master_dir_for_dest(
+                                &config_dir,
+                                dest,
+                            )
+                        })
+                    });
+                if let Some(master_dir) = master_dir {
                     r.candidates.push((
                         crate::config::config_seed::ConfigSeedTier::CatalogDefault,
-                        crate::config::coding_agents_catalog::master_dir_for_dest(
-                            &config_dir,
-                            cfg.dest.trim(),
-                        ),
+                        master_dir,
                     ));
                 }
                 r.config_dir_warning = crate::config::config_seed::compute_config_dir_warning(
@@ -2211,8 +2226,10 @@ mod tests {
         use crate::config::config_seed::ConfigSeedTier;
         // Workspace tiers outrank matrix tiers; profile beats base in each. The
         // matrix's bare `.claude` (the agent's own live config) is never a source.
-        // #769 P2 appends the absent-only CatalogDefault master LAST (still pure
-        // path math; perform_config_seed gates it on absent-dest + non-empty).
+        // #769 P2 + #1318 appends the absent-only CatalogDefault master LAST
+        // (still pure path math; perform_config_seed gates it on absent-dest +
+        // non-empty), resolved from the SESSION WORKSPACE's
+        // `.ac/coding-agents/_seed/<dest>`.
         let mut expected = vec![
             (
                 ConfigSeedTier::WorkspaceProfile,
@@ -2228,16 +2245,49 @@ mod tests {
             ),
             (ConfigSeedTier::MatrixBase, matrix.join("default.claude")),
         ];
-        if let Some(config_dir) = crate::config::config_dir() {
-            expected.push((
-                ConfigSeedTier::CatalogDefault,
-                crate::config::coding_agents_catalog::master_dir_for_dest(&config_dir, ".claude"),
-            ));
-        }
+        expected.push((
+            ConfigSeedTier::CatalogDefault,
+            workspace
+                .join("coding-agents")
+                .join("_seed")
+                .join(".claude"),
+        ));
         assert_eq!(seed.candidates, expected);
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.
         assert!(!workspace.join("default.claude").exists());
+    }
+
+    #[test]
+    fn build_spawn_catalog_default_absent_without_workspace() {
+        // A replica-shaped launch root with NO `.ac` workspace ancestor (the
+        // only shape that could reach the fill's config-dir legacy fallback).
+        // `resolve_config_seed` derives its candidates exclusively from the
+        // workspace and matrix roots, both of which require a workspace, so the
+        // seed does not resolve at all and no CatalogDefault tier is produced:
+        // the `.or_else(config_dir)` legacy fallback in the fill is structurally
+        // unreachable for a resolved seed and stays defense-in-depth for
+        // pre-migration shapes.
+        let temp = tempfile::tempdir().unwrap();
+        let replica = temp.path().join("wg-1-dev-team").join("__agent_legacy");
+        std::fs::create_dir_all(&replica).unwrap();
+
+        let mut claude = agent("claude", "claude");
+        claude.config_seed = Some(ConfigSeedConfig {
+            enabled: true,
+            dest: ".claude".to_string(),
+        });
+        let settings = AppSettings {
+            agents: vec![claude],
+            ..AppSettings::default()
+        };
+
+        let spawn =
+            build_agent_spawn_command(&settings, "claude", Some(&replica), Some("A")).unwrap();
+        assert!(
+            spawn.seed.is_none(),
+            "a workspace-less replica resolves no seed and no CatalogDefault tier"
+        );
     }
 
     #[test]
