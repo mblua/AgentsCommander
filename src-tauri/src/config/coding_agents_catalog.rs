@@ -114,8 +114,8 @@ pub struct CodingAgentDefinition {
     pub update_commands: Vec<String>,
     /// #1318 - stable catalog default for auto-update. Newly registered agents
     /// default to false ("No"). The per-user choice lives in
-    /// `AppSettings.agent_auto_update` + `agent_update_dont_ask_again`, keyed by
-    /// agent id. Inert until the follow-up feature reads it.
+    /// `AppSettings.agent_auto_update_by_command`, keyed by command. Inert: the
+    /// runtime reads only the settings map.
     #[serde(default)]
     pub auto_update: bool,
 }

@@ -1,3 +1,4 @@
+agentscommander_lib -> agentscommander_lib::agent_update
 agentscommander_lib -> agentscommander_lib::api::message_store
 agentscommander_lib -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib -> agentscommander_lib::commands::role_templates
@@ -41,6 +42,10 @@ agentscommander_lib -> agentscommander_lib::update_check
 agentscommander_lib -> agentscommander_lib::voice::tracker
 agentscommander_lib -> agentscommander_lib::web::auth
 agentscommander_lib -> agentscommander_lib::web::broadcast
+agentscommander_lib::agent_update -> agentscommander_lib::config
+agentscommander_lib::agent_update -> agentscommander_lib::config::coding_agents_catalog
+agentscommander_lib::agent_update -> agentscommander_lib::config::settings
+agentscommander_lib::agent_update -> agentscommander_lib::pty::job
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
@@ -125,6 +130,11 @@ agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::co
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::logging
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::session::purge_guard
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::audit
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::error
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::handlers
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::screenshot
 agentscommander_lib::api::identity -> agentscommander_lib::api
 agentscommander_lib::api::identity -> agentscommander_lib::api::auth
 agentscommander_lib::api::identity -> agentscommander_lib::api::error
@@ -331,6 +341,7 @@ agentscommander_lib::commands::ac_discovery -> agentscommander_lib::web::command
 agentscommander_lib::commands::agent_creator -> agentscommander_lib::config::agent_creation
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::config -> agentscommander_lib
+agentscommander_lib::commands::config -> agentscommander_lib::agent_update
 agentscommander_lib::commands::config -> agentscommander_lib::api
 agentscommander_lib::commands::config -> agentscommander_lib::api::audit
 agentscommander_lib::commands::config -> agentscommander_lib::api::auth
@@ -420,6 +431,7 @@ agentscommander_lib::commands::role_templates -> agentscommander_lib::config::se
 agentscommander_lib::commands::screenshot -> agentscommander_lib::config::settings
 agentscommander_lib::commands::screenshot -> agentscommander_lib::screenshot
 agentscommander_lib::commands::session -> agentscommander_lib
+agentscommander_lib::commands::session -> agentscommander_lib::agent_update
 agentscommander_lib::commands::session -> agentscommander_lib::api::message_store
 agentscommander_lib::commands::session -> agentscommander_lib::commands::pty
 agentscommander_lib::commands::session -> agentscommander_lib::commands::telegram
@@ -845,6 +857,7 @@ agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::shutdown
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::screenshot::unsupported -> agentscommander_lib::screenshot
+agentscommander_lib::screenshot::windows -> agentscommander_lib::api
 agentscommander_lib::screenshot::windows -> agentscommander_lib::config::replica_identity
 agentscommander_lib::screenshot::windows -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::windows -> agentscommander_lib::screenshot

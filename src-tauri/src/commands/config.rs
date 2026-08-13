@@ -2219,6 +2219,44 @@ pub async fn get_update_status(
     Ok(cache.get().cloned())
 }
 
+/// #1327 - snapshot of the startup coding-agent update run (in progress flag +
+/// the currently registered-but-unanswered prompt + per-command results). The
+/// sidebar queries it on mount to cover events that fired before its listeners
+/// registered (mirrors `get_update_status`).
+#[tauri::command]
+pub async fn get_agent_update_status(
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+) -> Result<crate::agent_update::AgentUpdateStatus, String> {
+    Ok(gate.snapshot())
+}
+
+/// #1327 - the user answered the startup prompt for one command. Persists the
+/// answer FIRST (so it is never asked again even if resolution fails), then
+/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
+/// accepted the answer THIS boot (update will run now); Ok(false) when the
+/// prompt had already closed OR the receiver was dropped by the prompt timeout
+/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
+/// nothing this boot; the overlay shows the conditional info toast). Unknown
+/// commands are rejected.
+#[tauri::command]
+pub async fn agent_update_answer(
+    settings: State<'_, SettingsState>,
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+    command: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !gate.was_prompted(&command) {
+        return Err(format!("agent_update_answer: '{command}' was not prompted this boot"));
+    }
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate
+            .agent_auto_update_by_command
+            .insert(command.clone(), enabled);
+    })
+    .await?;
+    Ok(gate.resolve_answer(&command, enabled))
+}
+
 /// Fetch the Home screen Markdown source from the public docs URL.
 /// Returns the raw Markdown body as a String.
 /// Errors are returned as user-facing strings; the frontend renders them in
