@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use agentscommander_lib::commands::pty::get_screen_snapshot;
 use agentscommander_lib::commands::session::{
     create_session_inner, destroy_session_inner, CreateSelectionIntent,
 };
@@ -60,7 +61,7 @@ use agentscommander_lib::{
     SpecBoardState, WebServerHandle,
 };
 use serde::Deserialize;
-use tauri::Listener;
+use tauri::{Listener, Manager};
 use uuid::Uuid;
 
 const OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -108,19 +109,40 @@ impl Drop for TestConfigEnvGuard {
     }
 }
 
+/// Tagged observation of the final `pty_output` wire union (Section 18.2):
+/// inactive-session regressions must see zero deliveries of either variant, and
+/// the listener records any unexpected data or resync-marker delivery so the
+/// wait helper can fail with a precise count instead of a silent parse error.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TestPtyOutputPayload {
-    session_id: String,
-    data: Vec<u8>,
-    sequence: Option<u64>,
+#[serde(tag = "kind")]
+enum TestPtyOutputDelivery {
+    #[serde(rename = "data")]
+    Data {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "generation")]
+        _generation: String,
+        #[serde(rename = "firstSequence")]
+        _first_sequence: String,
+        #[serde(rename = "sequence")]
+        _sequence: String,
+    },
+    #[serde(rename = "resyncRequired")]
+    ResyncRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "generation")]
+        _generation: String,
+        #[serde(rename = "sequence")]
+        _sequence: String,
+    },
 }
 
 struct Fixture {
     app: tauri::App,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: Arc<Mutex<PtyManager>>,
-    captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    captured_deliveries: Arc<Mutex<HashMap<String, usize>>>,
     listener_errors: Arc<Mutex<Vec<String>>>,
     tracked_sessions: Arc<Mutex<Vec<Uuid>>>,
     _temp: tempfile::TempDir,
@@ -129,15 +151,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn output_text(&self, session_id: &str) -> String {
-        self.captured_output
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-            .unwrap_or_default()
-    }
-
     fn listener_errors(&self) -> Vec<String> {
         self.listener_errors.lock().unwrap().clone()
     }
@@ -198,7 +211,7 @@ fn make_fixture() -> Fixture {
     })
     .expect("seed isolated settings");
 
-    let captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -239,7 +252,7 @@ fn make_fixture() -> Fixture {
     let selection_coordinator =
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown_signal.token().clone());
 
-    let captured = Arc::clone(&captured_output);
+    let deliveries = Arc::clone(&captured_deliveries);
     let error_capture = Arc::clone(&listener_errors);
     let app = tauri::Builder::default()
         .any_thread()
@@ -287,20 +300,15 @@ fn make_fixture() -> Fixture {
 
     app.listen_any("pty_output", move |event| {
         let raw = event.payload().to_string();
-        match serde_json::from_str::<TestPtyOutputPayload>(&raw) {
-            Ok(payload) => {
-                captured
+        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
+            Ok(TestPtyOutputDelivery::Data { session_id, .. })
+            | Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
+                deliveries
                     .lock()
                     .unwrap()
-                    .entry(payload.session_id.clone())
-                    .or_default()
-                    .extend(payload.data);
-                if payload.sequence.is_none() {
-                    error_capture
-                        .lock()
-                        .unwrap()
-                        .push(format!("pty_output payload missing sequence; raw={raw}"));
-                }
+                    .entry(session_id)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
             }
             Err(err) => error_capture.lock().unwrap().push(format!(
                 "failed to parse pty_output payload: {err}; raw={raw}"
@@ -312,7 +320,7 @@ fn make_fixture() -> Fixture {
         app,
         session_mgr,
         pty_mgr,
-        captured_output,
+        captured_deliveries,
         listener_errors,
         tracked_sessions: Arc::new(Mutex::new(Vec::new())),
         _temp: temp,
@@ -453,22 +461,53 @@ async fn create_plain_session(
     .await
 }
 
-async fn wait_for_output(
+/// Polls the unchanged public `commands::pty::get_screen_snapshot` route until the
+/// native snapshot contains the expected bytes (bounded by `OUTPUT_TIMEOUT`). Before
+/// returning success it inspects the per-session tagged listener recorder and asserts
+/// zero `pty_output` data or resync-marker deliveries: these are inactive-session
+/// regressions, so native parser/snapshot progress must occur without any UI observer
+/// delivery (Section 18.2 pattern).
+async fn wait_for_snapshot_contains(
     fixture: &Fixture,
-    session_id: &str,
-    marker: &str,
-    timeout: Duration,
+    session_id: &Uuid,
+    expected_bytes: &str,
+    phase: &str,
 ) -> Result<(), String> {
     let start = Instant::now();
-    while start.elapsed() < timeout {
-        if fixture.output_text(session_id).contains(marker) {
-            return Ok(());
+    let mut last_snapshot: Option<serde_json::Value> = None;
+    while start.elapsed() < OUTPUT_TIMEOUT {
+        let snapshot = get_screen_snapshot(
+            fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+            session_id.to_string(),
+        )
+        .map_err(|e| format!("{phase}: get_screen_snapshot failed for {session_id}: {e}"))?;
+        if let Some(snapshot) = snapshot {
+            last_snapshot = Some(
+                serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"),
+            );
+            let text = String::from_utf8_lossy(&snapshot.data);
+            if text.contains(expected_bytes) {
+                let deliveries = fixture
+                    .captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .get(&session_id.to_string())
+                    .copied()
+                    .unwrap_or(0);
+                if deliveries != 0 {
+                    return Err(format!(
+                        "{phase}: session {session_id} recorded {deliveries} tagged pty_output \
+                         deliveries while inactive; expected zero"
+                    ));
+                }
+                return Ok(());
+            }
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     Err(format!(
-        "timeout waiting for output marker '{marker}' in session {session_id}; output={:?}",
-        fixture.output_text(session_id)
+        "{phase}: timeout waiting for snapshot marker '{expected_bytes}' in session \
+         {session_id}; last_snapshot={last_snapshot:?}"
     ))
 }
 
@@ -680,7 +719,7 @@ fn configured_powershell_launches_bare_agent_via_cmd_shim() {
         assert!(!script.contains("--%"), "script must never emit --%");
 
         // Marker through the normal PTY output fanout.
-        wait_for_output(&fixture, &created.id, "AC_SHIM_MARKER", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "AC_SHIM_MARKER", "shim-marker")
             .await
             .expect("shim marker must arrive through the PTY output path");
 
@@ -786,10 +825,10 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
             .map(|arg| format!("{}:{}\r", arg.len(), arg))
             .collect();
         for line in &expected_lines {
-            wait_for_output(&fixture, &created.id, line, OUTPUT_TIMEOUT)
+            wait_for_snapshot_contains(&fixture, &id, line, "reporter-argv")
                 .await
                 .unwrap_or_else(|e| {
-                    panic!("{e}\nargv line missing: {line:?}\noutput={:?}", fixture.output_text(&created.id))
+                    panic!("{e}\nargv line missing: {line:?}")
                 });
         }
 
@@ -801,7 +840,7 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         PtyManager::write_with_permit(&permit, b"AC_PTY_MARKER\r\n")
             .expect("write marker through the PTY input path");
         drop(permit);
-        wait_for_output(&fixture, &created.id, "AC_PTY_MARKER", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "AC_PTY_MARKER", "pty-marker-echo")
             .await
             .expect("reporter must echo the PTY-written marker back");
 
@@ -929,7 +968,7 @@ fn configured_powershell_batch_regression() {
         drop(_path_lock);
         let id = parse_session_id(&created);
         fixture.track_session(id);
-        wait_for_output(&fixture, &created.id, "AC_BATCH_MARKER", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "AC_BATCH_MARKER", "batch-marker")
             .await
             .expect("batch shim marker must arrive through PTY output");
         // Per-argument delivery through the nested system-cmd route: every
@@ -941,14 +980,11 @@ fn configured_powershell_batch_regression() {
             .map(|(i, arg)| format!("\"V{}=[{}]\"", i + 1, arg))
             .collect();
         for line in &expected_lines {
-            wait_for_output(&fixture, &created.id, line, OUTPUT_TIMEOUT)
+            wait_for_snapshot_contains(&fixture, &id, line, "batch-argument")
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
-                        "{e}
-argument line missing: {line:?}
-output={:?}",
-                        fixture.output_text(&created.id)
+                        "{e}\nargument line missing: {line:?}"
                     )
                 });
         }
@@ -1083,11 +1119,11 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
             Some(&["/V:OFF".to_string(), "/S".to_string(), "/C".to_string()][..])
         );
 
-        wait_for_output(&fixture, &created.id, "CMD_PROBE_MARKER", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "CMD_PROBE_MARKER", "cmd-probe-marker")
             .await
             .expect("cmd shim marker must arrive through PTY output");
         // One literal argument each: the shim echoes [%*].
-        wait_for_output(&fixture, &created.id, "[--flag !bang! a\\b]", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "[--flag !bang! a\\b]", "cmd-literal-argument")
             .await
             .expect("flag-style, bang, and internal-backslash values must be one literal argument each");
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
@@ -1224,7 +1260,7 @@ fn configured_powershell_host_shutdown_reaps_agent() {
         drop(_path_guard);
         drop(_path_lock);
         let id = parse_session_id(&created);
-        wait_for_output(&fixture, &created.id, "AC_LONG_MARKER", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &id, "AC_LONG_MARKER", "long-running-marker")
             .await
             .expect("long-running shim must start");
 

@@ -50,7 +50,7 @@ pub struct PtyInputAuditMetadata {
 /// Write one payload-free PTY-input audit object through the same fail-soft
 /// rotation policy as the general API audit. Callers may supply only verified
 /// identities and fixed reason codes.
-pub fn record_pty_input(metadata: &PtyInputAuditMetadata) {
+fn record_audit_metadata(metadata: &impl serde::Serialize, record_kind: &str) {
     let Some(path) = audit_path() else {
         return;
     };
@@ -58,14 +58,20 @@ pub fn record_pty_input(metadata: &PtyInputAuditMetadata) {
     let mut line = match serde_json::to_string(metadata) {
         Ok(line) => line,
         Err(_) => {
-            log::warn!("[api-audit] failed to serialize PTY metadata (continuing)");
+            log::warn!("[api-audit] failed to serialize {record_kind} metadata (continuing)");
             return;
         }
     };
     line.push('\n');
     if append(&path, &line).is_err() {
-        log::warn!("[api-audit] failed to write PTY metadata code=audit_write_failed (continuing)");
+        log::warn!(
+            "[api-audit] failed to write {record_kind} metadata code=audit_write_failed (continuing)"
+        );
     }
+}
+
+pub fn record_pty_input(metadata: &PtyInputAuditMetadata) {
+    record_audit_metadata(metadata, "PTY");
 }
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
@@ -140,6 +146,176 @@ pub fn record_terminal_snapshot(metadata: &TerminalSnapshotAuditMetadata) {
     if append(&path, &line).is_err() {
         log::warn!("[api-audit] snapshot metadata write failed");
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WindowScreenshotAuditStatus {
+    Succeeded,
+    InvalidWindowId,
+    WindowNotFound,
+    CaptureBusy,
+    CaptureTooLarge,
+    CaptureUnavailable,
+}
+
+pub(crate) struct WindowScreenshotAuditResult {
+    pub status: WindowScreenshotAuditStatus,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static WINDOW_SCREENSHOT_AUDITS_FOR_TEST: std::cell::RefCell<Option<Vec<WindowScreenshotAuditStatus>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct WindowScreenshotAuditCaptureForTest;
+
+#[cfg(test)]
+impl Drop for WindowScreenshotAuditCaptureForTest {
+    fn drop(&mut self) {
+        WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
+            *audits.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_window_screenshot_audits_for_test() -> WindowScreenshotAuditCaptureForTest {
+    WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
+        let mut audits = audits.borrow_mut();
+        assert!(
+            audits.is_none(),
+            "screenshot audit capture is already active"
+        );
+        *audits = Some(Vec::new());
+    });
+    WindowScreenshotAuditCaptureForTest
+}
+
+#[cfg(test)]
+pub(crate) fn take_window_screenshot_audits_for_test() -> Vec<WindowScreenshotAuditStatus> {
+    WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
+        let mut audits = audits.borrow_mut();
+        match audits.as_mut() {
+            Some(audits) => std::mem::take(audits),
+            None => Vec::new(),
+        }
+    })
+}
+
+#[derive(serde::Serialize)]
+struct WindowScreenshotAuditMetadata {
+    event: &'static str,
+    operation: &'static str,
+    status: WindowScreenshotAuditStatus,
+    timestamp: String,
+}
+
+impl WindowScreenshotAuditMetadata {
+    fn new(status: WindowScreenshotAuditStatus) -> Self {
+        Self {
+            event: "window_screenshot",
+            operation: "window_screenshot",
+            status,
+            timestamp: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_screenshot_audit_tests {
+    use super::*;
+
+    #[test]
+    fn window_screenshot_statuses_are_redacted_fixed_values() {
+        let cases = [
+            (WindowScreenshotAuditStatus::Succeeded, "succeeded"),
+            (
+                WindowScreenshotAuditStatus::InvalidWindowId,
+                "invalid_window_id",
+            ),
+            (
+                WindowScreenshotAuditStatus::WindowNotFound,
+                "window_not_found",
+            ),
+            (WindowScreenshotAuditStatus::CaptureBusy, "capture_busy"),
+            (
+                WindowScreenshotAuditStatus::CaptureTooLarge,
+                "capture_too_large",
+            ),
+            (
+                WindowScreenshotAuditStatus::CaptureUnavailable,
+                "capture_unavailable",
+            ),
+        ];
+
+        for (status, expected) in cases {
+            let serialized = match serde_json::to_string(&status) {
+                Ok(serialized) => serialized,
+                Err(error) => panic!("audit status must serialize: {error}"),
+            };
+            assert_eq!(serialized, format!("\"{expected}\""));
+        }
+    }
+
+    #[test]
+    fn window_screenshot_audit_line_has_only_fixed_redacted_fields() {
+        let metadata = WindowScreenshotAuditMetadata::new(WindowScreenshotAuditStatus::Succeeded);
+        let line = match serde_json::to_string(&metadata) {
+            Ok(line) => line,
+            Err(error) => panic!("screenshot audit line must serialize: {error}"),
+        };
+        let value: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => panic!("screenshot audit line must be JSON: {error}"),
+        };
+        let object = match value.as_object() {
+            Some(object) => object,
+            None => panic!("screenshot audit line must be a JSON object"),
+        };
+
+        assert_eq!(
+            object.get("event").and_then(serde_json::Value::as_str),
+            Some("window_screenshot")
+        );
+        assert_eq!(
+            object.get("operation").and_then(serde_json::Value::as_str),
+            Some("window_screenshot")
+        );
+        assert_eq!(
+            object.get("status").and_then(serde_json::Value::as_str),
+            Some("succeeded")
+        );
+        assert!(object.contains_key("timestamp"));
+        assert_eq!(object.len(), 4);
+        for sensitive_field in [
+            "window_id",
+            "title",
+            "pid",
+            "token",
+            "credential",
+            "native_diagnostic",
+            "image",
+            "image_bytes",
+        ] {
+            assert!(!object.contains_key(sensitive_field));
+        }
+    }
+}
+
+pub(crate) fn record_window_screenshot_result(_event: &str, result: &WindowScreenshotAuditResult) {
+    #[cfg(test)]
+    {
+        WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
+            if let Some(audits) = audits.borrow_mut().as_mut() {
+                audits.push(result.status);
+            }
+        });
+    }
+
+    let metadata = WindowScreenshotAuditMetadata::new(result.status);
+    record_audit_metadata(&metadata, "window screenshot");
 }
 
 pub fn record_pty_input_result(event: &str, result: &crate::phone::types::PtyInputResult) {

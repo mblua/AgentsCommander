@@ -10,9 +10,68 @@ use axum::Json;
 
 use super::schema::{ErrorBody, API_VERSION};
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WindowScreenshotApiError {
+    InvalidWindowId,
+    WindowNotFound,
+    CaptureBusy,
+    CaptureTooLarge,
+    CaptureUnavailable,
+}
+
+#[cfg(test)]
+mod window_screenshot_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn window_screenshot_errors_use_typed_codes() {
+        let cases = [
+            (
+                WindowScreenshotApiError::InvalidWindowId,
+                StatusCode::BAD_REQUEST,
+                "invalid_window_id",
+            ),
+            (
+                WindowScreenshotApiError::WindowNotFound,
+                StatusCode::NOT_FOUND,
+                "window_not_found",
+            ),
+            (
+                WindowScreenshotApiError::CaptureBusy,
+                StatusCode::TOO_MANY_REQUESTS,
+                "capture_busy",
+            ),
+            (
+                WindowScreenshotApiError::CaptureTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "capture_too_large",
+            ),
+            (
+                WindowScreenshotApiError::CaptureUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "capture_unavailable",
+            ),
+        ];
+
+        for (error, expected_status, expected_code) in cases {
+            let response = ApiError::WindowScreenshot(error).into_response();
+            assert_eq!(response.status(), expected_status);
+            let body = match axum::body::to_bytes(response.into_body(), 8 * 1024).await {
+                Ok(body) => body,
+                Err(error) => panic!("error response body must be readable: {error}"),
+            };
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains(expected_code), "{body}");
+        }
+    }
+}
+
 /// A control-plane API failure with a fixed HTTP mapping.
 #[derive(Debug, Clone)]
 pub enum ApiError {
+    #[allow(private_interfaces)]
+    WindowScreenshot(WindowScreenshotApiError),
     /// 400 - malformed body, missing/forbidden field, or invalid one-of payload.
     BadRequest(String),
     /// 401 - missing/invalid/revoked/expired token, or bound replica gone.
@@ -40,6 +99,31 @@ pub enum ApiError {
 impl ApiError {
     fn parts(&self) -> (StatusCode, &'static str, &str) {
         match self {
+            ApiError::WindowScreenshot(WindowScreenshotApiError::InvalidWindowId) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_window_id",
+                "invalid target window identifier",
+            ),
+            ApiError::WindowScreenshot(WindowScreenshotApiError::WindowNotFound) => (
+                StatusCode::NOT_FOUND,
+                "window_not_found",
+                "target window was not found",
+            ),
+            ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureBusy) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "capture_busy",
+                "target window capture capacity is full",
+            ),
+            ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureTooLarge) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "capture_too_large",
+                "target window capture exceeds the configured size limit",
+            ),
+            ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureUnavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "capture_unavailable",
+                "target window capture is unavailable",
+            ),
             ApiError::BadRequest(d) => (StatusCode::BAD_REQUEST, "bad_request", d),
             ApiError::Unauthorized(d) => (StatusCode::UNAUTHORIZED, "unauthorized", d),
             ApiError::Forbidden(d) => (StatusCode::FORBIDDEN, "forbidden", d),

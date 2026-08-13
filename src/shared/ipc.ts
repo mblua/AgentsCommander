@@ -15,6 +15,9 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
+  TerminalOutputActivationResult,
+  TerminalOutputControlState,
+  TerminalRendererMetrics,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
@@ -400,6 +403,65 @@ export function onPtyOutput(
 ): Promise<UnlistenFn> {
   return transport.listen<PtyOutputEvent>("pty_output", callback);
 }
+
+/**
+ * #1283 - typed wrappers for the five terminal-output control commands. All
+ * generation/sequence arguments are canonical unsigned base-10 strings; the
+ * backend validates them before any state mutation. TerminalView routes every
+ * control call through these wrappers; components never invoke Tauri directly.
+ */
+export const TerminalOutputAPI = {
+  activate: (sessionId: string): Promise<TerminalOutputActivationResult> =>
+    transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
+      sessionId,
+    }),
+
+  ready: (
+    sessionId: string,
+    generation: string,
+    snapshotSequence: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("ready_terminal_output", {
+      sessionId,
+      generation,
+      snapshotSequence,
+    }),
+
+  deactivate: (
+    sessionId: string,
+    generation: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("deactivate_terminal_output", {
+      sessionId,
+      generation,
+    }),
+
+  acknowledgeDelivery: (
+    sessionId: string,
+    generation: string,
+    firstSequence: string,
+    sequence: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("ack_terminal_output_delivery", {
+      sessionId,
+      generation,
+      firstSequence,
+      sequence,
+    }),
+
+  /** Sends only the documented valid metrics shape; the backend wire wrapper
+   *  rejects any malformed value with `invalid terminal renderer metrics`. */
+  reportMetrics: (
+    sessionId: string,
+    generation: string,
+    metrics: TerminalRendererMetrics
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("report_terminal_renderer_metrics", {
+      sessionId,
+      generation,
+      metrics,
+    }),
+};
 
 export function onSessionCreated(
   callback: (session: Session) => void

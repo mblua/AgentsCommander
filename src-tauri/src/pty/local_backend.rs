@@ -1378,9 +1378,30 @@ impl LocalProcessBackend {
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
+        Self::with_coordinator(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            ws_broadcaster,
+            crate::pty::output::TerminalOutputCoordinator::new(),
+        )
+    }
+
+    pub(crate) fn with_coordinator(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        git_watcher: Arc<GitWatcher>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
+    ) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
+            fanout: SessionIoFanout::with_coordinator(
+                output_senders,
+                idle_detector,
+                ws_broadcaster,
+                coordinator,
+            ),
             git_watcher,
             #[cfg(test)]
             pre_pty_attempts: Arc::new(AtomicUsize::new(0)),
@@ -1590,7 +1611,19 @@ impl LocalProcessBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, instance);
-        self.fanout.register_session(id, idle_tuning, rows, cols);
+        let output_token =
+            match self
+                .fanout
+                .register_session(id, idle_tuning, rows, cols, output_target)
+            {
+                Ok(token) => token,
+                Err(_) => {
+                    let _ = self.kill(id);
+                    return Err(AppError::PtyError(
+                        "terminal output registration failed".to_string(),
+                    ));
+                }
+            };
 
         // #942 - app.log is what users paste into issues, so a secret must never be
         // echoed back out through the child output or the argv we log. Keyed on the env
@@ -1647,12 +1680,7 @@ impl LocalProcessBackend {
                         // path: once the first byte is stamped and the head buffer is
                         // full this is two relaxed loads and one relaxed add.
                         record.note_output(&buf[..n]);
-                        fanout.handle_output(
-                            &output_target,
-                            id,
-                            &session_id_str,
-                            buf[..n].to_vec(),
-                        );
+                        fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
                         // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
                         // parser that `handle_output` has just fed this chunk to, which is why it
                         // is asked after it and not before.
@@ -2157,6 +2185,56 @@ impl PtyBackend for LocalProcessBackend {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         self.fanout.get_screen_snapshot(id)
+    }
+
+    fn activate_terminal_output(
+        &self,
+        id: Uuid,
+    ) -> crate::pty::output::TerminalOutputActivationResult {
+        self.fanout.activate_terminal_output(id)
+    }
+
+    fn ready_terminal_output(
+        &self,
+        id: Uuid,
+        generation: u64,
+        snapshot_sequence: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .ready_terminal_output(id, generation, snapshot_sequence)
+    }
+
+    fn deactivate_terminal_output(
+        &self,
+        id: Uuid,
+        generation: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout.deactivate_terminal_output(id, generation)
+    }
+
+    fn ack_terminal_output_delivery(
+        &self,
+        id: Uuid,
+        generation: u64,
+        first_sequence: u64,
+        sequence: u64,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
+    }
+
+    fn report_terminal_renderer_metrics(
+        &self,
+        id: Uuid,
+        generation: u64,
+        metrics: crate::pty::output::TerminalRendererMetrics,
+    ) -> crate::pty::output::TerminalOutputControlState {
+        self.fanout
+            .report_terminal_renderer_metrics(id, generation, metrics)
+    }
+
+    fn shutdown_terminal_output(&self) {
+        self.fanout.shutdown_terminal_output();
     }
 
     #[allow(private_interfaces)]
@@ -2702,7 +2780,7 @@ mod context_gate_tests {
     };
     use crate::pty::context_scrape::ScreenRowsRead;
     use crate::pty::idle_detector::IdleDetector;
-    use crate::pty::output::{PtyOutputTarget, SessionIoFanout};
+    use crate::pty::output::SessionIoFanout;
     use crate::session::profile::IdleTuning;
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     use std::collections::HashMap;
@@ -2764,13 +2842,10 @@ mod context_gate_tests {
     }
 
     fn paint(fanout: &SessionIoFanout, id: Uuid) {
-        fanout.register_session(id, IdleTuning::DEFAULT, 30, 120);
-        fanout.handle_output(
-            &PtyOutputTarget::noop(),
-            id,
-            &id.to_string(),
-            ROW.as_bytes().to_vec(),
-        );
+        let token = fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
+            .expect("register test session");
+        fanout.handle_output(&token, &id.to_string(), ROW.as_bytes().to_vec());
     }
 
     /// Kill the child and wait until it is REALLY gone - which is NOT what

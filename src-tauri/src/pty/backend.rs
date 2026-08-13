@@ -7,7 +7,10 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use crate::pty::output::{CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::output::{
+    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputActivationResult,
+    TerminalOutputControlState, TerminalRendererMetrics,
+};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
@@ -143,7 +146,7 @@ pub struct ResolvedAgentHostShell {
     pub args: Vec<String>,
 }
 
-pub struct BackendSpawnSpec {
+pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
     /// opaque string like `agent_1782513272568_0`), or None. It is NOT the CLI:
@@ -181,7 +184,7 @@ pub struct BackendSpawnSpec {
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 }
 
-pub trait PtyBackend: Any + Send + Sync {
+pub(crate) trait PtyBackend: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 
     fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>>;
@@ -266,6 +269,53 @@ pub trait PtyBackend: Any + Send + Sync {
     /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
     /// backends with no local child (container transport).
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
+
+    /// Terminal-output controls are deliberately defaulted so all existing test-only backends
+    /// remain source-compatible. Only the two production adapters forward to their fanouts.
+    fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+        TerminalOutputActivationResult::recovery(
+            id,
+            crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,
+        )
+    }
+
+    fn ready_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _snapshot_sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn deactivate_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn ack_terminal_output_delivery(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _first_sequence: u64,
+        _sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn report_terminal_renderer_metrics(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _metrics: TerminalRendererMetrics,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn shutdown_terminal_output(&self) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
 }

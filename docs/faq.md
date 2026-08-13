@@ -20,11 +20,11 @@ No. AgentsCommander is a Rust + SolidJS Tauri app. There is no Python runtime re
 
 ## Where is the data stored?
 
-Locally, in `~/.agentscommander/` (or the portable instance's directory). Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See [`PRIVACY.md`](../PRIVACY.md).
+Locally, in the per-instance config directory next to the binary (for example `C:\tools\.agentscommander\` for `C:\tools\agentscommander.exe`), with a legacy `$HOME` fallback when the executable path is unavailable. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See [Portable instances](features/portable-instances.md) and [`PRIVACY.md`](../PRIVACY.md).
 
 ## Does AC send telemetry?
 
-No telemetry, no analytics, no crash reports, no automatic update checks. Optional features (Telegram, voice-to-text) only contact external services when you enable them.
+No telemetry, no analytics, no crash reports. The one automatic network check is the npm update check: on startup AC queries the npm registry for the latest published version (throttled to at most once per 24 hours, fail-silent) and shows an in-app notice when a newer version exists. No user data leaves the machine; the query is a plain version lookup. You can turn it off with `npmUpdateNotificationsEnabled: false` in `settings.json`. Optional features (Telegram, voice-to-text) only contact external services when you enable them.
 
 ## Can I run multiple AC instances side by side?
 

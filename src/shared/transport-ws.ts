@@ -1,4 +1,5 @@
 import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
+import type { PtyOutputEvent } from "./types";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -207,7 +208,12 @@ export class WsTransport implements Transport {
 
     const callbacks = this.listeners.get("pty_output");
     if (callbacks) {
-      const payload = { sessionId, data: dataArray };
+      // #1283: the browser/websocket fallback predates the tagged delivery
+      // union and emits the legacy raw binary stream (no kind/generation/
+      // firstSequence). The Tauri window is the only #1283 production path;
+      // this legacy shape is cast at the boundary and consumed only by the
+      // browser-mode fallback writer in TerminalView.
+      const payload = { sessionId, data: dataArray } as unknown as PtyOutputEvent;
       for (const cb of callbacks) {
         try {
           cb(payload);

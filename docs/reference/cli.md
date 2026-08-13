@@ -16,7 +16,7 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all.
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-wg` requires the caller to be the identity-verified workgroup coordinator, and the master/root token does NOT bypass that check (a root token has no workgroup).
 
 `terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
@@ -26,7 +26,9 @@ All subcommands return:
 
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
-- `2` — special: outcome unknown (used by `close-session` when delivery succeeded but no response landed in the poll window)
+- `2` — special: outcome unknown. Used by `close-session` when delivery succeeded but no response landed in the poll window, by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-wg` when the response is unparseable.
+- `3` — `purge-wg` only: gate rejected (one or more peers are busy)
+- `4` — `purge-wg` only: a destroy failed after the gate passed
 
 Exception: `harness` returns `0` for successful `--explain` and `--dry-run`, returns `1` for deny, validation, spawn, or audit-log failures, and propagates the child process exit code when it actually executes a command.
 
@@ -37,7 +39,7 @@ agentscommander --help                  # list every subcommand
 agentscommander <subcommand> --help     # full args + after-help block for one subcommand
 ```
 
-The `--help` text is the source of truth; this page is a curated index.
+The `--help` text is the source of truth; this page is a curated index. Internal test-only verbs (`role-experiment`, `test-reset`, `window-info`, `ui-*`) and test-only top-level flags are hidden from `--help` by design and are not documented here; the test harness invokes them by name.
 
 ---
 
@@ -168,6 +170,49 @@ See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary
 `self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Gemini-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
 
 Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
+
+### `self-handoff-and-switch`
+
+Two-phase handoff that also switches the caller's OWN session coding agent and/or profile: phase 1 waits for 30 seconds of sustained idle, respawns the session fresh with the requested agent/profile (or the same recipe when both flags are omitted), phase 2 waits a fresh 30 seconds of idle in the new session, archives `SELF-HANDOFF.md` into `self-clear/`, and injects a resume prompt naming that exact archive.
+
+```bash
+agentscommander self-handoff-and-switch \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --coding-agent agent_1719526800000_3 \
+  --profile C
+
+agentscommander self-handoff-and-switch --list-coding-agents
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. Shape-validated. |
+| `--root` | Yes | Caller's agent root directory. |
+| `--coding-agent` | No | Configured coding-agent entry id from `settings.json → agents[]`, not a backend kind or AC peer name. Omit to keep the live session's agent. |
+| `--profile` | No | Profile slot letter A through Z. Omit to keep the live session's effective profile. |
+| `--list-coding-agents` | No | Print valid coding-agent ids and profile letters, then exit. Requires neither token nor root. |
+| `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
+
+Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is WG replicas only (`__agent_*` under a `wg-*` workgroup); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
+
+---
+
+## `raise-hand`
+
+Raise the caller session's communication indicator in the Sidebar coordinator row.
+
+```bash
+agentscommander raise-hand --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. Shape-validated. |
+| `--root` | Yes | Caller's agent root directory. |
+| `--timeout` | No | Seconds to wait for the daemon's response. Default 15. |
+
+The daemon raises the indicator only when the caller token belongs to a live coordinator session with a visible `TASK.md` title slot. The indicator persists across app restarts until cleared by real user input to the session. On success stdout is exactly `true` or `false`. Exit codes: `0` valid boolean response, `1` auth/IO/delivery failure, `2` malformed response or no response within the timeout.
 
 ---
 
@@ -578,6 +623,53 @@ Subcommands:
 
 ---
 
+## `injected-messages`
+
+Reset operator-editable injected PTY message templates to the defaults this binary ships.
+
+```bash
+agentscommander injected-messages reseed --id context-alert
+agentscommander injected-messages reseed --all
+```
+
+| Flag | Description |
+|---|---|
+| `--id <id>` | Exact message id to reset (e.g. `context-alert`). Conflicts with `--all`. |
+| `--all` | Reset every known message id. |
+
+Edits `<config-dir>/injected-messages.toml` next to the executable; `injected-messages.default.toml` is the canonical reference set. A timestamped `.bak-` copy is written before anything is overwritten; comments, unknown keys, entry order, and untargeted entries are preserved. `--all` applies the same surgical writer to every known id; it is deliberately not a whole-file rewrite.
+
+**No token required** — this touches the user-local config directory next to the executable, the same boundary as `open-project` and `coding-agent`. Exit 0 on success, 1 on error.
+
+---
+
+## `api-client`
+
+Mint, revoke, and list control-plane API client tokens. Every subcommand requires HOST AUTHORITY: the master/root token. A container (which has no master token by construction) cannot self-mint.
+
+```bash
+agentscommander api-client mint \
+  --token "$MASTER_TOKEN" \
+  --root "D:\path\to\wg-8-dev-v5-team\__agent_dev-rust" \
+  --scopes send,list-peers-lean \
+  --label "CI bot"
+
+agentscommander api-client list --token "$MASTER_TOKEN"
+agentscommander api-client revoke --token "$MASTER_TOKEN" --client-id <uuid>
+```
+
+| Subcommand | Description |
+|---|---|
+| `mint` | Create a scoped, revocable client token bound to exactly one replica FQN derived from `--root`. Prints the secret exactly once as JSON on stdout; the registry stores only a SHA-256 hash. The Root Agent is rejected. |
+| `revoke` | Revoke a client by `--client-id`. Takes effect on the next API request. |
+| `list` | List registered clients. Secrets and hashes are never shown. |
+
+Mint flags: `--token` (master/root token, required), `--root` (replica working directory to bind, the identity source), `--scopes` (comma-separated: `send`, `list-peers-lean`, `session-transport`, `pty-input`, `terminal-snapshot`), `--label` (optional human label), `--expires` (optional RFC3339, e.g. `2026-12-31T00:00:00Z`).
+
+Manually minted privileged scopes (`pty-input`, `terminal-snapshot`) never gain live authority by themselves; both require a matching automatically bound container credential.
+
+---
+
 ## `close-session`
 
 Close all sessions for a target agent. Coordinator-only.
@@ -605,6 +697,33 @@ Exit codes:
 - `2` — outcome unknown (delivered, no response in the poll window).
 
 Only coordinators of the target's team can close. The master/root token bypasses the check.
+
+---
+
+## `purge-wg`
+
+Destroy every session of every peer in the caller's OWN workgroup. Coordinator-only.
+
+```bash
+agentscommander purge-wg \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --wg wg-8-dev-v5-team
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. The caller must be the identity-verified coordinator of its workgroup; the master/root token does NOT bypass this (a root token has no workgroup). |
+| `--root` | Yes | Coordinator's root directory. |
+| `--wg` | No | Safety assertion, not a scope selector: fail unless the resolved workgroup has exactly this name. |
+| `--graceful` | No | Inject the exit command and wait per session instead of killing immediately. Warning: it stalls ALL inter-agent messaging daemon-wide for the duration of the purge (the message poller is sequential). |
+| `--timeout` | No | Graceful shutdown timeout in seconds per session. Default 5. |
+| `--dry-run` | No | Evaluate the gate and print the per-peer table. Destroy nothing. |
+| `--quiet-period-ms` | No | Printable-silence a peer must show to be purgeable. Clamped daemon-side to a floor of 2500. Default 3000. |
+
+The caller itself and the Root Agent are never purged; cross-workgroup purge is not supported. If ANY in-scope peer has produced printable output within `--quiet-period-ms`, the command purges NOBODY and exits 3.
+
+Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcome unknown, `3` gate rejected (a peer is busy), `4` a destroy failed after the gate passed.
 
 ---
 
