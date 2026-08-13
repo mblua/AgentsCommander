@@ -85,7 +85,7 @@ A few configurations that look reasonable but cause pain:
 - **One agent doing everything.** AC's value is multi-agent. If you only have one agent, you are paying for a Tauri shell around the coding agent CLI you already have — use the CLI directly.
 - **Two role prompts in one directory.** Forbidden. The second agent will read the first one's role file and lose its identity. One agent = one directory.
 - **Sharing `TASK.md` across teams.** Each workgroup has its own brief. Sharing one brief across teams will produce coordinator conflicts on the YAML frontmatter title.
-- **Cross-coordinator messaging via shared files.** Coordinators on different teams cannot send each other messages directly. Use the Root Agent (Project AC Root-level) if you need a top-level coordinator.
+- **Assuming coordinators cannot talk to each other.** Coordinators of any teams can message each other directly (cross-team coordinator chat is allowed by the routing rules). The Root Agent (Project AC Root-level) is the top-level coordinator that sees every workgroup coordinator as a peer and can route work across the whole project.
 
 ---
 

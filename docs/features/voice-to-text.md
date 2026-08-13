@@ -58,7 +58,7 @@ Voice transcription uses the Gemini Files / Generate API. Pricing depends on the
 |---|---|---|
 | Mic button is greyed out | `voiceToTextEnabled: false` or missing API key | Set both under Settings → Integrations → Voice |
 | Transcription returns garbled text | Background noise or accent mismatch | Switch to `gemini-1.5-pro` |
-| Transcription returns empty string | Recording was <500ms or mic is muted | Hold longer; check OS microphone permissions for the AC process |
+| Transcription returns empty string | Very short recording (chunks never arrived) or mic is muted | Hold longer; check OS microphone permissions for the AC process |
 | Audio prompt for browser-level permission | First use on this machine | Allow microphone access for the AC process |
 
 More cases: [`docs/troubleshooting.md#voice-to-text`](../troubleshooting.md#voice-to-text).

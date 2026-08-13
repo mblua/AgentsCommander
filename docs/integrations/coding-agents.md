@@ -12,6 +12,7 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 | **Codex** | `codex` | `resume --last` | OpenAI's coding agent CLI. |
 | **Gemini** | `gemini` | `--resume latest` | Google's CLI. |
 | **Pi Coding Agent** | `pi`, `pi.exe`, or `pi.cmd` in a supported command position | `--continue` | Earendil Works' coding agent CLI. |
+| **Cursor** | `agent` (catalog entry) | — | Shipped in the default catalog (id `cursor`, instructions `AGENTS.md`). No tuned `CodingAgentKind`: it uses the generic path and the exact-stem logical-clear rule below. |
 
 > **OpenCode** runs today through the custom coding-agent path (see [Adding a custom coding agent](#adding-a-custom-coding-agent)). OpenCode is provider-agnostic, so you can point it at any provider or model, including OpenRouter Fusion. It does not yet have a first-class tuned integration (resume tokens, idle tuning); that work is tracked as [#315](https://github.com/mblua/AgentsCommander/issues/315).
 
@@ -152,7 +153,7 @@ When you create a new agent through the UI you can pick a role template. The pic
 1. **Agency templates** — read from the validated offline cache at `<config-dir>/agency-agents_templates`, refreshed only by `agency-templates update`.
 2. **Local templates** — read from `<config-dir>/agent-templates/<folder>/` (override the path via `settings.agentTemplatesPath`).
 
-Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md` and `CLAUDE.md`.
+Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md`; the coding-agent role file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) is materialized from `Role.md` plus AC context at launch.
 
 > AC's role-template picker can use a downloaded cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). If you author a new role and want it discoverable in AC by default, submit it upstream to the agency-agents catalog, then refresh the cache with `agency-templates update`.
 

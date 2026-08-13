@@ -26,11 +26,13 @@ See [Coding Agent Profiles](features/coding-agent-profiles.md).
 
 One running process bound to one agent directory, running inside a real PTY (ConPTY on Windows, Unix PTY on Linux/macOS). Each session shows in the sidebar with a status dot:
 
-- green — waiting for human input (the agent finished its turn and is ready for your reply)
+- cyan — active (live PTY, currently working)
 - blue — running (PTY output is streaming)
-- amber — pending (queued, no live PTY activity yet)
+- green — waiting for human input (the agent finished its turn and is ready for your reply)
+- amber — pending (the agent finished its turn but the row has not been focused yet)
 - red — exited (clean or crash; detail in the row tooltip)
 - gray — idle (no recent activity)
+- translucent — offline (no live session row, for example an inactive member)
 
 You can detach a session into its own window, attach a Telegram bot to it, or talk to it by voice. Idle teams can close their own sessions after a timeout; see [Session auto-close](features/session-auto-close.md).
 

@@ -102,11 +102,11 @@ Project-level agents appear in the **AGENTS** section of the AgentsCommander sid
 ├── memory/          # Created by AC on first use — persistent agent memory
 ├── plans/           # Created by AC on first use — plan files
 ├── skills/          # Created by AC on first use — reusable workflows
-└── .agentscommander_mb/   # Created by AC — internal runtime state
-    └── config.json        # Runtime config (tooling, session tracking)
+└── .<stem>/         # Created by AC — per-instance internal runtime state
+    └── config.json  # Runtime config (tooling, session tracking)
 ```
 
-**Minimum to create an agent:** A folder named `_agent_NAME/` containing a `Role.md` file. AgentsCommander creates the remaining directories (`inbox/`, `outbox/`, `memory/`, `plans/`, `skills/`, `.agentscommander_mb/`) automatically when the agent is first launched or used.
+**Minimum to create an agent:** A folder named `_agent_NAME/` containing a `Role.md` file. AgentsCommander creates the remaining directories (`inbox/`, `outbox/`, `memory/`, `plans/`, `skills/`, `.<stem>/`) automatically when the agent is first launched or used. `.<stem>` is the per-instance directory named after the running binary (for example `.agentscommander/`), the same rule as the instance config directory.
 
 ### Role.md Format
 
@@ -205,17 +205,17 @@ Teams define which agents can communicate with each other via `list-peers` and `
 ```json
 {
   "agents": [
-    "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_one",
-    "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_two",
-    "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_three"
+    "_agent_one",
+    "_agent_two",
+    "_agent_three"
   ],
-  "coordinator": "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_one",
+  "coordinator": "_agent_one",
   "repos": [
     {
       "agents": [
-        "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_one",
-        "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_two",
-        "C:\\Users\\USER\\path\\to\\project\\.ac\\_agent_three"
+        "_agent_one",
+        "_agent_two",
+        "_agent_three"
       ],
       "url": "https://github.com/owner/repo.git"
     }
@@ -227,17 +227,17 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 | Field | Required | Description |
 |---|---|---|
-| `agents` | Yes | Array of absolute paths to `_agent_*` folders. These agents become peers and can message each other. |
-| `coordinator` | Yes | Absolute path to the agent that coordinates work. Shown with `COORDINATOR` badge in sidebar. |
-| `repos` | Yes | Array of repo objects. Each has `agents` (who works on this repo) and `url` (the git remote). |
+| `agents` | Yes | Array of portable agent references (`_agent_<name>` or bare `<name>`). These agents become peers and can message each other. |
+| `coordinator` | Yes | The agent reference of the agent that coordinates work. Shown with `COORDINATOR` badge in sidebar. Must also be in `agents`. |
+| `repos` | Yes | Array of repo objects. Each has `agents` (which agents work on this repo) and `url` (the git remote). |
 
 ### Critical Rules for Team Config
 
-1. **Use absolute paths.** The `agents` array and `coordinator` must be absolute filesystem paths to `_agent_*` folders within the SAME project's `.ac/` directory.
+1. **Use portable agent references.** The `agents` array and `coordinator` must be `_agent_<name>` or bare `<name>` references to matrices inside the SAME project's `.ac/` directory. **Absolute filesystem paths are rejected** (`team configs must use portable refs like '_agent_name' or 'name', not filesystem paths`), so team configs stay portable across machines and workgroup copies.
 
-2. **Agents must exist.** Every path in the `agents` array must point to an existing `_agent_*` folder with a `Role.md`. If the folder doesn't exist, the agent won't appear.
+2. **Agents must exist.** Every reference in the `agents` array must resolve to an existing `_agent_<name>` matrix folder with a `Role.md`. If the folder doesn't exist, the agent won't appear.
 
-3. **Don't reference external projects.** If you're building a team for project A, the agents must be `_agent_*` folders inside project A's `.ac/`. Referencing agents from project B (e.g., `C:\repos\other-project\.ac\_agent_foo`) makes them appear as `@other-project` in the sidebar; they belong to the wrong project.
+3. **Don't reference external projects.** If you're building a team for project A, the agents must be `_agent_*` matrices inside project A's `.ac/`. Referencing agents from project B (for example `_agent_foo` from another project's root) makes them appear as belonging to the wrong project.
 
 4. **The coordinator must be in the agents list.** The coordinator path must also appear in the `agents` array.
 
@@ -259,7 +259,7 @@ Workgroups are isolated working environments created when a team needs to work o
 │   ├── Role.md                 # Optional override — if absent, uses parent's Role.md via config
 │   ├── inbox/
 │   ├── outbox/
-│   └── .agentscommander_mb/
+│   └── .<stem>/         # Per-instance dir named after the binary
 │       └── config.json
 ├── __agent_OTHER/
 │   └── ...
@@ -439,9 +439,9 @@ type: agent
 ---
 ```
 
-### Step 3 — Verify team config uses absolute paths to local agents
+### Step 3 — Verify team config uses portable agent references
 
-All paths in `_team_*/config.json` must point to `_agent_*` folders **inside the same project's `.ac/`**. Never reference agents from other projects.
+All references in `_team_*/config.json` must be `_agent_<name>` (or bare `<name>`) refs to matrices **inside the same project's `.ac/`**. Never reference agents from other projects. Absolute paths are rejected by `team create` and by the discovery code.
 
 ### Step 4 — Verify in AgentsCommander
 
@@ -482,8 +482,8 @@ This should return all team members. If empty, the team config is misconfigured 
 **Fix:** Always create `_agent_*` (single underscore) at `.ac/` first. These are the canonical definitions. Workgroup agents are replicas that reference them.
 
 ### Mistake: Agent folder has no Role.md
-**Cause:** Using `create-agent` CLI which creates CLAUDE.md, or creating the folder manually without the role file.
-**Fix:** Always create `Role.md` with proper frontmatter. This is the agent's identity.
+**Cause:** Creating the folder manually without the role file (or relying on an older `create-agent` behavior that wrote only `CLAUDE.md`).
+**Fix:** Always create `Role.md` with proper frontmatter. This is the agent's identity. The current `create-agent` CLI creates the full matrix layout including `Role.md`.
 
 ### Mistake: Git operations corrupt workgroup repos
 **Cause:** Missing `.gitignore` at `.ac/` level that excludes `wg-*/`.
@@ -527,10 +527,10 @@ These are proven team compositions. Adapt to your project's domain.
 ### Create an agent programmatically
 
 ```bash
-"<BINARY>" create-agent --parent "<.ac path>" --name "agent-name" [--launch "Claude Code"] --root "<caller root>" --token "<token>"
+"<BINARY>" create-agent --project "<PROJECT>" --name "agent-name" --description "One-line description" [--role-template <id>] [--launch "Claude Code"]
 ```
 
-This creates the folder and a basic CLAUDE.md. You'll still need to write a proper Role.md.
+`--project` is a registered AC project folder name (paths are not accepted). This creates `<project>/.ac/_agent_<id>/` with the matrix layout and writes `Role.md`. You can then edit `Role.md` to add your full role.
 
 ### Discover peers
 
