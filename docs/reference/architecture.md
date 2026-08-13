@@ -129,7 +129,7 @@ graph LR
         P_BE["backend.rs<br/>local vs container transport"]
         P_LOCAL["local_backend.rs<br/>ConPTY/pipes"]
         P_CONT["container_backend.rs<br/>Docker transport"]
-        P_IDLE["idle_detector.rs<br/>700ms silence → idle"]
+        P_IDLE["idle_detector.rs<br/>2.5s silence → idle"]
         P_GIT["git_watcher.rs<br/>5s branch poll"]
         P_INJ["inject.rs<br/>logical clear + exact PTY input"]
         P_WATCH["watchers/<br/>context-scrape watchers"]
@@ -676,7 +676,7 @@ Inter-agent messaging is file-based: senders write Markdown into `<workgroup>/me
 graph TD
     subgraph "std::thread (native)"
         T1["PTY Read Loop<br/>(1 per session)<br/>Blocking read → emit"]
-        T2["IdleDetector Watcher<br/>(1 global)<br/>200ms poll loop"]
+        T2["IdleDetector Watcher<br/>(1 global)<br/>500ms poll loop"]
         T3["GitWatcher<br/>(1 global)<br/>5s poll"]
         T4["Resource watchdog<br/>process sampling"]
     end
@@ -737,7 +737,7 @@ graph TD
 | `pty/container_backend.rs` | Docker container transport |
 | `pty/container_runtime.rs`, `docker_runtime.rs` | Container runtime discovery |
 | `pty/container_credentials.rs`, `container_tokens.rs`, `container_paths.rs`, `container_repos.rs` | Container credential/token/path/repo plumbing |
-| `pty/idle_detector.rs` | 700ms silence detection, idle/busy events |
+| `pty/idle_detector.rs` | 2.5s silence detection (default), idle/busy events |
 | `pty/git_watcher.rs` | 5s branch polling via `git rev-parse` |
 | `pty/inject.rs` | Logical clear and exact PTY input injection |
 | `pty/job.rs`, `pty/spawn_diagnostics.rs` | Spawn orchestration and diagnostics |

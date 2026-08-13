@@ -88,7 +88,7 @@ A Project AC Root-level coordinator that can route messages between coordinators
 
 ## Session
 
-A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: green waiting (ready for your input), blue running, amber pending, red exited, gray idle.
+A running process bound to one agent directory and one coding-agent CLI. Sessions live in the sidebar with status dots: cyan active, blue running, green waiting (ready for your input), amber pending, red exited, gray idle, translucent offline.
 
 ## Session auto-close
 
@@ -96,7 +96,7 @@ Automatic shutdown of an idle team (coordinator plus agent-owned sessions) after
 
 ## Settings tab
 
-The three tabs in the Settings modal: **General**, **Coding Agents**, **Integrations**.
+The five tabs in the Settings modal: **General**, **Coding Agents**, **Resources**, **Watchers**, **Integrations**.
 
 ## Team
 
