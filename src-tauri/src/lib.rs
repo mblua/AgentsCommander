@@ -16,6 +16,7 @@ pub mod session;
 pub mod shutdown;
 pub mod telegram;
 pub mod testability;
+pub mod agent_update;
 pub mod update_check;
 pub mod voice;
 pub mod web;
@@ -1200,6 +1201,13 @@ pub fn run(
     let update_check_state: UpdateCheckState = Arc::new(std::sync::OnceLock::new());
     let update_check_state_for_setup = Arc::clone(&update_check_state);
 
+    // Issue #1327 - startup coding-agent update flow: blocks every session open
+    // (via `create_session_inner_impl`) until the per-command update run
+    // finishes or times out. Managed before the restore task is submitted.
+    let agent_update_gate: Arc<agent_update::AgentUpdateGate> =
+        Arc::new(agent_update::AgentUpdateGate::new());
+    let agent_update_gate_for_setup = Arc::clone(&agent_update_gate);
+
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
     let selection_coordinator_for_setup = selection_coordinator.clone();
@@ -1258,6 +1266,7 @@ pub fn run(
         .manage(pty_target_gate_state)
         .manage(config_seed_lock)
         .manage(update_check_state)
+        .manage(agent_update_gate)
         .manage(ui_automation_state)
         .manage(terminal_snapshot_state)
         .manage(shutdown_signal)
@@ -1335,6 +1344,19 @@ pub fn run(
                 .unwrap()
                 .cleanup_container_orphans_on_startup();
             app.manage(pty_mgr.clone());
+
+            // #1327 - startup coding-agent update flow. Spawned BEFORE the
+            // restore task is submitted so every session open (restore, GUI,
+            // web, phone) blocks inside `create_session_inner_impl` until the
+            // updates finish or time out.
+            {
+                let app_for_agent_updates = app.handle().clone();
+                let gate_for_setup = Arc::clone(&agent_update_gate_for_setup);
+                tauri::async_runtime::spawn(async move {
+                    crate::agent_update::run_startup_updates(app_for_agent_updates, gate_for_setup)
+                        .await;
+                });
+            }
 
             selection_coordinator_for_setup
                 .start(app.handle().clone())
@@ -2701,6 +2723,8 @@ pub fn run(
             commands::config::set_rail_collapse,
             commands::config::set_log_level,
             commands::config::get_update_status,
+            commands::config::get_agent_update_status,
+            commands::config::agent_update_answer,
             commands::repos::search_repos,
             commands::repos::git_remote_url,
             commands::telegram::telegram_attach,
