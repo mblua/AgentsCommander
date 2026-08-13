@@ -474,22 +474,25 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
     Ok(settings_snapshot_helper(settings.inner(), None).await)
 }
 
-/// #769 Phase 1 - return the externalized coding-agent catalog for the onboarding
-/// and Settings pick lists. Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in
-/// the normal AND self-heal cases (a missing or unparseable `agents.json` yields
-/// the embedded default IN MEMORY, never a disk write); `Ok([])` is honored
-/// verbatim when the user removed every built-in; `Err` only when the config
-/// directory cannot be resolved (a genuine environment failure the compiled
-/// fallback cannot satisfy). The frontend's never-empty fallback fires only on
-/// this `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
+/// #769 Phase 1 + #1318 - return the externalized coding-agent catalog for the onboarding
+/// and Settings pick lists. Resolves against the PRIMARY registered project's
+/// `.ac/coding-agents` catalog; with no registered project it falls back to the
+/// legacy `<config_dir>/coding-agents` catalog when one exists (pre-migration
+/// installs keep today's read behavior), else the embedded default in memory.
+/// Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in the normal AND self-heal
+/// cases (a missing or unparseable `agents.json` yields the embedded default IN
+/// MEMORY, never a disk write); `Ok([])` is honored verbatim when the user
+/// removed every built-in; `Err` only when the config directory cannot be
+/// resolved (a genuine environment failure the compiled fallback cannot
+/// satisfy). The frontend's never-empty fallback fires only on this
+/// `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
 /// bearing for that contract.
 #[tauri::command]
 pub async fn get_coding_agent_catalog(
+    settings: State<'_, SettingsState>,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
-    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-    Ok(crate::config::coding_agents_catalog::load_catalog(
-        &config_dir,
-    ))
+    let settings = settings.read().await;
+    Ok(crate::config::coding_agents_catalog::load_catalog_for_settings(&settings))
 }
 
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
@@ -502,8 +505,11 @@ pub fn list_reseedable_agent_commands() -> Vec<String> {
     crate::config::coding_agents_catalog::reseedable_command_basenames()
 }
 
-/// #769 Phase 2 - restore a built-in's shipped default config-folder master (the
-/// Settings "Re-seed default configuration" button). Gating is re-checked
+/// #769 Phase 2 + #1318 - restore a built-in's shipped default config-folder master (the
+/// Settings "Re-seed default configuration" button). Resolves the master from the
+/// PRIMARY registered project's `.ac/coding-agents/_seed/<dest>`; with NO primary
+/// root it falls back to the legacy `<config_dir>/coding-agents/_seed/<dest>`
+/// masters (pre-migration installs keep the button working). Gating is re-checked
 /// server-side (exact executable basename, never `starts_with`, so `pi`/`agent`
 /// cannot false-match): `command` must map to a built-in that ships a master, else
 /// `Err`. On success the current master is `.bak`ed first, then atomically
@@ -511,10 +517,21 @@ pub fn list_reseedable_agent_commands() -> Vec<String> {
 /// absent-only fill. Running replicas and their live config are untouched.
 #[tauri::command]
 pub async fn reseed_coding_agent_default(
+    settings: State<'_, SettingsState>,
     command: String,
 ) -> Result<crate::config::coding_agents_catalog::ReseedResult, String> {
-    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-    crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+    let settings = settings.read().await;
+    let ac_dir = crate::config::coding_agents_catalog::primary_project_root(&settings)
+        .map(|root| root.join(".ac"));
+    match ac_dir {
+        Some(ac_dir) => {
+            crate::config::coding_agents_catalog::reseed_master_for_command(&ac_dir, &command)
+        }
+        None => {
+            let config_dir = crate::config::config_dir().ok_or("No config dir")?;
+            crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+        }
+    }
 }
 
 #[tauri::command]

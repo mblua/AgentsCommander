@@ -11,7 +11,8 @@
       "envs": [],
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".claude" },
-      "removable": true
+      "removable": true,
+      "updateCommands": ["claude", "--update"]
     },
     {
       "key": "codex",

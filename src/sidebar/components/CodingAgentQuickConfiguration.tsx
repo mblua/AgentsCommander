@@ -14,6 +14,8 @@ const CUSTOM_PRESET: CodingAgentDefinition = {
   envs: [],
   isolatedHome: false,
   removable: false,
+  updateCommands: [],
+  autoUpdate: false,
 };
 
 export interface CodingAgentQuickConfigurationProps {

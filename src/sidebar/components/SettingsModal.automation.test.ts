@@ -155,6 +155,8 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    agentAutoUpdate: {},
+    agentUpdateDontAskAgain: {},
     containerCredentialsFromHost: true,
     logLevel: null,
     activityLogEnabled: false,

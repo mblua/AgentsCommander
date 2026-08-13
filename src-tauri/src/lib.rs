@@ -1008,15 +1008,18 @@ pub fn run(
         log::info!("[app-outbox] Cleaned stale instance directories");
     }
 
-    // #769 Phase 1 - seed the externalized coding-agent catalog once (whole-file
-    // seed-once, fail-soft; never aborts boot). Must run before the frontend can
-    // call `get_coding_agent_catalog`.
-    config::coding_agents_catalog::ensure_seeded(&config_dir);
-
-    // #769 Phase 2 - seed the dest-keyed default config-folder masters once
-    // (create-if-absent, fail-soft). They back the absent-only spawn tier and the
-    // Settings re-seed button.
-    config::coding_agents_catalog::ensure_seeded_masters(&config_dir);
+    // #769 Phase 1 + #1318 - seed the externalized coding-agent catalog and the
+    // dest-keyed default config-folder masters once per registered project
+    // (whole-file seed-once + create-if-absent, fail-soft; never aborts boot).
+    // Must run before the frontend can call `get_coding_agent_catalog`. The
+    // read-only CLI loader avoids a boot-time settings write (no root_token
+    // auto-gen); the Tauri setup's own `load_settings()` performs the standard
+    // migrations. The per-project steady-state pre-check keeps the common
+    // already-seeded case lock-free.
+    let settings = config::settings::load_settings_for_cli();
+    for root in config::coding_agents_catalog::registered_project_roots(&settings) {
+        config::coding_agents_catalog::ensure_seeded_for_project(&root);
+    }
 
     let instance_id = uuid::Uuid::new_v4().to_string();
     // #1149 - open the activity run here, before the rest of boot: a panic in the
