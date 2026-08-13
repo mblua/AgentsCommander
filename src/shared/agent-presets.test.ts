@@ -55,11 +55,15 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
     }
   });
 
-  it("#1318: only claude ships an update command; every entry defaults autoUpdate off", () => {
+  it("#1318/#1325: claude, pi, and codex ship update commands; every entry defaults autoUpdate off", () => {
     for (const def of FALLBACK_CODING_AGENTS) {
       expect(def.autoUpdate).toBe(false);
       if (def.key === "claude") {
         expect(def.updateCommands).toEqual(["claude --update"]);
+      } else if (def.key === "pi") {
+        expect(def.updateCommands).toEqual(["pi update"]);
+      } else if (def.key === "codex") {
+        expect(def.updateCommands).toEqual(["codex update"]);
       } else {
         expect(def.updateCommands).toEqual([]);
       }

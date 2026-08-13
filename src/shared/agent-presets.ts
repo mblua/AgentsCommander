@@ -11,8 +11,8 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    // #1318 - mirror of the embedded default: only claude ships the update
-    // command; every entry defaults autoUpdate to false.
+    // #1318/#1325 - mirror of the embedded default: claude, pi, and codex
+    // ship the update command; every entry defaults autoUpdate to false.
     updateCommands: ["claude --update"],
     autoUpdate: false,
   },
@@ -26,7 +26,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    updateCommands: [],
+    updateCommands: ["codex update"],
     autoUpdate: false,
   },
   {
@@ -65,7 +65,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    updateCommands: [],
+    updateCommands: ["pi update"],
     autoUpdate: false,
   },
   {
