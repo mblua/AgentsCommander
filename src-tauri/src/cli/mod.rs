@@ -24,6 +24,10 @@ pub mod task_set_title;
 pub mod team;
 pub mod telegram_send_image;
 pub mod terminal_snapshot;
+#[cfg(target_os = "windows")]
+pub mod window_list;
+#[cfg(target_os = "windows")]
+pub mod window_screenshot;
 pub mod workgroup;
 
 use clap::{Parser, Subcommand};
@@ -202,6 +206,12 @@ pub enum Commands {
     /// Dispatch a WebView pointer hover transition on an automation target by data-ac-testid
     #[command(hide = true)]
     UiHover(crate::testability::ui_automation::UiHoverArgs),
+    /// List live native windows as decimal id and title (Windows only)
+    #[cfg(target_os = "windows")]
+    WindowList(window_list::WindowListArgs),
+    /// Capture a live native window to a PNG file (Windows only)
+    #[cfg(target_os = "windows")]
+    WindowScreenshot(window_screenshot::WindowScreenshotArgs),
     /// Set an input/select WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiSet(crate::testability::ui_automation::UiSetArgs),
@@ -353,6 +363,10 @@ pub fn handle_cli(cmd: Commands) -> i32 {
             crate::testability::ui_automation::execute_context_click(args)
         }
         Commands::UiHover(args) => crate::testability::ui_automation::execute_hover(args),
+        #[cfg(target_os = "windows")]
+        Commands::WindowList(args) => window_list::execute(args),
+        #[cfg(target_os = "windows")]
+        Commands::WindowScreenshot(args) => window_screenshot::execute(args),
         Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
         Commands::UiType(args) => crate::testability::ui_automation::execute_type(args),
         Commands::UiBackend(args) => crate::testability::ui_automation::execute_backend(args),
