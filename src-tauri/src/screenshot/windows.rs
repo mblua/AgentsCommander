@@ -617,6 +617,22 @@ pub(crate) async fn capture_window_png(
     })?
 }
 
+/// Canonical window-id validation shared by the HTTP route and the CLI verbs.
+/// Accepts only the canonical ASCII decimal rendering of an xcap window id:
+/// nonempty, at most 20 digits, no leading zeros except "0", parseable as u64.
+pub(crate) fn parse_window_id(raw_window_id: &str) -> Option<String> {
+    let bytes = raw_window_id.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 20
+        || !bytes.iter().all(u8::is_ascii_digit)
+        || (bytes.len() > 1 && bytes[0] == b'0')
+        || raw_window_id.parse::<u64>().is_err()
+    {
+        return None;
+    }
+    Some(raw_window_id.to_string())
+}
+
 #[cfg(test)]
 mod window_screenshot_tests {
     use super::*;
