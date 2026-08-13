@@ -1242,6 +1242,61 @@ html.light-theme .root-agent-avatar {
   backdrop-filter: blur(2px);
 }
 
+/* #1327 startup coding-agent update overlay (splash + SI/NO prompt). Above
+   .modal-overlay so the update question is never buried under other modals. */
+.agent-update-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  backdrop-filter: blur(2px);
+}
+
+.agent-update-card {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  padding: var(--spacing-lg);
+  min-width: 320px;
+  max-width: 92%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.agent-update-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--sidebar-border);
+  border-top-color: var(--accent-color, #0a84ff);
+  border-radius: 50%;
+  animation: agent-update-spin 0.9s linear infinite;
+}
+
+@keyframes agent-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-update-text {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  color: var(--sidebar-text);
+  text-align: center;
+}
+
+.agent-update-prompt-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: center;
+}
+
 .modal-container {
   background: var(--sidebar-surface);
   border: 1px solid var(--sidebar-border);

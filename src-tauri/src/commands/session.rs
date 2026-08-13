@@ -1387,6 +1387,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 ) -> Result<CreateCompletion, String> {
+    // #1327 - startup coding-agent updates gate: no session may open (GUI,
+    // restore, restart, root agent, web, phone) before the startup update run
+    // finishes or times out. Absent in tests (mock app, nothing managed) and in
+    // non-GUI contexts -> no-op.
+    if let Some(gate) = app.try_state::<Arc<crate::agent_update::AgentUpdateGate>>() {
+        gate.wait_until_done().await;
+    }
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let cwd_path = std::path::Path::new(&cwd);
     let create_target_key = crate::config::teams::pty_input_create_gate_key_from_cwd(cwd_path)

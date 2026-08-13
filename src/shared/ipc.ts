@@ -22,6 +22,9 @@ import type {
   SettingsSnapshot,
   LogLevel,
   UpdateInfo,
+  AgentUpdateResult,
+  AgentUpdateStatus,
+  AgentUpdatePrompt,
   CodingAgentEnv,
   CodingAgentDefinition,
   ReseedResult,
@@ -388,6 +391,13 @@ export const SettingsAPI = {
     }),
   getUpdateStatus: () =>
     transport.invoke<UpdateInfo | null>("get_update_status"),
+};
+
+export const AgentUpdateAPI = {
+  getStatus: () =>
+    transport.invoke<AgentUpdateStatus | null>("get_agent_update_status"),
+  answer: (command: string, enabled: boolean) =>
+    transport.invoke<boolean>("agent_update_answer", { command, enabled }),
 };
 
 export const ReposAPI = {
@@ -1178,6 +1188,33 @@ export function onNpmUpdateAvailable(
 ): Promise<UnlistenFn> {
   return transport.listen<UpdateInfo>("npm_update_available", (info) =>
     callback(info)
+  );
+}
+
+export function onAgentUpdatesStarted(callback: () => void): Promise<UnlistenFn> {
+  // Rust emits a unit payload (serializes to null).
+  return transport.listen<null>("agent_updates_started", () => callback());
+}
+
+export function onAgentUpdatePrompt(
+  callback: (prompt: AgentUpdatePrompt) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdatePrompt>("agent_update_prompt", (prompt) =>
+    callback(prompt)
+  );
+}
+
+/** The backend timed the prompt out (no answer within 60s): clear the modal. */
+export function onAgentUpdatePromptClosed(callback: () => void): Promise<UnlistenFn> {
+  return transport.listen<null>("agent_update_prompt_closed", () => callback());
+}
+
+export function onAgentUpdatesFinished(
+  callback: (payload: { results: AgentUpdateResult[] }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ results: AgentUpdateResult[] }>(
+    "agent_updates_finished",
+    (payload) => callback(payload)
   );
 }
 
