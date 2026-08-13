@@ -360,7 +360,8 @@ export const SettingsAPI = {
       agentId,
       envs,
       isolatedHome,
-    }),  setAgentDefaultProfile: (agentPath: string, profile: string) =>
+    }),
+  setAgentDefaultProfile: (agentPath: string, profile: string) =>
     transport.invoke<void>("set_agent_default_profile", { agentPath, profile }),
   setInstanceProfileOverride: (agentPath: string, profile: string | null) =>
     transport.invoke<void>("set_instance_profile_override", { agentPath, profile }),

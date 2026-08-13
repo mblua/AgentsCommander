@@ -750,8 +750,8 @@ export interface AppSettings {
    * string (not the agent id: several profiles can share one command; the
    * software is the update unit). Absent = never asked (the startup dialog
    * asks once, default No); true = run this command's updateCommands at
-   * startup; false = never ask again. Replaces the inert #1318
-   * agentAutoUpdate / agentUpdateDontAskAgain maps. */
+   * startup; false = never ask again. Replaces the two inert #1318
+   * agent-id-keyed maps. */
   agentAutoUpdateByCommand: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;

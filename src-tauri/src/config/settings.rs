@@ -559,7 +559,7 @@ pub struct AppSettings {
     /// command; the software is the update unit). Absent = never asked (the startup
     /// dialog asks once, default No); present = last answer (true = run this
     /// command's updateCommands at startup, false = never ask again). Replaces the
-    /// inert #1318 agent_auto_update / agent_update_dont_ask_again maps. Read and
+    /// two inert #1318 agent-id-keyed maps. Read and
     /// written by the #1327 startup update flow only.
     #[serde(default)]
     pub agent_auto_update_by_command: std::collections::BTreeMap<String, bool>,

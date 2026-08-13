@@ -2232,9 +2232,11 @@ pub async fn get_agent_update_status(
 
 /// #1327 - the user answered the startup prompt for one command. Persists the
 /// answer FIRST (so it is never asked again even if resolution fails), then
-/// resolves the pending prompt. Returns Ok(true) when the answer applied THIS
-/// boot (update will run now); Ok(false) when the prompt had already closed
-/// (late answer: persisted for next boot, updates nothing this boot). Unknown
+/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
+/// accepted the answer THIS boot (update will run now); Ok(false) when the
+/// prompt had already closed OR the receiver was dropped by the prompt timeout
+/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
+/// nothing this boot; the overlay shows the conditional info toast). Unknown
 /// commands are rejected.
 #[tauri::command]
 pub async fn agent_update_answer(

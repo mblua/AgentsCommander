@@ -146,8 +146,11 @@ impl AgentUpdateGate {
         }
     }
 
-    /// Deliver the user's answer. Returns `false` when nothing was pending
-    /// (prompt already closed: late answer, persisted for next boot only).
+    /// Deliver the user's answer. Returns `true` ONLY when a live receiver
+    /// accepted the answer (the update runs this boot); `false` when nothing
+    /// was pending (late answer) or the receiver was dropped by the prompt
+    /// timeout (round-3 F1 pin: a dead receiver must never report "applied
+    /// this boot").
     pub fn resolve_answer(&self, command: &str, enabled: bool) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(tx) = state.pending.remove(command) else {
@@ -160,8 +163,7 @@ impl AgentUpdateGate {
         {
             state.pending_prompt = None;
         }
-        let _ = tx.send(enabled);
-        true
+        tx.send(enabled).is_ok()
     }
 
     pub fn was_prompted(&self, command: &str) -> bool {
@@ -342,6 +344,13 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
                 break;
             }
         };
+        // F2 (round 3) pin: job dropped at step end on EVERY path - no
+        // survivors from an update step on Windows (deliberate, plan 5.2/18).
+        // The timeout arm keeps `terminate()` and the R1 truncation path keeps
+        // `job.take()`; on the plain-success path KILL_ON_JOB_CLOSE reaps any
+        // fully detached descendant the update command left behind. On Unix
+        // there is no job: detached descendants survive the step (group-kill
+        // runs only on timeout/truncation).
         let mut job: Option<crate::pty::job::JobObject> = {
             #[cfg(windows)]
             {
@@ -771,8 +780,19 @@ mod tests {
 
         assert!(gate.resolve_answer("claude", true));
         assert!(!gate.resolve_answer("claude", true), "second resolve must fail");
-        assert_eq!(rx.await.expect("answer delivered"), true);
+        assert!(rx.await.expect("answer delivered"));
         assert!(gate.snapshot().prompt.is_none(), "resolved prompt cleared");
+
+        // dropped-receiver path (round-3 F1): the prompt timeout drops the
+        // answer channel; a late resolve must return false without panicking
+        let gate2 = AgentUpdateGate::new();
+        let rx_dropped = gate2.register_prompt("codex", "Codex");
+        drop(rx_dropped);
+        assert!(!gate2.resolve_answer("codex", true));
+        assert!(
+            gate2.snapshot().prompt.is_none(),
+            "a dead prompt must not be resurrected by the snapshot"
+        );
 
         // drop_pending path: no answer, snapshot must not resurrect the prompt
         let rx2 = gate.register_prompt("codex", "Codex");
@@ -900,5 +920,84 @@ mod tests {
             "descendant must be reaped promptly, took {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn runner_success_with_detached_survivor() {
+        // round-3 F2 pin (deliberate platform divergence): a fully detached
+        // (non-pipe-holding) descendant of the update step is reaped on
+        // Windows by the per-step JobObject drop (KILL_ON_JOB_CLOSE: no
+        // survivors from an update step on Windows) but SURVIVES on Unix (no
+        // job; the group-kill runs only on timeout/truncation). The step
+        // itself reports success on both platforms, via the plain-success
+        // path, NOT the R1 reader-truncation arm: the survivor's handles are
+        // redirected away from the step's pipes, so the readers EOF when the
+        // parent exits. The survivor writes its marker only after a delay that
+        // exceeds the step.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("marker.txt");
+        let marker_str = marker.to_string_lossy().replace('\\', "/");
+        let step = if cfg!(windows) {
+            // The plan's pinned `cmd /C start /B "" cmd /C "<cmd>"` shape was
+            // VERIFIED to hang layer-2 cmd at `start` when spawned through the
+            // runner's `cmd.exe /C` chain (start mangles the nested quotes
+            // into a recursive `start "" "..."` command, observed in the
+            // process tree), so the implementer pinned a quoting-free
+            // equivalent with the SAME semantics (plan 9.1: implementer
+            // verifies both arms and pins the exact quoting): `start` an exe
+            // target - powershell, whose -EncodedCommand carries the whole
+            // script with no quotes/spaces - with the handles redirected to
+            // NUL on the start line. PowerShell exits right after
+            // Start-Process returns (no wait); the detached survivor (the
+            // Start-Process child, in the step's job, NOT inheriting the
+            // step's pipes) pings ~2s and only then writes the marker - after
+            // the step end, so the per-step job drop must reap it before the
+            // write.
+            use base64::Engine as _;
+            let script = format!(
+                "Start-Process cmd -ArgumentList '/c','ping -n 3 127.0.0.1 >NUL & echo x > {marker_str}' -WindowStyle Hidden"
+            );
+            let mut utf16 = Vec::new();
+            for u in script.encode_utf16() {
+                utf16.extend_from_slice(&u.to_le_bytes());
+            }
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
+            format!("start /B powershell -NoProfile -EncodedCommand {encoded} >NUL 2>NUL")
+        } else {
+            format!("sh -c '(sleep 1; echo x > {marker_str}) >/dev/null 2>&1 &'")
+        };
+        let started = std::time::Instant::now();
+        let result = run_update_sequence(
+            &UpdateTarget {
+                command: "test".to_string(),
+                label: "Test".to_string(),
+                commands: vec![step],
+                cwd: dir.path().to_path_buf(),
+            },
+            UPDATE_STEP_TIMEOUT,
+        )
+        .await;
+        assert!(result.ok, "unexpected: {result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "completion bounded, took {:?}",
+            started.elapsed()
+        );
+        if cfg!(windows) {
+            // The per-step job drop reaped the survivor before its delayed
+            // marker write.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            assert!(!marker.exists(), "Windows survivor must have been reaped");
+        } else {
+            // No job on Unix: the detached descendant survives the step and
+            // writes the marker within ~3s.
+            for _ in 0..30 {
+                if marker.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(marker.exists(), "Unix survivor must write the marker");
+        }
     }
 }
