@@ -84,7 +84,7 @@ set RUST_LOG=info,agentscommander_lib::pty=trace && agentscommander.exe
 | On-disk log file | `<config-dir>/app.log`, the persistent log. Rotated at 50 MB, keeping up to six files (`app.log` plus `app.log.1` through `app.log.5`). |
 | Live runtime logs | stderr of the AC process (visible if you launched from a terminal) |
 | In-app console capture | The DevTools console plus a rolling 500-entry in-memory buffer |
-| Voice failure dump | `<config-dir>/debug-logs.txt`, written automatically when voice-to-text fails. A one-off console snapshot, not a user action. |
+| Debug logs export | `<config-dir>/debug-logs.txt`, written by the `save_debug_logs` IPC command with caller-supplied content (a console snapshot export). Not written automatically. |
 
 `<config-dir>` is the per-instance config directory next to the binary, the same directory as `settings.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
 
