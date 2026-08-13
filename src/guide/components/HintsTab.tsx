@@ -25,7 +25,7 @@ const sections: HintSection[] = [
       },
       {
         title: "claude-hud",
-        body: "A statusline HUD for Claude Code that displays real-time context in your terminal - model, token usage, active tools, and session state at a glance. Essential for monitoring long-running agent sessions.",     
+        body: "A statusline HUD for Claude Code that displays real-time context in your terminal - model, token usage, active tools, and session state at a glance. Essential for monitoring long-running agent sessions.",
         link: {
           label: "GitHub repo",
           url: "https://github.com/jarrodwatts/claude-hud",
@@ -57,10 +57,6 @@ const sections: HintSection[] = [
         },
       },
     ],
-  },
-  {
-    agent: "OpenCode",
-    hints: [],
   },
   {
     agent: "Crucial Practices",
