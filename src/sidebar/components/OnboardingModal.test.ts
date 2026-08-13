@@ -119,6 +119,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    agentAutoUpdate: {},
+    agentUpdateDontAskAgain: {},
     containerCredentialsFromHost: true,
     logLevel: null,
     activityLogEnabled: false,
