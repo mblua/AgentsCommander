@@ -1,9 +1,10 @@
 //! Issue #1327 - startup coding-agent update flow.
 //!
 //! At GUI startup a detached task (spawned in `lib.rs` setup, BEFORE the restore
-//! task is submitted) plans and runs the catalog's per-command `updateCommands`
-//! sequences for every coding agent the user enabled through the per-command
-//! policy map `AppSettings.agent_auto_update_by_command`. Commands never asked
+//! task is submitted) plans and runs the per-command `updateCommands` sequences
+//! for every coding agent the user REGISTERED (`AppSettings.agents[].command`)
+//! AND enabled through the per-command policy map
+//! `AppSettings.agent_auto_update_by_command`. Commands never asked
 //! about get a first-time SI/NO prompt (asked once, never again, default No).
 //! Updates run in parallel ACROSS commands (each command's sequence stays
 //! strictly ordered) with a splash overlay on the sidebar while they run, and a
@@ -235,6 +236,10 @@ pub struct AgentUpdatePlan {
 }
 
 /// Pure plan builder. Binding rules:
+/// 0. Only commands in `registered_commands` (the command strings of
+///    `settings.agents[]`, i.e. agents the user actually registered) are
+///    considered: a catalog-only command is never prompted nor updated.
+///    Zero registered commands -> empty plan.
 /// 1. Distinct commands in catalog order (first occurrence wins). `label` and
 ///    `commands` come from the FIRST catalog entry (in order) whose
 ///    `update_commands` is non-empty. A command with NO non-empty sequence is
@@ -246,6 +251,7 @@ pub struct AgentUpdatePlan {
 /// Prompts and updates are disjoint by construction.
 pub fn build_update_plan(
     catalog: &[crate::config::coding_agents_catalog::CodingAgentDefinition],
+    registered_commands: &HashSet<String>,
     answers: &BTreeMap<String, bool>,
     default_cwd: PathBuf,
 ) -> AgentUpdatePlan {
@@ -254,6 +260,9 @@ pub fn build_update_plan(
     let mut updates: Vec<UpdateTarget> = Vec::new();
 
     for entry in catalog {
+        if !registered_commands.contains(&entry.command) {
+            continue; // catalog-only command: never prompted, never updated
+        }
         if !seen.insert(entry.command.as_str()) {
             continue; // first occurrence wins
         }
@@ -588,7 +597,17 @@ pub async fn run_startup_updates(app: AppHandle, gate: Arc<AgentUpdateGate>) {
 
     // 2. Pure plan. An empty plan releases the gate instantly (guard Drop) and
     // emits nothing: no splash flash on a quiet boot.
-    let plan = build_update_plan(&catalog, &settings.agent_auto_update_by_command, default_cwd);
+    let registered_commands: HashSet<String> = settings
+        .agents
+        .iter()
+        .map(|agent| agent.command.clone())
+        .collect();
+    let plan = build_update_plan(
+        &catalog,
+        &registered_commands,
+        &settings.agent_auto_update_by_command,
+        default_cwd,
+    );
     if plan.prompts.is_empty() && plan.updates.is_empty() {
         log::debug!("[agent-update] nothing to prompt or update; skipping");
         return;
@@ -685,7 +704,8 @@ mod tests {
             entry("codex", "Codex", vec!["codex update"]),
         ];
         let answers = BTreeMap::new();
-        let plan = build_update_plan(&catalog, &answers, cwd());
+        let registered = HashSet::from(["claude".to_string(), "codex".to_string()]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert_eq!(plan.prompts.len(), 2);
         assert!(plan.updates.is_empty());
         let claude = plan
@@ -704,7 +724,8 @@ mod tests {
             entry("claude", "Claude B", vec!["claude --update"]),
         ];
         let answers = BTreeMap::from([("claude".to_string(), true)]);
-        let plan = build_update_plan(&catalog, &answers, cwd());
+        let registered = HashSet::from(["claude".to_string()]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert!(plan.prompts.is_empty());
         assert_eq!(plan.updates.len(), 1);
         let claude = &plan.updates[0];
@@ -719,7 +740,8 @@ mod tests {
             entry("hermes", "Hermes", vec![]),
         ];
         let answers = BTreeMap::new();
-        let plan = build_update_plan(&catalog, &answers, cwd());
+        let registered = HashSet::from(["claude".to_string(), "hermes".to_string()]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert_eq!(plan.prompts.len(), 1);
         assert_eq!(plan.prompts[0].command, "claude");
         assert!(!plan.prompts.iter().any(|t| t.command == "hermes"));
@@ -734,7 +756,9 @@ mod tests {
             entry("pi", "Pi", vec!["pi update"]),
         ];
         let answers = BTreeMap::from([("claude".to_string(), true)]);
-        let plan = build_update_plan(&catalog, &answers, cwd());
+        let registered =
+            HashSet::from(["claude".to_string(), "codex".to_string(), "pi".to_string()]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
         assert_eq!(plan.prompts.len(), 2);
         assert_eq!(plan.updates.len(), 1);
         assert_eq!(plan.updates[0].command, "claude");
@@ -745,6 +769,56 @@ mod tests {
         for p in &plan.prompts {
             assert!(!plan.updates.iter().any(|u| u.command == p.command));
         }
+    }
+
+    #[test]
+    fn build_plan_filters_to_registered_commands() {
+        let catalog = vec![
+            entry("claude", "Claude", vec!["claude --update"]),
+            entry("codex", "Codex", vec!["codex update"]),
+            entry("pi", "Pi", vec!["pi update"]),
+        ];
+        let registered = HashSet::from(["claude".to_string(), "pi".to_string()]);
+        let answers = BTreeMap::new();
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+        assert_eq!(plan.prompts.len(), 2);
+        assert!(plan.updates.is_empty());
+        // catalog order preserved for the registered subset
+        let prompt_commands: Vec<&str> = plan.prompts.iter().map(|t| t.command.as_str()).collect();
+        assert_eq!(prompt_commands, vec!["claude", "pi"]);
+        // catalog-only command skipped: never prompted, never updated
+        assert!(!plan.prompts.iter().any(|t| t.command == "codex"));
+        assert!(!plan.updates.iter().any(|t| t.command == "codex"));
+    }
+
+    #[test]
+    fn build_plan_zero_registered_commands_returns_empty_plan() {
+        let catalog = vec![
+            entry("claude", "Claude", vec!["claude --update"]),
+            entry("codex", "Codex", vec!["codex update"]),
+        ];
+        let registered = HashSet::new();
+        let answers = BTreeMap::new();
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+        assert!(plan.prompts.is_empty());
+        assert!(plan.updates.is_empty());
+    }
+
+    #[test]
+    fn build_plan_registered_filter_preserves_first_entry_semantics() {
+        let catalog = vec![
+            entry("claude", "Claude (primary)", vec![]),
+            entry("claude", "Claude (secondary)", vec!["claude --update"]),
+            entry("codex", "Codex", vec!["codex update"]),
+        ];
+        let registered = HashSet::from(["claude".to_string()]);
+        let answers = BTreeMap::from([("claude".to_string(), true)]);
+        let plan = build_update_plan(&catalog, &registered, &answers, cwd());
+        assert!(plan.prompts.is_empty());
+        assert_eq!(plan.updates.len(), 1);
+        let claude = &plan.updates[0];
+        assert_eq!(claude.label, "Claude (primary)"); // first-entry label wins
+        assert_eq!(claude.commands, vec!["claude --update"]); // first non-empty sequence wins
     }
 
     #[tokio::test]
