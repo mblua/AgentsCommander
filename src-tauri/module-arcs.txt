@@ -302,6 +302,9 @@ agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::root
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::config::teams
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::path_identity
 agentscommander_lib::cli::terminal_snapshot -> agentscommander_lib::phone::terminal_snapshot
+agentscommander_lib::cli::window_list -> agentscommander_lib
+agentscommander_lib::cli::window_screenshot -> agentscommander_lib::api
+agentscommander_lib::cli::window_screenshot -> agentscommander_lib::screenshot
 agentscommander_lib::cli::workgroup -> agentscommander_lib
 agentscommander_lib::cli::workgroup -> agentscommander_lib::cli::create_agent_matrix
 agentscommander_lib::cli::workgroup -> agentscommander_lib::cli::session_safety
