@@ -125,6 +125,11 @@ agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::co
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::logging
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::api::handlers::terminal_snapshot -> agentscommander_lib::session::purge_guard
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::audit
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::error
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::api::handlers
+agentscommander_lib::api::handlers::window_screenshot -> agentscommander_lib::screenshot
 agentscommander_lib::api::identity -> agentscommander_lib::api
 agentscommander_lib::api::identity -> agentscommander_lib::api::auth
 agentscommander_lib::api::identity -> agentscommander_lib::api::error
@@ -845,6 +850,7 @@ agentscommander_lib::resource_monitor::watchdog -> agentscommander_lib::shutdown
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::registry
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::screenshot::unsupported -> agentscommander_lib::screenshot
+agentscommander_lib::screenshot::windows -> agentscommander_lib::api
 agentscommander_lib::screenshot::windows -> agentscommander_lib::config::replica_identity
 agentscommander_lib::screenshot::windows -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::windows -> agentscommander_lib::screenshot
