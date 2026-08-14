@@ -7,7 +7,7 @@ Use this feature when you need the current pixels of a live native desktop windo
 ## Before you start
 
 - A live interactive Windows desktop session (the verbs and the route require the native Windows capture stack).
-- The canonical decimal window id of the target window, discovered with `window-list` (or the in-app window picker).
+- The canonical decimal window id of the target window, discovered with `window-list`.
 - For the API path: an automatically bound container credential with live fresh-guard authority. A manually minted API token never gains this capability.
 
 Window captures can contain passwords, tokens, source code, and personal data. The CLI writes exactly the captured pixels with no redaction.
