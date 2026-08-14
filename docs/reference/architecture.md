@@ -796,7 +796,7 @@ graph TD
 | `commands/non_stop.rs` | non-stop mode |
 | `commands/wg_delete_diagnostic.rs` | workgroup delete diagnostics |
 | `commands/testability.rs` | test-only bridges |
-| `cli/` | CLI verbs: send, list-peers, terminal-snapshot, coding-agent, api-client, ... |
+| `cli/` | CLI verbs: send, list-peers, terminal-snapshot, coding-agent, api-client, window-list, window-screenshot, ... |
 | `api/` | Control-plane API server: auth, audit, dispatcher, handlers, message store |
 | `loops/` | Loop scheduler, delivery, events, non-stop watchdog |
 | `resource_monitor/` | Process registry, watchdog, per-window reporting |
