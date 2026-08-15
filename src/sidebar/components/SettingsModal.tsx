@@ -201,6 +201,24 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   return JSON.parse(JSON.stringify(value)) as AppSettings;
 };
 
+/** #1347 - the notice shown under every settings input whose value is persisted
+ *  unencrypted in the instance settings.json. `path` is the backend-resolved
+ *  absolute file path (SettingsSnapshot.settingsFilePath); a null path degrades
+ *  to the same warning without the location, because the storage fact holds
+ *  whether or not config_dir() resolved. `overflow-wrap` is inline so a long
+ *  path with no spaces wraps inside the modal instead of overflowing; the shared
+ *  .settings-hint rules stay untouched. */
+const PlaintextSecretHint: Component<{ path: string | null; testId: string }> = (props) => (
+  <div
+    class="settings-hint settings-hint-error"
+    style={{ "overflow-wrap": "break-word" }}
+    data-ac-testid={props.testId}
+  >
+    Stored unencrypted in {props.path ?? "this instance's settings.json file"}.
+    Anyone who can read that file can read this value.
+  </div>
+);
+
 /** #1171 - how long the pattern and reach previews wait before asking the backend. */
 const WATCHER_PREVIEW_DEBOUNCE_MS = 300;
 
@@ -683,6 +701,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     createSignal<ApiClientMintResponse | null>(null);
   const [apiClientSecretCopied, setApiClientSecretCopied] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");
+  // #1347 - snapshot-only metadata, kept out of `settings.data` on purpose: it
+  // is not a setting, must never enter the draft, the dirty check, or the save
+  // payload, and the draft store is typed AppSettings and cannot carry it.
+  const [settingsFilePath, setSettingsFilePath] = createSignal<string | null>(null);
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
@@ -1007,6 +1029,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     ]);
     setWebServerRunning(wsRunning);
     setApiServerRunning(apiRunning);
+    // `?? null` tolerates a mixed-version backend that predates #1347.
+    setSettingsFilePath(loaded.settingsFilePath ?? null);
     if (!draftDirty()) {
       const nextSettings = cloneSettings(loaded);
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
@@ -3705,6 +3729,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               placeholder="AIza..."
             />
           </label>
+          <PlaintextSecretHint
+            path={settingsFilePath()}
+            testId="settings.integrations.geminiApiKey.plaintextWarning"
+          />
           <label class="settings-field">
             <span class="settings-label">Gemini Model</span>
             <select
@@ -3795,6 +3823,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 placeholder="123456:ABC-DEF..."
               />
             </label>
+            <PlaintextSecretHint
+              path={settingsFilePath()}
+              testId={`settings.integrations.telegramBots.${i()}.plaintextWarning`}
+            />
             <Show when={bot.chatId}>
               <div class="settings-field">
                 <span class="settings-label">Chat ID</span>

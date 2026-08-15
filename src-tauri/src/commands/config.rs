@@ -201,6 +201,12 @@ pub struct SettingsSnapshot {
     #[serde(flatten)]
     pub settings: AppSettings,
     pub project_path_resolution: ProjectPathResolution,
+    /// #1347 - absolute path of the instance `settings.json` this snapshot was
+    /// built for, so the UI can name the file that holds the plaintext secrets.
+    /// `None` only when `config_dir()` itself is unresolvable (no `current_exe()`
+    /// and no home dir); there is no `skip_serializing_if`, so the key is always
+    /// present on the wire and is `null` in that degraded mode.
+    pub settings_file_path: Option<String>,
 }
 
 fn issue_source(source: ProjectSource) -> IssueSource {
@@ -384,9 +390,11 @@ pub(crate) fn build_project_path_resolution(
     }
 }
 
-/// Pure snapshot builder: clone `settings`, clear the root token, and attach the
-/// resolution report. Shared by the Tauri and WebSocket transports so both
-/// clients receive the identical report and `rootToken` is absent from each.
+/// Snapshot builder: clone `settings`, clear the root token, attach the
+/// resolution report, and record the instance settings-file path (#1347).
+/// Shared by the Tauri and WebSocket transports so both clients receive the
+/// identical report and `rootToken` is absent from each. The only non-argument
+/// input is the process-wide, cached instance location behind `config_dir()`.
 pub(crate) fn settings_snapshot_from(
     settings: &AppSettings,
     reconciliation_error: Option<ProjectPathReconciliationError>,
@@ -399,6 +407,12 @@ pub(crate) fn settings_snapshot_from(
     SettingsSnapshot {
         settings: cleaned,
         project_path_resolution: resolution,
+        // #1347: derived from the process instance location, deliberately NOT
+        // from `settings_snapshot_helper`'s injectable `settings_path`, which is
+        // a test-only reconciliation write target and not a client-facing
+        // location. Same expression already used at the reconciliation site.
+        settings_file_path: crate::config::config_dir()
+            .map(|d| d.join("settings.json").to_string_lossy().into_owned()),
     }
 }
 
@@ -2513,6 +2527,23 @@ mod tests {
             a.raw_absolute = RawStringField::string("/gone/y");
             let settings_c = settings_with_state(state_with(vec![a], vec![]));
             assert_ne!(id_a, issue_id(&settings_snapshot_from(&settings_c, None)));
+        }
+
+        #[test]
+        fn snapshot_carries_the_instance_settings_file_path() {
+            // #1347: the UI names the file that holds the plaintext secrets. Assert
+            // agreement with config_dir() rather than a literal path, so the test is
+            // independent of where the test binary happens to live.
+            let snap = settings_snapshot_from(&AppSettings::default(), None);
+            match (crate::config::config_dir(), snap.settings_file_path) {
+                (Some(dir), Some(path)) => {
+                    assert_eq!(path, dir.join("settings.json").to_string_lossy())
+                }
+                (None, None) => {}
+                (dir, path) => {
+                    panic!("settings_file_path disagrees with config_dir: {dir:?} vs {path:?}")
+                }
+            }
         }
 
         fn issue_id(snap: &super::super::SettingsSnapshot) -> String {
