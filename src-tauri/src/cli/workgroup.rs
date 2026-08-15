@@ -13,7 +13,7 @@ use crate::commands::entity_creation::{
     WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 
 #[derive(Args)]
 pub struct WorkgroupArgs {

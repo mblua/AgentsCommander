@@ -267,7 +267,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
     if cwd
         .file_name()
         .and_then(|name| name.to_str())
-        .map(crate::config::workspace::is_workspace_dir_name)
+        .map(crate::config::ac_root::is_workspace_dir_name)
         .unwrap_or(false)
     {
         return Some(format!(
@@ -276,7 +276,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
         ));
     }
 
-    if crate::config::workspace::has_workspace_dir(cwd) {
+    if crate::config::ac_root::has_workspace_dir(cwd) {
         return Some(format!(
             "container transport refuses to bind-mount project root '{}' because it directly contains an AC workspace",
             cwd.display()
@@ -288,7 +288,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("wg-"))
         .unwrap_or(false);
-    if is_wg_dir && crate::config::workspace::find_workspace_ancestor(cwd).is_some() {
+    if is_wg_dir && crate::config::ac_root::find_workspace_ancestor(cwd).is_some() {
         return Some(format!(
             "container transport refuses to bind-mount workgroup root '{}'",
             cwd.display()

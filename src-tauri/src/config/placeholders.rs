@@ -69,7 +69,7 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
         PlaceholderRootKind::NormalLaunchCwd
     };
 
-    let workspace_root = crate::config::workspace::find_workspace_ancestor(&canonical);
+    let workspace_root = crate::config::ac_root::find_workspace_ancestor(&canonical);
     let matrix_root = derive_matrix_root(&canonical, workspace_root.as_deref());
 
     Ok(PlaceholderContext {

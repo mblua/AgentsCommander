@@ -135,7 +135,7 @@ fn default_match_none_regex() -> String {
 }
 
 fn project_settings_path(project_path: &Path) -> Result<PathBuf, String> {
-    let workspace = crate::config::workspace::existing_workspace_dir(project_path)
+    let workspace = crate::config::ac_root::existing_workspace_dir(project_path)
         .ok_or_else(|| format!("Project has no .ac directory: {}", project_path.display()))?;
     Ok(workspace.join(PROJECT_SETTINGS_FILE))
 }

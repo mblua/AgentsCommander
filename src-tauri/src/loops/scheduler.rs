@@ -15,7 +15,7 @@ use crate::config::loops::{
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
 use crate::loops::events::emit_loop_change;
 use crate::shutdown::ShutdownSignal;

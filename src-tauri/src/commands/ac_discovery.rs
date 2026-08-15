@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
-use crate::config::workspace::{
+use crate::config::ac_root::{
     canonical_workspace_dir_label, existing_workspace_dir, find_workspace_segment,
     has_workspace_dir, workspace_dir_for_project,
 };

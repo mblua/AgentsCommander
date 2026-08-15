@@ -135,7 +135,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("wg-"))
         .unwrap_or(false)
-        && crate::config::workspace::find_workspace_ancestor(&wg_root).is_some();
+        && crate::config::ac_root::find_workspace_ancestor(&wg_root).is_some();
     if !is_workgroup_root {
         return Ok(RepoMountResolution::default());
     }

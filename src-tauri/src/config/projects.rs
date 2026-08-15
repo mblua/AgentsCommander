@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::settings::AppSettings;
-use super::workspace::{existing_workspace_dir, has_workspace_dir, workspace_dir_for_project};
+use super::ac_root::{existing_workspace_dir, has_workspace_dir, workspace_dir_for_project};
 
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns

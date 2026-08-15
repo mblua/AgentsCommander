@@ -1147,7 +1147,7 @@ fn compute_pending_update(
 fn validate_project_workspace_dir(workspace_dir: &Path) -> Result<PathBuf, String> {
     validate_existing_dir(workspace_dir, "Project AC Root")?;
     let name = workspace_dir.file_name().and_then(|name| name.to_str());
-    if name != Some(crate::config::workspace::canonical_workspace_dir_label()) {
+    if name != Some(crate::config::ac_root::canonical_workspace_dir_label()) {
         return Err(format!(
             "{} is not a Project AC Root directory",
             workspace_dir.display()
@@ -1164,7 +1164,7 @@ fn validate_project_workspace_for_scan(
     workspace_dir: &Path,
 ) -> Result<(), String> {
     validate_existing_dir(workspace_dir, "Project AC Root")?;
-    let expected = crate::config::workspace::workspace_dir_for_project(project_dir);
+    let expected = crate::config::ac_root::workspace_dir_for_project(project_dir);
     if workspace_dir != expected {
         return Err(format!(
             "Project AC Root {} is not the canonical child of {}",

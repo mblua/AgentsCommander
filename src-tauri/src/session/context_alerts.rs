@@ -1481,7 +1481,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             "sampled CWD escapes its member replica".to_string(),
         );
     }
-    let layout = match crate::config::workspace::wg_replica_layout_from_agent_dir(&replica_dir) {
+    let layout = match crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_dir) {
         Ok(Some(layout)) => layout,
         Ok(None) => {
             return MemberPolicyResolution::PermanentIneligible(

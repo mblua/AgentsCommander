@@ -229,7 +229,7 @@ fn wait_for_response(
 /// or `project_dir` is not valid UTF-8, matching `list_peers::detect_wg_replica`
 /// which also uses `to_str()` rather than `to_string_lossy()`).
 ///
-/// Thin wrapper over `config::workspace::wg_replica_layout_from_agent_dir`, the
+/// Thin wrapper over `config::ac_root::wg_replica_layout_from_agent_dir`, the
 /// single source of the WG-replica walk-up shared with
 /// `list_peers::detect_wg_replica` and
 /// `phone::mailbox::derive_project_from_outbox_path`, so `send` resolves WG-peer
@@ -239,7 +239,7 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     let Some(canon) = std::fs::canonicalize(root).ok() else {
         return Ok(None);
     };
-    match crate::config::workspace::wg_replica_layout_from_agent_dir(&canon)? {
+    match crate::config::ac_root::wg_replica_layout_from_agent_dir(&canon)? {
         Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
         None => Ok(None),
     }
@@ -252,7 +252,7 @@ fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> 
             wg_root.display()
         )
     })?;
-    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)
+    crate::config::ac_root::ensure_authoritative_workspace_dir(workspace_dir)
 }
 
 /// v4 UUID string length. Request ids are `Uuid::new_v4().to_string()`, so the

@@ -939,7 +939,7 @@ fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    crate::config::workspace::find_workspace_ancestor(path).map(|p| canonical_or_original(&p))
+    crate::config::ac_root::find_workspace_ancestor(path).map(|p| canonical_or_original(&p))
 }
 
 pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
@@ -1445,7 +1445,7 @@ fn path_parent_is_workspace(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .map(crate::config::workspace::is_workspace_dir_name)
+        .map(crate::config::ac_root::is_workspace_dir_name)
         .unwrap_or(false)
 }
 

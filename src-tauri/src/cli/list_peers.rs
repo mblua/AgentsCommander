@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 #[derive(Args)]
@@ -526,7 +526,7 @@ struct WgReplicaInfo {
 /// Detect if `root` is a WG replica: path matches `*/<project_ac_root>/wg-*/__agent_*/`.
 ///
 /// Thin wrapper over the shared walk-up in
-/// `config::workspace::wg_replica_layout_from_agent_dir` (single source with
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `send::derive_root_project_dir` and `mailbox::derive_project_from_outbox_path`,
 /// see #726). This caller keeps the project FOLDER NAME (`my_project`), the LHS
 /// of a WG replica's canonical FQN, rather than the full project path.
@@ -535,7 +535,7 @@ fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
         Ok(c) => c,
         Err(_) => return Ok(None),
     };
-    let Some(layout) = crate::config::workspace::wg_replica_layout_from_agent_dir(&canon)? else {
+    let Some(layout) = crate::config::ac_root::wg_replica_layout_from_agent_dir(&canon)? else {
         return Ok(None);
     };
     let Some(my_project) = layout

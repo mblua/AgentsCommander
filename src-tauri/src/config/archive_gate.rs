@@ -16,7 +16,7 @@ fn archived_root_for_cwd(cwd: &str, archived_roots: &[String]) -> Option<String>
 }
 
 fn probe_spawn_refusal_for_archived_root(root: &str) -> Result<(), String> {
-    if crate::config::workspace::has_workspace_dir(Path::new(root)) {
+    if crate::config::ac_root::has_workspace_dir(Path::new(root)) {
         return Ok(());
     }
     Err(format!(

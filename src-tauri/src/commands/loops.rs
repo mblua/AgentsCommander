@@ -12,7 +12,7 @@ use crate::config::loops::{
     LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
     LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
 use crate::loops::scheduler::LoopScheduler;

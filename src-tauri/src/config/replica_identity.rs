@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::config::workspace::{ensure_authoritative_workspace_dir, find_workspace_ancestor};
+use crate::config::ac_root::{ensure_authoritative_workspace_dir, find_workspace_ancestor};
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];

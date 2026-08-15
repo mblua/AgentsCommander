@@ -107,7 +107,7 @@ impl InternalSystemTarget {
                     e
                 )
             })?;
-        let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&canonical)?
+        let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&canonical)?
             .ok_or_else(|| {
                 format!(
                     "Internal system target replica '{}' is not a canonical workgroup replica",
@@ -750,7 +750,7 @@ fn validate_root_sender_payload_with_root_dir(
 /// Uses `to_str()` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. The shared
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
-/// `config::workspace::wg_replica_layout_from_agent_dir` (single source with
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
 /// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
@@ -771,7 +771,7 @@ fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>,
     let Some(agent_dir) = local_dir.parent() else {
         return Ok(None);
     };
-    match crate::config::workspace::wg_replica_layout_from_agent_dir(agent_dir)? {
+    match crate::config::ac_root::wg_replica_layout_from_agent_dir(agent_dir)? {
         Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
         None => Ok(None),
     }
@@ -10466,7 +10466,7 @@ impl MailboxPoller {
 
                     for dir in dirs_to_check {
                         let Some(workspace_dir) =
-                            crate::config::workspace::existing_workspace_dir(&dir)
+                            crate::config::ac_root::existing_workspace_dir(&dir)
                         else {
                             continue;
                         };

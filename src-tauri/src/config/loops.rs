@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 
 pub const LOOP_DIR_PREFIX: &str = "_loop_";
 pub const LOOP_CONFIG_FILE: &str = "config.toml";

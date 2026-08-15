@@ -18,7 +18,7 @@ use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
 };
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_workspace_dir;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionRepo, SessionStatus};

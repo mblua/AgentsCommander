@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::config::settings::{
     empty_profile_cell, normalize_profile_letter, AppSettings, ProfileCellConfig,
 };
-use crate::config::workspace::{
+use crate::config::ac_root::{
     ensure_authoritative_workspace_dir, is_workspace_dir_name, CANONICAL_WORKSPACE_DIR,
 };
 

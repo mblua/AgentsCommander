@@ -490,7 +490,7 @@ fn should_keep_clock_key(
         return true;
     };
     // Workspace dir missing/unreadable -> cannot confirm absence -> keep.
-    let Some(workspace) = crate::config::workspace::existing_workspace_dir(&resolved.path) else {
+    let Some(workspace) = crate::config::ac_root::existing_workspace_dir(&resolved.path) else {
         return true;
     };
     // Keep iff the workgroup dir still exists; prune only on CONFIRMED absence.

@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::config::replica_identity::{
     agent_bare_name_from_ref, read_and_repair_wg_replica_config, WG_REPLICA_REQUIRED_CONTEXT,
 };
-use crate::config::workspace::{existing_workspace_dir, find_workspace_segment, has_workspace_dir};
+use crate::config::ac_root::{existing_workspace_dir, find_workspace_segment, has_workspace_dir};
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
@@ -257,7 +257,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
 }
 
 fn strict_project_workspace(project: &Path) -> Result<Option<PathBuf>, String> {
-    let workspace = project.join(crate::config::workspace::CANONICAL_WORKSPACE_DIR);
+    let workspace = project.join(crate::config::ac_root::CANONICAL_WORKSPACE_DIR);
     if !workspace
         .try_exists()
         .map_err(|_| "unsafe_path".to_string())?
@@ -269,7 +269,7 @@ fn strict_project_workspace(project: &Path) -> Result<Option<PathBuf>, String> {
         .canonical_path
         .file_name()
         .and_then(|value| value.to_str())
-        != Some(crate::config::workspace::CANONICAL_WORKSPACE_DIR)
+        != Some(crate::config::ac_root::CANONICAL_WORKSPACE_DIR)
     {
         return Err("unsafe_path".to_string());
     }
@@ -931,7 +931,7 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
         if !is_replica {
             continue;
         }
-        return crate::config::workspace::wg_replica_layout_from_agent_dir(path)
+        return crate::config::ac_root::wg_replica_layout_from_agent_dir(path)
             .map(|layout| layout.map(|_| path.to_path_buf()));
     }
     Ok(None)
@@ -948,7 +948,7 @@ pub(crate) fn pty_input_create_gate_key_from_cwd(cwd: &Path) -> Result<Option<St
     let Some(replica_root) = strict_wg_replica_anchor_from_cwd(cwd)? else {
         return Ok(None);
     };
-    let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&replica_root)?
+    let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_root)?
         .ok_or_else(|| "target_create_gate_unavailable".to_string())?;
     let project = layout
         .project_dir
