@@ -206,6 +206,7 @@ export function settingsSnapshot(
   return {
     ...baseSettings(settingsOverrides),
     projectPathResolution: projectPathResolution(resolutionOverrides),
+    settingsFilePath: null,
   };
 }
 

@@ -5,8 +5,9 @@ declare module "*.png" {
   export default src;
 }
 
-/* #1167 - node:fs for static source guards ONLY (today: the one in
-   src/sidebar/styles/agent-badge-css.test.ts, which has to read real stylesheet
+/* #1167 - node:fs for static source guards ONLY (today: the ones in
+   src/sidebar/styles/agent-badge-css.test.ts and
+   src/sidebar/styles/coord-quick-access-css.test.ts, which have to read real stylesheet
    bytes because Vitest replaces every CSS module with `export default ""` unless
    test.css is enabled). @types/node is deliberately not a dependency of this
    frontend, so the single function that guard needs is declared here, next to the
