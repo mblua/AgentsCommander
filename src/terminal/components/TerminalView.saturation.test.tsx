@@ -680,7 +680,11 @@ describe("TerminalView saturation/admission (#1283)", () => {
       await flushMicrotasks();
       const activateCalls = fake.callsFor("activate_terminal_output");
       expect(activateCalls).toHaveLength(3); // A, B, then exactly one b2
-      expect(activateCalls[2].args).toEqual({ sessionId: SESSION_B });
+      // b2 runs on a rebuilt entry, so it may replay history again (#1355).
+      expect(activateCalls[2].args).toEqual({
+        sessionId: SESSION_B,
+        includeHistory: true,
+      });
 
       await flushMicrotasks();
       const b2 = instanceFor(SESSION_B);
@@ -734,6 +738,76 @@ describe("TerminalView saturation/admission (#1283)", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
       expect(instanceFor(SESSION_A).writes).toHaveLength(2);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1355 (plan 9.2 test 5) - the retained output ring may only be replayed
+  // into a terminal with nothing rendered yet; replaying it over an entry that
+  // already has content duplicates history cumulatively (plan 12.1). This ties
+  // `includeHistory` to `!entry.hasRenderedOutput` and would also catch an
+  // argument-name mismatch between ipc.ts and the Rust parameter (plan 15.4).
+  it("requests history only for a fresh terminal, never for a retained one", async () => {
+    const fake = new FakeTransport();
+    installProtocol(fake, [SESSION_A]);
+    currentFake = fake;
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await settleReal();
+      const terminal = instanceFor(SESSION_A);
+      await waitFor(() => expect(terminal.writes).toHaveLength(1)); // snapshot rendered
+
+      // Gap (firstSequence 8 != next 6): one recovery lane reactivates the SAME
+      // retained entry, which now has rendered output.
+      emitPtyOutput({
+        kind: "data",
+        sessionId: SESSION_A,
+        generation: "1",
+        firstSequence: "8",
+        sequence: "8",
+        data: [72],
+      });
+      await flushMicrotasks();
+      await flushMicrotasks();
+
+      const activateCalls = fake.callsFor("activate_terminal_output");
+      expect(activateCalls).toHaveLength(2);
+      expect(instanceFor(SESSION_A)).toBe(terminal); // same instance, not rebuilt
+      expect(activateCalls[0].args).toMatchObject({ includeHistory: true });
+      expect(activateCalls[1].args).toMatchObject({ includeHistory: false });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1355 (plan 9.2 test 6) - a 64 KiB replay lengthens the activation window,
+  // so a console switch must still cost exactly one activation and never feed
+  // an activate -> resync -> activate cycle.
+  it("issues exactly one activation per console switch", async () => {
+    const fake = new FakeTransport();
+    installProtocol(fake, [SESSION_A, SESSION_B]);
+    currentFake = fake;
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await settleReal();
+      await waitFor(() => expect(instanceFor(SESSION_A).writes).toHaveLength(1));
+      const activationsBefore = fake.callsFor("activate_terminal_output").length;
+
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instanceFor(SESSION_B).writes).toHaveLength(1));
+      await flushMicrotasks();
+      await flushMicrotasks();
+
+      expect(fake.callsFor("activate_terminal_output")).toHaveLength(
+        activationsBefore + 1,
+      );
+      expect(fake.lastCall("activate_terminal_output")?.args).toEqual({
+        sessionId: SESSION_B,
+        includeHistory: true,
+      });
     } finally {
       rendered.cleanup();
     }

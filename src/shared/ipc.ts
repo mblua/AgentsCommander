@@ -421,9 +421,17 @@ export function onPtyOutput(
  * control call through these wrappers; components never invoke Tauri directly.
  */
 export const TerminalOutputAPI = {
-  activate: (sessionId: string): Promise<TerminalOutputActivationResult> =>
+  // #1355 - `includeHistory` asks the backend to replay its retained output ring
+  // instead of the current viewport. Only a fresh xterm instance may request it:
+  // replaying the ring over a terminal that already has content duplicates
+  // history cumulatively (plan 12.1). Callers pass `!entry.hasRenderedOutput`.
+  activate: (
+    sessionId: string,
+    includeHistory: boolean
+  ): Promise<TerminalOutputActivationResult> =>
     transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
       sessionId,
+      includeHistory,
     }),
 
   ready: (
