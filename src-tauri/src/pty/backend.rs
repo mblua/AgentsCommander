@@ -272,7 +272,11 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     /// Terminal-output controls are deliberately defaulted so all existing test-only backends
     /// remain source-compatible. Only the two production adapters forward to their fanouts.
-    fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+    fn activate_terminal_output(
+        &self,
+        id: Uuid,
+        _include_history: bool,
+    ) -> TerminalOutputActivationResult {
         TerminalOutputActivationResult::recovery(
             id,
             crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,
