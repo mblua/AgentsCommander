@@ -871,6 +871,10 @@ export interface ProjectPathResolution {
  *  the structured resolution report. */
 export interface SettingsSnapshot extends AppSettings {
   projectPathResolution: ProjectPathResolution;
+  /** #1347 - absolute path of the instance settings.json this snapshot came
+   *  from, or null when the backend could not resolve its config dir. Read-only
+   *  metadata: it is never edited, never part of a save payload. */
+  settingsFilePath: string | null;
 }
 
 export interface UpdateInfo {

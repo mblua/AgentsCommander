@@ -63,14 +63,14 @@ function Get-1283ByteSha256 {
 function Initialize-1283LocalSessionProofModule {
     param(
         [Parameter(Mandatory)] [string]$Stage,
-        [string]$CanonicalWorkspaceRoot
+        [string]$CanonicalRepositoryRoot
     )
 
     if ($null -ne $script:ProofSupportModule) { return $script:ProofSupportModule }
-    if (-not [string]::IsNullOrWhiteSpace($CanonicalWorkspaceRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($CanonicalRepositoryRoot)) {
         # The proof-run harness copy imports the implemented PSM1 through the recorded
         # fully-qualified canonical path beneath the canonical repository root.
-        $Psm1Path = [System.IO.Path]::GetFullPath((Join-Path $CanonicalWorkspaceRoot 'scripts\1283-local-session-proof.psm1'))
+        $Psm1Path = [System.IO.Path]::GetFullPath((Join-Path $CanonicalRepositoryRoot 'scripts\1283-local-session-proof.psm1'))
     }
     else {
         $Psm1Path = Get-1283LocalSessionProofSiblingPath -FileName '1283-local-session-proof.psm1'
@@ -139,17 +139,17 @@ function Assert-1283CanonicalRootPreflight {
     if ([string]$OwnerRecord.proof_run_root -cne $RunRoot) {
         throw "$Stage owner record run root differs from the supplied run root"
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$OwnerRecord.canonical_workspace_root) -and
-        -not [System.IO.Directory]::Exists([string]$OwnerRecord.canonical_workspace_root)) {
-        throw "$Stage owner record canonical workspace root is absent"
+    if (-not [string]::IsNullOrWhiteSpace([string]$OwnerRecord.canonical_repository_root) -and
+        -not [System.IO.Directory]::Exists([string]$OwnerRecord.canonical_repository_root)) {
+        throw "$Stage owner record canonical repository root is absent"
     }
-    $OwnerRecord | Add-Member -NotePropertyName canonical_workspace_root -NotePropertyValue ([string]$OwnerRecord.canonical_workspace_root) -Force
+    $OwnerRecord | Add-Member -NotePropertyName canonical_repository_root -NotePropertyValue ([string]$OwnerRecord.canonical_repository_root) -Force
     return [pscustomobject][ordered]@{
         run_root = $RunRoot
         contract_sha256 = $ActualSha256
         owner_name = [string]$OwnerRecord.owner_name
         coordinator_pid = [int]$OwnerRecord.coordinator_pid
-        canonical_workspace_root = [string]$OwnerRecord.canonical_workspace_root
+        canonical_repository_root = [string]$OwnerRecord.canonical_repository_root
     }
 }
 
@@ -232,7 +232,7 @@ function Invoke-1283LocalSessionProofRole {
     )
 
     $Preflight = Assert-1283CanonicalRootPreflight -ProofRunRoot $ProofRunRoot -ProofContractPath $ProofContractPath -ProofContractSha256 $ProofContractSha256 -ProofOwnerPath $ProofOwnerPath -Stage "role-$Role"
-    $Module = Initialize-1283LocalSessionProofModule -Stage "role-$Role" -CanonicalWorkspaceRoot $Preflight.canonical_workspace_root
+    $Module = Initialize-1283LocalSessionProofModule -Stage "role-$Role" -CanonicalRepositoryRoot $Preflight.canonical_repository_root
     switch ($Role) {
         'Prepare' { throw 'Prepare is a coordinator-side role and never runs as a child role' }
         'Holder' { Invoke-1283LocalSessionProofHolder -Module $Module -Preflight $Preflight -ProofContractPath $ProofContractPath -ProofRunRoot $ProofRunRoot -ProofOwnerPath $ProofOwnerPath }
@@ -272,11 +272,11 @@ function Invoke-1283LocalSessionProofHolder {
 
     $ContractBytes = [System.IO.File]::ReadAllBytes($ProofContractPath)
     $Contract = ([System.Text.UTF8Encoding]::new($false, $true)).GetString($ContractBytes) | ConvertFrom-Json -Depth 8
-    $CanonicalWorkspaceRoot = [string]$Contract.canonical_workspace_root
+    $CanonicalRepositoryRoot = [string]$Contract.canonical_repository_root
 
-    # 1. Holder enters the exact workspace lease and records it.
-    $Lease = & $Module 'Enter-WorkspaceMutationLease' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Purpose '1283-local-proof-holder' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
-    $LeaseRecord = & $Module 'Assert-WorkspaceMutationLease' -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'holder-lease-held'
+    # 1. Holder enters the exact repository lease and records it.
+    $Lease = & $Module 'Enter-RepositoryMutationLease' -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Purpose '1283-local-proof-holder' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
+    $LeaseRecord = & $Module 'Assert-RepositoryMutationLease' -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'holder-lease-held'
     Write-1283CreateNewRecord -Path (Join-Path $ResultsDir 'holder-lease-held.json') -Record ([pscustomobject][ordered]@{
         lease_name = $LeaseRecord.lease_name
         principal_sid = $LeaseRecord.principal_sid
@@ -304,7 +304,7 @@ function Invoke-1283LocalSessionProofHolder {
         if ($LiveActiveCount -le 0) {
             throw 'holder fixture Job has no live member process'
         }
-        $Adapter = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -ContractSha256 $ProofContractSha256 -WorkspaceLease $Lease -Stage 'holder-adapter'
+        $Adapter = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalRepositoryRoot $CanonicalRepositoryRoot -ContractSha256 $ProofContractSha256 -RepositoryLease $Lease -Stage 'holder-adapter'
         & $Module 'Write-LocalProofFixtureHardStop' -Adapter $Adapter -ContractSha256 $ProofContractSha256 -JobName $FixtureJobName -ChildPid ([string]$FixtureChildPid) -Stage 'holder-hard-stop' | Out-Null
         Write-1283CreateNewRecord -Path (Join-Path $ResultsDir 'holder-fixture-job-identity.json') -Record ([pscustomobject][ordered]@{
             job_name = $FixtureJobName
@@ -316,7 +316,7 @@ function Invoke-1283LocalSessionProofHolder {
         }) -Stage 'holder-fixture-job-identity'
     }
     catch {
-        try { & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'holder-failure-lease-exit' | Out-Null } catch { }
+        try { & $Module 'Exit-RepositoryMutationLease' -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'holder-failure-lease-exit' | Out-Null } catch { }
         try { & $Module 'Close-LocalProofFixtureChildHandles' -Stage 'holder-failure-child-handles' | Out-Null } catch { }
         if ($FixtureChildPid -gt 0) { try { Stop-Process -Id $FixtureChildPid -Force -ErrorAction SilentlyContinue } catch { } }
         throw
@@ -325,7 +325,7 @@ function Invoke-1283LocalSessionProofHolder {
     # 3. Holder KEEPS the lease held (fixture Job and child stay live) until Contender
     #    has observed the contention timeout, then releases while the Job stays live.
     Wait-1283CreateNewBarrier -Path (Join-Path $ResultsDir 'contender-contention-observed.json') -TimeoutSeconds 30 -Stage 'holder-wait-contention-observed'
-    & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'holder-state-live-released' | Out-Null
+    & $Module 'Exit-RepositoryMutationLease' -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'holder-state-live-released' | Out-Null
     Write-1283CreateNewRecord -Path (Join-Path $ResultsDir 'holder-state-live-released.json') -Record ([pscustomobject][ordered]@{
         job_name = $FixtureJobName
         child_pid = [string]$FixtureChildPid
@@ -336,7 +336,7 @@ function Invoke-1283LocalSessionProofHolder {
     #    for Contender's live-Job observation, then reacquires, terminates its own Job,
     #    waits for zero active processes and child exit, and closes its owned handles.
     Wait-1283CreateNewBarrier -Path (Join-Path $ResultsDir 'contender-live-job-blocked.json') -TimeoutSeconds 30 -Stage 'holder-wait-live-job-blocked'
-    $Lease2 = & $Module 'Enter-WorkspaceMutationLease' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Purpose '1283-local-proof-holder-reacquire' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
+    $Lease2 = & $Module 'Enter-RepositoryMutationLease' -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Purpose '1283-local-proof-holder-reacquire' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
     try {
         [AgentsCommander.Review1283.ProofJobInterop]::TerminateJob($FixtureJobName) | Out-Null
         try { Stop-Process -Id $FixtureChildPid -Force -ErrorAction SilentlyContinue } catch { }
@@ -357,7 +357,7 @@ function Invoke-1283LocalSessionProofHolder {
         }) -Stage 'holder-job-terminated'
     }
     finally {
-        try { & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease2 -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'holder-final-lease-exit' | Out-Null } catch { }
+        try { & $Module 'Exit-RepositoryMutationLease' -Lease $Lease2 -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'holder-final-lease-exit' | Out-Null } catch { }
     }
 }
 
@@ -392,13 +392,13 @@ function Invoke-1283LocalSessionProofContender {
 
     $ContractBytes = [System.IO.File]::ReadAllBytes($ProofContractPath)
     $Contract = ([System.Text.UTF8Encoding]::new($false, $true)).GetString($ContractBytes) | ConvertFrom-Json -Depth 8
-    $CanonicalWorkspaceRoot = [string]$Contract.canonical_workspace_root
+    $CanonicalRepositoryRoot = [string]$Contract.canonical_repository_root
 
     # 2. Contender contends for the same lease with the contract's five-second timeout.
     $ContentionStart = [DateTime]::UtcNow
     $ContentionError = $null
     try {
-        $Lease = & $Module 'Enter-WorkspaceMutationLease' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Purpose '1283-local-proof-contender' -AcquireTimeout ([TimeSpan]::FromSeconds(5))
+        $Lease = & $Module 'Enter-RepositoryMutationLease' -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Purpose '1283-local-proof-contender' -AcquireTimeout ([TimeSpan]::FromSeconds(5))
         $Acquired = $true
     }
     catch {
@@ -407,10 +407,10 @@ function Invoke-1283LocalSessionProofContender {
     }
     $ContentionElapsed = ([DateTime]::UtcNow - $ContentionStart).TotalMilliseconds
     if ($Acquired) {
-        & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'contender-unexpected-acquire-exit' | Out-Null
+        & $Module 'Exit-RepositoryMutationLease' -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'contender-unexpected-acquire-exit' | Out-Null
         throw "contender acquired the held lease; expected contention timeout"
     }
-    if ($ContentionError -notmatch 'Timed out acquiring workspace lease') {
+    if ($ContentionError -notmatch 'Timed out acquiring repository lease') {
         throw "contender did not time out cleanly: $ContentionError"
     }
     Write-1283CreateNewRecord -Path (Join-Path $ResultsDir 'contender-contention-observed.json') -Record ([pscustomobject][ordered]@{
@@ -422,11 +422,11 @@ function Invoke-1283LocalSessionProofContender {
     # 3. After holder releases, contender acquires, opens the exact recorded fixture Job
     #    and must observe the live-Job hard block.
     Wait-1283CreateNewBarrier -Path (Join-Path $ResultsDir 'holder-state-live-released.json') -TimeoutSeconds 30 -Stage 'contender-wait-live-released'
-    $Lease2 = & $Module 'Enter-WorkspaceMutationLease' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Purpose '1283-local-proof-contender-live-job' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
+    $Lease2 = & $Module 'Enter-RepositoryMutationLease' -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Purpose '1283-local-proof-contender-live-job' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
     try {
         $FixtureBytes = [System.IO.File]::ReadAllBytes((Join-Path $ResultsDir 'holder-fixture-job-identity.json'))
         $FixtureRecord = ([System.Text.UTF8Encoding]::new($false, $true)).GetString($FixtureBytes) | ConvertFrom-Json -Depth 8
-        $Adapter = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -ContractSha256 $ProofContractSha256 -WorkspaceLease $Lease2 -Stage 'contender-adapter'
+        $Adapter = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalRepositoryRoot $CanonicalRepositoryRoot -ContractSha256 $ProofContractSha256 -RepositoryLease $Lease2 -Stage 'contender-adapter'
         $Clearance = & $Module 'Confirm-LocalProofFixtureHardStopCleared' -Adapter $Adapter -ContractSha256 $ProofContractSha256 -Stage 'contender-live-job-blocked'
         if ($Clearance.state -cne 'live-job-blocked') {
             throw "contender received unexpected clearance state: $($Clearance.state)"
@@ -439,15 +439,15 @@ function Invoke-1283LocalSessionProofContender {
         }) -Stage 'contender-live-job-blocked'
     }
     finally {
-        & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease2 -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'contender-live-job-lease-exit' | Out-Null
+        & $Module 'Exit-RepositoryMutationLease' -Lease $Lease2 -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'contender-live-job-lease-exit' | Out-Null
     }
 
     # 5. After holder terminates its Job, contender reacquires and observes the cleared
     #    transition through the adapter.
     Wait-1283CreateNewBarrier -Path (Join-Path $ResultsDir 'holder-job-terminated.json') -TimeoutSeconds 30 -Stage 'contender-wait-job-terminated'
-    $Lease3 = & $Module 'Enter-WorkspaceMutationLease' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Purpose '1283-local-proof-contender-clearance' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
+    $Lease3 = & $Module 'Enter-RepositoryMutationLease' -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Purpose '1283-local-proof-contender-clearance' -AcquireTimeout ([TimeSpan]::FromSeconds(30))
     try {
-        $Adapter3 = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -ContractSha256 $ProofContractSha256 -WorkspaceLease $Lease3 -Stage 'contender-clearance-adapter'
+        $Adapter3 = & $Module 'New-LocalProofFixtureStateAdapter' -ProofRunRoot $ProofRunRoot -CanonicalRepositoryRoot $CanonicalRepositoryRoot -ContractSha256 $ProofContractSha256 -RepositoryLease $Lease3 -Stage 'contender-clearance-adapter'
         $Cleared = & $Module 'Confirm-LocalProofFixtureHardStopCleared' -Adapter $Adapter3 -ContractSha256 $ProofContractSha256 -Stage 'contender-clearance'
         if ($Cleared.state -cne 'cleared') {
             throw "contender did not observe the cleared transition: $($Cleared.state)"
@@ -460,7 +460,7 @@ function Invoke-1283LocalSessionProofContender {
         }) -Stage 'contender-clearance-observed'
     }
     finally {
-        & $Module 'Exit-WorkspaceMutationLease' -Lease $Lease3 -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage 'contender-clearance-lease-exit' | Out-Null
+        & $Module 'Exit-RepositoryMutationLease' -Lease $Lease3 -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage 'contender-clearance-lease-exit' | Out-Null
     }
 }
 
@@ -527,14 +527,14 @@ function Get-1283ProtectedCurrentUserAcl {
 
 function Invoke-1283LocalSessionProofPrepare {
     param(
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$DraftPlanSha256,
         [Parameter(Mandatory)] [string]$ProofRunRoot,
         [Parameter(Mandatory)] [string]$ProofScratchOwner,
         [Parameter(Mandatory)] [string]$ProofId
     )
 
-    $Module = Initialize-1283LocalSessionProofModule -Stage 'prepare' -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+    $Module = Initialize-1283LocalSessionProofModule -Stage 'prepare' -CanonicalRepositoryRoot $CanonicalRepositoryRoot
     if ([System.IO.Directory]::Exists($ProofRunRoot)) {
         throw 'proof scratch run root already exists and cannot be adopted'
     }
@@ -570,7 +570,7 @@ function Invoke-1283LocalSessionProofPrepare {
         proof_id = $ProofId
         proof_run_root = $ProofRunRoot
         owner_name = $ProofScratchOwner
-        canonical_workspace_root = $CanonicalWorkspaceRoot
+        canonical_repository_root = $CanonicalRepositoryRoot
         coordinator_pid = $PID
         coordinator_process_creation_filetime = (Get-1283ProcessCreationFileTime -ProcessId $PID -Stage 'prepare-owner-creation')
         sid_hash = $SidHash
@@ -581,8 +581,8 @@ function Invoke-1283LocalSessionProofPrepare {
     Write-1283CreateNewRecord -Path (Join-Path $ProofRunRoot 'owner.json') -Record $OwnerRecord -Stage 'prepare-owner'
 
     $ContractRecord = [pscustomobject][ordered]@{
-        canonical_workspace_root = $CanonicalWorkspaceRoot
-        canonical_plan_path = (Join-Path $CanonicalWorkspaceRoot 'plans/1283-prevent-terminal-renderer-saturation.md')
+        canonical_repository_root = $CanonicalRepositoryRoot
+        canonical_plan_path = (Join-Path $CanonicalRepositoryRoot 'plans/1283-prevent-terminal-renderer-saturation.md')
         draft_plan_sha256 = $DraftPlanSha256
         proof_id = $ProofId
         proof_run_root = $ProofRunRoot
@@ -656,7 +656,7 @@ function Invoke-1283LocalSessionProofHarness {
 
     switch ($Role) {
         'Prepare' {
-            throw 'Prepare is invoked by the coordinator-side Prepare dispatcher with the canonical workspace identity; it never runs as a child role'
+            throw 'Prepare is invoked by the coordinator-side Prepare dispatcher with the canonical repository identity; it never runs as a child role'
         }
         'Holder' { Invoke-1283LocalSessionProofRole -Role Holder -ProofContractPath $ProofContractPath -ProofContractSha256 $ProofContractSha256 -ProofRunRoot $ProofRunRoot -ProofOwnerPath $ProofOwnerPath }
         'Contender' { Invoke-1283LocalSessionProofRole -Role Contender -ProofContractPath $ProofContractPath -ProofContractSha256 $ProofContractSha256 -ProofRunRoot $ProofRunRoot -ProofOwnerPath $ProofOwnerPath }
@@ -673,7 +673,7 @@ $ParamProofContractPath = $null
 $ParamProofContractSha256 = $null
 $ParamProofRunRoot = $null
 $ParamProofOwnerPath = $null
-$ParamCanonicalWorkspaceRoot = $null
+$ParamCanonicalRepositoryRoot = $null
 $ParamDraftPlanSha256 = $null
 $ParamProofId = $null
 $ParamProofScratchOwner = $null
@@ -684,7 +684,7 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
         '^-ProofContractSha256$' { $ParamProofContractSha256 = $args[++$Index] }
         '^-ProofRunRoot$' { $ParamProofRunRoot = $args[++$Index] }
         '^-ProofOwnerPath$' { $ParamProofOwnerPath = $args[++$Index] }
-        '^-CanonicalWorkspaceRoot$' { $ParamCanonicalWorkspaceRoot = $args[++$Index] }
+        '^-CanonicalRepositoryRoot$' { $ParamCanonicalRepositoryRoot = $args[++$Index] }
         '^-DraftPlanSha256$' { $ParamDraftPlanSha256 = $args[++$Index] }
         '^-ProofId$' { $ParamProofId = $args[++$Index] }
         '^-ProofScratchOwner$' { $ParamProofScratchOwner = $args[++$Index] }
@@ -692,7 +692,7 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     }
 }
 if ($ParamRole -eq 'Prepare') {
-    Invoke-1283LocalSessionProofPrepare -CanonicalWorkspaceRoot $ParamCanonicalWorkspaceRoot -DraftPlanSha256 $ParamDraftPlanSha256 -ProofRunRoot $ParamProofRunRoot -ProofScratchOwner $ParamProofScratchOwner -ProofId $ParamProofId
+    Invoke-1283LocalSessionProofPrepare -CanonicalRepositoryRoot $ParamCanonicalRepositoryRoot -DraftPlanSha256 $ParamDraftPlanSha256 -ProofRunRoot $ParamProofRunRoot -ProofScratchOwner $ParamProofScratchOwner -ProofId $ParamProofId
 }
 elseif ($ParamRole -in @('Holder', 'Contender', 'CoordinatorCleanup')) {
     Invoke-1283LocalSessionProofHarness -Role $ParamRole -ProofContractPath $ParamProofContractPath -ProofContractSha256 $ParamProofContractSha256 -ProofRunRoot $ParamProofRunRoot -ProofOwnerPath $ParamProofOwnerPath

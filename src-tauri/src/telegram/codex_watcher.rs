@@ -16,10 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
 use crate::network::OutboundNetwork;
-use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
 };
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 /// Buffer thresholds tuned for Codex's commentary cadence.
 /// `event_msg + agent_message` events average 200-400 B and arrive 3-8 per

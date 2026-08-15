@@ -1,4 +1,8 @@
-//! Structured dependency guard for the Claude watcher output seam.
+//! Structured dependency guard for the Telegram output seam.
+//!
+//! `telegram::output` is the single owner of the output/logging cluster, sitting
+//! below its four consumers (`telegram::bridge` and the Claude, Codex and Gemini
+//! watchers), which import from it directly with no intermediate re-export.
 //!
 //! The guard parses Rust syntax and records canonical internal module dependencies.
 //! Later hardening stages extend the same engine with compiler-faithful module-tree
@@ -34,8 +38,8 @@ use syn::{
 const CRATE_ID: &str = "agentscommander_lib";
 const TARGET_MODULE: &str = "agentscommander_lib::telegram::claude_watcher";
 const TARGET_ROOT_SOURCE: &str = "src/telegram/claude_watcher.rs";
-const OUTPUT_MODULE: &str = "agentscommander_lib::telegram::claude_watcher::output";
-const OUTPUT_SOURCE: &str = "src/telegram/claude_watcher/output.rs";
+const OUTPUT_MODULE: &str = "agentscommander_lib::telegram::output";
+const OUTPUT_SOURCE: &str = "src/telegram/output.rs";
 const FOCUSED_RERUN: &str = "cargo test --test claude_watcher_layering -- --nocapture";
 const AUTHORITATIVE_TOPOLOGY: &str = "rust-module-dependency-cycles 1.1.0";
 const SCOPE_TEXT: &str = "SCOPE: this guard is a syntax and compiler module-tree regression net. 1. Macro/proc-macro expansion and include! tokens are not performed. 2. Trait, generic, and receiver dispatch without a syntactic path is not type-resolved. 3. Generated source without a literal mod declaration is outside traversal. 4. Identity available only through an outside re-export chain can exceed the local alias resolver.";
@@ -1253,6 +1257,17 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
             TARGET_ROOT_SOURCE,
             "agentscommander_lib::telegram::jsonl_kernel",
         ),
+    ]
+    .into_iter()
+    .map(|(source, module)| DependencyObservation {
+        source: source.to_owned(),
+        module: module.to_owned(),
+    })
+    .collect()
+}
+
+fn expected_output_dependencies() -> BTreeSet<DependencyObservation> {
+    [
         (OUTPUT_SOURCE, "agentscommander_lib::config"),
         (OUTPUT_SOURCE, "agentscommander_lib::network"),
         (OUTPUT_SOURCE, "agentscommander_lib::telegram::api"),
@@ -1527,6 +1542,7 @@ enum RequiredVisibility {
     Private,
     Crate,
     Super,
+    Public,
 }
 
 fn restricted_visibility_parts(visibility: &Visibility) -> Option<(bool, Vec<String>)> {
@@ -1571,6 +1587,7 @@ fn require_visibility(
             .is_some_and(|(has_in, path)| !has_in && path.len() == 1 && path[0] == "crate"),
         RequiredVisibility::Super => restricted_visibility_parts(visibility)
             .is_some_and(|(has_in, path)| !has_in && path.len() == 1 && path[0] == "super"),
+        RequiredVisibility::Public => matches!(visibility, Visibility::Public(_)),
     };
     if matches {
         return Ok(());
@@ -1581,11 +1598,12 @@ fn require_visibility(
         RequiredVisibility::Private => "private",
         RequiredVisibility::Crate => "pub(crate) with absent in_token",
         RequiredVisibility::Super => "pub(super) with absent in_token",
+        RequiredVisibility::Public => "pub",
     };
     let evidence = if observed == "pub(in crate)" {
         "; measured detector 1.1.0 variant is graph-neutral, but it violates the canonical in_token.is_none() contract"
     } else if observed == "pub(in crate::telegram)" {
-        "; external live detector 1.1.0 evidence records claude_watcher::output -> telegram for this spelling"
+        "; external live detector 1.1.0 evidence records telegram::output -> telegram for this spelling"
     } else {
         ""
     };
@@ -1666,34 +1684,41 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
             _ => None,
         })
         .collect::<Vec<_>>();
-    if output_declarations.len() != 1 || output_declarations[0].content.is_some() {
+    if !output_declarations.is_empty() {
         return Err(GuardError::new(
             "output module declaration",
             format!(
-                "expected one out-of-line output declaration in {TARGET_ROOT_SOURCE}, got {}",
+                "claude_watcher.rs declares output; the module must live under telegram (got {} declarations in {TARGET_ROOT_SOURCE})",
                 output_declarations.len()
             ),
         ));
     }
-    require_visibility(
-        &output_declarations[0].vis,
-        RequiredVisibility::Super,
-        "claude_watcher::output module",
-    )?;
 
     let telegram_output_declarations = index
         .bodies
         .iter()
         .filter(|body| body.module_id == "agentscommander_lib::telegram")
         .flat_map(|body| &body.items)
-        .filter(|item| matches!(item, Item::Mod(item_mod) if unraw(&item_mod.ident) == "output"))
-        .count();
-    if telegram_output_declarations != 0 {
+        .filter_map(|item| match item {
+            Item::Mod(item_mod) if unraw(&item_mod.ident) == "output" => Some(item_mod),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if telegram_output_declarations.len() != 1 || telegram_output_declarations[0].content.is_some()
+    {
         return Err(GuardError::new(
             "output module ownership",
-            "telegram/mod.rs declares output; the module must remain nested under Claude",
+            format!(
+                "telegram/mod.rs must declare exactly one out-of-line output module, got {}",
+                telegram_output_declarations.len()
+            ),
         ));
     }
+    require_visibility(
+        &telegram_output_declarations[0].vis,
+        RequiredVisibility::Public,
+        "telegram::output module",
+    )?;
 
     let mut interface = BTreeSet::new();
     let aliases = module_item_aliases(output_body, crate_id, &index.declared_modules);
@@ -1811,50 +1836,67 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
             _ => None,
         })
         .collect::<Vec<_>>();
-    let facade = bridge_uses
+    let bridge_import = bridge_uses
         .iter()
         .copied()
         .filter(|item_use| {
             exact_use_leaf_set(
                 item_use,
-                &["super", "claude_watcher", "output"],
-                &["flush_buffer", "BridgeLogger", "DiagLogger"],
+                &["crate", "telegram", "output"],
+                &[
+                    "flush_buffer",
+                    "BridgeLogger",
+                    "DiagLogger",
+                    "TelegramErrKind",
+                ],
             )
         })
         .collect::<Vec<_>>();
-    if facade.len() != 1 {
+    if bridge_import.len() != 1 {
         return Err(GuardError::new(
-            "bridge compatibility facade",
-            format!("expected one exact three-item facade, got {}", facade.len()),
+            "bridge direct output import",
+            format!(
+                "expected one exact four-item import, got {}",
+                bridge_import.len()
+            ),
         ));
     }
     require_visibility(
-        &facade[0].vis,
-        RequiredVisibility::Super,
-        "bridge output compatibility facade",
-    )?;
-    let enum_import = bridge_uses
-        .iter()
-        .copied()
-        .filter(|item_use| {
-            exact_use_leaf_set(
-                item_use,
-                &["super", "claude_watcher", "output"],
-                &["TelegramErrKind"],
-            )
-        })
-        .collect::<Vec<_>>();
-    if enum_import.len() != 1 {
-        return Err(GuardError::new(
-            "bridge private error import",
-            format!("expected one direct enum import, got {}", enum_import.len()),
-        ));
-    }
-    require_visibility(
-        &enum_import[0].vis,
+        &bridge_import[0].vis,
         RequiredVisibility::Private,
-        "bridge TelegramErrKind import",
+        "bridge output import",
     )?;
+
+    // Zero re-exports from bridge: any `use` whose visibility is not inherited and
+    // that exposes one of the four cluster names, the `output` module itself, or a
+    // glob. Written over raw leaves on purpose — `exact_use_leaf_set` requires an
+    // exact-size leaf set, so mirroring the old facade check with four names would
+    // never match the real three-name re-export and would pass vacuously.
+    let leaked = bridge_uses
+        .iter()
+        .copied()
+        .filter(|item_use| !matches!(item_use.vis, Visibility::Inherited))
+        .filter(|item_use| {
+            use_leaves(item_use).iter().any(|leaf| {
+                leaf.glob
+                    || leaf.path.iter().any(|segment| segment == "output")
+                    || leaf.path.last().is_some_and(|last| {
+                        matches!(
+                            last.as_str(),
+                            "flush_buffer" | "BridgeLogger" | "DiagLogger" | "TelegramErrKind"
+                        )
+                    })
+            })
+        })
+        .count();
+    if leaked != 0 {
+        return Err(GuardError::new(
+            "bridge re-export forbidden",
+            format!(
+                "bridge must not re-export the output cluster; got {leaked} re-exporting use items"
+            ),
+        ));
+    }
 
     let claude_import = target_body
         .items
@@ -1863,7 +1905,7 @@ fn verify_exact_interface(index: &ModuleIndex, crate_id: &str) -> Result<(), Gua
             Item::Use(item_use)
                 if exact_use_leaf_set(
                     item_use,
-                    &["self", "output"],
+                    &["crate", "telegram", "output"],
                     &["flush_buffer", "BridgeLogger", "DiagLogger"],
                 ) =>
             {
@@ -1915,10 +1957,29 @@ fn require_exact_source_set(
 }
 
 fn require_exact_production_report(report: &GuardReport) -> Result<(), GuardError> {
-    let expected_sources = [TARGET_ROOT_SOURCE.to_owned(), OUTPUT_SOURCE.to_owned()]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let expected_dependencies = expected_dependencies();
+    require_exact_report(
+        report,
+        [TARGET_ROOT_SOURCE.to_owned()].into_iter().collect(),
+        expected_dependencies(),
+        "Claude watcher dependency and source sets",
+    )
+}
+
+fn require_exact_output_report(report: &GuardReport) -> Result<(), GuardError> {
+    require_exact_report(
+        report,
+        [OUTPUT_SOURCE.to_owned()].into_iter().collect(),
+        expected_output_dependencies(),
+        "Telegram output dependency and source sets",
+    )
+}
+
+fn require_exact_report(
+    report: &GuardReport,
+    expected_sources: BTreeSet<String>,
+    expected_dependencies: BTreeSet<DependencyObservation>,
+    contract_label: &'static str,
+) -> Result<(), GuardError> {
     let missing_sources = expected_sources
         .difference(&report.sources)
         .cloned()
@@ -1945,7 +2006,7 @@ fn require_exact_production_report(report: &GuardReport) -> Result<(), GuardErro
         return Ok(());
     }
     Err(GuardError::new(
-        "Claude watcher dependency and source sets",
+        contract_label,
         format!(
             "missing expected source rows: {missing_sources:?}; unexpected observed source rows: {unexpected_sources:?}; missing expected dependency rows: {missing_dependencies:?}; unexpected observed dependency rows: {unexpected_dependencies:?}"
         ),
@@ -2474,6 +2535,89 @@ fn production_interface_is_exactly_telegram_internal_and_canonical() {
         .unwrap_or_else(|error| panic!("exact interface proof failed: {error}"));
 }
 
+#[test]
+fn production_output_module_owns_the_seam_alone() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build");
+    let report = analyze_module_index(&index, CRATE_ID, OUTPUT_MODULE)
+        .unwrap_or_else(|error| panic!("output guard analysis failed:\n{error}"));
+    require_exact_output_report(&report)
+        .unwrap_or_else(|error| panic!("output guard failed:\n{error}"));
+}
+
+#[test]
+fn production_codex_and_gemini_reach_output_without_bridge() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build");
+    // Both watchers keep their `use super::*;` inside a `#[cfg(test)] mod`, which
+    // `index_body` skips, so no glob reaches `build_scope`. Lifting one to the top
+    // level would abort this analysis with "glob import forbidden".
+    for module in [
+        "agentscommander_lib::telegram::codex_watcher",
+        "agentscommander_lib::telegram::gemini_watcher",
+    ] {
+        let report = analyze_module_index(&index, CRATE_ID, module)
+            .unwrap_or_else(|error| panic!("{module} guard analysis failed:\n{error}"));
+        assert!(
+            report
+                .dependencies
+                .iter()
+                .any(|row| row.module == OUTPUT_MODULE),
+            "{module} must depend on {OUTPUT_MODULE} directly; observed {:?}",
+            report.dependencies
+        );
+        assert!(
+            report
+                .dependencies
+                .iter()
+                .all(|row| row.module != "agentscommander_lib::telegram::bridge"),
+            "{module} must not route through bridge; observed {:?}",
+            report.dependencies
+        );
+    }
+}
+
+#[test]
+fn production_every_telegram_source_is_reachable_from_the_module_tree() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
+        .expect("production module index should build");
+    let indexed = index
+        .bodies
+        .iter()
+        .map(|body| body.relative_source.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut on_disk = BTreeSet::new();
+    let mut pending = vec![(manifest.join("src/telegram"), "src/telegram".to_owned())];
+    while let Some((directory, prefix)) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap_or_else(|error| {
+            panic!(
+                "telegram source directory {} should read: {error}",
+                directory.display()
+            )
+        }) {
+            let entry = entry.expect("telegram directory entry should read");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rendered = format!("{prefix}/{name}");
+            if entry.path().is_dir() {
+                pending.push((entry.path(), rendered));
+            } else if name.ends_with(".rs") {
+                on_disk.insert(rendered);
+            }
+        }
+    }
+    assert!(!on_disk.is_empty(), "telegram subtree must contain sources");
+
+    let unreachable = on_disk.difference(&indexed).cloned().collect::<Vec<_>>();
+    assert!(
+        unreachable.is_empty(),
+        "every .rs under src/telegram/ must be declared by some mod; unreachable: {unreachable:?}"
+    );
+}
+
 fn parsed_struct_visibility(prefix: &str) -> Visibility {
     let source = if prefix.is_empty() {
         "struct Item;".to_owned()
@@ -2569,7 +2713,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     duplicate.write("src/lib.rs", "mod telegram;\n");
     duplicate.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { #[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; } }\n",
+        "pub mod claude_watcher {}\n#[cfg(unix)] pub mod output { pub struct BridgeLogger; } #[cfg(windows)] pub mod output { pub struct BridgeLogger; }\n",
     );
     let duplicate_index = duplicate
         .index_as(CRATE_ID)
@@ -2584,7 +2728,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     misplaced.write("src/lib.rs", "mod telegram;\n");
     misplaced.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { pub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } } } pub mod bridge { impl crate::telegram::claude_watcher::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
+        "pub mod claude_watcher {}\npub mod output { pub struct BridgeLogger; impl BridgeLogger { pub fn new() -> Self { Self } pub fn log(&mut self) {} } }\npub mod bridge { impl crate::telegram::output::BridgeLogger { pub fn log(&mut self) {} } }\n",
     );
     let misplaced_index = misplaced
         .index_as(CRATE_ID)
@@ -2605,7 +2749,7 @@ fn moved_symbol_map_preserves_duplicates_locations_and_rejects_local_substitutes
     local.write("src/lib.rs", "mod telegram;\n");
     local.write(
         "src/telegram.rs",
-        "pub mod claude_watcher { pub mod output { fn wrapper() { struct BridgeLogger; } } }\n",
+        "pub mod claude_watcher {}\npub mod output { fn wrapper() { struct BridgeLogger; } }\n",
     );
     let local_index = local
         .index_as(CRATE_ID)

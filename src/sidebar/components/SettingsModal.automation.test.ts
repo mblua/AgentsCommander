@@ -169,6 +169,7 @@ function settings(overrides: Partial<AppSettings> = {}): SettingsSnapshot {
       issues: [],
       reconciliationError: null,
     },
+    settingsFilePath: null,
   };
 }
 
