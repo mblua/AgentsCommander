@@ -1869,8 +1869,10 @@ impl SessionIoFanout {
                         // may only grow once `output_sequence` has advanced: on overflow the
                         // line above returns `Err` and the parser goes `Unavailable`, and a
                         // ring that grew anyway would make the activation payload carry bytes
-                        // that `sequence` does not represent. The frontend acks by watermark,
-                        // so it would ack them without writing and drop live output silently.
+                        // that `sequence` does not represent. The frontend acks by watermark
+                        // and only skips what is at or below the snapshot sequence, so those
+                        // bytes would be replayed and then written again when they arrive
+                        // live: a duplicated block of history.
                         append_history(&mut state.history, &data);
                         Ok::<u64, ()>(sequence)
                     });
@@ -3593,15 +3595,21 @@ mod tests {
     /// The oversized chunk covers the one case where the trim arithmetic gets written as a
     /// plain subtraction. That panic would not be local: the caller flips the parser to
     /// `Unavailable`, which leaves the console dead for the rest of the process.
+    ///
+    /// The line length is load bearing and must stay a non divisor of the limit. With lines
+    /// of 128 bytes against a 65 536 byte ceiling the space trim lands on a line boundary by
+    /// arithmetic alone, so the front assert passes just as happily with the line-boundary
+    /// trim deleted: verified by mutation, both variants passed.
     #[test]
     fn history_ring_is_bounded_and_line_aligned() {
         let fanout = fanout();
         let id = session(&fanout);
-        let mut line = vec![b'-'; 128];
+        let mut line = [b'-'; 100];
         line[0] = b'>';
-        line[127] = b'\n';
-        for _ in 0..1_024 {
-            feed(&fanout, id, &[&line]);
+        line[99] = b'\n';
+        let chunk: Vec<u8> = line.repeat(3);
+        for _ in 0..512 {
+            feed(&fanout, id, &[&chunk]);
         }
         {
             let parsers = fanout.screen_parsers.lock().expect("parser state");
