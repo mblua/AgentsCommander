@@ -2239,4 +2239,143 @@ describe("SettingsModal automation hooks", () => {
 
     dispose();
   });
+
+  it("renders the Auto-update dropdown under Command with default No and the shared-command note", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const select = byTestId<HTMLSelectElement>("settings.agentRow.0.autoUpdate");
+    // absent map entry -> default No, and nothing is written until the user changes it
+    expect(select.value).toBe("no");
+    expect(select.querySelector('option[value="yes"]')).toBeTruthy();
+    expect(select.querySelector('option[value="no"]')).toBeTruthy();
+    expect(byTestId("settings.agentRow.0.autoUpdate.note").textContent).toContain(
+      "Applies to every Coding Agent using this command.",
+    );
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    // untouched absent key stays absent: first-time prompt behavior unchanged
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agentAutoUpdateByCommand).toEqual({});
+
+    dispose();
+  });
+
+  it("round-trips the Auto-update dropdown through save: Yes writes true, No writes false (key retained)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const select = byTestId<HTMLSelectElement>("settings.agentRow.0.autoUpdate");
+    select.value = "yes";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    let saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agentAutoUpdateByCommand).toEqual({ codex: true });
+
+    select.value = "no";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[1]?.[0];
+    // false is the stable "off": the key is written, never deleted (deleting it
+    // would resurrect the first-time prompt, absent = never asked, #1327).
+    expect(saved?.agentAutoUpdateByCommand).toEqual({ codex: false });
+
+    dispose();
+  });
+
+  it("shows No for a previously answered No and lets the user flip it to Yes", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agentAutoUpdateByCommand: { codex: false }, // #1327 prompt answered No
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const select = byTestId<HTMLSelectElement>("settings.agentRow.0.autoUpdate");
+    expect(select.value).toBe("no");
+    select.value = "yes";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agentAutoUpdateByCommand).toEqual({ codex: true });
+
+    dispose();
+  });
+
+  it("disables Auto-update until a command is set and shares the value across agents using the same command", async () => {
+    vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
+      agents: [
+        { id: "blank", label: "Blank", command: "", color: "#10b981", envs: [], isolatedHome: false },
+        { id: "codex-a", label: "Codex A", command: "codex", color: "#10b981", envs: [], isolatedHome: false },
+        { id: "codex-b", label: "Codex B", command: "codex", color: "#d97706", envs: [], isolatedHome: false },
+      ],
+    }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    // no command yet: writing an empty-string key would be junk, so it is disabled
+    expect(byTestId<HTMLSelectElement>("settings.agentRow.0.autoUpdate").disabled).toBe(true);
+
+    // two agents share "codex": both selects read the SAME map entry. Row
+    // expansion is single-exclusive (one activeAgentId, SettingsModal.tsx:990,
+    // :2611), so the shared entry is verified sequentially: expand row 1, read
+    // its select ("no") and flip it to Yes, then expand row 2 (row 1 collapses)
+    // and read the same shared entry through row 2's select ("yes").
+    expandAgentRow(1);
+    await settle();
+    const a = byTestId<HTMLSelectElement>("settings.agentRow.1.autoUpdate");
+    expect(a.value).toBe("no");
+    a.value = "yes";
+    a.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+
+    expandAgentRow(2);
+    await settle();
+    const b = byTestId<HTMLSelectElement>("settings.agentRow.2.autoUpdate");
+    expect(b.value).toBe("yes");
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agentAutoUpdateByCommand).toEqual({ codex: true });
+
+    dispose();
+  });
 });
