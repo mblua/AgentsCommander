@@ -56,6 +56,9 @@ struct ScreenReplayState {
     registration: Arc<RegisteredPtyOutputTarget>,
     reader_gate: Arc<ReaderOperationGate>,
     parser_availability: ParserAvailability,
+    /// Bounded suffix of the raw output stream. Must be a `VecDeque`: trimming a `Vec` from
+    /// the front would memmove the whole ring on every chunk of the hot path.
+    history: std::collections::VecDeque<u8>,
 }
 
 enum CaptureFailure {
@@ -205,6 +208,44 @@ const UI_BATCH_INTERVAL_MS: u64 = 16;
 const UI_PENDING_LIMIT_BYTES: usize = 131_072;
 const UI_DELIVERY_ACK_TIMEOUT_MS: u64 = 5_000;
 const UI_ACTIVATION_READY_TIMEOUT_MS: u64 = 5_000;
+/// Raw output bytes retained per session so a freshly created terminal can be rehydrated
+/// with history instead of a single viewport. Sized to keep the frontend replay peak close
+/// to its current value rather than to double the admission ceiling.
+const UI_HISTORY_LIMIT_BYTES: usize = 65_536;
+/// How far into the ring the line-boundary trim looks for a newline. A stream without
+/// newlines (progress bars redrawing with `\r`) would otherwise walk the whole ring on
+/// every chunk, inside the parser mutex shared by every session of the backend.
+const UI_HISTORY_LINE_SCAN_BYTES: usize = 4_096;
+/// Normalization prologue for a history replay: normal buffer, full scroll region, autowrap
+/// on, G0 back to ASCII, default attributes. Deliberately carries no erase sequence:
+/// `\x1b[2J`, `\x1b[3J` and RIS each wipe part or all of the history this replay restores.
+const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[0m";
+
+/// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
+/// trim to a line boundary, then append, so the ring stays line aligned and its length
+/// never exceeds the limit.
+///
+/// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
+/// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
+/// which leaves that console dead for the rest of the process.
+fn append_history(history: &mut std::collections::VecDeque<u8>, data: &[u8]) {
+    // A chunk larger than the whole ring keeps only its tail. Unreachable in production
+    // (the local backend reads 4 KiB buffers, the container backend rejects frames over
+    // 64 KiB) but it is where the trim arithmetic gets written wrong.
+    let tail = &data[data.len().saturating_sub(UI_HISTORY_LIMIT_BYTES)..];
+    let over = (history.len() + tail.len()).saturating_sub(UI_HISTORY_LIMIT_BYTES);
+    if over > 0 {
+        history.drain(..over.min(history.len()));
+        if let Some(newline) = history
+            .iter()
+            .take(UI_HISTORY_LINE_SCAN_BYTES)
+            .position(|byte| *byte == b'\n')
+        {
+            history.drain(..=newline);
+        }
+    }
+    history.extend(tail);
+}
 
 /// The private result surface of the Tauri output effect. It deliberately carries no
 /// underlying Tauri error because output bytes and event errors are both sensitive at this
@@ -1667,6 +1708,10 @@ impl SessionIoFanout {
             registration,
             reader_gate: ReaderOperationGate::new(),
             parser_availability: ParserAvailability::Available,
+            // Reserved up front, outside the parser mutex, so the ring never reallocates and
+            // its ceiling is a property of construction. `VecDeque` growth is amortized, so
+            // reserving later cannot pin the ceiling: the doubling already overshot by then.
+            history: std::collections::VecDeque::with_capacity(UI_HISTORY_LIMIT_BYTES),
         };
         let mut parsers = self
             .screen_parsers
@@ -1820,6 +1865,13 @@ impl SessionIoFanout {
                         state.parser.process(&data);
                         let sequence = state.output_sequence.checked_add(1).ok_or(())?;
                         state.output_sequence = sequence;
+                        // Order matters, and these two lines must stay contiguous. The ring
+                        // may only grow once `output_sequence` has advanced: on overflow the
+                        // line above returns `Err` and the parser goes `Unavailable`, and a
+                        // ring that grew anyway would make the activation payload carry bytes
+                        // that `sequence` does not represent. The frontend acks by watermark,
+                        // so it would ack them without writing and drop live output silently.
+                        append_history(&mut state.history, &data);
                         Ok::<u64, ()>(sequence)
                     });
                     match processed {
@@ -1876,7 +1928,16 @@ impl SessionIoFanout {
         lease.complete();
     }
 
-    pub(crate) fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+    /// `include_history` asks for the retained ring instead of the mirrored viewport. The
+    /// caller must only set it for a terminal with no rendered content: replaying the ring
+    /// over a terminal that already has scrollback appends a duplicate block on every
+    /// activation, and the frontend owns that discriminant (`!entry.hasRenderedOutput`).
+    /// The failure is asymmetric on purpose: a wrongly `false` flag is today's behaviour.
+    pub(crate) fn activate_terminal_output(
+        &self,
+        id: Uuid,
+        include_history: bool,
+    ) -> TerminalOutputActivationResult {
         let candidate = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
                 return TerminalOutputActivationResult::recovery(
@@ -1912,8 +1973,22 @@ impl SessionIoFanout {
                 if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
                     return Err(());
                 }
+                let data = if include_history && !state.history.is_empty() {
+                    // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
+                    // rotates the buffer during what is otherwise a copy out.
+                    let (front, back) = state.history.as_slices();
+                    let mut replay = Vec::with_capacity(
+                        UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
+                    );
+                    replay.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                    replay.extend_from_slice(front);
+                    replay.extend_from_slice(back);
+                    replay
+                } else {
+                    screen.contents_formatted()
+                };
                 Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
-                    data: screen.contents_formatted(),
+                    data,
                     rows,
                     cols,
                     sequence: state.output_sequence,
@@ -2824,7 +2899,7 @@ mod tests {
             )
             .expect("register fanout");
 
-        let activation = match fanout.activate_terminal_output(id) {
+        let activation = match fanout.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected activation, got {other:?}"),
         };
@@ -2915,7 +2990,7 @@ mod tests {
                 PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
             )
             .expect("register session");
-        let activation = match fanout.activate_terminal_output(id) {
+        let activation = match fanout.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected activation, got {other:?}"),
         };
@@ -2954,7 +3029,7 @@ mod tests {
                 PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
             )
             .expect("register session");
-        let activation = match fanout.activate_terminal_output(id) {
+        let activation = match fanout.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected activation, got {other:?}"),
         };
@@ -3013,7 +3088,7 @@ mod tests {
                 PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
             )
             .expect("register session");
-        let activation = match fanout.activate_terminal_output(id) {
+        let activation = match fanout.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected activation, got {other:?}"),
         };
@@ -3075,7 +3150,7 @@ mod tests {
         assert!(!String::from_utf8_lossy(&snapshot.data).contains("old output"));
         assert!(old_sink.lock().expect("old target sink").is_empty());
 
-        let activation = match fanout.activate_terminal_output(id) {
+        let activation = match fanout.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected replacement activation, got {other:?}"),
         };
@@ -3491,5 +3566,113 @@ mod tests {
             fanout.copy_terminal_screen(healthy),
             crate::pty::backend::TerminalScreenCopyRead::Copied(_)
         ));
+    }
+
+    fn activation_data(fanout: &SessionIoFanout, id: Uuid, include_history: bool) -> Vec<u8> {
+        match fanout.activate_terminal_output(id, include_history) {
+            TerminalOutputActivationResult::Activated { activation } => activation.snapshot.data,
+            other => panic!("expected activation, got {other:?}"),
+        }
+    }
+
+    fn mirrored_screen(fanout: &SessionIoFanout, id: Uuid) -> Vec<u8> {
+        let parsers = fanout.screen_parsers.lock().expect("parser state");
+        parsers
+            .get(&id)
+            .expect("registered session")
+            .parser
+            .screen()
+            .contents_formatted()
+    }
+
+    /// The ring stays under its limit, keeps the reserved capacity it was built with, and
+    /// starts on a line boundary. The capacity assert is the point: `len` is bounded by the
+    /// trim under every reserve variant, so without it this test passes just as happily with
+    /// a ring that quietly grew to twice its ceiling.
+    ///
+    /// The oversized chunk covers the one case where the trim arithmetic gets written as a
+    /// plain subtraction. That panic would not be local: the caller flips the parser to
+    /// `Unavailable`, which leaves the console dead for the rest of the process.
+    #[test]
+    fn history_ring_is_bounded_and_line_aligned() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        let mut line = vec![b'-'; 128];
+        line[0] = b'>';
+        line[127] = b'\n';
+        for _ in 0..1_024 {
+            feed(&fanout, id, &[&line]);
+        }
+        {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert!(state.history.len() <= UI_HISTORY_LIMIT_BYTES);
+            assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
+            assert_eq!(state.history.front().copied(), Some(b'>'));
+        }
+
+        let oversized = vec![b'x'; UI_HISTORY_LIMIT_BYTES + 4_096];
+        feed(&fanout, id, &[&oversized]);
+        let parsers = fanout.screen_parsers.lock().expect("parser state");
+        let state = parsers.get(&id).expect("registered session");
+        assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
+        assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
+        assert_eq!(state.parser_availability, ParserAvailability::Available);
+    }
+
+    /// The regression the issue reports: a session that produced output while another one was
+    /// selected must come back with history, not with a single viewport.
+    #[test]
+    fn activation_payload_replays_history_for_background_session() {
+        let fanout = fanout();
+        let foreground = session(&fanout);
+        let background = session(&fanout);
+        activation_data(&fanout, foreground, false);
+
+        for index in 0..200 {
+            let line = format!("history line {index}\r\n");
+            feed(&fanout, background, &[line.as_bytes()]);
+        }
+
+        // The first line scrolled out of the 30 row mirror, so it is only reachable through
+        // the ring. Without this the payload assert could pass on the viewport alone.
+        let mirror = String::from_utf8_lossy(&mirrored_screen(&fanout, background)).into_owned();
+        assert!(!mirror.contains("history line 0\r\n"));
+
+        let data = activation_data(&fanout, background, true);
+        // Asserting the prologue keeps a silent fallback to `contents_formatted()` from
+        // passing this test for the wrong reason.
+        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        let replayed = String::from_utf8_lossy(&data);
+        assert!(replayed.contains("history line 0\r\n"));
+        assert!(replayed.contains("history line 199"));
+    }
+
+    #[test]
+    fn activation_payload_falls_back_to_screen_when_history_empty() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        let expected = mirrored_screen(&fanout, id);
+
+        let data = activation_data(&fanout, id, true);
+        assert_eq!(data, expected);
+        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+    }
+
+    /// Protects the most frequent path: a retained terminal already holds its scrollback, so
+    /// replaying the ring over it would append a duplicate block on every activation.
+    #[test]
+    fn activation_payload_ignores_history_when_not_requested() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        for index in 0..200 {
+            let line = format!("history line {index}\r\n");
+            feed(&fanout, id, &[line.as_bytes()]);
+        }
+        let expected = mirrored_screen(&fanout, id);
+
+        let data = activation_data(&fanout, id, false);
+        assert_eq!(data, expected);
+        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
     }
 }

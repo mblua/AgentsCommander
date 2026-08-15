@@ -3273,8 +3273,9 @@ impl PtyBackend for ContainerTransportBackend {
     fn activate_terminal_output(
         &self,
         id: Uuid,
+        include_history: bool,
     ) -> crate::pty::output::TerminalOutputActivationResult {
-        self.fanout.activate_terminal_output(id)
+        self.fanout.activate_terminal_output(id, include_history)
     }
 
     fn ready_terminal_output(
@@ -5604,7 +5605,7 @@ mod tests {
             .expect("spawn");
         let ticket = backend.last_issued_ticket_for_test(id).unwrap();
         let _rx = attach(&backend, id, root, &ticket);
-        let activation = match backend.activate_terminal_output(id) {
+        let activation = match backend.activate_terminal_output(id, false) {
             TerminalOutputActivationResult::Activated { activation } => activation,
             other => panic!("expected activation, got {other:?}"),
         };
