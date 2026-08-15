@@ -1202,6 +1202,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     });
   };
 
+  const setAgentAutoUpdate = (index: number, enabled: boolean) => {
+    if (!settings.data) return;
+    const command = settings.data.agents[index]?.command;
+    if (!command) return; // never write an empty-string key
+    setDraftDirty(true);
+    setSettings("data", "agentAutoUpdateByCommand", (map) => ({
+      ...(map ?? {}),
+      [command]: enabled,
+    }));
+  };
+
   const updateAgentEnv = (
     agentIndex: number,
     rowIndex: number,
@@ -2612,6 +2623,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       }
     };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
+    const autoUpdateEnabled = () =>
+      settings.data?.agentAutoUpdateByCommand[agent.command] ?? false;
     const containerImageMissing = () => !agent.backend?.image?.trim();
     const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
     return (
@@ -2719,6 +2732,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 data-ac-role="textbox"
               />
             </label>
+            <label class="settings-field">
+              <span class="settings-label">Auto-update</span>
+              <select
+                class="settings-input"
+                value={autoUpdateEnabled() ? "yes" : "no"}
+                onChange={(e) => setAgentAutoUpdate(i(), e.currentTarget.value === "yes")}
+                disabled={!agent.command.trim()}
+                title={agent.command.trim() ? undefined : "Set the Coding Agent command first"}
+                data-ac-testid={`settings.agentRow.${i()}.autoUpdate`}
+                data-ac-role="combobox"
+                data-ac-state={autoUpdateEnabled() ? "yes" : "no"}
+              >
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <div
+              class="settings-label-hint"
+              data-ac-testid={`settings.agentRow.${i()}.autoUpdate.note`}
+              data-ac-role="status"
+            >
+              Applies to every Coding Agent using this command.
+            </div>
             <label class="settings-field">
               <span class="settings-label">Runtime</span>
               <select
