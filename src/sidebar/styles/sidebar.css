@@ -6171,9 +6171,14 @@ html.light-theme .ac-discovery-badge.running-peer {
   padding-left: calc(var(--spacing-md) + 20px);
 }
 
+/* #1351 — box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
+   the same 12px left inset and the same 1px separator, so the Coordinators header
+   lines up with its sibling section headers instead of sitting 6px to their left.
+   margin-right drops to 0 so the separator spans the same width as theirs. */
 [data-sidebar-style="noir-minimal"] .coord-quick-access-group {
   display: block;
-  margin: 4px 6px 2px;
+  margin: 4px 0 2px 12px;
+  border-top: 1px solid var(--sidebar-border);
   padding: 4px 0;
 }
 
@@ -7369,7 +7374,7 @@ html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access-group {
 [data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
   display: block;
   margin: 2px 0;
-  padding: 2px 0;
+  padding: 2px 0 2px 6px;
   border-left: 3px solid rgba(255, 100, 40, 0.3);
   background: rgba(255, 80, 40, 0.03);
 }
@@ -7381,10 +7386,13 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
 
 /* ---- Neon Circuit: coordinator quick-access enabled ---- */
 
+/* #1351 — 6px margin + 1px border + 7px padding = the 14px left inset of
+   [data-sidebar-style="neon-circuit"] .ac-wg-group (4 + 2 + 8), so the header
+   lines up with its siblings. The frame keeps its own 6px right margin. */
 [data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
-  padding: 4px 0;
+  padding: 4px 0 4px 7px;
   border: 1px solid rgba(255, 0, 180, 0.1);
   border-radius: 4px;
   position: relative;
