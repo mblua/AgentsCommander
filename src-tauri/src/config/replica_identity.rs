@@ -6,7 +6,7 @@ use crate::config::ac_root::{ensure_authoritative_ac_root, find_ac_root_ancestor
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
-const DEPRECATED_REPOS_WORKSPACE_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
+const DEPRECATED_REPOS_INFO_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgReplicaIdentity {
@@ -314,7 +314,7 @@ pub fn normalize_wg_replica_context_entries(
     }
 
     for entry in existing_context {
-        if entry == DEPRECATED_REPOS_WORKSPACE_CONTEXT
+        if entry == DEPRECATED_REPOS_INFO_CONTEXT
             || required_prefix.contains(&entry.as_str())
             || is_identity_role_context_entry(entry)
         {
