@@ -133,6 +133,42 @@ You are running inside an AgentsCommander session - a terminal session manager t
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #1369 (C4): `get_default_agent_template()` exactly as it shipped from #1005
+/// S6 (token minimization, v2) through base commit 8f272a76, frozen so a
+/// pristine v2 `Context.AgentsCommander.md` on disk keeps being recognized
+/// (project auto-update AND standalone root retirement) after the v3
+/// `{{AGENT_REPOS}}` rename. Never edit. Provenance: the raw literal at
+/// 8f272a76 is len 567, sha256
+/// e5861a9f011967e96e5515f858e1643f7fdf161511ad909fe86ddb4ce1a0cff7; pinned by
+/// `global_pre_agent_repos_snapshot_is_byte_exact` against those externally
+/// captured values, never against this const itself.
+///
+/// Do NOT replace this literal with `include_str!`: a raw string literal
+/// normalizes `\r\n` to `\n` at compile time and `include_str!` does not.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS: &str = r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{WORKSPACE_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
 /// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
 /// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
@@ -380,7 +416,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 2,
+            current_version: 3,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -435,6 +471,7 @@ fn actionable_project_spec_by_filename(
 fn is_known_generated_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -451,6 +488,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
 fn is_known_generated_standalone_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
 }
 
@@ -1930,6 +1968,12 @@ mod tests {
         assert!(is_known_generated_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        ));
         assert!(
             !is_known_generated_global_template(
                 COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
@@ -2237,9 +2281,205 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 2,
-            "global current_version must be bumped to 2 by the S6 rewrite"
+            parsed["templates"]["global"]["currentVersion"], 3,
+            "global current_version must be bumped to 3 by the #1369 {{AGENT_REPOS}} rename"
         );
+    }
+
+    /// #1369 (C4) AC-4.3: the frozen v2 global snapshot must stay byte-identical
+    /// to what the #1005 S6..8f272a76 builds shipped. Expected values captured
+    /// externally from the raw literal AT base commit 8f272a76, never from this
+    /// const.
+    #[test]
+    fn global_pre_agent_repos_snapshot_is_byte_exact() {
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS.len(),
+            567,
+            "frozen v2 global snapshot must be the 8f272a76 bytes"
+        );
+        assert_eq!(
+            hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS),
+            "e5861a9f011967e96e5515f858e1643f7fdf161511ad909fe86ddb4ce1a0cff7",
+            "frozen v2 global snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
+    /// with NO `global` state entry. Failing-first proof for the v3 rename
+    /// (assert_ne), BOTH recognizers, the version bump, and the auto-upgrade.
+    #[test]
+    fn read_sync_updates_pre_agent_repos_global_template() {
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
+            crate::config::session_context::get_default_agent_template(),
+            "the v3 rename must actually change the template or the freeze is pointless"
+        );
+        assert!(
+            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS),
+            "project recognizer must accept the frozen v2 bytes"
+        );
+        assert!(
+            is_known_generated_standalone_global_template(
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+            ),
+            "standalone (retirement) recognizer must accept the frozen v2 bytes"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
+        )
+        .expect("write pristine v2 global");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read global");
+        assert_eq!(
+            content,
+            crate::config::session_context::get_default_agent_template(),
+            "pristine v2 Context.AgentsCommander.md must auto-upgrade"
+        );
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
+        assert!(
+            scan_project_context_template_updates(temp.path(), &ac_root)
+                .expect("scan updates")
+                .is_empty(),
+            "an auto-upgraded pristine template must not leave a pending update"
+        );
+    }
+
+    /// #1369 (C4) AC-4.5-B: population B, the dominant one - a pristine v2 on
+    /// disk PLUS a `global` state entry whose `lastSeededSha256` is the v2 hash,
+    /// which is what any project seeded by a normal build carries. Without the
+    /// freeze this yields 1 pending update, i.e. the modal telling the user that
+    /// a file they never touched "appears customized".
+    #[test]
+    fn read_sync_updates_pre_agent_repos_global_template_with_state_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS,
+        )
+        .expect("write pristine v2 global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: 2,
+                last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS)),
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist v2 state entry");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read global"),
+            crate::config::session_context::get_default_agent_template(),
+            "a pristine v2 with a trusted state entry must auto-upgrade silently"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
+        assert!(
+            scan_project_context_template_updates(temp.path(), &ac_root)
+                .expect("scan updates")
+                .is_empty(),
+            "the dominant population must never be accused of having customized the file"
+        );
+    }
+
+    /// #1369 (C4) AC-4.8a: the whole flow the update modal drives, minus the
+    /// pixels. A v2 template with a trusted state entry and ONE user edit is a
+    /// genuine customization, so it must surface as a pending update carrying the
+    /// v3 digest and version, and overwriting must land the v3 bytes on disk and
+    /// in the state.
+    #[test]
+    fn customized_pre_agent_repos_global_template_scans_and_overwrites_to_v3() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let customized = format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS}\n\nMY OWN NOTE\n");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &customized)
+            .expect("write customized v2 global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: 2,
+                last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS)),
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist v2 state entry");
+
+        let update = scan_project_context_template_updates(temp.path(), &ac_root)
+            .expect("scan updates")
+            .pop()
+            .expect("pending update");
+        let v3_sha = hash_text(crate::config::session_context::get_default_agent_template());
+        assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        assert_eq!(update.current_default_sha256, v3_sha);
+        assert_eq!(update.current_default_version, 3);
+
+        let result = overwrite_context_template_with_default(
+            &ac_root,
+            &update.filename,
+            &update.current_file_sha256,
+            &update.current_default_sha256,
+        )
+        .expect("overwrite");
+
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read global"),
+            crate::config::session_context::get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(result.backup_path).expect("read backup"),
+            customized
+        );
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v3_sha);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
     }
 
     #[test]
