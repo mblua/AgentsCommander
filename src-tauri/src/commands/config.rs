@@ -2690,8 +2690,7 @@ mod tests {
             )
             .expect("open API message store"),
         );
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(ApiServerHandle::default())
             .manage(crate::api::message_store::MessageStoreState::ready(
                 message_store,

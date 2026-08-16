@@ -748,10 +748,13 @@ pub(crate) enum RelDecodeError {
     /// Parent traversal that would walk above the filesystem root.
     EscapesRoot,
     /// A Windows-illegal character (`< > : " | ? *` or a control char).
+    #[cfg(windows)]
     IllegalWindowsChar,
     /// A reserved DOS device basename (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+    #[cfg(windows)]
     ReservedDosName,
     /// A component ending in a space or dot (Win32 strips these).
+    #[cfg(windows)]
     TrailingDotOrSpace,
     /// The instance base handed in was not absolute.
     BaseNotAbsolute,

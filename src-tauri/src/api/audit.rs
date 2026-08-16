@@ -148,6 +148,7 @@ pub fn record_terminal_snapshot(metadata: &TerminalSnapshotAuditMetadata) {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WindowScreenshotAuditStatus {
@@ -159,19 +160,20 @@ pub(crate) enum WindowScreenshotAuditStatus {
     CaptureUnavailable,
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) struct WindowScreenshotAuditResult {
     pub status: WindowScreenshotAuditStatus,
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 std::thread_local! {
     static WINDOW_SCREENSHOT_AUDITS_FOR_TEST: std::cell::RefCell<Option<Vec<WindowScreenshotAuditStatus>>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 pub(crate) struct WindowScreenshotAuditCaptureForTest;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 impl Drop for WindowScreenshotAuditCaptureForTest {
     fn drop(&mut self) {
         WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
@@ -180,7 +182,7 @@ impl Drop for WindowScreenshotAuditCaptureForTest {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 pub(crate) fn lock_window_screenshot_audits_for_test() -> WindowScreenshotAuditCaptureForTest {
     WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
         let mut audits = audits.borrow_mut();
@@ -193,7 +195,7 @@ pub(crate) fn lock_window_screenshot_audits_for_test() -> WindowScreenshotAuditC
     WindowScreenshotAuditCaptureForTest
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 pub(crate) fn take_window_screenshot_audits_for_test() -> Vec<WindowScreenshotAuditStatus> {
     WINDOW_SCREENSHOT_AUDITS_FOR_TEST.with(|audits| {
         let mut audits = audits.borrow_mut();
@@ -204,6 +206,7 @@ pub(crate) fn take_window_screenshot_audits_for_test() -> Vec<WindowScreenshotAu
     })
 }
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(serde::Serialize)]
 struct WindowScreenshotAuditMetadata {
     event: &'static str,
@@ -212,6 +215,7 @@ struct WindowScreenshotAuditMetadata {
     timestamp: String,
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl WindowScreenshotAuditMetadata {
     fn new(status: WindowScreenshotAuditStatus) -> Self {
         Self {
@@ -304,6 +308,7 @@ mod window_screenshot_audit_tests {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn record_window_screenshot_result(_event: &str, result: &WindowScreenshotAuditResult) {
     #[cfg(test)]
     {

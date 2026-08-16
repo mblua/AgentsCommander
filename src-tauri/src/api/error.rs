@@ -10,6 +10,7 @@ use axum::Json;
 
 use super::schema::{ErrorBody, API_VERSION};
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum WindowScreenshotApiError {
     InvalidWindowId,
@@ -70,6 +71,7 @@ mod window_screenshot_tests {
 /// A control-plane API failure with a fixed HTTP mapping.
 #[derive(Debug, Clone)]
 pub enum ApiError {
+    #[cfg(any(target_os = "windows", test))]
     #[allow(private_interfaces)]
     WindowScreenshot(WindowScreenshotApiError),
     /// 400 - malformed body, missing/forbidden field, or invalid one-of payload.
@@ -99,26 +101,31 @@ pub enum ApiError {
 impl ApiError {
     fn parts(&self) -> (StatusCode, &'static str, &str) {
         match self {
+            #[cfg(any(target_os = "windows", test))]
             ApiError::WindowScreenshot(WindowScreenshotApiError::InvalidWindowId) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_window_id",
                 "invalid target window identifier",
             ),
+            #[cfg(any(target_os = "windows", test))]
             ApiError::WindowScreenshot(WindowScreenshotApiError::WindowNotFound) => (
                 StatusCode::NOT_FOUND,
                 "window_not_found",
                 "target window was not found",
             ),
+            #[cfg(any(target_os = "windows", test))]
             ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureBusy) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "capture_busy",
                 "target window capture capacity is full",
             ),
+            #[cfg(any(target_os = "windows", test))]
             ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureTooLarge) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "capture_too_large",
                 "target window capture exceeds the configured size limit",
             ),
+            #[cfg(any(target_os = "windows", test))]
             ApiError::WindowScreenshot(WindowScreenshotApiError::CaptureUnavailable) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "capture_unavailable",

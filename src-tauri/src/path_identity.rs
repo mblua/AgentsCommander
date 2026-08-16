@@ -17,7 +17,9 @@ const UNIX_O_NOFOLLOW: i32 = 0x0002_0000;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 const UNIX_O_NOFOLLOW: i32 = 0x0000_0100;
 
-#[cfg(unix)]
+// Only `child_is_absent` reaches this, and off Windows that helper survives
+// solely for its own unit tests (see its gate below).
+#[cfg(all(unix, test))]
 fn unix_child_open_error_is_absent(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(libc::ENOENT)
 }
@@ -69,6 +71,11 @@ pub(crate) enum UnixFileWitnessState {
 }
 
 #[cfg(unix)]
+// The `Before` prefix is the contract, not noise: each variant names the moment
+// the cleanup hook fires, which is BEFORE the step it is named after. Renaming to
+// `Restore` / `ClaimRename` / `ClaimUnlink` would name the steps instead and lose
+// that. clippy's shared-prefix heuristic cannot distinguish the two cases.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnixTrackedCleanupStage {
     BeforeClaimRename,
@@ -162,17 +169,12 @@ impl RetainedDirectory {
         #[cfg(unix)]
         {
             let _ = lock_output_leaf;
-            return self
-                .open_unix_child(
-                    path,
-                    libc::O_WRONLY
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    0o600,
-                )
-                .map_err(|_| "unsafe_path".to_string());
+            self.open_unix_child(
+                path,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+            .map_err(|_| "unsafe_path".to_string())
         }
         #[cfg(not(unix))]
         {
@@ -224,12 +226,12 @@ impl RetainedDirectory {
             if reopened_id != opened_id || reopened_links != 1 {
                 return Err("unsafe_path".to_string());
             }
-            return Ok(VerifiedPathIdentity {
+            Ok(VerifiedPathIdentity {
                 canonical_path: self.canonical_child_path(path)?,
                 object_id: opened_id,
                 metadata: snapshot(&metadata, links),
                 content_sha256: None,
-            });
+            })
         }
         #[cfg(not(unix))]
         {
@@ -248,7 +250,7 @@ impl RetainedDirectory {
                     0,
                 )
                 .map_err(|_| "unsafe_path".to_string())?;
-            return self.verify_opened_regular_file(path, &file, false);
+            self.verify_opened_regular_file(path, &file, false)
         }
         #[cfg(not(unix))]
         {
@@ -415,17 +417,21 @@ impl RetainedDirectory {
         }
     }
 
+    // Every production caller sits in a `#[cfg(not(unix))]` arm
+    // (`phone::terminal_snapshot` and `pty::terminal_snapshot`); on Unix the
+    // method survives only for `terminal_snapshot_unix_child_api_*`.
+    #[cfg(any(not(unix), test))]
     pub fn child_is_absent(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
-            return match self.open_unix_child(
+            match self.open_unix_child(
                 path,
                 libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 0,
             ) {
                 Ok(_) => false,
                 Err(error) => unix_child_open_error_is_absent(&error),
-            };
+            }
         }
         #[cfg(not(unix))]
         {
@@ -460,11 +466,11 @@ impl RetainedDirectory {
                     RENAME_NOREPLACE,
                 )
             };
-            return if result == 0 {
+            if result == 0 {
                 Ok(())
             } else {
                 Err("atomic_publish_failed".to_string())
-            };
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -491,11 +497,11 @@ impl RetainedDirectory {
                     RENAME_EXCL,
                 )
             };
-            return if result == 0 {
+            if result == 0 {
                 Ok(())
             } else {
                 Err("atomic_publish_failed".to_string())
-            };
+            }
         }
         #[cfg(windows)]
         {
@@ -518,10 +524,10 @@ impl RetainedDirectory {
             let Ok(witness) = self.retain_unix_file_witness(path, expected) else {
                 return false;
             };
-            return matches!(
+            matches!(
                 self.cleanup_unix_tracked_file(path, expected, &witness),
                 UnixTrackedCleanupOutcome::Removed | UnixTrackedCleanupOutcome::AlreadyAbsent
-            );
+            )
         }
         #[cfg(windows)]
         {
@@ -594,7 +600,7 @@ impl RetainedDirectory {
         #[cfg(target_os = "linux")]
         {
             const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
-            return unsafe {
+            unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
                     directory,
@@ -603,7 +609,7 @@ impl RetainedDirectory {
                     destination.as_ptr(),
                     RENAME_NOREPLACE,
                 ) == 0
-            };
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -617,7 +623,7 @@ impl RetainedDirectory {
                     flags: u32,
                 ) -> i32;
             }
-            return unsafe {
+            unsafe {
                 renameatx_np(
                     directory,
                     source.as_ptr(),
@@ -625,7 +631,7 @@ impl RetainedDirectory {
                     destination.as_ptr(),
                     RENAME_EXCL,
                 ) == 0
-            };
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -1083,7 +1089,9 @@ pub fn opened_file_is_delete_pending(file: &File) -> bool {
     succeeded != 0 && unsafe { information.assume_init() }.DeletePending != 0
 }
 
-#[cfg(not(windows))]
+// The sole caller is a `#[cfg(not(unix))]` match arm, so this fallback is only
+// reachable on a target that is neither Windows nor Unix.
+#[cfg(not(any(windows, unix)))]
 pub fn opened_file_is_delete_pending(_file: &File) -> bool {
     false
 }

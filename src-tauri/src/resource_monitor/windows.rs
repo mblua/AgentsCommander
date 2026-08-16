@@ -576,6 +576,12 @@ mod platform {
 
     pub struct PlatformProcessTreeBackend;
 
+    impl Default for PlatformProcessTreeBackend {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl PlatformProcessTreeBackend {
         pub fn new() -> Self {
             Self

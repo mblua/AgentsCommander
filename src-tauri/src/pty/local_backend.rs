@@ -3849,8 +3849,7 @@ mod adapter_spawn_sync_tests {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         // GitWatcher takes a plain (Wry) AppHandle; the pty_lifecycle pattern
         // builds a default-runtime mock app the same way.
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build adapter spawn-sync test app");
         let git_watcher = GitWatcher::new(session_mgr, app.handle().clone());
