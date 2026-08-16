@@ -1453,6 +1453,7 @@ mod tests {
     /// lacks the SelectionCoordinator and the other states `create_session_inner`
     /// requires, so the web-path invalid-input postcondition test builds them
     /// here, mirroring the pty_lifecycle harness (plan Finding F).
+    #[cfg(windows)]
     fn ws_state_for_1271(settings: AppSettings) -> WsState {
         let app = crate::test_support::test_builder()
             .manage(crate::session::warnings::new_session_warning_state())

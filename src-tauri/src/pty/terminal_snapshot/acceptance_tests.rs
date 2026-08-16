@@ -968,6 +968,10 @@ fn consume_host_response(
     let identity = crate::path_identity::verify_regular_file(&path)
         .expect("host cancellation response identity");
     std::fs::remove_file(&path).expect("consume host cancellation response");
+    // `fixture` is read only by the non-Unix untracking below; keep the
+    // signature stable on Unix rather than splitting the helper.
+    #[cfg(unix)]
+    let _ = fixture;
     #[cfg(not(unix))]
     fixture.snapshot_state.untrack_artifact(&identity);
     bytes

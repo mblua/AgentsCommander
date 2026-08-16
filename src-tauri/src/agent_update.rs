@@ -431,7 +431,15 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
                         // arrived" is not an option; a second bounded join
                         // recovers the FULL tail once the tree is dead.
                         if let Some(job) = job.take() {
+                            // Windows: dropping the handle closes the job, and
+                            // KILL_ON_JOB_CLOSE reaps the lingering tree member.
+                            // Off Windows `JobObject::for_child` always returns
+                            // `None` (`pty::job::stub_impl`), so this arm is
+                            // unreachable and the stub has no `Drop` to call.
+                            #[cfg(windows)]
                             drop(job);
+                            #[cfg(not(windows))]
+                            let _ = job;
                         }
                         #[cfg(unix)]
                         // SAFETY: `-pid` is the process group created by

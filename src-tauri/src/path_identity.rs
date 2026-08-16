@@ -71,6 +71,11 @@ pub(crate) enum UnixFileWitnessState {
 }
 
 #[cfg(unix)]
+// The `Before` prefix is the contract, not noise: each variant names the moment
+// the cleanup hook fires, which is BEFORE the step it is named after. Renaming to
+// `Restore` / `ClaimRename` / `ClaimUnlink` would name the steps instead and lose
+// that. clippy's shared-prefix heuristic cannot distinguish the two cases.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnixTrackedCleanupStage {
     BeforeClaimRename,
@@ -164,17 +169,12 @@ impl RetainedDirectory {
         #[cfg(unix)]
         {
             let _ = lock_output_leaf;
-            return self
-                .open_unix_child(
-                    path,
-                    libc::O_WRONLY
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    0o600,
-                )
-                .map_err(|_| "unsafe_path".to_string());
+            self.open_unix_child(
+                path,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+            .map_err(|_| "unsafe_path".to_string())
         }
         #[cfg(not(unix))]
         {
@@ -226,12 +226,12 @@ impl RetainedDirectory {
             if reopened_id != opened_id || reopened_links != 1 {
                 return Err("unsafe_path".to_string());
             }
-            return Ok(VerifiedPathIdentity {
+            Ok(VerifiedPathIdentity {
                 canonical_path: self.canonical_child_path(path)?,
                 object_id: opened_id,
                 metadata: snapshot(&metadata, links),
                 content_sha256: None,
-            });
+            })
         }
         #[cfg(not(unix))]
         {
@@ -250,7 +250,7 @@ impl RetainedDirectory {
                     0,
                 )
                 .map_err(|_| "unsafe_path".to_string())?;
-            return self.verify_opened_regular_file(path, &file, false);
+            self.verify_opened_regular_file(path, &file, false)
         }
         #[cfg(not(unix))]
         {
@@ -424,14 +424,14 @@ impl RetainedDirectory {
     pub fn child_is_absent(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
-            return match self.open_unix_child(
+            match self.open_unix_child(
                 path,
                 libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 0,
             ) {
                 Ok(_) => false,
                 Err(error) => unix_child_open_error_is_absent(&error),
-            };
+            }
         }
         #[cfg(not(unix))]
         {
@@ -466,11 +466,11 @@ impl RetainedDirectory {
                     RENAME_NOREPLACE,
                 )
             };
-            return if result == 0 {
+            if result == 0 {
                 Ok(())
             } else {
                 Err("atomic_publish_failed".to_string())
-            };
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -497,11 +497,11 @@ impl RetainedDirectory {
                     RENAME_EXCL,
                 )
             };
-            return if result == 0 {
+            if result == 0 {
                 Ok(())
             } else {
                 Err("atomic_publish_failed".to_string())
-            };
+            }
         }
         #[cfg(windows)]
         {
@@ -524,10 +524,10 @@ impl RetainedDirectory {
             let Ok(witness) = self.retain_unix_file_witness(path, expected) else {
                 return false;
             };
-            return matches!(
+            matches!(
                 self.cleanup_unix_tracked_file(path, expected, &witness),
                 UnixTrackedCleanupOutcome::Removed | UnixTrackedCleanupOutcome::AlreadyAbsent
-            );
+            )
         }
         #[cfg(windows)]
         {
