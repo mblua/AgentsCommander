@@ -2187,6 +2187,10 @@ impl PtyBackend for LocalProcessBackend {
         self.fanout.get_screen_snapshot(id)
     }
 
+    fn has_rendered_visible_content(&self, id: Uuid) -> bool {
+        self.fanout.has_rendered_visible_content(id)
+    }
+
     fn activate_terminal_output(
         &self,
         id: Uuid,
