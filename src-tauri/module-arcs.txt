@@ -797,6 +797,7 @@ agentscommander_lib::pty::local_backend -> agentscommander_lib::pty::watchers
 agentscommander_lib::pty::local_backend -> agentscommander_lib::session::manager
 agentscommander_lib::pty::local_backend -> agentscommander_lib::session::profile
 agentscommander_lib::pty::local_backend -> agentscommander_lib::telegram::manager
+agentscommander_lib::pty::local_backend -> agentscommander_lib::test_support
 agentscommander_lib::pty::local_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::manager -> agentscommander_lib::config::settings
 agentscommander_lib::pty::manager -> agentscommander_lib::config::teams

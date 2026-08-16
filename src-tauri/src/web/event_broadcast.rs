@@ -37,8 +37,7 @@ mod tests {
         let managed = WsBroadcaster::new();
         let explicit = WsBroadcaster::new();
         let mut receiver = explicit.subscribe();
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(managed)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");

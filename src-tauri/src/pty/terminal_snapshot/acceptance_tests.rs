@@ -505,8 +505,7 @@ impl AcceptanceFixture {
             crate::api::message_store::MessageStore::open(config.join("api-messages.sqlite3"))
                 .expect("API message store"),
         );
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(Arc::clone(&snapshot_state))
             .manage(settings.clone())
             .manage(Arc::clone(&session_manager))

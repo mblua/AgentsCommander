@@ -228,8 +228,7 @@ fn make_fixture() -> Fixture {
         s
     }));
     let git_app = Box::leak(Box::new(
-        tauri::Builder::default()
-            .any_thread()
+        agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build git watcher handle app"),
     ));
@@ -254,8 +253,7 @@ fn make_fixture() -> Fixture {
 
     let deliveries = Arc::clone(&captured_deliveries);
     let error_capture = Arc::clone(&listener_errors);
-    let app = tauri::Builder::default()
-        .any_thread()
+    let app = agentscommander_lib::test_support::test_builder()
         .manage(MasterToken::new("pty-powershell-native-master-token".into()))
         .manage(AppOutbox::new(
             repo_root

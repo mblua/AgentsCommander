@@ -15,6 +15,7 @@ pub mod screenshot;
 pub mod session;
 pub mod shutdown;
 pub mod telegram;
+pub mod test_support;
 pub mod testability;
 pub mod agent_update;
 pub mod update_check;
@@ -3597,8 +3598,7 @@ mod tests {
 
     #[test]
     fn web_and_api_server_handles_can_be_managed_together() {
-        let _app = tauri::Builder::default()
-            .any_thread()
+        let _app = crate::test_support::test_builder()
             .manage(WebServerHandle::default())
             .manage(ApiServerHandle::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

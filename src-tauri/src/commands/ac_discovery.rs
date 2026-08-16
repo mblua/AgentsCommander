@@ -3166,8 +3166,7 @@ mod tests {
         let broadcaster = WsBroadcaster::new();
         let receiver = broadcaster.subscribe();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(settings_state.clone())
             .manage(broadcaster.clone())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
