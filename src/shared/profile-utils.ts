@@ -105,7 +105,7 @@ export function hasAcPlaceholder(value: string): boolean {
   return AC_PLACEHOLDERS.some((token) => value.includes(token));
 }
 
-export function deriveWorkspaceRoot(replicaPath: string | null | undefined): string | null {
+export function deriveAcRoot(replicaPath: string | null | undefined): string | null {
   if (!replicaPath) return null;
   const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
   const idx = parts.lastIndexOf(".ac");
@@ -116,15 +116,15 @@ export function deriveWorkspaceRoot(replicaPath: string | null | undefined): str
 
 export function deriveMatrixRoot(replicaPath: string | null | undefined): string | null {
   if (!replicaPath) return null;
-  const workspace = deriveWorkspaceRoot(replicaPath);
-  if (!workspace) return null;
+  const acRoot = deriveAcRoot(replicaPath);
+  if (!acRoot) return null;
   const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
   if (!/^__agent_/.test(leaf) || !/^wg-/.test(parent)) return null;
   const name = leaf.replace(/^__agent_/, "");
   const sep = replicaPath.includes("\\") ? "\\" : "/";
-  return `${workspace}${sep}_agent_${name}`;
+  return `${acRoot}${sep}_agent_${name}`;
 }
 
 export function expandAcPlaceholdersPreview(
@@ -133,8 +133,8 @@ export function expandAcPlaceholdersPreview(
 ): string {
   if (!replicaRoot || !hasAcPlaceholder(value)) return value;
   let out = value.split(AC_REPLICA_ROOT_PLACEHOLDER).join(replicaRoot);
-  const workspace = deriveWorkspaceRoot(replicaRoot);
-  if (workspace) out = out.split(AC_WORKSPACE_ROOT_PLACEHOLDER).join(workspace);
+  const acRoot = deriveAcRoot(replicaRoot);
+  if (acRoot) out = out.split(AC_WORKSPACE_ROOT_PLACEHOLDER).join(acRoot);
   const matrix = deriveMatrixRoot(replicaRoot);
   if (matrix) out = out.split(AC_MATRIX_ROOT_PLACEHOLDER).join(matrix);
   return out;
@@ -353,7 +353,7 @@ export interface EffectiveEnvEntry {
 export function effectiveEnvProjection(
   agentEnvs: CodingAgentEnv[] | undefined,
   profileEnv: Record<string, string> | undefined,
-  acRoot: string | null | undefined,
+  replicaRoot: string | null | undefined,
 ): EffectiveEnvEntry[] {
   const byKey = new Map<string, EffectiveEnvEntry>();
   for (const row of agentEnvs ?? []) {
@@ -362,7 +362,7 @@ export function effectiveEnvProjection(
     if (!key) continue;
     byKey.set(envKeyCompare(key), {
       key,
-      value: expandAcPlaceholdersPreview(row.value, acRoot),
+      value: expandAcPlaceholdersPreview(row.value, replicaRoot),
       origin: row.source === "system" ? "system" : "accepted",
     });
   }
@@ -371,7 +371,7 @@ export function effectiveEnvProjection(
     if (!key) continue;
     byKey.set(envKeyCompare(key), {
       key,
-      value: expandAcPlaceholdersPreview(rawValue, acRoot),
+      value: expandAcPlaceholdersPreview(rawValue, replicaRoot),
       origin: profileEnvOrigin(key, rawValue),
     });
   }

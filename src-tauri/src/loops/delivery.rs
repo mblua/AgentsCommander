@@ -78,7 +78,7 @@ pub async fn deliver_loop_prompt(
         }
     }
 
-    let loop_storage_dir = loop_dir(&target.workspace_dir, &config.loop_def.id);
+    let loop_storage_dir = loop_dir(&target.ac_root, &config.loop_def.id);
     let policy = config.policy.busy_coordinator.clone();
     let prompt = config.prompt.body.clone();
 

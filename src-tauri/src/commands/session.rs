@@ -5040,8 +5040,8 @@ mod tests {
     #[test]
     fn configured_pi_materialization_wires_auto_self_clear_to_agents_md() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join(".ac");
-        let matrix = workspace.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix).unwrap();
         let cwd = matrix.to_string_lossy().to_string();
         let settings = AppSettings {
@@ -6000,12 +6000,12 @@ mod tests {
     fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("project");
-        let workspace = project.join(".ac");
-        let team = workspace.join("_team_team");
-        let coordinator_matrix = workspace.join("_agent_lead");
-        let first_matrix = workspace.join("_agent_dev-one");
-        let second_matrix = workspace.join("_agent_dev-two");
-        let workgroup = workspace.join("wg-1-team");
+        let ac_root = project.join(".ac");
+        let team = ac_root.join("_team_team");
+        let coordinator_matrix = ac_root.join("_agent_lead");
+        let first_matrix = ac_root.join("_agent_dev-one");
+        let second_matrix = ac_root.join("_agent_dev-two");
+        let workgroup = ac_root.join("wg-1-team");
         let coordinator = workgroup.join("__agent_lead");
         let first = workgroup.join("__agent_dev-one");
         let second = workgroup.join("__agent_dev-two");
@@ -6067,13 +6067,13 @@ mod tests {
     /// something to rotate.
     fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSide) {
         let (temp, first_replica, second_replica) = strict_target_fixture();
-        let workspace = temp.path().join("project").join(".ac");
+        let ac_root = temp.path().join("project").join(".ac");
         let mut sides = Vec::new();
         for (replica_cwd, agent) in [
             (first_replica, "_agent_dev-one"),
             (second_replica, "_agent_dev-two"),
         ] {
-            let matrix = workspace.join(agent);
+            let matrix = ac_root.join(agent);
             std::fs::create_dir_all(matrix.join("memory")).expect("create origin memory/");
             std::fs::write(matrix.join("memory").join("MEMORY.md"), ROTATION_SENTINEL)
                 .expect("seed origin memory/");

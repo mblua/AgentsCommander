@@ -56,7 +56,7 @@ mod tests {
     use super::*;
     use crate::config::project_settings::WorkgroupGroup;
 
-    fn project_with_workspace() -> tempfile::TempDir {
+    fn project_with_ac_root() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(temp.path().join(".ac")).expect("create .ac");
         temp
@@ -78,7 +78,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_project_groups_returns_default_for_missing_file() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
 
         let loaded = get_project_groups(project.path().to_string_lossy().to_string())
             .await
@@ -89,7 +89,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_project_groups_round_trips_saved_config() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = project.path().to_string_lossy().to_string();
         let config = sample_config();
 

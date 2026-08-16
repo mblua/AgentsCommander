@@ -157,7 +157,7 @@ const AgentPickerModal: Component<{
   );
   const canPersistProfileSelection = createMemo(() => isAcAgentPath(targetReplicaPath()));
   const canUseBackendProfileResolution = createMemo(() => isAcAgentPath(targetReplicaPath()));
-  const acRoot = createMemo(() => targetReplicaPath());
+  const replicaRoot = createMemo(() => targetReplicaPath());
 
   const configuredDefault = createMemo(() => {
     const resolved = backendPreview();
@@ -223,7 +223,7 @@ const AgentPickerModal: Component<{
       .sort(([a], [b]) => a.localeCompare(b, "en", { sensitivity: "base" }))
       .map(([key, value]) => ({
         key,
-        value: expandAcPlaceholdersPreview(value, acRoot()),
+        value: expandAcPlaceholdersPreview(value, replicaRoot()),
         origin: profileEnvOrigin(key, value),
       }));
   const declaredProfileEnv = (agent: AgentConfig | null, letter: string) =>
@@ -245,7 +245,7 @@ const AgentPickerModal: Component<{
       const cell = enabledLaunchCellFor(agent, preview.effectiveProfile);
       const command = expandAcPlaceholdersPreview(
         composeEffectiveCommand(agent.command, profileCellCommandText(cell)),
-        acRoot(),
+        replicaRoot(),
       );
       const status = command.trim().length === 0
         ? "missing"

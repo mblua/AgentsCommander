@@ -14,7 +14,7 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('path_without_workspace_returns_all_null', () => {
+  it('path_without_ac_root_returns_all_null', () => {
     const w = 'C:\\foo\\bar';
     expect(extractProjectName(w)).toBeNull();
     expect(extractWorkgroupName(w)).toBeNull();
@@ -49,7 +49,7 @@ describe('path-extractors', () => {
     expect(extractAgentName(w)).toBeNull();
   });
 
-  it('nested_workspace_uses_innermost', () => {
+  it('nested_ac_root_uses_innermost', () => {
     const w = 'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
     expect(extractProjectName(w)).toBe('repo-AC');
     expect(extractWorkgroupName(w)).toBe('WG-2-INNER');
@@ -128,7 +128,7 @@ describe('computeTrailingText', () => {
     expect(computeTrailingText('C:\\nothing', null)).toBeNull();
   });
 
-  it('nested_workspace_uses_innermost_for_trailing', () => {
+  it('nested_ac_root_uses_innermost_for_trailing', () => {
     const w = 'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
     expect(computeTrailingText(w, null)).toBe('alice@repo-AC');
   });

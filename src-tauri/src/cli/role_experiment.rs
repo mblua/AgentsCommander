@@ -426,7 +426,7 @@ struct CommandOutput {
 }
 
 struct LoadedExperiment {
-    workspace_dir: PathBuf,
+    ac_root: PathBuf,
     experiment_dir: PathBuf,
     experiment: ExperimentMetadata,
 }
@@ -528,17 +528,17 @@ fn init_for_project_path(
         )]);
     }
 
-    let workspace_dir = resolve_workspace(project_path)?;
-    reject_link_or_reparse(&workspace_dir, "workspace_link_or_reparse", None)?;
+    let ac_root = resolve_ac_root(project_path)?;
+    reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
 
     let source_ref = map_err(
-        resolve_agent_ref(&workspace_dir, &args.source_agent),
+        resolve_agent_ref(&ac_root, &args.source_agent),
         "source_agent_missing",
         None,
     )?;
     let source_agent = agent_ref_bare_name(&source_ref);
     validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
-    let source_matrix = source_matrix_path(&workspace_dir, &source_agent);
+    let source_matrix = source_matrix_path(&ac_root, &source_agent);
     let source_role = source_matrix.join("Role.md");
     reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
     reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
@@ -579,7 +579,7 @@ fn init_for_project_path(
             preflight_errors.push(err("variant_name_invalid", e, Some(variant.as_str())));
             continue;
         }
-        let target = variant_matrix_path(&workspace_dir, &source_agent, variant);
+        let target = variant_matrix_path(&ac_root, &source_agent, variant);
         if target.exists() {
             if is_link_path(&target) {
                 preflight_errors.push(err(
@@ -601,7 +601,7 @@ fn init_for_project_path(
         variants.push(variant.clone());
     }
 
-    let experiment_dir = experiments_dir(&workspace_dir).join(&args.name);
+    let experiment_dir = experiments_dir(&ac_root).join(&args.name);
     reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
     if experiment_dir.exists() {
         preflight_errors.push(err(
@@ -640,7 +640,7 @@ fn init_for_project_path(
     for variant in &variants {
         let agent_name = variant_agent_name(&source_agent, variant);
         let created = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
-            workspace_dir: &workspace_dir,
+            ac_root: &ac_root,
             safe_name: &agent_name,
             role_bytes: &role_bytes,
         })
@@ -719,8 +719,8 @@ fn init_for_project_path(
 
 fn list(args: ProjectArgs) -> Result<CommandOutput, Vec<CliError>> {
     let project_path = resolve_project(&args.project)?;
-    let workspace_dir = resolve_workspace(&project_path)?;
-    let root = experiments_dir(&workspace_dir);
+    let ac_root = resolve_ac_root(&project_path)?;
+    let root = experiments_dir(&ac_root);
     let mut warnings = Vec::new();
     let mut experiments = Vec::new();
     if root.is_dir() {
@@ -831,7 +831,7 @@ fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
         )]);
     }
 
-    let blockers = find_live_sessions_for_variant(&loaded.workspace_dir, &variant.agent_name);
+    let blockers = find_live_sessions_for_variant(&loaded.ac_root, &variant.agent_name);
     if !blockers.is_empty() {
         return Err(vec![err(
             "active_variant_session",
@@ -841,7 +841,7 @@ fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<CliError>> {
     }
 
     let expected_matrix = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.variant,
     );
@@ -948,13 +948,13 @@ fn variant_diff_loaded(
         return Err(errors);
     }
     let left_role = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.against,
     )
     .join("Role.md");
     let right_role = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.variant,
     )
@@ -1179,7 +1179,7 @@ fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
                 agent_name: variant.agent_name.clone(),
                 role_sha256: variant.role_sha256.clone(),
                 role_path: variant_matrix_path(
-                    &loaded.workspace_dir,
+                    &loaded.ac_root,
                     &loaded.experiment.source_agent,
                     &variant.name,
                 )
@@ -1531,7 +1531,7 @@ fn prepare_execution_plan(
         } else {
             (
                 create_run_workgroup_dirs(
-                    &loaded.workspace_dir,
+                    &loaded.ac_root,
                     &loaded.experiment.name,
                     &run_id,
                     &validation.variant_metas,
@@ -1740,7 +1740,7 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
 
     if source_metadata_valid {
         let source_matrix =
-            source_matrix_path(&loaded.workspace_dir, &loaded.experiment.source_agent);
+            source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
         let source_role = source_matrix.join("Role.md");
         if !source_matrix.is_dir() {
             errors.push(err(
@@ -1790,7 +1790,7 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
                 errors.extend(validate_variant_metadata_paths(loaded, variant, &meta));
                 validate_variant_files(loaded, &meta, &mut errors);
                 for blocker in
-                    find_live_sessions_for_variant(&loaded.workspace_dir, &meta.agent_name)
+                    find_live_sessions_for_variant(&loaded.ac_root, &meta.agent_name)
                 {
                     errors.push(err(
                         "active_variant_session",
@@ -1801,7 +1801,7 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
                         Some(meta.name.as_str()),
                     ));
                 }
-                if replica_role_overrides(&loaded.workspace_dir, &meta.agent_name)
+                if replica_role_overrides(&loaded.ac_root, &meta.agent_name)
                     .into_iter()
                     .next()
                     .is_some()
@@ -1830,11 +1830,11 @@ fn resolve_project(project: &str) -> Result<PathBuf, Vec<CliError>> {
     workgroup::resolve_cli_project(project).map_err(|e| vec![err("project_not_found", e, None)])
 }
 
-fn resolve_workspace(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
-    let workspace = workgroup::resolve_cli_workspace(project_path)
+fn resolve_ac_root(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
+    let ac_root = workgroup::resolve_cli_ac_root(project_path)
         .map_err(|e| vec![err("workspace_not_found", e, None)])?;
-    reject_link_or_reparse(&workspace, "workspace_link_or_reparse", None)?;
-    std::fs::canonicalize(&workspace).map_err(|e| {
+    reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
+    std::fs::canonicalize(&ac_root).map_err(|e| {
         vec![err(
             "workspace_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
@@ -1846,15 +1846,15 @@ fn resolve_workspace(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
 fn load_experiment(project: &str, experiment: &str) -> Result<LoadedExperiment, Vec<CliError>> {
     validate_slug_identity(experiment, "Experiment", "experiment_name_invalid")?;
     let project_path = resolve_project(project)?;
-    let workspace_dir = resolve_workspace(&project_path)?;
-    let experiment_dir = experiments_dir(&workspace_dir).join(experiment);
+    let ac_root = resolve_ac_root(&project_path)?;
+    let experiment_dir = experiments_dir(&ac_root).join(experiment);
     let metadata_path = experiment_dir.join("experiment.json");
     reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
     reject_link_or_reparse(&metadata_path, "experiment_metadata_link_or_reparse", None)?;
     let experiment = read_json::<ExperimentMetadata>(&metadata_path)
         .map_err(|e| vec![err("experiment_metadata_missing", e, None)])?;
     Ok(LoadedExperiment {
-        workspace_dir,
+        ac_root,
         experiment_dir,
         experiment,
     })
@@ -2195,12 +2195,12 @@ fn validate_child_path(root: &Path, child: &Path) -> Result<(), Vec<CliError>> {
 }
 
 fn create_run_workgroup_dirs(
-    workspace_dir: &Path,
+    ac_root: &Path,
     experiment: &str,
     run_id: &str,
     variants: &[VariantMetadata],
 ) -> Result<RunWorkgroupArtifact, Vec<CliError>> {
-    reject_link_or_reparse(workspace_dir, "workspace_link_or_reparse", None)?;
+    reject_link_or_reparse(ac_root, "workspace_link_or_reparse", None)?;
     let sanitized_experiment = sanitize_name(experiment).map_err(|e| {
         vec![err(
             "experiment_name_invalid",
@@ -2208,9 +2208,9 @@ fn create_run_workgroup_dirs(
             None,
         )]
     })?;
-    let next = next_workgroup_number(workspace_dir)?;
+    let next = next_workgroup_number(ac_root)?;
     let name = format!("wg-{}-role-exp-{}", next, sanitized_experiment);
-    let path = workspace_dir.join(&name);
+    let path = ac_root.join(&name);
     reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
     fs::create_dir(&path).map_err(|e| {
         vec![err_at_path(
@@ -2257,7 +2257,7 @@ fn create_run_workgroup_dirs(
                 )]
             })?;
         }
-        let role_path = variant_matrix_path(workspace_dir, &variant.source_agent, &variant.name)
+        let role_path = variant_matrix_path(ac_root, &variant.source_agent, &variant.name)
             .join("Role.md");
         let role_text = fs::read_to_string(&role_path).map_err(|e| {
             vec![err_at_path(
@@ -2281,13 +2281,13 @@ fn create_run_workgroup_dirs(
     })
 }
 
-fn next_workgroup_number(workspace_dir: &Path) -> Result<u32, Vec<CliError>> {
+fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
     let mut max = 0;
-    for entry in fs::read_dir(workspace_dir).map_err(|e| {
+    for entry in fs::read_dir(ac_root).map_err(|e| {
         vec![err_at_path(
             "workspace_not_found",
-            format!("Failed to read {}: {}", workspace_dir.display(), e),
-            workspace_dir,
+            format!("Failed to read {}: {}", ac_root.display(), e),
+            ac_root,
         )]
     })? {
         let entry = entry.map_err(|e| {
@@ -2308,15 +2308,15 @@ fn next_workgroup_number(workspace_dir: &Path) -> Result<u32, Vec<CliError>> {
     Ok(max + 1)
 }
 
-fn validate_workgroup_under_workspace(
-    workspace_dir: &Path,
+fn validate_workgroup_under_ac_root(
+    ac_root: &Path,
     workgroup: &RunWorkgroupArtifact,
 ) -> Result<(), Vec<CliError>> {
-    let workspace = fs::canonicalize(workspace_dir).map_err(|e| {
+    let ac_root = fs::canonicalize(ac_root).map_err(|e| {
         vec![err_at_path(
             "workspace_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
-            workspace_dir,
+            ac_root,
         )]
     })?;
     let path = PathBuf::from(&workgroup.path);
@@ -2328,7 +2328,7 @@ fn validate_workgroup_under_workspace(
             &path,
         )]
     })?;
-    if canonical.starts_with(workspace) && workgroup.name.starts_with("wg-") {
+    if canonical.starts_with(ac_root) && workgroup.name.starts_with("wg-") {
         Ok(())
     } else {
         Err(vec![err(
@@ -2528,7 +2528,7 @@ fn load_and_validate_resume_artifacts(
         ));
     }
     if let Err(mut workgroup_errors) =
-        validate_workgroup_under_workspace(&loaded.workspace_dir, &workgroup)
+        validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
     {
         errors.append(&mut workgroup_errors);
     }
@@ -2807,7 +2807,7 @@ fn validate_experiment_metadata_paths(loaded: &LoadedExperiment) -> Vec<CliError
         &mut errors,
         parent,
         &loaded.experiment.source_matrix_path,
-        &source_matrix_path(&loaded.workspace_dir, source),
+        &source_matrix_path(&loaded.ac_root, source),
         "sourceMatrixPath",
         None,
     );
@@ -2815,7 +2815,7 @@ fn validate_experiment_metadata_paths(loaded: &LoadedExperiment) -> Vec<CliError
         &mut errors,
         parent,
         &loaded.experiment.source_role_path,
-        &source_matrix_path(&loaded.workspace_dir, source).join("Role.md"),
+        &source_matrix_path(&loaded.ac_root, source).join("Role.md"),
         "sourceRolePath",
         None,
     );
@@ -2833,7 +2833,7 @@ fn validate_loaded_experiment_source_metadata(loaded: &LoadedExperiment) -> Vec<
         return errors;
     }
     errors.extend(validate_experiment_metadata_paths(loaded));
-    let source_matrix = source_matrix_path(&loaded.workspace_dir, &loaded.experiment.source_agent);
+    let source_matrix = source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
     let source_role = source_matrix.join("Role.md");
     if let Err(mut e) = reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)
     {
@@ -2885,7 +2885,7 @@ fn validate_variant_metadata_paths(
     }
     let expected_agent = variant_agent_name(&loaded.experiment.source_agent, requested_variant);
     let expected_matrix = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         requested_variant,
     );
@@ -2927,7 +2927,7 @@ fn validate_variant_files(
     errors: &mut Vec<CliError>,
 ) {
     let matrix = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         &variant.name,
     );
@@ -2954,7 +2954,7 @@ fn validate_variant_files(
         ));
     } else if path_key(&matrix)
         == path_key(&source_matrix_path(
-            &loaded.workspace_dir,
+            &loaded.ac_root,
             &loaded.experiment.source_agent,
         ))
     {
@@ -3176,12 +3176,12 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 }
 
 fn find_live_sessions_for_variant(
-    workspace_dir: &Path,
+    ac_root: &Path,
     variant_agent_name: &str,
 ) -> Vec<LiveSessionBlocker> {
     let mut out =
-        find_live_sessions_under(&workspace_dir.join(format!("_agent_{}", variant_agent_name)));
-    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
+        find_live_sessions_under(&ac_root.join(format!("_agent_{}", variant_agent_name)));
+    if let Ok(entries) = std::fs::read_dir(ac_root) {
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -3198,9 +3198,9 @@ fn find_live_sessions_for_variant(
     out
 }
 
-fn replica_role_overrides(workspace_dir: &Path, variant_agent_name: &str) -> Vec<PathBuf> {
+fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
+    if let Ok(entries) = std::fs::read_dir(ac_root) {
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -3241,7 +3241,7 @@ fn add_diff_warnings(
         return;
     };
     let control_role = variant_matrix_path(
-        &loaded.workspace_dir,
+        &loaded.ac_root,
         &loaded.experiment.source_agent,
         &control.name,
     )
@@ -3251,7 +3251,7 @@ fn add_diff_warnings(
     };
     for variant in variants.iter().filter(|v| v.name != "control") {
         let role = variant_matrix_path(
-            &loaded.workspace_dir,
+            &loaded.ac_root,
             &loaded.experiment.source_agent,
             &variant.name,
         )
@@ -3531,8 +3531,8 @@ fn line_diff(left_name: &str, right_name: &str, left: &str, right: &str) -> (Str
     )
 }
 
-fn experiments_dir(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join("experiments")
+fn experiments_dir(ac_root: &Path) -> PathBuf {
+    ac_root.join("experiments")
 }
 
 fn runs_dir(loaded: &LoadedExperiment) -> PathBuf {
@@ -4063,16 +4063,16 @@ fn valid_run_status(status: &str) -> bool {
     )
 }
 
-fn source_matrix_path(workspace_dir: &Path, source_agent: &str) -> PathBuf {
-    workspace_dir.join(format!("_agent_{}", source_agent))
+fn source_matrix_path(ac_root: &Path, source_agent: &str) -> PathBuf {
+    ac_root.join(format!("_agent_{}", source_agent))
 }
 
 fn variant_agent_name(source_agent: &str, variant: &str) -> String {
     format!("{}-{}", source_agent, variant)
 }
 
-fn variant_matrix_path(workspace_dir: &Path, source_agent: &str, variant: &str) -> PathBuf {
-    workspace_dir.join(format!(
+fn variant_matrix_path(ac_root: &Path, source_agent: &str, variant: &str) -> PathBuf {
+    ac_root.join(format!(
         "_agent_{}",
         variant_agent_name(source_agent, variant)
     ))
@@ -4142,17 +4142,17 @@ mod tests {
 
     fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join(".ac");
-        let experiment_dir = workspace_dir.join("experiments").join("exp");
+        let ac_root = tmp.path().join(".ac");
+        let experiment_dir = ac_root.join("experiments").join("exp");
         std::fs::create_dir_all(experiment_dir.join("variants")).expect("experiment dirs");
 
-        let source_matrix = workspace_dir.join(format!("_agent_{}", source_agent));
+        let source_matrix = ac_root.join(format!("_agent_{}", source_agent));
         std::fs::create_dir_all(&source_matrix).expect("source matrix");
         std::fs::write(source_matrix.join("Role.md"), "source role\n").expect("source role");
 
         for variant in ["control", "test"] {
             let agent_name = variant_agent_name(source_agent, variant);
-            let matrix = workspace_dir.join(format!("_agent_{}", agent_name));
+            let matrix = ac_root.join(format!("_agent_{}", agent_name));
             std::fs::create_dir_all(&matrix).expect("variant matrix");
             std::fs::write(matrix.join("Role.md"), format!("{} role\n", variant))
                 .expect("variant role");
@@ -4191,7 +4191,7 @@ mod tests {
             variants: vec!["control".to_string(), "test".to_string()],
         };
         let loaded = LoadedExperiment {
-            workspace_dir,
+            ac_root,
             experiment_dir,
             experiment,
         };
@@ -4235,7 +4235,7 @@ mod tests {
         let run_id = "20260601-181500".to_string();
         let run_dir = runs_dir(&loaded).join(&run_id);
         std::fs::create_dir_all(run_dir.join("attempt-state")).expect("run dirs");
-        let workgroup_dir = loaded.workspace_dir.join("wg-1-role-exp-exp");
+        let workgroup_dir = loaded.ac_root.join("wg-1-role-exp-exp");
         std::fs::create_dir_all(&workgroup_dir).expect("workgroup dir");
 
         let suite = ParsedPromptSuite {
@@ -4470,14 +4470,14 @@ mod tests {
     fn init_rejects_linked_experiments_parent_before_metadata_write() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("project");
-        let workspace_dir = project.join(".ac");
-        let source_matrix = workspace_dir.join("_agent_alpha");
+        let ac_root = project.join(".ac");
+        let source_matrix = ac_root.join("_agent_alpha");
         std::fs::create_dir_all(&source_matrix).expect("source matrix");
         std::fs::write(source_matrix.join("Role.md"), "source role\n").expect("source role");
 
         let outside = tmp.path().join("outside-experiments");
         std::fs::create_dir_all(&outside).expect("outside experiments");
-        let experiments = workspace_dir.join("experiments");
+        let experiments = ac_root.join("experiments");
 
         #[cfg(windows)]
         let link_result = std::os::windows::fs::symlink_dir(&outside, &experiments);

@@ -8,9 +8,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
-use crate::config::workspace::{
-    canonical_workspace_dir_label, existing_workspace_dir, find_workspace_segment,
-    has_workspace_dir, workspace_dir_for_project,
+use crate::config::ac_root::{
+    canonical_ac_root_label, existing_ac_root, find_ac_root_segment,
+    has_ac_root, ac_root_for_project,
 };
 use crate::pty::manager::{PendingSpawn, PtyManager};
 use crate::session::manager::SessionManager;
@@ -162,7 +162,7 @@ pub struct AcDiscoveryResult {
 fn extract_origin_project(identity_abs_path: &std::path::Path) -> Option<String> {
     let s = identity_abs_path.to_string_lossy().replace('\\', "/");
     let parts: Vec<&str> = s.split('/').collect();
-    find_workspace_segment(&parts).and_then(|i| (i > 0).then(|| parts[i - 1].to_string()))
+    find_ac_root_segment(&parts).and_then(|i| (i > 0).then(|| parts[i - 1].to_string()))
 }
 
 struct ReplicaIdentityRead {
@@ -242,7 +242,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     if trimmed.contains(':') || trimmed.starts_with('/') {
         // Absolute path: extract origin project from folder before the Project AC Root marker
         let parts: Vec<&str> = trimmed.split('/').collect();
-        let origin = find_workspace_segment(&parts)
+        let origin = find_ac_root_segment(&parts)
             .and_then(|i| (i > 0).then_some(parts[i - 1]))
             .unwrap_or(project_folder);
         let dir_name = parts.last().unwrap_or(&trimmed);
@@ -525,7 +525,7 @@ impl DiscoveryBranchWatcher {
     pub fn update_replicas_for_project(&self, project_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
         // in dev builds. Release builds log a warn and return to prevent silent corruption.
-        let has_workspace = has_workspace_dir(Path::new(project_dir));
+        let has_workspace = has_ac_root(Path::new(project_dir));
         debug_assert!(
             has_workspace,
             "update_replicas_for_project: {} does not contain a Project AC Root",
@@ -984,7 +984,7 @@ impl DiscoveryBranchWatcher {
 /// 10-second gate poll never blocks a Tokio worker.
 fn scan_project_context_templates_recorded(
     project_root: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<Vec<crate::config::seeded_context_templates::ContextTemplateUpdate>, String> {
     use crate::config::seed_manifest::SoftProjectGate;
@@ -993,7 +993,7 @@ fn scan_project_context_templates_recorded(
         scan_project_context_template_updates_with_publications, ContextPublication,
     };
     let Some(token) = activation else {
-        return scan_project_context_template_updates(project_root, workspace_dir);
+        return scan_project_context_template_updates(project_root, ac_root);
     };
     match crate::config::seed_manifest::acquire_project_gate_soft(project_root) {
         SoftProjectGate::Held(mut guard) => {
@@ -1009,7 +1009,7 @@ fn scan_project_context_templates_recorded(
                     };
                 scan_project_context_template_updates_with_publications(
                     project_root,
-                    workspace_dir,
+                    ac_root,
                     &mut on_publication,
                 )
             };
@@ -1017,12 +1017,12 @@ fn scan_project_context_templates_recorded(
             result
         }
         SoftProjectGate::DegradedUntracked => {
-            scan_project_context_template_updates(project_root, workspace_dir)
+            scan_project_context_template_updates(project_root, ac_root)
         }
         SoftProjectGate::Unavailable(error) => {
             log::warn!(
                 "[context-templates] skipping gated context scan for {}: {}",
-                workspace_dir.display(),
+                ac_root.display(),
                 error
             );
             Ok(Vec::new())
@@ -1092,16 +1092,16 @@ pub async fn discover_ac_agents(
         };
 
         for repo_dir in dirs_to_check {
-            let Some(workspace_dir) = existing_workspace_dir(&repo_dir) else {
+            let Some(ac_root) = existing_ac_root(&repo_dir) else {
                 continue;
             };
             let repo_dir_str = projected_path_string(&repo_dir);
 
             // Opportunistic: ensure gitignore exists for existing projects
-            let _ = ensure_workspace_gitignore(&workspace_dir);
+            let _ = ensure_ac_root_gitignore(&ac_root);
             let context_scan = crate::config::seed_manifest::run_blocking_owned({
                 let repo_dir = repo_dir.clone();
-                let workspace_dir = workspace_dir.clone();
+                let ac_root = ac_root.clone();
                 move || {
                     // #1065 Stage F: production records recognized context updates
                     // under the gate; a `#[cfg(test)]` lib build stays non-emitting.
@@ -1114,7 +1114,7 @@ pub async fn discover_ac_agents(
                     > = None;
                     scan_project_context_templates_recorded(
                         &repo_dir,
-                        &workspace_dir,
+                        &ac_root,
                         activation.as_ref(),
                     )
                 }
@@ -1124,12 +1124,12 @@ pub async fn discover_ac_agents(
                 Ok(Ok(mut updates)) => context_template_updates.append(&mut updates),
                 Ok(Err(e)) => log::warn!(
                     "[context-templates] scan failed for {}: {}",
-                    workspace_dir.display(),
+                    ac_root.display(),
                     e
                 ),
                 Err(e) => log::warn!(
                     "[context-templates] blocking scan failed for {}: {}",
-                    workspace_dir.display(),
+                    ac_root.display(),
                     e
                 ),
             }
@@ -1141,7 +1141,7 @@ pub async fn discover_ac_agents(
                 .unwrap_or("unknown")
                 .to_string();
 
-            let entries = match std::fs::read_dir(&workspace_dir) {
+            let entries = match std::fs::read_dir(&ac_root) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -1269,7 +1269,7 @@ pub async fn discover_ac_agents(
                                 // teams::tests::is_any_coordinator_requires_qualified_fqn.
                                 let is_coordinator =
                                     crate::config::teams::resolve_wg_coordinator_replica(
-                                        &workspace_dir,
+                                        &ac_root,
                                         &path,
                                     )
                                     .map(|resolved| resolved.agent_name == replica_name)
@@ -1482,7 +1482,7 @@ pub async fn discover_ac_agents(
 
 /// Check if a folder has a Project AC Root subdirectory.
 pub(crate) fn check_project_path_inner(path: &str) -> bool {
-    existing_workspace_dir(Path::new(path)).is_some()
+    existing_ac_root(Path::new(path)).is_some()
 }
 
 /// Check if a folder has a Project AC Root subdirectory.
@@ -1493,8 +1493,8 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 
 /// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
-pub(crate) fn ensure_workspace_gitignore(workspace_dir: &Path) -> Result<(), String> {
-    let gitignore_path = workspace_dir.join(".gitignore");
+pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
+    let gitignore_path = ac_root.join(".gitignore");
     const SEED_MANIFEST_GITIGNORE_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n\n# AgentsCommander: keep the seed publication manifest reviewable.\n!/seed-manifest.toml\n";
     const SEED_MANIFEST_PATTERNS: [&str; 3] = [
         "/.seed-manifest.lock",
@@ -1595,9 +1595,9 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
         create_ac_project_impl(
             &path,
             activation.as_ref(),
-            |workspace_dir, on_publication| {
+            |ac_root, on_publication| {
                 crate::config::session_context::create_default_context_templates_with_publications(
-                    workspace_dir,
+                    ac_root,
                     on_publication,
                 )
             },
@@ -1668,14 +1668,14 @@ where
         }
     }
 
-    let workspace_dir = workspace_dir_for_project(&project_dir);
-    let created = match std::fs::create_dir(&workspace_dir) {
+    let ac_root = ac_root_for_project(&project_dir);
+    let created = match std::fs::create_dir(&ac_root) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(error) => {
             return Err(format!(
                 "Failed to create {} directory: {}",
-                canonical_workspace_dir_label(),
+                canonical_ac_root_label(),
                 error
             ))
         }
@@ -1688,16 +1688,16 @@ where
                 error
             )
         })?;
-    let pinned_workspace = crate::config::seed_manifest::PinnedDirectory::open(&workspace_dir)
+    let pinned_ac_root = crate::config::seed_manifest::PinnedDirectory::open(&ac_root)
         .map_err(|error| {
             format!(
                 "Failed to pin {} directory {}: {}",
-                canonical_workspace_dir_label(),
-                workspace_dir.display(),
+                canonical_ac_root_label(),
+                ac_root.display(),
                 error
             )
         })?;
-    after_create_before_gate(&workspace_dir, created);
+    after_create_before_gate(&ac_root, created);
     pinned_project.revalidate().map_err(|error| {
         format!(
             "AC project setup at {} changed before gate acquisition: {}; retry the operation",
@@ -1705,7 +1705,7 @@ where
             error
         )
     })?;
-    pinned_workspace.revalidate().map_err(|error| {
+    pinned_ac_root.revalidate().map_err(|error| {
         format!(
             "AC project setup at {} changed before gate acquisition: {}; retry the operation",
             project_dir.display(),
@@ -1728,7 +1728,7 @@ where
             error
         )
     })?;
-    pinned_workspace
+    pinned_ac_root
         .revalidate_at(guard.ac_root())
         .map_err(|error| {
             format!(
@@ -1745,7 +1745,7 @@ where
         )
     })?;
     if created {
-        ensure_workspace_gitignore(&workspace_dir)?;
+        ensure_ac_root_gitignore(&ac_root)?;
         // #1065 Stage F: record each freshly created project context template under
         // the held gate at its commit-point time. A pre-existing `.ac` is not
         // backfilled (the `else` branch creates no templates), preserving the bare
@@ -1762,9 +1762,9 @@ where
                     );
                 }
             };
-        create_context_templates(&workspace_dir, &mut on_publication)?;
+        create_context_templates(&ac_root, &mut on_publication)?;
     } else {
-        ensure_workspace_gitignore(&workspace_dir)?;
+        ensure_ac_root_gitignore(&ac_root)?;
     }
     guard.revalidate_owner().map_err(|error| {
         format!(
@@ -1823,7 +1823,7 @@ pub(crate) async fn discover_project_inner(
         .unwrap_or_else(|e| e.into_inner())
         .snapshot();
 
-    let Some(workspace_dir) = existing_workspace_dir(base) else {
+    let Some(ac_root) = existing_ac_root(base) else {
         return Ok(AcDiscoveryResult {
             agents: vec![],
             teams: vec![],
@@ -1834,10 +1834,10 @@ pub(crate) async fn discover_project_inner(
     };
 
     // Opportunistic: ensure gitignore protects workgroup clones
-    let _ = ensure_workspace_gitignore(&workspace_dir);
+    let _ = ensure_ac_root_gitignore(&ac_root);
     let context_scan = crate::config::seed_manifest::run_blocking_owned({
         let base = base.to_path_buf();
-        let workspace_dir = workspace_dir.clone();
+        let ac_root = ac_root.clone();
         move || {
             // #1065 Stage F: production records recognized context updates under the
             // gate; a `#[cfg(test)]` lib build stays non-emitting.
@@ -1848,7 +1848,7 @@ pub(crate) async fn discover_project_inner(
             let activation: Option<
                 crate::config::seed_manifest::ManifestActivationToken,
             > = None;
-            scan_project_context_templates_recorded(&base, &workspace_dir, activation.as_ref())
+            scan_project_context_templates_recorded(&base, &ac_root, activation.as_ref())
         }
     })
     .await;
@@ -1857,7 +1857,7 @@ pub(crate) async fn discover_project_inner(
         Ok(Err(e)) => {
             log::warn!(
                 "[context-templates] scan failed for {}: {}",
-                workspace_dir.display(),
+                ac_root.display(),
                 e
             );
             Vec::new()
@@ -1865,7 +1865,7 @@ pub(crate) async fn discover_project_inner(
         Err(e) => {
             log::warn!(
                 "[context-templates] blocking scan failed for {}: {}",
-                workspace_dir.display(),
+                ac_root.display(),
                 e
             );
             Vec::new()
@@ -1891,7 +1891,7 @@ pub(crate) async fn discover_project_inner(
     let mut workgroups: Vec<AcWorkgroup> = Vec::new();
     let mut loops = crate::config::loops::discover_loops_in_project(base);
 
-    let entries = match std::fs::read_dir(&workspace_dir) {
+    let entries = match std::fs::read_dir(&ac_root) {
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to read Project AC Root directory: {}", e)),
     };
@@ -2006,7 +2006,7 @@ pub(crate) async fn discover_project_inner(
                         // shape). Covered by
                         // teams::tests::is_any_coordinator_requires_qualified_fqn.
                         let is_coordinator = crate::config::teams::resolve_wg_coordinator_replica(
-                            &workspace_dir,
+                            &ac_root,
                             &entry_path,
                         )
                         .map(|resolved| resolved.agent_name == replica_name)
@@ -2223,10 +2223,10 @@ pub async fn keep_custom_context_template(
     current_file_sha256: String,
     current_default_sha256: String,
 ) -> Result<(), String> {
-    let workspace_dir = existing_workspace_dir(Path::new(&path))
+    let ac_root = existing_ac_root(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
     crate::config::seeded_context_templates::dismiss_context_template_update(
-        &workspace_dir,
+        &ac_root,
         &filename,
         &current_file_sha256,
         &current_default_sha256,
@@ -2244,7 +2244,7 @@ pub async fn keep_custom_context_template(
 /// unactivated caller, which runs the plain ungated overwrite unchanged.
 fn overwrite_context_template_recorded(
     project_root: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
@@ -2257,7 +2257,7 @@ fn overwrite_context_template_recorded(
     };
     let Some(token) = activation else {
         return overwrite_context_template_with_default(
-            workspace_dir,
+            ac_root,
             filename,
             expected_file_sha256,
             expected_default_sha256,
@@ -2275,7 +2275,7 @@ fn overwrite_context_template_recorded(
                     );
                 };
                 overwrite_context_template_with_default_with_publications(
-                    workspace_dir,
+                    ac_root,
                     filename,
                     expected_file_sha256,
                     expected_default_sha256,
@@ -2286,7 +2286,7 @@ fn overwrite_context_template_recorded(
             execution.completion
         }
         SoftProjectGate::DegradedUntracked => overwrite_context_template_with_default(
-            workspace_dir,
+            ac_root,
             filename,
             expected_file_sha256,
             expected_default_sha256,
@@ -2304,7 +2304,7 @@ pub async fn overwrite_context_template_with_default(
     current_file_sha256: String,
     current_default_sha256: String,
 ) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
-    let workspace_dir = existing_workspace_dir(Path::new(&path))
+    let ac_root = existing_ac_root(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
     crate::config::seed_manifest::run_blocking_owned(move || {
         // #1065 Stage F: production records the overwrite under the gate; a
@@ -2315,7 +2315,7 @@ pub async fn overwrite_context_template_with_default(
         let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
         overwrite_context_template_recorded(
             Path::new(&path),
-            &workspace_dir,
+            &ac_root,
             &filename,
             &current_file_sha256,
             &current_default_sha256,
@@ -2638,13 +2638,13 @@ impl NewProjectTransactionHooks {
         crate::config::settings::reconcile_project_state_to_path(settings, path, true, true)
     }
 
-    fn before_final_revalidation(&self, workspace_dir: &Path) {
+    fn before_final_revalidation(&self, ac_root: &Path) {
         #[cfg(test)]
         if let Some(hook) = &self.before_final_revalidation {
-            hook(workspace_dir);
+            hook(ac_root);
         }
         #[cfg(not(test))]
-        let _ = workspace_dir;
+        let _ = ac_root;
     }
 }
 
@@ -2694,7 +2694,7 @@ async fn new_project_inner_with_settings_path_and_hooks(
         let written = hooks.save_settings(&snapshot, settings_path.as_deref())?;
         // §4.2: publish the fresh-decoded settings (selected runtime + hidden state).
         *current = written;
-        hooks.before_final_revalidation(prepared.workspace_dir());
+        hooks.before_final_revalidation(prepared.ac_root());
         if let Err(error) = prepared.revalidate() {
             // #1077 reconciliation step 3: resync the pre-mutation snapshot so its
             // pre-mutation runtime list writes runtime_authoritative and CLEARS the
@@ -2719,8 +2719,8 @@ async fn new_project_inner_with_settings_path_and_hooks(
         let archived_changed = before_archived != current.archived_project_paths;
         drop(current);
         // #1318 - capture the project root BEFORE release (`abs` is private;
-        // `workspace_dir()` returns the `.ac` dir).
-        let project_root = prepared.workspace_dir().parent().map(Path::to_path_buf);
+        // `ac_root()` returns the `.ac` dir).
+        let project_root = prepared.ac_root().parent().map(Path::to_path_buf);
         prepared.release();
         // #1318 - a fresh registration seeds the catalog + masters immediately
         // (no restart needed). INSIDE this blocking closure, so the gate acquire
@@ -3998,7 +3998,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_project_path_rejects_non_ac_workspace() {
+    async fn check_project_path_rejects_non_ac_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(tmp.path().join(".workspace")).expect("create non-AC workspace");
 
@@ -4044,9 +4044,9 @@ mod tests {
         create_ac_project_impl(
             &project.to_string_lossy(),
             Some(&token),
-            |workspace_dir, on_publication| {
+            |ac_root, on_publication| {
                 crate::config::session_context::create_default_context_templates_with_publications(
-                    workspace_dir,
+                    ac_root,
                     on_publication,
                 )
             },
@@ -4077,14 +4077,14 @@ mod tests {
     fn overwrite_context_template_records_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
-        let workspace = project.join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let filename = crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
-        std::fs::write(workspace.join(filename), "custom coordinator guidance")
+        std::fs::write(ac_root.join(filename), "custom coordinator guidance")
             .expect("write custom coordinator");
         let update =
             crate::config::seeded_context_templates::scan_project_context_template_updates(
-                project, &workspace,
+                project, &ac_root,
             )
             .expect("scan updates")
             .pop()
@@ -4093,7 +4093,7 @@ mod tests {
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         overwrite_context_template_recorded(
             project,
-            &workspace,
+            &ac_root,
             &update.filename,
             &update.current_file_sha256,
             &update.current_default_sha256,
@@ -4101,7 +4101,7 @@ mod tests {
         )
         .expect("overwrite context template");
 
-        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
             .expect("an explicit overwrite records a manifest row under the gate");
         assert!(
             manifest.contains("scope = \"context:coordinator\""),
@@ -4114,9 +4114,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().to_string_lossy().to_string();
 
-        let first_result = create_ac_project_impl(&path, None, |workspace_dir, _on_publication| {
+        let first_result = create_ac_project_impl(&path, None, |ac_root, _on_publication| {
             std::fs::write(
-                workspace_dir
+                ac_root
                     .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                 crate::config::session_context::get_default_agent_template(),
             )
@@ -4158,17 +4158,17 @@ mod tests {
     #[tokio::test]
     async fn create_ac_project_does_not_backfill_existing_ac_contexts() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
 
         create_ac_project(tmp.path().to_string_lossy().to_string())
             .await
             .expect("create project");
 
-        assert!(!workspace
+        assert!(!ac_root
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .exists());
-        assert!(!workspace
+        assert!(!ac_root
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
     }
@@ -4184,8 +4184,8 @@ mod tests {
             create_ac_project_impl_with_hook(
                 &creator_path,
                 None,
-                |workspace_dir, _on_publication| {
-                    crate::config::session_context::create_default_context_templates(workspace_dir)
+                |ac_root, _on_publication| {
+                    crate::config::session_context::create_default_context_templates(ac_root)
                 },
                 move |_, created| {
                     assert!(created, "creator must own the create_dir win");
@@ -4343,11 +4343,11 @@ mod tests {
         let state: SettingsState =
             std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
         let hooks = NewProjectTransactionHooks {
-            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
-                let detached = workspace_dir.with_extension("ac-detached-after-save");
-                std::fs::rename(workspace_dir, &detached).expect("detach prepared root");
-                std::fs::create_dir(workspace_dir).expect("install replacement root");
-                std::fs::write(workspace_dir.join("foreign.txt"), b"FOREIGN")
+            before_final_revalidation: Some(std::sync::Arc::new(|ac_root| {
+                let detached = ac_root.with_extension("ac-detached-after-save");
+                std::fs::rename(ac_root, &detached).expect("detach prepared root");
+                std::fs::create_dir(ac_root).expect("install replacement root");
+                std::fs::write(ac_root.join("foreign.txt"), b"FOREIGN")
                     .expect("write replacement marker");
             })),
             ..NewProjectTransactionHooks::default()
@@ -4387,10 +4387,10 @@ mod tests {
         let state: SettingsState =
             std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
         let hooks = NewProjectTransactionHooks {
-            before_final_revalidation: Some(std::sync::Arc::new(|workspace_dir| {
+            before_final_revalidation: Some(std::sync::Arc::new(|ac_root| {
                 let lock =
-                    workspace_dir.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
-                let detached = workspace_dir.join(".seed-manifest.lock-detached-after-save");
+                    ac_root.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+                let detached = ac_root.join(".seed-manifest.lock-detached-after-save");
                 std::fs::rename(&lock, &detached).expect("detach held lock identity");
                 std::fs::write(&lock, b"").expect("install replacement lock identity");
             })),
@@ -4467,11 +4467,11 @@ mod tests {
     #[tokio::test]
     async fn keep_custom_context_template_rejects_workspace_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
 
         let err = keep_custom_context_template(
-            workspace.to_string_lossy().to_string(),
+            ac_root.to_string_lossy().to_string(),
             crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
             "file".to_string(),
             "default".to_string(),
@@ -4483,15 +4483,15 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workspace_gitignore_includes_delete_sentinels_on_create() {
+    fn ensure_ac_root_gitignore_includes_delete_sentinels_on_create() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         let content =
-            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
             "workspace .gitignore must ignore workgroup delete sentinel directories"
@@ -4525,15 +4525,15 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workspace_gitignore_writes_team_config_lock_block_on_create() {
+    fn ensure_ac_root_gitignore_writes_team_config_lock_block_on_create() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
 
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         let content =
-            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let block =
             "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
         assert_eq!(
@@ -4552,16 +4552,16 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workspace_gitignore_appends_delete_sentinels_to_existing_file() {
+    fn ensure_ac_root_gitignore_appends_delete_sentinels_to_existing_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
-        std::fs::write(workspace.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        std::fs::write(ac_root.join(".gitignore"), "wg-*/\n").expect("write .gitignore");
 
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         let content =
-            std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let count = content
             .lines()
             .filter(|line| line.trim() == ".deleting-*/")
@@ -4576,9 +4576,9 @@ mod tests {
     fn seed_manifest_gitignore_rules_are_anchored_to_ac_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("project");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(workspace.join("nested")).expect("create .ac tree");
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("nested")).expect("create .ac tree");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         for relative in [
             ".ac/.seed-manifest.lock",
@@ -4631,10 +4631,10 @@ mod tests {
     fn stage_e_parent_gitignore_excluding_ac_hides_manifest_despite_negation() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("project");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("create .ac");
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
-        std::fs::write(workspace.join("seed-manifest.toml"), b"fixture").expect("write manifest");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+        std::fs::write(ac_root.join("seed-manifest.toml"), b"fixture").expect("write manifest");
         // A parent repository rule excludes the whole `.ac/` directory.
         std::fs::write(project.join(".gitignore"), b"/.ac/\n").expect("write parent .gitignore");
 
@@ -4674,15 +4674,15 @@ mod tests {
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let project = tmp.path().join("project");
-            let workspace = project.join(".ac");
-            std::fs::create_dir_all(&workspace).expect("create .ac");
-            ensure_workspace_gitignore(&workspace).expect("ensure .gitignore");
+            let ac_root = project.join(".ac");
+            std::fs::create_dir_all(&ac_root).expect("create .ac");
+            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
             // Append a later user rule (never reordered by AC).
             let mut content =
-                std::fs::read_to_string(workspace.join(".gitignore")).expect("read .gitignore");
+                std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
             content.push_str("\n# user rule\n/seed-manifest.toml\n");
-            std::fs::write(workspace.join(".gitignore"), content).expect("append user rule");
-            std::fs::write(workspace.join("seed-manifest.toml"), b"x").expect("manifest");
+            std::fs::write(ac_root.join(".gitignore"), content).expect("append user rule");
+            std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
 
             let init = std::process::Command::new("git")
                 .args(["init", "--quiet"])
@@ -4716,10 +4716,10 @@ mod tests {
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let project = tmp.path().join("project");
-            let workspace = project.join(".ac");
-            std::fs::create_dir_all(&workspace).expect("create .ac");
-            ensure_workspace_gitignore(&workspace).expect("ensure .gitignore");
-            std::fs::write(workspace.join("seed-manifest.toml"), b"x").expect("manifest");
+            let ac_root = project.join(".ac");
+            std::fs::create_dir_all(&ac_root).expect("create .ac");
+            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+            std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
             let init = std::process::Command::new("git")
                 .args(["init", "--quiet"])
                 .current_dir(&project)
@@ -4757,10 +4757,10 @@ mod tests {
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let project = tmp.path().join("project");
-            let workspace = project.join(".ac");
-            std::fs::create_dir_all(&workspace).expect("create .ac");
-            ensure_workspace_gitignore(&workspace).expect("ensure .gitignore");
-            std::fs::write(workspace.join("seed-manifest.toml"), b"x").expect("manifest");
+            let ac_root = project.join(".ac");
+            std::fs::create_dir_all(&ac_root).expect("create .ac");
+            ensure_ac_root_gitignore(&ac_root).expect("ensure .gitignore");
+            std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
             let init = std::process::Command::new("git")
                 .args(["init", "--quiet"])
                 .current_dir(&project)
@@ -4799,17 +4799,17 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workspace_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent(
+    fn ensure_ac_root_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent(
     ) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create .ac");
-        let gitignore_path = workspace.join(".gitignore");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        let gitignore_path = ac_root.join(".gitignore");
         let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
             .to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         let updated = std::fs::read(&gitignore_path).expect("read updated .gitignore");
         assert!(
@@ -4834,7 +4834,7 @@ mod tests {
         );
 
         let once_updated = updated;
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore again");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
         let twice_updated = std::fs::read(&gitignore_path).expect("read .gitignore again");
         assert_eq!(
             twice_updated, once_updated,
@@ -4843,12 +4843,12 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workspace_gitignore_team_config_lock_rule_is_root_anchored() {
+    fn ensure_ac_root_gitignore_team_config_lock_rule_is_root_anchored() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("project");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("create .ac");
-        ensure_workspace_gitignore(&workspace).expect("ensure workspace .gitignore");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
         let init_status = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -4859,10 +4859,10 @@ mod tests {
 
         let empty_excludes = project.join("empty-global-excludes");
         std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
-        std::fs::write(workspace.join(".team-config-write.lock"), [])
+        std::fs::write(ac_root.join(".team-config-write.lock"), [])
             .expect("create root team-config lock");
-        std::fs::create_dir_all(workspace.join("nested")).expect("create nested directory");
-        std::fs::write(workspace.join("nested").join(".team-config-write.lock"), [])
+        std::fs::create_dir_all(ac_root.join("nested")).expect("create nested directory");
+        std::fs::write(ac_root.join("nested").join(".team-config-write.lock"), [])
             .expect("create nested team-config lock");
 
         let excludes_override = format!(
@@ -5049,10 +5049,10 @@ mod tests {
     fn invalid_replica_identity_is_not_reported_as_repaired_discovery_identity() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("AgentsCommander_ac");
-        let workspace = project.join(".ac");
-        let team_dir = workspace.join("_team_dev-team");
-        let matrix_dir = workspace.join("_agent_tech-lead");
-        let wg_dir = workspace.join("wg-2-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let matrix_dir = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join("wg-2-dev-team");
         let replica_dir = wg_dir.join("__agent_tech-lead");
 
         for dir in [&team_dir, &matrix_dir, &replica_dir] {
@@ -5083,7 +5083,7 @@ mod tests {
             "invalid identity must not be masked as the local origin project"
         );
         assert!(
-            crate::config::teams::resolve_wg_coordinator_replica(&workspace, &wg_dir).is_none(),
+            crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none(),
             "invalid identity must not grant coordinator/root authority"
         );
 
