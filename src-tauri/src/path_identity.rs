@@ -600,7 +600,7 @@ impl RetainedDirectory {
         #[cfg(target_os = "linux")]
         {
             const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
-            return unsafe {
+            unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
                     directory,
@@ -609,7 +609,7 @@ impl RetainedDirectory {
                     destination.as_ptr(),
                     RENAME_NOREPLACE,
                 ) == 0
-            };
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -623,7 +623,7 @@ impl RetainedDirectory {
                     flags: u32,
                 ) -> i32;
             }
-            return unsafe {
+            unsafe {
                 renameatx_np(
                     directory,
                     source.as_ptr(),
@@ -631,7 +631,7 @@ impl RetainedDirectory {
                     destination.as_ptr(),
                     RENAME_EXCL,
                 ) == 0
-            };
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
