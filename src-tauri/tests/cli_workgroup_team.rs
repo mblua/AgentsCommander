@@ -210,6 +210,7 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+#[cfg(target_os = "windows")]
 fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
     let out = Command::new(bin).args(args).output().expect("spawn");
     assert!(

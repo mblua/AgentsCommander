@@ -113,6 +113,7 @@ fn close_response(
     .to_string()
 }
 
+#[cfg(target_os = "windows")]
 const WINDOWS_SIMULATOR_PS1: &str = r#"
 param(
   [Parameter(Mandatory=$true)][string]$OutboxDir,

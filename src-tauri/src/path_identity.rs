@@ -17,7 +17,9 @@ const UNIX_O_NOFOLLOW: i32 = 0x0002_0000;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 const UNIX_O_NOFOLLOW: i32 = 0x0000_0100;
 
-#[cfg(unix)]
+// Only `child_is_absent` reaches this, and off Windows that helper survives
+// solely for its own unit tests (see its gate below).
+#[cfg(all(unix, test))]
 fn unix_child_open_error_is_absent(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(libc::ENOENT)
 }
@@ -415,6 +417,10 @@ impl RetainedDirectory {
         }
     }
 
+    // Every production caller sits in a `#[cfg(not(unix))]` arm
+    // (`phone::terminal_snapshot` and `pty::terminal_snapshot`); on Unix the
+    // method survives only for `terminal_snapshot_unix_child_api_*`.
+    #[cfg(any(not(unix), test))]
     pub fn child_is_absent(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
@@ -1083,7 +1089,9 @@ pub fn opened_file_is_delete_pending(file: &File) -> bool {
     succeeded != 0 && unsafe { information.assume_init() }.DeletePending != 0
 }
 
-#[cfg(not(windows))]
+// The sole caller is a `#[cfg(not(unix))]` match arm, so this fallback is only
+// reachable on a target that is neither Windows nor Unix.
+#[cfg(not(any(windows, unix)))]
 pub fn opened_file_is_delete_pending(_file: &File) -> bool {
     false
 }

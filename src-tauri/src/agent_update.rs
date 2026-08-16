@@ -342,7 +342,8 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
         // no new group); on timeout the whole tree dies with one group kill.
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
+            // `tokio::process::Command` exposes this as an inherent method on
+            // Unix, mirroring `creation_flags` above (no trait import needed).
             command.process_group(0);
         }
 
