@@ -587,18 +587,24 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         fixture
             .cleanup
             .record_session(&fixture.pty_mgr, restart_old_id);
-        wait_for_snapshot_contains(&fixture, &fixture.app, &restart_old_id, "AC_READY", "Phase F")
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_old_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
+        wait_for_snapshot_contains(
+            &fixture,
+            &fixture.app,
+            &restart_old_id,
+            "AC_READY",
+            "Phase F",
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase F",
+                    &[restart_old_id],
+                    std::slice::from_ref(&pid_restart)
                 )
-            });
+            )
+        });
         let restart_old_pid = wait_for_pid_file(&pid_restart, PID_TIMEOUT)
             .await
             .unwrap_or_else(|e| {
@@ -665,18 +671,24 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             });
         fixture.cleanup.record_pid(restart_new_pid);
         assert!(process_exists(restart_new_pid));
-        wait_for_snapshot_contains(&fixture, &fixture.app, &restart_new_id, "AC_READY", "Phase F")
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_old_id, restart_new_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
+        wait_for_snapshot_contains(
+            &fixture,
+            &fixture.app,
+            &restart_new_id,
+            "AC_READY",
+            "Phase F",
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase F",
+                    &[restart_old_id, restart_new_id],
+                    std::slice::from_ref(&pid_restart)
                 )
-            });
+            )
+        });
         {
             let last_event_sequence =
                 last_strictly_increasing_sequence(&fixture, &restarted.id, "Phase F");
@@ -942,9 +954,15 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
 
         let session_id = parse_session_id(&info);
         fixture.cleanup.record_session(&fixture.pty_mgr, session_id);
-        wait_for_snapshot_contains(&fixture, &fixture.app, &session_id, "AC_READY", "Claude materialization")
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
+        wait_for_snapshot_contains(
+            &fixture,
+            &fixture.app,
+            &session_id,
+            "AC_READY",
+            "Claude materialization",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
 
         assert_eq!(
             info.agent_kind,
@@ -1140,9 +1158,8 @@ async fn wait_for_snapshot_contains(
         )
         .map_err(|e| format!("{phase}: get_screen_snapshot failed for {session_id}: {e}"))?;
         if let Some(snapshot) = snapshot {
-            last_snapshot = Some(
-                serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"),
-            );
+            last_snapshot =
+                Some(serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"));
             let text = String::from_utf8_lossy(&snapshot.data);
             if text.contains(expected_bytes) {
                 let deliveries = fixture

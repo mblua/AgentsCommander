@@ -10304,14 +10304,10 @@ mod tests {
         // Drive the resolved-agent path exactly as `create_session` does: the
         // resolved agent stays the command-to-run, and the configured host shell
         // (copied from the same config snapshot) travels separately.
-        let spawn = super::build_configured_agent_spawn_for_cwd(
-            &test_settings(),
-            "claude",
-            &cwd,
-            None,
-        )
-        .expect("resolve claude")
-        .expect("claude is configured in test_settings");
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&test_settings(), "claude", &cwd, None)
+                .expect("resolve claude")
+                .expect("claude is configured in test_settings");
         let host_shell = crate::pty::backend::ResolvedAgentHostShell {
             program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
             args: vec!["-NoProfile".to_string()],
@@ -10378,14 +10374,10 @@ mod tests {
         )));
         let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
 
-        let spawn = super::build_configured_agent_spawn_for_cwd(
-            &test_settings(),
-            "claude",
-            &cwd,
-            None,
-        )
-        .expect("resolve claude")
-        .expect("claude is configured in test_settings");
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&test_settings(), "claude", &cwd, None)
+                .expect("resolve claude")
+                .expect("claude is configured in test_settings");
         let host_shell = crate::pty::backend::ResolvedAgentHostShell {
             program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
             args: vec!["-NoProfile".to_string()],
@@ -10444,7 +10436,10 @@ mod tests {
         {
             let specs = backend.specs.lock().unwrap();
             let spec = specs.last().expect("create reached the backend");
-            assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+            assert_eq!(
+                spec.args, effective,
+                "backend args stay the logical agent argv"
+            );
             assert_eq!(
                 spec.resolved_agent_host_shell
                     .as_ref()
@@ -10525,7 +10520,10 @@ mod tests {
         .await
         .expect_err("invalid configured host must fail the create");
         assert!(error.contains("conflicting/terminal"), "{error}");
-        assert!(error.contains("agent adapter owns command execution"), "{error}");
+        assert!(
+            error.contains("agent adapter owns command execution"),
+            "{error}"
+        );
 
         assert!(
             session_mgr.read().await.list_sessions().await.is_empty(),
@@ -10574,5 +10572,4 @@ mod tests {
         }
         close_test_coordinator(&app).await;
     }
-
 }

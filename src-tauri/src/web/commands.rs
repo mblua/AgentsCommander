@@ -1487,7 +1487,9 @@ mod tests {
             .manage(Arc::clone(&session_mgr))
             .manage(Arc::clone(&pty_mgr))
             .manage(coordinator.clone())
-            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(Arc::new(
+                crate::resource_monitor::ResourceMonitorState::new(),
+            ))
             .manage(Arc::new(crate::RestoreInProgress(
                 std::sync::atomic::AtomicBool::new(false),
             )))
@@ -1573,12 +1575,21 @@ mod tests {
             .as_str()
             .expect("invalid configured host must fail the create");
         assert!(error.contains("conflicting/terminal"), "{error}");
-        assert!(error.contains("agent adapter owns command execution"), "{error}");
+        assert!(
+            error.contains("agent adapter owns command execution"),
+            "{error}"
+        );
 
         // Full no-side-effect postcondition through the web creation path: no
         // session row and no pending/metadata record survive the rejection.
         assert!(
-            state.session_mgr.read().await.list_sessions().await.is_empty(),
+            state
+                .session_mgr
+                .read()
+                .await
+                .list_sessions()
+                .await
+                .is_empty(),
             "no session may appear in the session manager"
         );
         // The adapter rejection happens at the TOP of spawn_sync, before any
@@ -1657,8 +1668,17 @@ mod tests {
         let error = response["error"]
             .as_str()
             .expect("invalid cmd payload must fail the create");
-        assert!(error.contains("unsupported cmd payload character"), "{error}");
-        assert!(state.session_mgr.read().await.list_sessions().await.is_empty());
+        assert!(
+            error.contains("unsupported cmd payload character"),
+            "{error}"
+        );
+        assert!(state
+            .session_mgr
+            .read()
+            .await
+            .list_sessions()
+            .await
+            .is_empty());
         let pending_ids = state
             .session_mgr
             .read()
