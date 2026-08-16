@@ -184,7 +184,7 @@ AC does not store coding-agent credentials of its own. Each CLI manages its cred
 
 Under the **local-process** runtime, Pi auto-resume never reads, copies, or writes those host credentials or live state. The separate generic config-seed feature can copy a user-configured template into a replica, but Pi has no Pi-specific seed convention or factory seed.
 
-Under the **Container** runtime there is one deliberate exception, on by default. AC copies the Claude Code host credential file (`~/.claude/.credentials.json`) into the replica config dir so the container starts signed in, and deletes it when the session stops. Claude Code is the only supported copy-in provider today. AC does not copy or provision Pi state or credentials. The Claude copy puts a full-account token in plaintext inside the workspace tree and is governed by the `containerCredentialsFromHost` setting. Read [Container coding agents](../features/container-coding-agents.md) and [Security model](../security.md#container-coding-agents-copied-host-credentials) before you rely on it.
+Under the **Container** runtime there is one deliberate exception, on by default. AC copies the Claude Code host credential file (`~/.claude/.credentials.json`) into the replica config dir so the container starts signed in, and deletes it when the session stops. Claude Code is the only supported copy-in provider today. AC does not copy or provision Pi state or credentials. The Claude copy puts a full-account token in plaintext inside the project tree and is governed by the `containerCredentialsFromHost` setting. Read [Container coding agents](../features/container-coding-agents.md) and [Security model](../security.md#container-coding-agents-copied-host-credentials) before you rely on it.
 
 ## See also
 

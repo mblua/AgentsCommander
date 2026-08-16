@@ -27,7 +27,7 @@ If AC finds no host credential, or if the destination directory or file is a sym
 
 ### AC answers the folder-trust prompt for you
 
-First-run stamping means AC pre-accepts Claude Code's **"do you trust this folder?"** dialog for the container's `/workspace`. That is a safety prompt, and AC answers it on your behalf so the agent does not stall at launch. The folder is the workspace you chose to open, and AC already bind-mounts it read-write. This is deliberate, it is stated in the Settings hint, and it is stated here.
+First-run stamping means AC pre-accepts Claude Code's **"do you trust this folder?"** dialog for the container's `/workspace`. That is a safety prompt, and AC answers it on your behalf so the agent does not stall at launch. The folder is the agent's replica root, which AC already bind-mounts read-write. This is deliberate, it is stated in the Settings hint, and it is stated here.
 
 ## Terminal snapshots from a container Coordinator
 
@@ -86,7 +86,7 @@ For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CO
 
 | Gap | Detail |
 |---|---|
-| **No owner-only ACL on Windows** | On Unix AC sets `0o600` on the copied credential. On Windows it sets no ACL, so the copy inherits the workspace tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). |
+| **No owner-only ACL on Windows** | On Unix AC sets `0o600` on the copied credential. On Windows it sets no ACL, so the copy inherits the project tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). |
 | **Crash residue** | Teardown deletes the copy, and the next launch of the same agent overwrites it. There is no boot-time sweep. An unclean host crash (SIGKILL, power loss) leaves the copied credential on disk until that replica's next same-agent launch. A replica you never relaunch keeps a live refresh token on disk indefinitely. |
 
 ### 5. No shared team container ([#936](https://github.com/mblua/AgentsCommander/issues/936), paused)
@@ -95,7 +95,7 @@ One container per session today, each mounting only its own agent's replica. One
 
 ## What the copied file actually is
 
-A **full-account credential in plaintext**: a short-lived access token plus a **long-lived refresh token**, account-scoped. It sits in the workspace tree, inside a read-write bind mount, for the lifetime of the session. See [Security model → Container coding agents](../security.md#container-coding-agents-copied-host-credentials) for the exposure this adds and how AC limits it.
+A **full-account credential in plaintext**: a short-lived access token plus a **long-lived refresh token**, account-scoped. It sits in the project tree, inside a read-write bind mount, for the lifetime of the session. See [Security model → Container coding agents](../security.md#container-coding-agents-copied-host-credentials) for the exposure this adds and how AC limits it.
 
 Host and containers share **one login**. The copy is a snapshot, not a live mount. If the provider rotates the refresh token when it is used, whichever party refreshes first can invalidate the others: a container refresh can force a re-login on the host, or break a sibling container. This is the accepted tradeoff of copying in, which avoids a token-refresh write race between the host and every container.
 

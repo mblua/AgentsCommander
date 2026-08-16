@@ -120,7 +120,7 @@ Push-to-talk transcription via the Google Gemini API. Dictate a prompt; AC write
 
 ## Workgroup
 
-A team's active workspace for a specific task. Lives at `.ac/wg-<N>-<team>/` with replicas of every team member.
+A team's activation for a specific task. Lives at `.ac/wg-<N>-<team>/` with replicas of every team member.
 
 ## `wg-<N>-<team>`
 

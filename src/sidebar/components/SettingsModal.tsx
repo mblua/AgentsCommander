@@ -2054,11 +2054,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           prompts, AC also writes that agent's first-run state inside the container: onboarding
           is marked complete, and the container's
           /workspace folder is marked as trusted. That means AC answers the "do you trust this
-          folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
-          config is never modified. Turn this off to supply credentials yourself (for example a
-          CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
-          and containers share one login, so a token refresh in one place can require re-login in
-          another.
+          folder?" safety prompt on your behalf, for that agent's replica folder, which AC
+          mounts into the container. Your host config is never modified. Turn this off to supply
+          credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
+          copied and nothing is marked. Host and containers share one login, so a token refresh
+          in one place can require re-login in another.
         </div>
       </div>
 

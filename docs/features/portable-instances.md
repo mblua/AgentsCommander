@@ -46,7 +46,7 @@ That's it. The instance creates its own config directory on first launch, gets a
 ## Why you might want this
 
 - **Stage / prod parity.** Run `agentscommander_stage.exe` against your test repos while the canonical `agentscommander.exe` stays focused on shipping work.
-- **Per-team workspaces.** One instance per team you operate, each with its own coding-agent credentials and project list.
+- **Per-team instances.** One instance per team you operate, each with its own coding-agent credentials and project list.
 - **Reset experiments cheaply.** Want to try a different settings layout without losing your current one? Copy the `.exe`, rename it, experiment, delete when done.
 
 ## Portable project paths

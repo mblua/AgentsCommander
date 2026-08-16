@@ -21,9 +21,9 @@ Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-t
 Result summary:
 
 - Native folder picker cancel path passed without mutating settings.
-- Creating from a selected empty disposable folder in clean/no-workspace state loaded the project directly; no `project.createConfirm.*` modal appeared.
-- Current source behavior supports that observation: the no-workspace `New Project` path creates and loads directly after folder selection.
-- PRJ-008 is therefore a conditional confirmation-modal case, not part of the clean no-workspace happy path unless a future UI change reintroduces that modal.
+- Creating from a selected empty disposable folder in a clean state with no Project AC Root loaded the project directly; no `project.createConfirm.*` modal appeared.
+- Current source behavior supports that observation: the no-Project-AC-Root `New Project` path creates and loads directly after folder selection.
+- PRJ-008 is therefore a conditional confirmation-modal case, not part of the clean no-Project-AC-Root happy path unless a future UI change reintroduces that modal.
 
 Date: 2026-06-11
 
@@ -303,7 +303,7 @@ Preconditions:
 - Depends on PRJ-001.
 - A disposable empty folder exists and does not contain `.ac/`.
 - Baseline project registration state has been captured.
-- The active product path shows a create confirmation after selecting an empty folder. If a clean no-workspace run creates directly instead, record that as "not applicable for this path" and rely on PRJ-007 for cancel-before-selection coverage.
+- The active product path shows a create confirmation after selecting an empty folder. If a clean no-Project-AC-Root run creates directly instead, record that as "not applicable for this path" and rely on PRJ-007 for cancel-before-selection coverage.
 
 Steps:
 

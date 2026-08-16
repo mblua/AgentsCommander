@@ -761,7 +761,7 @@ graph TD
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |
 | `config/projects.rs` | Dual-path project registry |
-| `config/ac_root.rs` | Workspace discovery |
+| `config/ac_root.rs` | Project AC Root discovery |
 | `config/root_agent.rs` | Root Agent layout and identity |
 | `config/sessions_persistence.rs` | `PersistedSession`, snapshot/restore |
 | `config/coding_agent_profiles.rs` | Profile matrix resolution |
