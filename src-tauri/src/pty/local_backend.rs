@@ -2190,8 +2190,9 @@ impl PtyBackend for LocalProcessBackend {
     fn activate_terminal_output(
         &self,
         id: Uuid,
+        include_history: bool,
     ) -> crate::pty::output::TerminalOutputActivationResult {
-        self.fanout.activate_terminal_output(id)
+        self.fanout.activate_terminal_output(id, include_history)
     }
 
     fn ready_terminal_output(

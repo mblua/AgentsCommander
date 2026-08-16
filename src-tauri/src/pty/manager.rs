@@ -160,8 +160,12 @@ pub(crate) struct PtyTerminalOutputRoute {
 }
 
 impl PtyTerminalOutputRoute {
-    pub(crate) fn activate_terminal_output(&self) -> TerminalOutputActivationResult {
-        self.backend.activate_terminal_output(self.session_id)
+    pub(crate) fn activate_terminal_output(
+        &self,
+        include_history: bool,
+    ) -> TerminalOutputActivationResult {
+        self.backend
+            .activate_terminal_output(self.session_id, include_history)
     }
 
     pub(crate) fn ready_terminal_output(
