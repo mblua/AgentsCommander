@@ -39,9 +39,9 @@ pub struct MintArgs {
     /// Replica working directory to bind the token to (the identity source).
     #[arg(long)]
     pub root: String,
-    /// Comma-separated scopes: send, list-peers-lean, session-transport, pty-input.
-    /// A manually minted pty-input scope is not actuation authority; privileged
-    /// input also requires the matching automatically bound live container session.
+    /// Comma-separated scopes: send, list-peers-lean, session-transport,
+    /// pty-input, terminal-snapshot. Manually minted privileged scopes never
+    /// gain live authority; both require a matching automatic container binding.
     #[arg(long)]
     pub scopes: String,
     /// Optional human label.

@@ -652,7 +652,14 @@ fn rotate_if_needed(path: &Path) -> bool {
 ///
 /// Called exactly once, from `lib.rs::run()`, before the Tauri builder exists.
 /// Every append before this call is a no-op.
-pub fn init_run(dir: &Path, run_id: &str) {
+pub fn init_run(dir: &Path, run_id: &str, enabled: bool) {
+    if !enabled {
+        log::info!(
+            "[activity] recording disabled by settings (activityLogEnabled=false); \
+             activity.jsonl will not be written this run"
+        );
+        return;
+    }
     // First-wins: a second call would be a programming error, and silently
     // keeping the first sink is the fail-soft direction.
     let _ = SINK.set(Sink {
@@ -1327,6 +1334,22 @@ mod tests {
         assert!(
             !dir.path().join(FILE_NAME).exists(),
             "an unconfigured sink must write nothing"
+        );
+    }
+
+    #[test]
+    fn init_run_disabled_stores_no_sink_and_writes_nothing() {
+        let dir = TempDir::new().expect("temp dir");
+        init_run(dir.path(), "run-disabled", false);
+        init_run(dir.path(), "run-disabled", false);
+        assert!(sink_path().is_none());
+        assert!(run_id().is_empty());
+        assert!(!dir.path().join(FILE_NAME).exists());
+        append(build_app_alive(vec![]));
+        append_batch(&[build_app_stop(true, 0)]);
+        assert!(
+            !dir.path().join(FILE_NAME).exists(),
+            "a disabled run must never create the activity file"
         );
     }
 

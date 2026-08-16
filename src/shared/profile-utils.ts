@@ -23,13 +23,6 @@ export interface ArgvParseResult {
   error: string | null;
 }
 
-const EMPTY_CELL: ProfileCellConfig = {
-  enabled: true,
-  command: "",
-  env: {},
-  notes: "",
-};
-
 export const AC_REPLICA_ROOT_PLACEHOLDER = "%AC_REPLICA_ROOT%";
 export const AC_WORKSPACE_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
 export const AC_MATRIX_ROOT_PLACEHOLDER = "%AC_MATRIX_ROOT%";
@@ -94,14 +87,6 @@ function cellForLetter(
   const cell = profiles.profilesByAgent[agentId]?.[letter] ?? null;
   if (!cell || !cell.enabled) return null;
   return cell;
-}
-
-export function profileCellOrDefault(
-  profiles: CodingAgentProfilesConfig,
-  agentId: string,
-  letter: string,
-): ProfileCellConfig {
-  return profiles.profilesByAgent[agentId]?.[letter] ?? EMPTY_CELL;
 }
 
 export function profileCellCommandText(cell: ProfileCellConfig | null | undefined): string {
@@ -422,7 +407,7 @@ export function defaultInstructionsFilename(command: string): string {
 }
 
 export const CLAUDE_CONTEXT_REGEX = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
-export const CODEX_CONTEXT_REGEX = String.raw`^ {2}.*· Context (\d{1,3})% used`;
+export const CODEX_CONTEXT_REGEX = String.raw`^ {2}(?:.*· )?Context (\d{1,3})% used`;
 export const PI_CONTEXT_REGEX = String.raw`^(?:.*? )?(\d{1,3})\.\d%/`;
 
 export function suggestedContextRegex(command: string): string | null {

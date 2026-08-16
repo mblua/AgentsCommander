@@ -57,12 +57,35 @@ fn lifecycle_test_config_dir() -> PathBuf {
         .join("config")
 }
 
+/// Test-only wire observation of the two final `pty_output` delivery variants.
+/// This is a tagged mirror of the production `TerminalOutputDelivery` union, not a
+/// production DTO: data bytes are retained only for the data variant, and either
+/// variant records one delivery for its session id.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TestPtyOutputPayload {
-    session_id: String,
-    data: Vec<u8>,
-    sequence: Option<u64>,
+#[serde(tag = "kind")]
+enum TestPtyOutputDelivery {
+    #[serde(rename = "data")]
+    Data {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "generation")]
+        _generation: String,
+        #[serde(rename = "firstSequence")]
+        _first_sequence: String,
+        #[serde(rename = "sequence")]
+        sequence: String,
+        #[serde(rename = "data")]
+        data: Vec<u8>,
+    },
+    #[serde(rename = "resyncRequired")]
+    ResyncRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "generation")]
+        _generation: String,
+        #[serde(rename = "sequence")]
+        _sequence: String,
+    },
 }
 
 struct TestConfigEnvGuard {
@@ -135,6 +158,9 @@ struct LifecycleFixture {
     pid_files: Vec<PathBuf>,
     captured_output: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+    /// Per-session count of tagged `pty_output` deliveries (data or resync marker).
+    /// Inactive-session regressions require this to stay at zero for each session.
+    captured_deliveries: Arc<Mutex<HashMap<String, usize>>>,
     listener_errors: Arc<Mutex<Vec<String>>>,
     app: tauri::App,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -194,15 +220,16 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
 
     let captured_output = Arc::new(Mutex::new(HashMap::new()));
     let captured_sequences = Arc::new(Mutex::new(HashMap::new()));
+    let captured_deliveries = Arc::new(Mutex::new(HashMap::new()));
     let listener_errors = Arc::new(Mutex::new(Vec::new()));
     let cleanup = LifecycleCleanup::new();
     let (app, session_mgr, pty_mgr) = make_test_app(
         &repo_root,
         &captured_output,
         &captured_sequences,
+        &captured_deliveries,
         &listener_errors,
         &cleanup,
-        None,
         None,
     );
 
@@ -215,6 +242,7 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         pid_files: Vec::new(),
         captured_output,
         captured_sequences,
+        captured_deliveries,
         listener_errors,
         app,
         session_mgr,
@@ -229,10 +257,10 @@ fn make_test_app(
     repo_root: &Path,
     captured_output: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
     captured_sequences: &Arc<Mutex<HashMap<String, Vec<u64>>>>,
+    captured_deliveries: &Arc<Mutex<HashMap<String, usize>>>,
     listener_errors: &Arc<Mutex<Vec<String>>>,
     _cleanup: &LifecycleCleanup,
     session_mgr_override: Option<Arc<tokio::sync::RwLock<SessionManager>>>,
-    _pty_mgr_override: Option<Arc<Mutex<PtyManager>>>,
 ) -> (
     tauri::App,
     Arc<tokio::sync::RwLock<SessionManager>>,
@@ -279,6 +307,7 @@ fn make_test_app(
 
     let captured = Arc::clone(captured_output);
     let captured_sequences = Arc::clone(captured_sequences);
+    let captured_deliveries = Arc::clone(captured_deliveries);
     let listener_errors = Arc::clone(listener_errors);
     let app = tauri::Builder::default()
         .any_thread()
@@ -325,27 +354,44 @@ fn make_test_app(
 
     app.listen_any("pty_output", move |event| {
         let raw = event.payload().to_string();
-        match serde_json::from_str::<TestPtyOutputPayload>(&raw) {
-            Ok(payload) => {
+        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
+            Ok(TestPtyOutputDelivery::Data {
+                session_id,
+                sequence,
+                data,
+                ..
+            }) => {
                 captured
                     .lock()
                     .unwrap()
-                    .entry(payload.session_id.clone())
+                    .entry(session_id.clone())
                     .or_default()
-                    .extend(payload.data);
-
-                match payload.sequence {
-                    Some(sequence) => captured_sequences
+                    .extend(data);
+                captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .entry(session_id.clone())
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+                match sequence.parse::<u64>() {
+                    Ok(sequence) => captured_sequences
                         .lock()
                         .unwrap()
-                        .entry(payload.session_id)
+                        .entry(session_id)
                         .or_default()
                         .push(sequence),
-                    None => listener_errors
-                        .lock()
-                        .unwrap()
-                        .push(format!("pty_output payload missing sequence; raw={raw}")),
+                    Err(err) => listener_errors.lock().unwrap().push(format!(
+                        "pty_output data sequence is not canonical decimal: {err}; raw={raw}"
+                    )),
                 }
+            }
+            Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
+                captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .entry(session_id)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
             }
             Err(err) => listener_errors.lock().unwrap().push(format!(
                 "failed to parse pty_output payload: {err}; raw={raw}"
@@ -414,7 +460,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         let id_a = parse_session_id(&session_a);
         fixture.cleanup.record_session(&fixture.pty_mgr, id_a);
         assert_has_pty(&fixture.pty_mgr, id_a, "Phase A", &fixture);
-        wait_for_output(&fixture, &session_a.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &fixture.app, &id_a, "AC_READY", "Phase A")
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -469,11 +515,12 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             PtyManager::write_with_permit(&permit, b"AC_ECHO hello-from-pty-lifecycle\r\n")
                 .expect("write to pty");
         }
-        wait_for_output(
+        wait_for_snapshot_contains(
             &fixture,
-            &session_a.id,
+            &fixture.app,
+            &id_a,
             "AC_ECHOED hello-from-pty-lifecycle",
-            OUTPUT_TIMEOUT,
+            "Phase B",
         )
         .await
         .unwrap_or_else(|e| {
@@ -540,7 +587,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         fixture
             .cleanup
             .record_session(&fixture.pty_mgr, restart_old_id);
-        wait_for_output(&fixture, &restart_session.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &fixture.app, &restart_old_id, "AC_READY", "Phase F")
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -618,7 +665,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             });
         fixture.cleanup.record_pid(restart_new_pid);
         assert!(process_exists(restart_new_pid));
-        wait_for_output(&fixture, &restarted.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &fixture.app, &restart_new_id, "AC_READY", "Phase F")
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -702,7 +749,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         fixture
             .cleanup
             .record_session(&fixture.pty_mgr, persisted_id);
-        wait_for_output(&fixture, &persisted_session.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &fixture.app, &persisted_id, "AC_READY", "Phase G")
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -759,15 +806,16 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         let second_session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let second_captured = Arc::clone(&fixture.captured_output);
         let second_sequences = Arc::clone(&fixture.captured_sequences);
+        let second_deliveries = Arc::clone(&fixture.captured_deliveries);
         let second_errors = Arc::clone(&fixture.listener_errors);
         let (second_app, second_mgr, second_pty_mgr) = make_test_app(
             &fixture.repo_root,
             &second_captured,
             &second_sequences,
+            &second_deliveries,
             &second_errors,
             &fixture.cleanup,
             Some(second_session_mgr),
-            None,
         );
 
         let restored = create_session_inner(
@@ -783,6 +831,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
             true,
             persisted_row.git_repos,
             false,
+            None,
             None,
             None, // #973 - no view in this test: 120x30
             CreateSelectionIntent::User,
@@ -800,7 +849,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         });
         let restored_id = parse_session_id(&restored);
         fixture.cleanup.record_session(&second_pty_mgr, restored_id);
-        wait_for_output(&fixture, &restored.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &second_app, &restored_id, "AC_READY", "Phase G")
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -858,7 +907,7 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
 #[test]
 fn claude_launch_materializes_context_without_prompt_file_arg() {
     let mut fixture = make_lifecycle_fixture();
-    let agent_cwd = fixture._temp.path().join(".ac").join("_agent_claude");
+    let agent_cwd = fixture.repo_root.join(".ac").join("_agent_claude");
     std::fs::create_dir_all(&agent_cwd).expect("create claude agent cwd");
     let script_path = agent_cwd.join("claude.ps1");
     write_child_script(&script_path);
@@ -884,6 +933,7 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
             Vec::new(),
             true,
             None,
+            None,
             None, // #973 - no view in this test: 120x30
             CreateSelectionIntent::User,
         )
@@ -892,7 +942,7 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
 
         let session_id = parse_session_id(&info);
         fixture.cleanup.record_session(&fixture.pty_mgr, session_id);
-        wait_for_output(&fixture, &info.id, "AC_READY", OUTPUT_TIMEOUT)
+        wait_for_snapshot_contains(&fixture, &fixture.app, &session_id, "AC_READY", "Claude materialization")
             .await
             .unwrap_or_else(|e| panic!("{e}"));
 
@@ -949,6 +999,7 @@ impl LifecycleFixture {
             false,
             Vec::new(),
             true,
+            None,
             None,
             None, // #973 - no view in this test: 120x30
             CreateSelectionIntent::User,
@@ -1068,31 +1119,60 @@ fn run_powershell_preflight() {
     );
 }
 
-async fn wait_for_output(
+/// Polls the unchanged public `commands::pty::get_screen_snapshot` route until the native
+/// snapshot contains the complete expected bytes (bounded by `OUTPUT_TIMEOUT`). Before
+/// returning success it inspects the per-session tagged listener recorder and asserts zero
+/// `pty_output` data or resync-marker deliveries: these are inactive-session regressions,
+/// so native parser/snapshot progress must occur without any UI observer delivery.
+async fn wait_for_snapshot_contains(
     fixture: &LifecycleFixture,
-    session_id: &str,
-    marker: &str,
-    timeout: Duration,
+    app: &tauri::App,
+    session_id: &Uuid,
+    expected_bytes: &str,
+    phase: &str,
 ) -> Result<(), String> {
     let start = Instant::now();
-    while start.elapsed() < timeout {
-        let text = {
-            let captured = fixture.captured_output.lock().unwrap();
-            captured
-                .get(session_id)
-                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                .unwrap_or_default()
-        };
-        if text.contains(marker) {
-            return Ok(());
+    let mut last_snapshot: Option<serde_json::Value> = None;
+    while start.elapsed() < OUTPUT_TIMEOUT {
+        let snapshot = get_screen_snapshot(
+            app.state::<Arc<Mutex<PtyManager>>>(),
+            session_id.to_string(),
+        )
+        .map_err(|e| format!("{phase}: get_screen_snapshot failed for {session_id}: {e}"))?;
+        if let Some(snapshot) = snapshot {
+            last_snapshot = Some(
+                serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"),
+            );
+            let text = String::from_utf8_lossy(&snapshot.data);
+            if text.contains(expected_bytes) {
+                let deliveries = fixture
+                    .captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .get(&session_id.to_string())
+                    .copied()
+                    .unwrap_or(0);
+                if deliveries != 0 {
+                    return Err(format!(
+                        "{phase}: session {session_id} recorded {deliveries} tagged pty_output \
+                         deliveries while inactive; expected zero"
+                    ));
+                }
+                return Ok(());
+            }
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     Err(format!(
-        "timeout waiting for output marker '{marker}' in session {session_id}"
+        "{phase}: timeout waiting for snapshot marker '{expected_bytes}' in session \
+         {session_id}; last_snapshot={last_snapshot:?}"
     ))
 }
 
+/// The last UI event sequence for a session. Inactive-session regressions deliver zero
+/// `pty_output` events, so the empty baseline (0) is the correct anchor and the snapshot
+/// sequence comparison remains meaningful; the strict-increasing check still guards any
+/// future path that does record sequences.
 fn last_strictly_increasing_sequence(
     fixture: &LifecycleFixture,
     session_id: &str,
@@ -1105,17 +1185,13 @@ fn last_strictly_increasing_sequence(
         .get(session_id)
         .cloned()
         .unwrap_or_default();
-    assert!(
-        !sequences.is_empty(),
-        "{phase}: expected at least one pty_output sequence for {session_id}"
-    );
     for pair in sequences.windows(2) {
         assert!(
             pair[0] < pair[1],
             "{phase}: sequences must be strictly increasing: {sequences:?}"
         );
     }
-    *sequences.last().unwrap()
+    sequences.last().copied().unwrap_or(0)
 }
 
 async fn wait_for_pid_file(path: &Path, timeout: Duration) -> Result<u32, String> {

@@ -201,6 +201,12 @@ pub struct SettingsSnapshot {
     #[serde(flatten)]
     pub settings: AppSettings,
     pub project_path_resolution: ProjectPathResolution,
+    /// #1347 - absolute path of the instance `settings.json` this snapshot was
+    /// built for, so the UI can name the file that holds the plaintext secrets.
+    /// `None` only when `config_dir()` itself is unresolvable (no `current_exe()`
+    /// and no home dir); there is no `skip_serializing_if`, so the key is always
+    /// present on the wire and is `null` in that degraded mode.
+    pub settings_file_path: Option<String>,
 }
 
 fn issue_source(source: ProjectSource) -> IssueSource {
@@ -384,9 +390,11 @@ pub(crate) fn build_project_path_resolution(
     }
 }
 
-/// Pure snapshot builder: clone `settings`, clear the root token, and attach the
-/// resolution report. Shared by the Tauri and WebSocket transports so both
-/// clients receive the identical report and `rootToken` is absent from each.
+/// Snapshot builder: clone `settings`, clear the root token, attach the
+/// resolution report, and record the instance settings-file path (#1347).
+/// Shared by the Tauri and WebSocket transports so both clients receive the
+/// identical report and `rootToken` is absent from each. The only non-argument
+/// input is the process-wide, cached instance location behind `config_dir()`.
 pub(crate) fn settings_snapshot_from(
     settings: &AppSettings,
     reconciliation_error: Option<ProjectPathReconciliationError>,
@@ -399,6 +407,12 @@ pub(crate) fn settings_snapshot_from(
     SettingsSnapshot {
         settings: cleaned,
         project_path_resolution: resolution,
+        // #1347: derived from the process instance location, deliberately NOT
+        // from `settings_snapshot_helper`'s injectable `settings_path`, which is
+        // a test-only reconciliation write target and not a client-facing
+        // location. Same expression already used at the reconciliation site.
+        settings_file_path: crate::config::config_dir()
+            .map(|d| d.join("settings.json").to_string_lossy().into_owned()),
     }
 }
 
@@ -474,22 +488,25 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
     Ok(settings_snapshot_helper(settings.inner(), None).await)
 }
 
-/// #769 Phase 1 - return the externalized coding-agent catalog for the onboarding
-/// and Settings pick lists. Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in
-/// the normal AND self-heal cases (a missing or unparseable `agents.json` yields
-/// the embedded default IN MEMORY, never a disk write); `Ok([])` is honored
-/// verbatim when the user removed every built-in; `Err` only when the config
-/// directory cannot be resolved (a genuine environment failure the compiled
-/// fallback cannot satisfy). The frontend's never-empty fallback fires only on
-/// this `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
+/// #769 Phase 1 + #1318 - return the externalized coding-agent catalog for the onboarding
+/// and Settings pick lists. Resolves against the PRIMARY registered project's
+/// `.ac/coding-agents` catalog; with no registered project it falls back to the
+/// legacy `<config_dir>/coding-agents` catalog when one exists (pre-migration
+/// installs keep today's read behavior), else the embedded default in memory.
+/// Contract (§14.2, dev-rust E5): resolves `Ok(Vec)` in the normal AND self-heal
+/// cases (a missing or unparseable `agents.json` yields the embedded default IN
+/// MEMORY, never a disk write); `Ok([])` is honored verbatim when the user
+/// removed every built-in; `Err` only when the config directory cannot be
+/// resolved (a genuine environment failure the compiled fallback cannot
+/// satisfy). The frontend's never-empty fallback fires only on this
+/// `Err`/transport path, so keeping the self-heal on the `Ok` side is load-
 /// bearing for that contract.
 #[tauri::command]
 pub async fn get_coding_agent_catalog(
+    settings: State<'_, SettingsState>,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
-    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-    Ok(crate::config::coding_agents_catalog::load_catalog(
-        &config_dir,
-    ))
+    let settings = settings.read().await;
+    Ok(crate::config::coding_agents_catalog::load_catalog_for_settings(&settings))
 }
 
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
@@ -502,8 +519,11 @@ pub fn list_reseedable_agent_commands() -> Vec<String> {
     crate::config::coding_agents_catalog::reseedable_command_basenames()
 }
 
-/// #769 Phase 2 - restore a built-in's shipped default config-folder master (the
-/// Settings "Re-seed default configuration" button). Gating is re-checked
+/// #769 Phase 2 + #1318 - restore a built-in's shipped default config-folder master (the
+/// Settings "Re-seed default configuration" button). Resolves the master from the
+/// PRIMARY registered project's `.ac/coding-agents/_seed/<dest>`; with NO primary
+/// root it falls back to the legacy `<config_dir>/coding-agents/_seed/<dest>`
+/// masters (pre-migration installs keep the button working). Gating is re-checked
 /// server-side (exact executable basename, never `starts_with`, so `pi`/`agent`
 /// cannot false-match): `command` must map to a built-in that ships a master, else
 /// `Err`. On success the current master is `.bak`ed first, then atomically
@@ -511,10 +531,21 @@ pub fn list_reseedable_agent_commands() -> Vec<String> {
 /// absent-only fill. Running replicas and their live config are untouched.
 #[tauri::command]
 pub async fn reseed_coding_agent_default(
+    settings: State<'_, SettingsState>,
     command: String,
 ) -> Result<crate::config::coding_agents_catalog::ReseedResult, String> {
-    let config_dir = crate::config::config_dir().ok_or("No config dir")?;
-    crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+    let settings = settings.read().await;
+    let ac_dir = crate::config::coding_agents_catalog::primary_project_root(&settings)
+        .map(|root| root.join(".ac"));
+    match ac_dir {
+        Some(ac_dir) => {
+            crate::config::coding_agents_catalog::reseed_master_for_command(&ac_dir, &command)
+        }
+        None => {
+            let config_dir = crate::config::config_dir().ok_or("No config dir")?;
+            crate::config::coding_agents_catalog::reseed_master_for_command(&config_dir, &command)
+        }
+    }
 }
 
 #[tauri::command]
@@ -572,6 +603,31 @@ pub async fn save_settings_draft(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_terminal_snapshots_enabled(
+    settings: State<'_, SettingsState>,
+    expected: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    set_terminal_snapshots_enabled_inner(settings.inner(), expected, enabled).await
+}
+
+/// Shared #1173 owner used by native Tauri and browser WebSocket transports.
+/// Whole-settings writers preserve this field and cannot call this owner
+/// without an explicit expected value.
+pub(crate) async fn set_terminal_snapshots_enabled_inner(
+    settings: &SettingsState,
+    expected: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut guard = settings.write().await;
+    let written = crate::config::settings::compare_and_set_terminal_snapshots_enabled(
+        &guard, expected, enabled,
+    )?;
+    *guard = written;
+    Ok(())
+}
+
 pub(crate) async fn persist_protected_settings_update(
     settings: &SettingsState,
     new_settings: AppSettings,
@@ -622,6 +678,8 @@ fn build_protected_settings_candidate(
     // above; this is not the prohibited disk re-read.
     candidate.rail_collapsed_projects = current.rail_collapsed_projects.clone();
     candidate.rail_favorites_collapsed = current.rail_favorites_collapsed;
+    // #1173: terminal snapshot disclosure is owned only by its dedicated CAS.
+    candidate.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
     validate_and_repair_settings(&mut candidate)?;
     Ok(candidate)
 }
@@ -656,6 +714,8 @@ async fn persist_settings_draft_update_with_saver(
     // collapse is owned by `set_rail_collapse`; restore it from live memory.
     draft.rail_collapsed_projects = current.rail_collapsed_projects.clone();
     draft.rail_favorites_collapsed = current.rail_favorites_collapsed;
+    // #1173: a stale whole-settings draft has no disclosure-gate authority.
+    draft.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
@@ -1075,7 +1135,6 @@ pub(crate) async fn preview_coding_agent_profile_selection_inner(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn apply_coding_agent_profile_selection(
     app: AppHandle,
@@ -1189,6 +1248,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
                     false,
                     crate::session::selection::TrustedRestartIntent::Background,
                     None,
+                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
                 )
                 .await
                 {
@@ -2005,7 +2065,10 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
-async fn persist_narrow_settings_update(
+/// `pub(crate)` since #1171: `set_watchers_geometry` lives in `commands/window.rs` beside the
+/// window it belongs to, and must write its one field through this same candidate-save-publish
+/// path rather than a second one of its own.
+pub(crate) async fn persist_narrow_settings_update(
     settings: &SettingsState,
     mutate_candidate: impl FnOnce(&mut AppSettings),
 ) -> Result<(), String> {
@@ -2168,6 +2231,44 @@ pub async fn get_update_status(
     cache: State<'_, crate::UpdateCheckState>,
 ) -> Result<Option<crate::update_check::UpdateInfo>, String> {
     Ok(cache.get().cloned())
+}
+
+/// #1327 - snapshot of the startup coding-agent update run (in progress flag +
+/// the currently registered-but-unanswered prompt + per-command results). The
+/// sidebar queries it on mount to cover events that fired before its listeners
+/// registered (mirrors `get_update_status`).
+#[tauri::command]
+pub async fn get_agent_update_status(
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+) -> Result<crate::agent_update::AgentUpdateStatus, String> {
+    Ok(gate.snapshot())
+}
+
+/// #1327 - the user answered the startup prompt for one command. Persists the
+/// answer FIRST (so it is never asked again even if resolution fails), then
+/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
+/// accepted the answer THIS boot (update will run now); Ok(false) when the
+/// prompt had already closed OR the receiver was dropped by the prompt timeout
+/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
+/// nothing this boot; the overlay shows the conditional info toast). Unknown
+/// commands are rejected.
+#[tauri::command]
+pub async fn agent_update_answer(
+    settings: State<'_, SettingsState>,
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+    command: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !gate.was_prompted(&command) {
+        return Err(format!("agent_update_answer: '{command}' was not prompted this boot"));
+    }
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate
+            .agent_auto_update_by_command
+            .insert(command.clone(), enabled);
+    })
+    .await?;
+    Ok(gate.resolve_answer(&command, enabled))
 }
 
 /// Fetch the Home screen Markdown source from the public docs URL.
@@ -2426,6 +2527,23 @@ mod tests {
             a.raw_absolute = RawStringField::string("/gone/y");
             let settings_c = settings_with_state(state_with(vec![a], vec![]));
             assert_ne!(id_a, issue_id(&settings_snapshot_from(&settings_c, None)));
+        }
+
+        #[test]
+        fn snapshot_carries_the_instance_settings_file_path() {
+            // #1347: the UI names the file that holds the plaintext secrets. Assert
+            // agreement with config_dir() rather than a literal path, so the test is
+            // independent of where the test binary happens to live.
+            let snap = settings_snapshot_from(&AppSettings::default(), None);
+            match (crate::config::config_dir(), snap.settings_file_path) {
+                (Some(dir), Some(path)) => {
+                    assert_eq!(path, dir.join("settings.json").to_string_lossy())
+                }
+                (None, None) => {}
+                (dir, path) => {
+                    panic!("settings_file_path disagrees with config_dir: {dir:?} vs {path:?}")
+                }
+            }
         }
 
         fn issue_id(snap: &super::super::SettingsSnapshot) -> String {

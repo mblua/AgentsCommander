@@ -149,7 +149,9 @@ async fn post_inner(
             Some(agent_id.to_string())
         }
     };
-    let authority = crate::api::identity::verify_live_pty_input_authority(state, &fresh).await?;
+    let proof = crate::api::identity::InitialApiCredentialProof::from_fresh_guard(fresh)
+        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound))?;
+    let authority = crate::api::identity::verify_live_pty_input_authority(state, proof).await?;
     let in_memory_project_paths = {
         let settings = state
             .app_handle
@@ -172,7 +174,7 @@ async fn post_inner(
         }
     }
     let route = crate::config::teams::verify_pty_input_route(
-        std::path::Path::new(&fresh.client.bound_root),
+        &authority.sender.replica_root,
         false,
         &request.to,
         &project_paths,
@@ -256,7 +258,9 @@ async fn get_inner(
     }
     crate::phone::types::parse_canonical_uuid_v4(op_id)
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::InvalidId))?;
-    let authority = crate::api::identity::verify_live_pty_input_authority(state, &fresh).await?;
+    let proof = crate::api::identity::InitialApiCredentialProof::from_fresh_guard(fresh)
+        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound))?;
+    let authority = crate::api::identity::verify_live_pty_input_authority(state, proof).await?;
     state
         .message_store
         .query_pty_input_offloaded(

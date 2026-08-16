@@ -26,9 +26,22 @@ When the user activates voice recording:
 - **When**: Only when the user explicitly presses the record button and stops recording
 - **Credentials**: The Gemini API key is configured by the user and stored locally in `~/.agentscommander/settings.json`
 
-### Inter-Agent Messaging (Phone)
+### Inter-Agent Messaging
 
-The internal messaging system between agents is **entirely local**. Messages are stored as JSON files in `~/.agentscommander/conversations/`. No external network calls are made.
+The internal messaging system between agents is **local by default**: the file-based path writes Markdown files into `messaging/` directories inside each workgroup and inside the Root Agent directory, and other delivery paths keep message content in queues of their own. AC sends message content to no service of its own. A destination you select yourself, such as `send --outbox`, can place a message outside those locations, including on another machine.
+
+### Terminal Snapshots
+
+Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-workgroup Coordinator can request the current backend terminal viewport as JSON or deterministic PNG.
+
+- **Data processed locally**: Current visible backend rows, cells, text, colors, represented styles, cursor, dimensions, selected session metadata, and fidelity metadata. Terminal content can include passwords, tokens, source code, prompts, and personal data. Agents Commander does not redact it.
+- **Host transport**: A host requester exchanges bounded transient files in dedicated requester-side terminal snapshot directories. Snapshot content does not enter ordinary messages, conversations, delivered or rejected message artifacts, or PTY-input state. The daemon normally removes identity-stable protocol files after use or 60 seconds. A crash plus removal of the only project registration can leave an undiscoverable residual.
+- **Container API transmission**: An automatically bound container Coordinator can send one authenticated request to the operator-configured `AGENTSCOMMANDER_API_URL`. The response can contain the JSON viewport or PNG base64. This is transmission between the local Agents Commander daemon and the user's container or configured private endpoint, not to Agents Commander developers or a third-party snapshot service. Whether HTTP is encrypted depends on the URL the operator configured.
+- **Caller output**: A requested PNG is a caller-owned persistent file and remains until the caller deletes it. A failed write can leave an incomplete file. JSON is written to requester stdout.
+- **Memory and deletion limits**: Snapshot buffers are bounded but are not locked or zeroized and can appear in swap or crash dumps. File cleanup is not forensic secure erasure. Windows inherited same-user ACLs are not a boundary against a compromised local account.
+- **Audit**: Snapshot audit contains operational metadata only, such as verified identities, format, selected session/backend, dimensions, sequence, capture time, byte count, status, and fixed reason code. It excludes terminal text, JSON, PNG/base64, ANSI, title, credentials, nonce, output path, and content hash. Audit is fail-soft, not compliance-grade.
+
+Agents Commander never captures an OS window, monitor, desktop, WebView, or unrelated pixel for this feature. See [Terminal snapshots](docs/features/terminal-snapshots.md) for the complete authorization, fidelity, output, and cleanup contract.
 
 ## What Is NOT Transmitted
 
@@ -37,6 +50,7 @@ The internal messaging system between agents is **entirely local**. Messages are
 - No automatic update checks
 - No fingerprinting or device identification
 - No data to Agents Commander developers or any third party beyond the services listed above
+- No terminal snapshot content to a third-party snapshot or rendering service
 
 ## Credential Storage
 

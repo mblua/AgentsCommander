@@ -4,6 +4,7 @@ pub mod list_peers;
 pub mod pty_input;
 pub mod send;
 pub mod session_transport;
+pub mod terminal_snapshot;
 
 use std::net::IpAddr;
 
@@ -54,6 +55,17 @@ pub fn bearer_token_strict(headers: &HeaderMap) -> Result<String, ApiError> {
         .filter(|token| !token.is_empty())
         .ok_or_else(|| ApiError::Unauthorized("malformed_authorization".to_string()))?;
     Ok(token.to_string())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) mod window_screenshot;
+
+pub async fn authenticate_window_screenshot_fresh(
+    state: &ApiState,
+    headers: &HeaderMap,
+    ip: IpAddr,
+) -> Result<crate::api::auth::ApiClientFreshGuard, ApiError> {
+    authenticate_pty_input_fresh(state, headers, ip).await
 }
 
 pub async fn authenticate_pty_input_fresh(

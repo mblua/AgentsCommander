@@ -14,11 +14,11 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::network::OutboundNetwork;
-use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     find_latest_jsonl, read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS,
     ROTATION_STALE_SECS,
 };
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 const FLUSH_DELAY_MS: u64 = 500;
 

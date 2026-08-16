@@ -9,7 +9,9 @@ use crate::config::agent_config::{self, AgentLocalConfig};
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::backend::{BackendSpawnSpec, PtyViewport, SessionBackendKind};
+use crate::pty::backend::{
+    BackendSpawnSpec, PtyViewport, ResolvedAgentHostShell, SessionBackendKind,
+};
 use crate::pty::container_paths::{
     claude_config_dir_no_value_warning, container_config_dir, ContainerEnvWarning,
     ContainerPathMap, CLAUDE_CONFIG_DIR_KEY,
@@ -50,6 +52,75 @@ fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> ExistingRoot
         ExistingRootAction::ReuseLive
     } else {
         ExistingRootAction::DiscardMissingPty
+    }
+}
+
+/// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
+///
+/// **Sessions with no agent are never registered**, and that rule lives HERE, once, for both:
+/// a plain shell costs neither engine anything, ever. `try_state` and not `state`, because
+/// `state` panics when unmanaged and a test app manages neither engine - an absent engine is
+/// simply the feature being off.
+///
+/// There is no race with the screen parser: `PtyManager::spawn` has already returned `Ok` at
+/// the call site and the parser is registered during the spawn. The scraper's first sample is
+/// 5 s away and the first watcher tick is 200 ms away, and neither can arrive before the
+/// parser exists.
+pub(crate) fn register_session_samplers<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+    agent_id: Option<String>,
+) {
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
+        scraper.register_session(id, agent_id.clone());
+    }
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.register_session(id, agent_id);
+    }
+}
+
+/// #1171 - purge every per-session side structure a DESTROYED session leaves behind.
+///
+/// One helper with two call sites, because the per-session side-state purge is already
+/// duplicated in this file: the destroy loop and `publish_restart_destroyed` are parallel
+/// copies of each other, and adding a third thing to purge to only one of them is how a leak
+/// gets written.
+///
+/// **The order is load-bearing.** The engine is retired FIRST, so no tick still in flight can
+/// republish this session's status and recreate the entry step 2 removes. `WatcherHistory`
+/// creates entries only from the engine's publish, and the engine publishes only while holding
+/// its registration lock, so once `retire_session` returns nothing can bring the entry back.
+///
+/// **Destroyed sessions only.** A session that exits on its own is NOT destroyed: the engine
+/// stops sampling it and its buffer stays, which is the case that matters - an API error or a
+/// CLI crash is exactly when the evidence is worth keeping. Root-agent sessions retained as
+/// `Exited` keep theirs too, because their row is still in the list.
+pub(crate) fn purge_session_side_state<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.retire_session(session_id);
+    }
+    if let Some(history) = app.try_state::<crate::pty::watchers::history::WatcherHistoryState>() {
+        history.purge(session_id);
+    }
+    reset_substantive_input(app, session_id);
+}
+
+/// #871 - clear a session's substantive-input marker.
+///
+/// Extracted by #1171 so it has ONE definition rather than the two inline copies the destroy
+/// and restart cleanups each carried. It is a map removal, so calling it twice for the same
+/// session is a no-op and not a second effect - which is what lets the destroy path keep
+/// resetting every id it publishes, retained-exited ones included, while the destroyed-only
+/// purge below also resets the ones it owns.
+fn reset_substantive_input<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid) {
+    if let Some(activity) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
+        activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset(session_id);
     }
 }
 
@@ -1157,6 +1228,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     // #973 - the size the view has already fitted to, when the caller has a view at all.
     // `None` keeps AC's historical 120x30. See `PtyViewport`.
     viewport: Option<PtyViewport>,
@@ -1176,6 +1248,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1184,6 +1257,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None,
         false,
         None,
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
     )
     .await?
     .into_finalized()
@@ -1204,6 +1278,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
@@ -1222,6 +1297,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         selection_intent,
         None,
@@ -1230,6 +1306,7 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         None,
         false,
         Some(target_ownership),
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
     )
     .await?
     .into_finalized()
@@ -1250,6 +1327,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     pending_start_fresh: Option<bool>,
     pending_communication: Option<SessionCommunication>,
@@ -1268,6 +1346,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         git_repos,
         skip_auto_resume,
         resolved_spawn,
+        resolved_agent_host_shell,
         viewport,
         CreateSelectionIntent::Suppress,
         pending_start_fresh,
@@ -1276,6 +1355,7 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         Some(SelectionCause::Restore),
         false,
         None,
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
     )
     .await?
     .into_finalized()
@@ -1296,6 +1376,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     git_repos: Vec<SessionRepo>,
     mut skip_auto_resume: bool,
     resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     pending_start_fresh: Option<bool>,
@@ -1304,7 +1385,15 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     inline_cause: Option<SelectionCause>,
     defer_inline_finalization: bool,
     preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
+    enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 ) -> Result<CreateCompletion, String> {
+    // #1327 - startup coding-agent updates gate: no session may open (GUI,
+    // restore, restart, root agent, web, phone) before the startup update run
+    // finishes or times out. Absent in tests (mock app, nothing managed) and in
+    // non-GUI contexts -> no-op.
+    if let Some(gate) = app.try_state::<Arc<crate::agent_update::AgentUpdateGate>>() {
+        gate.wait_until_done().await;
+    }
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let cwd_path = std::path::Path::new(&cwd);
     let create_target_key = crate::config::teams::pty_input_create_gate_key_from_cwd(cwd_path)
@@ -1371,6 +1460,14 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     let inline_pending_binding = Arc::new(Mutex::new(None));
     let inline_pending_for_body = Arc::clone(&inline_pending_binding);
     let create_body = async {
+        // §1295 5.1a creation gate: FIRST statement of create_body, BEFORE the
+        // existing `enforce_unarchived_for_spawn` (which the archive-gate source
+        // test :7438 counts separately). Reading the SAME normalized `cwd` string
+        // the archive gate receives; no resource permit and no pending row exist
+        // yet, so a rejection leaves zero RAM/disk residue and needs no
+        // `rollback_pre_created_session`. (dev-rust E: the two call strings
+        // at :1443/:1708 are untouched.)
+        crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
         crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
             .await?;
         let (agent_id, agent_label) = {
@@ -1973,6 +2070,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let context_result = coordinator
                 .run_blocking_seed_work({
                     let cwd = cwd.clone();
+                    // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+                    // is a `mut` parameter of this function whose only mutation is the #756 mirror
+                    // at :1470, ~500 lines above, so the value read here is final. `true` means AC
+                    // is deliberately NOT resuming: a fresh conversation begins.
+                    let start_fresh = skip_auto_resume;
                     let target_filename = target_filename.clone();
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
@@ -1989,15 +2091,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         let activation: Option<
                             crate::config::seed_manifest::ManifestActivationToken,
                         > = None;
-                        crate::config::session_context::materialize_agent_context_file_with_filename_activated(
-                            &cwd,
-                            &target_filename,
-                            &managed_filenames,
-                            is_coordinator,
-                            auto_self_clear,
-                            container_repos.as_ref(),
-                            activation.as_ref(),
-                        )
+                        let context_result =
+                            crate::config::session_context::materialize_agent_context_file_with_filename_activated(
+                                &cwd,
+                                &target_filename,
+                                &managed_filenames,
+                                is_coordinator,
+                                auto_self_clear,
+                                container_repos.as_ref(),
+                                activation.as_ref(),
+                            );
+                        // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+                        // about to start, so it begins with a clean write target and the previous
+                        // session's memory is preserved under `memory_<ts>/`.
+                        //
+                        // Two gates, both load-bearing (D5):
+                        //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
+                        //     app-startup restore path (`create_session_inner_for_restore`, :1239),
+                        //     which continues an existing conversation; emptying `memory/` under a
+                        //     resumed agent is the one outcome the user ruled out.
+                        //   - `is_ok()`: a launch that is about to roll back (:2016-2036) leaves no
+                        //     rotation behind.
+                        //
+                        // Never fails a launch: `rotate_origin_memory_at_spawn` returns `()` and every
+                        // error path inside it warns and returns.
+                        if start_fresh && context_result.is_ok() {
+                            crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
+                        }
+                        context_result
                     }
                 })
                 .await;
@@ -2210,6 +2331,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             coding_agent: agent_kind,
             cmd: shell.clone(),
             args: shell_args.clone(),
+            // #1271 - the configured host shell paired with a resolved agent
+            // command, carried as one immutable snapshot (never as loose
+            // program/argument fields, so the pairing invariant cannot drift).
+            resolved_agent_host_shell: resolved_agent_host_shell.clone(),
             cwd: spawn_cwd.clone(),
             selected_cwd: if spawn_cwd != cwd {
                 Some(cwd.clone())
@@ -2258,20 +2383,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             return Err(err);
         }
 
-        // #1032 - start sampling this session's context reading. This sits above the backend
-        // split and covers local and container alike, with no backend plumbing. `try_state`,
-        // not `state`: `state` panics when unmanaged, and test apps do not manage the scraper.
-        // An absent scraper is simply the feature being off.
-        //
-        // Sessions with no agent are never registered, so a plain shell costs nothing. There is
-        // no race with the parser here: the first sample is 5s away.
-        if let Some(agent_id) = agent_id.clone() {
-            if let Some(scraper) =
-                app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>()
-            {
-                scraper.register_session(id, agent_id);
-            }
-        }
+        register_session_samplers(app, id, agent_id.clone());
 
         // Auto-inject optional non-credential bootstrap text for agent sessions
         // after PTY spawn. Credentials are already present in child environment
@@ -2612,6 +2724,20 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
     }
 }
 
+/// §1295 S5 — resolve the create-command working directory. The bare
+/// `invoke("create_session", {})` default (cwd: None) falls back to the home
+/// dir. In production the creation gate then REJECTS that default when home is
+/// not a registered project root (an intentional, documented UX change, §5.8);
+/// every shipped frontend call site passes an explicit registered cwd.
+pub(crate) fn resolve_create_session_cwd(cwd: Option<String>) -> String {
+    let cwd = cwd.unwrap_or_else(|| {
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "C:\\".to_string())
+    });
+    crate::path_utils::normalize_windows_verbatim_path(&cwd)
+}
+
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
@@ -2638,12 +2764,7 @@ pub async fn create_session(
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
-    let cwd = cwd.unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "C:\\".to_string())
-    });
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let cwd = resolve_create_session_cwd(cwd);
 
     let resolved_spawn = if let Some(aid) = agent_id.as_deref() {
         build_configured_agent_spawn_for_cwd(&cfg, aid, &cwd, requested_profile.as_deref())?
@@ -2651,23 +2772,34 @@ pub async fn create_session(
         None
     };
 
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
-        let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
-        let al = agent_id.as_ref().and_then(|aid| {
-            cfg.agents
-                .iter()
-                .find(|a| a.id == *aid)
-                .map(|a| a.label.clone())
-        });
-        (s, sa, al)
-    };
+    let (shell, shell_args, agent_label, resolved_agent_host_shell) =
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            // #1271 - keep the resolved agent executable and its logical argv as
+            // the command-to-run, and carry a copy of the configured default host
+            // shell (program + args from the SAME immutable config snapshot, before
+            // `drop(cfg)`) separately to the backend. The backend launches a
+            // non-direct Windows agent command through this host shell instead of
+            // the unconditional `cmd.exe /C` fallback.
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+                Some(ResolvedAgentHostShell {
+                    program: cfg.default_shell.clone(),
+                    args: cfg.default_shell_args.clone(),
+                }),
+            )
+        } else {
+            let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
+            let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+            let al = agent_id.as_ref().and_then(|aid| {
+                cfg.agents
+                    .iter()
+                    .find(|a| a.id == *aid)
+                    .map(|a| a.label.clone())
+            });
+            (s, sa, al, None)
+        };
 
     log::info!(
         "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
@@ -2694,6 +2826,7 @@ pub async fn create_session(
         // passes Some(false) so the prior conversation resumes.
         effective_create_skip_auto_resume(skip_auto_resume),
         resolved_spawn,
+        resolved_agent_host_shell,
         // #973 - the only caller that has a terminal to measure.
         match (cols, rows) {
             (Some(c), Some(r)) => Some(PtyViewport::from_fit(c, r)),
@@ -3073,6 +3206,11 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
             }
         }
 
+        // The std-Mutex guard from this `let` initializer is dropped at the `;`
+        // before `runtime_snapshot` re-locks the same pty Mutex below. Moving this
+        // into an `if let`/`match` scrutinee or an inner blocking block would hold
+        // the guard across that re-lock and re-introduce the re-entrant std-Mutex
+        // deadlock fixed in resource_monitor (§1295).
         let kill_result = transaction
             .app()
             .state::<Arc<Mutex<PtyManager>>>()
@@ -3196,16 +3334,22 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
                 );
             }
         }
-        if let Some(activity) = transaction
-            .app()
-            .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-        {
-            activity
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .reset(session_id);
-        }
+        reset_substantive_input(transaction.app(), session_id);
     }
+
+    // #1171 - a SEPARATE loop over `destroyed_ids` only, rather than a membership test inside
+    // the loop above. That loop iterates `destroyed_ids.chain(retained_exited_ids)`, so a
+    // `contains` check would be O(n squared) and, worse, would express a business rule as a
+    // condition inside a loop that does something else. A separate loop makes "destroyed only"
+    // structural.
+    //
+    // Root-agent sessions retained as `Exited` are deliberately NOT purged: they stay in the
+    // manager and their row is still in the list, so their post-mortem view still has a place
+    // to be shown.
+    for session_id in outcome.destroyed_ids.iter().copied() {
+        purge_session_side_state(transaction.app(), session_id);
+    }
+
     for row in committed.changed_rows.iter().filter(|row| {
         Uuid::parse_str(&row.id)
             .ok()
@@ -3524,6 +3668,11 @@ pub(crate) struct RestartJobRequest {
     pub activate_after: bool,
     pub intent: TrustedRestartIntent,
     pub communication_override: Option<SessionCommunication>,
+    /// §1295 5.1b — creation-gate enforcement for the restart replacement.
+    /// Root-agent and archived-root cwds are exempt by the gate itself, so
+    /// callers pass the build default; the mailbox wake-restart passes
+    /// `Enforce` explicitly (§1295 6.6 / mailbox.rs:9796).
+    pub enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 }
 
 /// Restart a session: destroy the existing one and recreate it with the same
@@ -3598,6 +3747,7 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
         activate_after,
         TrustedRestartIntent::User,
         None,
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
     )
     .await
 }
@@ -3615,6 +3765,7 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
     activate_after: bool,
     intent: TrustedRestartIntent,
     communication_override: Option<SessionCommunication>,
+    enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
 ) -> Result<SessionInfo, String> {
     app.state::<SelectionCoordinator>()
         .restart_lifecycle(RestartJobRequest {
@@ -3625,6 +3776,7 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
             activate_after,
             intent,
             communication_override,
+            enforcement,
         })
         .await
 }
@@ -3721,6 +3873,11 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
         }
     }
 
+    // The std-Mutex guard from this `let` initializer is dropped at the `;` before
+    // `runtime_snapshot` re-locks the same pty Mutex below. Moving this into an
+    // `if let`/`match` scrutinee or an inner blocking block would hold the guard
+    // across that re-lock and re-introduce the re-entrant std-Mutex deadlock fixed
+    // in resource_monitor (§1295).
     let kill_result = transaction
         .app()
         .state::<Arc<Mutex<PtyManager>>>()
@@ -3755,6 +3912,11 @@ async fn teardown_old_for_restart<R: tauri::Runtime>(
     Ok(true)
 }
 
+/// #1171 - this covers BOTH restart paths: `execute_restart_transaction`'s success path and
+/// `finalize_failed_restart`. A restart is a normal flow - it is in the invoke handler, the
+/// mailbox calls it, and a bulk settings save can restart sessions - so without the purge here
+/// every restart would orphan up to 500 ring entries under an id that is already gone from the
+/// session list, unreachable from the UI.
 fn publish_restart_destroyed<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,
@@ -3770,15 +3932,7 @@ fn publish_restart_destroyed<R: tauri::Runtime>(
             );
         }
     }
-    if let Some(activity) = transaction
-        .app()
-        .try_state::<crate::pty::input_activity::SubstantiveInputState>()
-    {
-        activity
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .reset(session_id);
-    }
+    purge_session_side_state(transaction.app(), session_id);
 }
 
 async fn finalize_failed_restart<R: tauri::Runtime>(
@@ -3830,6 +3984,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         activate_after,
         intent,
         communication_override,
+        enforcement,
     } = request;
     // 1. Read config from existing session BEFORE destroying it
     let (
@@ -3877,6 +4032,14 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     };
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
+    // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
+    // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
+    // live outside-roots session therefore DECLINES: the old session stays
+    // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
+    // and no `finalize_failed_restart` runs. Root-agent restarts already
+    // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
+    // exempts by rule 1.
+    crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
 
     // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
     let clean_args =
@@ -3887,8 +4050,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
     // #537 read-side: resolve the launch agent (honoring currentCodingAgent) and
     // build its spawn under a single settings read guard. No await is held across
-    // the guard; it is dropped at the end of this block.
-    let (selected_agent_id, resolved_spawn) = {
+    // the guard; it is dropped at the end of this block. The #1271 host-shell
+    // snapshot is copied from the SAME guard so program and args can never pair
+    // across a configuration change.
+    let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
         let cfg = settings.read().await;
         let selected_agent_id = resolve_restart_selected_agent_id(
             &cfg,
@@ -3906,7 +4071,15 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         } else {
             None
         };
-        (selected_agent_id, resolved_spawn)
+        let resolved_agent_host_shell = if resolved_spawn.is_some() {
+            Some(ResolvedAgentHostShell {
+                program: cfg.default_shell.clone(),
+                args: cfg.default_shell_args.clone(),
+            })
+        } else {
+            None
+        };
+        (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -3963,6 +4136,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         git_repos,
         restart_start_fresh,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         (!is_root_agent).then_some(restart_start_fresh),
@@ -3971,6 +4145,7 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         Some(SelectionCause::Restart(intent)),
         true,
         None,
+        enforcement,
     )
     .await;
     let deferred = match completion {
@@ -4581,6 +4756,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
                         activate_after: request.select_after,
                         intent: restart_intent,
                         communication_override: None,
+                        enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
                     },
                 )
                 .await;
@@ -4597,16 +4773,25 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             last_coding_agent.as_deref(),
         )?
     };
-    let resolved_spawn = if let Some(agent_id) = agent_id.as_deref() {
+    let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
+        // #1271 - build the spawn and copy the configured default host shell
+        // from the SAME single guard, before any await, so the pair can never
+        // mix across a configuration change (Phase 1 items 1-2; mirrors the
+        // restart pattern).
         let settings = settings.read().await;
-        build_configured_agent_spawn_for_cwd(
+        let spawn = build_configured_agent_spawn_for_cwd(
             &settings,
             agent_id,
             &root_agent_path,
             request.requested_profile.as_deref(),
-        )?
+        )?;
+        let host_shell = Some(ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
+        (spawn, host_shell)
     } else {
-        None
+        (None, None)
     };
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
@@ -4631,6 +4816,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Vec::new(),
         request.skip_auto_resume_for_new_session,
         resolved_spawn,
+        resolved_agent_host_shell,
         None,
         CreateSelectionIntent::Suppress,
         None,
@@ -4639,6 +4825,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Some(SelectionCause::SessionCreated(request.intent)),
         false,
         None,
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
     )
     .await?
     .into_finalized()?;
@@ -5835,7 +6022,7 @@ mod tests {
         }
         std::fs::write(
             team.join("config.json"),
-            r#"{"agents":["../_agent_dev-one","../_agent_dev-two"],"coordinator":"../_agent_lead"}"#,
+            r#"{"agents":["../_agent_dev-one","../_agent_dev-two","../_agent_lead"],"coordinator":"../_agent_lead"}"#,
         )
         .unwrap();
         for (replica, identity) in [
@@ -5854,6 +6041,140 @@ mod tests {
             first.to_string_lossy().into_owned(),
             second.to_string_lossy().into_owned(),
         )
+    }
+
+    /// #1175. The bytes every rotation fixture seeds into `memory/MEMORY.md`.
+    /// Asserted verbatim on both sides of every differential, so a green test can
+    /// never mean "an archive directory exists but is empty".
+    const ROTATION_SENTINEL: &str = "remembered bytes";
+
+    /// #1175. One replica and the origin Agent Matrix its `config.json` identity
+    /// points at.
+    struct RotationSide {
+        replica_cwd: String,
+        matrix: std::path::PathBuf,
+    }
+
+    /// #1175. `strict_target_fixture` (`:5896`) already builds two symmetric
+    /// replicas under `<temp>/project/.ac/wg-1-team/` whose `config.json` identity
+    /// names `<temp>/project/.ac/_agent_dev-one` and `_agent_dev-two`. Those two
+    /// directories sit directly under a `.ac` workspace, so they satisfy
+    /// `is_canonical_agent_matrix_dir`, which is what `resolve_rotatable_matrix_root`
+    /// (`config/agent_memory.rs:83`) resolves a replica session to.
+    ///
+    /// Seed a non-empty `memory/` in each: #1172 D2 makes an EMPTY `memory/` a
+    /// no-op, so the sentinel is what gives the fresh half of each differential
+    /// something to rotate.
+    fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSide) {
+        let (temp, first_replica, second_replica) = strict_target_fixture();
+        let workspace = temp.path().join("project").join(".ac");
+        let mut sides = Vec::new();
+        for (replica_cwd, agent) in [
+            (first_replica, "_agent_dev-one"),
+            (second_replica, "_agent_dev-two"),
+        ] {
+            let matrix = workspace.join(agent);
+            std::fs::create_dir_all(matrix.join("memory")).expect("create origin memory/");
+            std::fs::write(matrix.join("memory").join("MEMORY.md"), ROTATION_SENTINEL)
+                .expect("seed origin memory/");
+            sides.push(RotationSide {
+                replica_cwd,
+                matrix,
+            });
+        }
+        let second = sides.pop().expect("second side");
+        let first = sides.pop().expect("first side");
+        (temp, first, second)
+    }
+
+    /// #1175. Every rotated sibling of `memory/`, sorted. Same shape as
+    /// `agent_memory.rs:180-189`.
+    fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(matrix)
+            .expect("read origin matrix")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .filter_map(|name| name.to_str().map(str::to_string))
+            .filter(|name| name.starts_with("memory_"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #1175. "Nothing has happened to this side." Used for the resume side AND
+    /// for a side whose own launch has not run yet, which is what stops the second
+    /// launch from laundering a side effect of the first (D3, hole 2).
+    fn assert_memory_pristine(side: &RotationSide, case: &str) {
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join("memory").join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the origin matrix's live memory/ must be exactly as it was"
+        );
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert!(
+            rotated.is_empty(),
+            "#1175 ({case}): nothing may have rotated, and this created {rotated:?} in {}",
+            side.matrix.display()
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
+    }
+
+    /// #1175. The RESUME assertion: pristine, PLUS a witness that the launch
+    /// actually entered the context block.
+    ///
+    /// The witness is not decoration. `:2041` is an `if let`, and a launch that
+    /// skips it still reaches the spawn, so `spawn_count` cannot see the
+    /// difference; without this, "nothing rotated" is satisfiable by a resume that
+    /// never reached the gate at all.
+    /// `materialize_agent_context_file_with_filename_activated`
+    /// (`config/session_context.rs:2215`) writes `cwd.join(target_filename)`, and
+    /// the fixture seeds only `config.json` into a replica, so this file existing
+    /// means the block ran. Measured in probe 14 and in 2.7.
+    fn assert_resume_left_memory_alone(side: &RotationSide, case: &str) {
+        assert!(
+            std::path::Path::new(&side.replica_cwd)
+                .join("AGENTS.md")
+                .is_file(),
+            "#1175 ({case}): the resume must have ENTERED the context block; without \
+             this witness the no-rotation assertion below can pass vacuously"
+        );
+        assert_memory_pristine(side, case);
+    }
+
+    /// #1175. The FRESH assertion, which is also the POSITIVE CONTROL: it fails if
+    /// the launch never reached the rotation chokepoint, which is what makes a green
+    /// `assert_resume_left_memory_alone` on the resume side attributable to the gate
+    /// rather than to an unreached call site.
+    fn assert_memory_rotated_once(side: &RotationSide, case: &str) {
+        let rotated = rotated_memory_dirs(&side.matrix);
+        assert_eq!(
+            rotated.len(),
+            1,
+            "#1175 ({case}): a fresh launch must rotate exactly once, found {rotated:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(side.matrix.join(&rotated[0]).join("MEMORY.md")).ok(),
+            Some(ROTATION_SENTINEL.to_string()),
+            "#1175 ({case}): the archive must carry the previous session's bytes"
+        );
+        let live = side.matrix.join("memory");
+        assert!(
+            live.is_dir(),
+            "#1175 ({case}): the fresh session must get a live memory/ back"
+        );
+        assert_eq!(
+            std::fs::read_dir(&live).expect("read live memory/").count(),
+            0,
+            "#1175 ({case}): the recreated memory/ starts empty"
+        );
+        let replica = std::path::Path::new(&side.replica_cwd);
+        assert!(
+            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            "#1175 ({case}): the replica itself must gain no memory* entry"
+        );
     }
 
     async fn create_target_for_test(
@@ -5876,6 +6197,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             intent,
@@ -5902,6 +6224,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::User,
@@ -5983,6 +6306,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::User,
@@ -6674,6 +6998,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             CreateSelectionIntent::User,
@@ -6754,6 +7079,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -6778,6 +7104,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             CreateSelectionIntent::Background,
             &ownership,
         )
@@ -6799,6 +7126,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None,
             CreateSelectionIntent::Background,
@@ -6856,6 +7184,7 @@ mod tests {
                 true,
                 Vec::new(),
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -6941,13 +7270,14 @@ mod tests {
                 true,
                 None,
                 None,
+                None,
                 CreateSelectionIntent::User,
             )
             .await
         });
         started_rx.await.unwrap();
         let second = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(60),
             create_target_for_test(
                 &app,
                 &session_mgr,
@@ -7005,6 +7335,7 @@ mod tests {
                     true,
                     None,
                     None,
+                    None,
                     CreateSelectionIntent::Background,
                 )
                 .await
@@ -7034,6 +7365,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None,
                     CreateSelectionIntent::Background,
@@ -7100,6 +7432,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             Some(crate::pty::backend::PtyViewport::from_fit(74, 23)),
             CreateSelectionIntent::User,
         )
@@ -7146,6 +7479,7 @@ mod tests {
             true,
             Vec::new(),
             true,
+            None,
             None,
             None, // no view
             CreateSelectionIntent::User,
@@ -7194,6 +7528,7 @@ mod tests {
             Vec::new(),
             true,
             None,
+            None,
             Some(crate::pty::backend::PtyViewport::from_fit(0, 0)),
             CreateSelectionIntent::User,
         )
@@ -7225,6 +7560,347 @@ mod tests {
             count, 2,
             "create_session_inner must keep both archive activation gates"
         );
+    }
+
+    // T16 (#1172 D5), rescoped by #1175. READ THIS BEFORE TRUSTING IT.
+    //
+    // This is a SOURCE-LEVEL INVENTORY over `session.rs` alone. It does NOT prove
+    // that a resume never rotates, and it does not close the class of changes that
+    // retarget the rotation. Three measured facts bound it:
+    //
+    //   - A cross-file alias (`pub(crate) use ... as <alias>;` in `config/mod.rs`
+    //     plus an ungated call to the alias here) keeps assertions 1 to 3 intact
+    //     while a resume rotates. Recorded in the issue.
+    //   - A cross-file CALL added in `lib.rs` before the restore at `:2350` is
+    //     invisible to every assertion here and to both behavioral tests below.
+    //   - `skip_auto_resume |= is_coordinator;` inserted immediately above the
+    //     binding leaves ALL FIVE assertions and BOTH behavioral tests green while
+    //     a coordinator resume rotates. Measured; plan 2.8.
+    //
+    // What it DOES enforce, and what nothing else in this suite can:
+    //   - assertions 1 to 3: `rotate_origin_memory_at_spawn` is REFERENCED exactly
+    //     twice in this file, once in the comment and once in the gated call. A
+    //     third occurrence is an UNBUDGETED REFERENCE; it need not be a call. This
+    //     is what catches an ungated second call added on a launch branch the
+    //     behavioral tests do not drive (`execute_restart_transaction` at `:3897`,
+    //     the Root Agent launch at `:4703`).
+    //   - assertions 4 and 5: the name `start_fresh` is bound exactly once, and its
+    //     right-hand side is exactly the resume flag. That is a complete statement
+    //     about ONE LINE. It says nothing about the value flowing into that line,
+    //     which is the residual named above and in plan D5.
+    //
+    // The normative property is guarded behaviorally by
+    // `a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does`
+    // and `create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one`,
+    // for the entry points and argument shapes those tests drive and no further.
+    // Plan section 4.5 enumerates what neither side covers.
+    //
+    // One invisible dependency, already satisfied: the split needle below uses
+    // `\n`. This repository sets `core.autocrlf=true` on Windows checkouts, and
+    // `.gitattributes` `*.rs text eol=lf` is what keeps `session.rs` LF on disk
+    // (measured: 0 CRLF, 9344 LF). If that attribute were ever dropped, this test
+    // fails LOUD rather than silent: assertion 1 would count 2, because the needle
+    // also appears as this test's own `let gated_call = "..."` literal.
+    #[test]
+    fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/session.rs"
+        ))
+        .expect("read session.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production session source");
+        let normalized = production.split_whitespace().collect::<String>();
+        let gated_call = "ifstart_fresh&&context_result.is_ok(){crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);}";
+
+        assert_eq!(
+            normalized.matches(gated_call).count(),
+            1,
+            "#1172 D5: the memory rotation must stay behind `start_fresh && context_result.is_ok()`. \
+             This pins the gate's exact spelling at the single call site in this file; it does not \
+             prove the resume property, and the behavioral tests named above prove it only for the \
+             entry points they drive."
+        );
+        // What assertions 2 and 3 add to assertion 1, stated as the bounded
+        // property they actually enforce.
+        //
+        // Assertion 1 pins one exact spelling of the gated call, so a second
+        // call spelled differently would not match its needle: a different
+        // argument, the path wrapped in parens so it reads `..._at_spawn)(`, or
+        // a block comment between the identifier and the paren. Assertions 2
+        // and 3 reach those by counting the BARE identifier rather than an
+        // invocation shape, and by pinning the one legitimate occurrence that
+        // is not a call, the comment 5.4 requires above the gate.
+        //
+        // The property they enforce, and nothing broader: within `session.rs`
+        // the exact identifier `rotate_origin_memory_at_spawn` occurs exactly
+        // twice, once in that comment and once in the call assertion 1 already
+        // pinned. A third occurrence is unbudgeted.
+        //
+        // That is a count of one identifier in one file. It does NOT establish
+        // that every route to the rotation is accounted for. A call reached
+        // through a cross-file alias, and a call added in another file, both
+        // leave this count at two; both are recorded in the header above, and
+        // the second is plan 9.2's M9, measured green against all five
+        // assertions here and both behavioral tests below.
+        let comment_mention = "`rotate_origin_memory_at_spawn`returns`()`";
+        assert_eq!(
+            normalized.matches(comment_mention).count(),
+            1,
+            "#1172 D5: the comment above the gate must keep naming the rotation exactly once; \
+             it is the one non-call mention the reference budget below accounts for."
+        );
+        assert_eq!(
+            normalized.matches("rotate_origin_memory_at_spawn").count(),
+            2,
+            "#1172 D5: within THIS FILE the rotation entry point must be REFERENCED exactly twice - \
+             once in the comment above the gate, once in the gated call itself. A third occurrence \
+             is unbudgeted: it may be a second call site, an import, or any other reference, and \
+             each of those is a change this inventory deliberately refuses to absorb silently. A \
+             cross-file alias evades this count entirely; see the header comment."
+        );
+        // #1175 D2 part 4. The gate's INPUT, not just its shape. Bounded claim: this
+        // pins ONE LINE. It cannot see how `skip_auto_resume` got its value; see the
+        // header and plan D5 residual 3.
+        assert_eq!(
+            normalized
+                .matches("letstart_fresh=skip_auto_resume;")
+                .count(),
+            1,
+            "#1175: `start_fresh` must be bound to the resume flag ALONE. Appending `|| <extra>` \
+             here makes a RESUME rotate on the production launches that supply the extra input. \
+             Measured (plan 2.7): `|| pending_start_fresh.is_some()` reds this assertion AND the \
+             production-shaped restore test; the `|| is_coordinator` variant reds only this one, \
+             because no cwd in this test binary can be a coordinator."
+        );
+        // #1175 round 2. Assertion 4 alone is defeated by ordinary shadowing:
+        // `let start_fresh = skip_auto_resume; let start_fresh = start_fresh || X;`
+        // preserves its needle exactly. MEASURED (plan 2.8): this assertion is the
+        // only thing in the suite that reds on that form.
+        assert_eq!(
+            normalized.matches("letstart_fresh=").count(),
+            1,
+            "#1175: `start_fresh` must be bound EXACTLY ONCE. A second binding shadows the first \
+             and can compose any additional input into the rotation decision while assertion 4's \
+             needle stays intact."
+        );
+    }
+
+    /// #1175 B1. The behavioral guard on #1172 D5's normative property, within the
+    /// scope D5 of this plan declares. This EXECUTES the launch path and looks at
+    /// the filesystem, so unlike the reference inventory above it reds under the
+    /// cross-file alias the issue built.
+    ///
+    /// The resume half is PRODUCTION-SHAPED, not merely nominal. Round 0 passed
+    /// `pending_start_fresh = None`, `resolved_spawn = None`, `agent_id = None` and
+    /// `skip_tooling_save = true`, none of which is what `lib.rs:2313-2372` passes
+    /// on an ordinary startup restore. Grinch showed the cost: a one-line
+    /// `let start_fresh = skip_auto_resume || pending_start_fresh.is_some();`
+    /// left every round-0 guard green while a real restore rotated, because
+    /// production passes `Some(false)` there and round 0 passed `None`. Each
+    /// argument below is annotated with the production line it mirrors.
+    ///
+    /// The fresh half is the POSITIVE CONTROL and is not optional: without it, a
+    /// green resume half would also be produced by a launch that never reached the
+    /// rotation chokepoint, or by the feature having been deleted outright.
+    ///
+    /// Observation happens at every boundary, never only at the end. See D3.
+    #[tokio::test]
+    async fn a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_does() {
+        let (_fixture, resumed, fresh) = rotation_fixture();
+        // `lib.rs:2314` rebuilds the spawn recipe from settings before restoring.
+        let settings = test_settings();
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &settings,
+            "codex",
+            &resumed.replica_cwd,
+            None,
+        )
+        .expect("resolve the configured codex spawn")
+        .expect("codex is configured in test_settings");
+        // `lib.rs:2334-2340` takes shell, args and label from the rebuilt spawn.
+        let shell = spawn.shell.clone();
+        let shell_args = spawn.shell_args.clone();
+        let agent_label = Some(spawn.trusted_agent_label.clone());
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let restore =
+            crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+        let restored = super::create_session_inner_for_restore(
+            &restore,
+            &session_mgr,
+            &pty_mgr,
+            shell,
+            shell_args,
+            resumed.replica_cwd.clone(),
+            Some("startup restore".to_string()),
+            Some("codex".to_string()), // lib.rs:2358, ps.agent_id
+            agent_label,               // lib.rs:2339, spawn.trusted_agent_label
+            false,                     // lib.rs:2360, "Persist tooling on restore"
+            Vec::new(),
+            false,       // lib.rs:2362, skip_auto_resume_for_restore(false): RESUME
+            Some(spawn), // lib.rs:2363, the rebuilt recipe
+            None,
+            None,        // lib.rs:2365, headless caller keeps 120x30
+            Some(false), // lib.rs:2366, Some(ps.start_fresh_on_restore). LOAD-BEARING.
+            None,
+        )
+        .await;
+        let restored = restored.expect("the production-shaped restore must launch");
+
+        // The launch must be an ACTUAL provider resume, not just a `false` argument.
+        // The Codex injection at `:1999` gates on `agent_kind`, and its body gates
+        // again on `if let Some(ref aid) = agent_id` at `:2000`, so this only holds
+        // because the rebuilt spawn supplies the agent id at `:1446-1450`.
+        let effective = restored
+            .effective_shell_args
+            .clone()
+            .unwrap_or_else(|| restored.shell_args.clone());
+        assert!(
+            effective.iter().any(|arg| arg == "resume"),
+            "#1175: the restore must be an ACTUAL Codex provider resume, got {effective:?}"
+        );
+
+        // Boundary 1: observe BOTH sides before the second cause runs.
+        assert_resume_left_memory_alone(&resumed, "production-shaped startup restore");
+        assert_memory_pristine(&fresh, "fresh side, before its own launch");
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("fresh launch".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true, // a fresh create
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh launch must launch: {created:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY (this proves nothing about the context block)"
+        );
+
+        // Boundary 2: the fresh side rotated, and the resume side is STILL untouched.
+        assert_memory_rotated_once(&fresh, "fresh create");
+        assert_resume_left_memory_alone(&resumed, "restore, rechecked after the fresh launch");
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1175 B2. The same function twice with matched arguments and the same
+    /// session label, one launch fresh and one launch resuming, in the OPPOSITE
+    /// order from B1.
+    ///
+    /// It is deliberately NOT called a one-boolean experiment, and it never was
+    /// one: the cwd differs, and the second launch runs against a `SessionManager`,
+    /// selection coordinator and backend the first already mutated. Naming that
+    /// "the flag alone" would grant exactly the false confidence #1175 exists to
+    /// remove. What it does establish, together with B1, is that no discriminator
+    /// based solely on first-versus-second launch explains the result: B1 runs
+    /// resume then fresh, this runs fresh then resume.
+    ///
+    /// The cwd differs for a positive reason, not because it has to. Two
+    /// same-target `CreateSelectionIntent::User` creates are supported and are
+    /// already exercised by `sequential_user_same_target_creates_remain_compatible`
+    /// (`:6958`); the dedup gate at `:1609` applies to Background and Suppress
+    /// only. Separate replicas are used so each side has its own independently
+    /// seeded, non-empty `memory/` to observe.
+    ///
+    /// Its resume half uses the same `false` polarity as the #599 reopen of a
+    /// closed coordinator, but it is NOT that scenario: `is_coordinator` is
+    /// deterministically false for every cwd in this binary, and the Tauri
+    /// `create_session` producer is bypassed. Plan D5 records coordinator polarity
+    /// and outer composition as untested.
+    ///
+    /// The rotating role is assigned to the OPPOSITE replica from B1's, so no
+    /// single fixture directory is the one that always rotates.
+    #[tokio::test]
+    async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one() {
+        let (_fixture, fresh, resumed) = rotation_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            fresh.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            true, // FRESH first: the opposite order from B1
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(created.is_ok(), "the fresh create must launch: {created:?}");
+
+        // Boundary 1.
+        assert_memory_rotated_once(&fresh, "fresh create, observed immediately");
+        assert_memory_pristine(&resumed, "resume side, before its own launch");
+
+        let reopened = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            resumed.replica_cwd.clone(),
+            Some("matched differential".to_string()),
+            Some("codex".to_string()),
+            Some("Codex".to_string()),
+            true,
+            Vec::new(),
+            false, // the #599 reopen value: this launch RESUMES
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await;
+        assert!(reopened.is_ok(), "the reopen must launch: {reopened:?}");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            2,
+            "both launches must reach the PTY"
+        );
+
+        // Boundary 2.
+        assert_resume_left_memory_alone(&resumed, "reopen that resumes");
+        assert_memory_rotated_once(&fresh, "fresh side, rechecked after the resume");
+        close_test_coordinator(&app).await;
     }
 
     #[test]
@@ -7330,6 +8006,7 @@ mod tests {
                     Vec::new(),
                     true,
                     None,
+                    None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
                 )
@@ -7412,6 +8089,7 @@ mod tests {
                     true,
                     Vec::new(),
                     true,
+                    None,
                     None,
                     None, // #973 - no view in this test: 120x30
                     CreateSelectionIntent::User,
@@ -9198,4 +9876,710 @@ mod tests {
                 ));
         assert_eq!(resolved, Some(expected));
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // §1295 gate tests (13-16)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Test 13 (dispatch c): the impl creation gate blocks an unregistered cwd
+    /// (zero residue) and accepts a registered existing root when forced with
+    /// `Enforce`.
+    #[tokio::test]
+    async fn create_session_inner_gate_blocks_unregistered_cwd() {
+        use crate::config::sessions_persistence::CreationGateEnforcement;
+
+        // Use the strict-replica fixture so `pty_input_create_gate_key_from_cwd`
+        // classifies the cwd as a known replica (returns None, not Err) rather
+        // than erroring on a bare tempdir path.
+
+        // Outside-roots cwd (empty project_paths) with Enforce -> rejected, no
+        // row, no spawn.
+        let (temp, first_cwd, _second) = strict_target_fixture();
+        let outside_cwd = first_cwd;
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let err = super::create_session_inner_impl(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            outside_cwd,
+            Some("gated".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            CreationGateEnforcement::Enforce,
+        )
+        .await;
+        let err = match err {
+            Ok(_) => panic!("expected the gate to reject the unregistered cwd"),
+            Err(e) => e,
+        };
+        assert!(err.contains("sessionCreateBlocked"), "{err}");
+        assert!(err.contains("outside all registered projects"), "{err}");
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "rejected create leaves zero residue"
+        );
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            0,
+            "rejected create leaves zero residue"
+        );
+        close_test_coordinator(&app).await;
+
+        // Registered existing root with Enforce -> Ok and a row is created.
+        let project_root = temp.path().join("project");
+        let reg_cwd = temp
+            .path()
+            .join("project")
+            .join(".ac")
+            .join("wg-1-team")
+            .join("__agent_dev-one")
+            .to_string_lossy()
+            .to_string();
+        std::fs::create_dir_all(&reg_cwd).unwrap();
+        let settings = AppSettings {
+            project_paths: vec![project_root.to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let session_mgr2 = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend2 = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr2 = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend2.clone(),
+        )));
+        let app2 = session_test_app(settings, Arc::clone(&session_mgr2), Arc::clone(&pty_mgr2));
+        let reg_cwd = reg_cwd.to_string();
+        let outcome = super::create_session_inner_impl(
+            app2.handle(),
+            &session_mgr2,
+            &pty_mgr2,
+            "codex".to_string(),
+            Vec::new(),
+            reg_cwd,
+            Some("gated-ok".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            CreationGateEnforcement::Enforce,
+        )
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "registered existing root must pass the gate"
+        );
+        assert_eq!(
+            session_mgr2.read().await.list_sessions().await.len(),
+            1,
+            "row created"
+        );
+        close_test_coordinator(&app2).await;
+    }
+
+    /// Test 14 (B2/N4b): restart of a LIVE outside-roots session DECLINES before
+    /// teardown when forced with `Enforce`: the row survives with its original
+    /// status, the PTY handle count is unchanged, and no replacement spawns.
+    #[tokio::test]
+    async fn restart_of_live_outside_roots_declines_before_teardown() {
+        use crate::config::sessions_persistence::CreationGateEnforcement;
+
+        let temp = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        // Create a LIVE session at an unregistered cwd (gate Skip in the test
+        // build lets the create through).
+        let old =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &temp.path().to_string_lossy())
+                .await;
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        assert!(backend.has_session(old_id), "old PTY is live");
+        let settings = app.state::<crate::config::settings::SettingsState>();
+
+        let err = super::restart_session_inner_with_intent(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(true),
+            true,
+            crate::session::selection::TrustedRestartIntent::User,
+            None,
+            CreationGateEnforcement::Enforce,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("sessionCreateBlocked"), "{err}");
+
+        // No teardown side effects: row survives with its original (non-Exited)
+        // status, PTY untouched, no replacement spawn.
+        let row = session_mgr
+            .read()
+            .await
+            .get_session(old_id)
+            .await
+            .expect("row survives");
+        assert!(
+            !matches!(
+                row.status,
+                crate::session::session::SessionStatus::Exited(_)
+            ),
+            "declare must not flip the row to Exited"
+        );
+        assert!(backend.has_session(old_id), "PTY handle not torn down");
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            1,
+            "no replacement spawn"
+        );
+        close_test_coordinator(&app).await;
+    }
+
+    /// Test 15 (N4d): the restore-wake gate exempts root-agent and archived-root
+    /// cwds (existence waived) and refuses an outside-roots cwd, all through the
+    /// same `enforce_creation_gate` the restore path runs.
+    #[tokio::test]
+    async fn restore_wake_gate_exceptions() {
+        use crate::config::sessions_persistence::{enforce_creation_gate, CreationGateEnforcement};
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+
+        // Root-agent cwd: allowed even when the dir is missing.
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let root = crate::config::root_agent::root_agent_dir().expect("root dir resolves");
+        assert!(
+            enforce_creation_gate(app.handle(), &root, CreationGateEnforcement::Enforce)
+                .await
+                .is_ok(),
+            "root-agent cwd is gate-exempt"
+        );
+        close_test_coordinator(&app).await;
+
+        // Archived-root cwd: allowed with existence waived.
+        let archived_dir = tempfile::tempdir().unwrap();
+        let archived_root = archived_dir.path().to_string_lossy().to_string();
+        let missing_under_archived = archived_dir
+            .path()
+            .join("not-there")
+            .join("__agent_x")
+            .to_string_lossy()
+            .to_string();
+        let session_mgr2 = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app2 = session_test_app(
+            AppSettings {
+                archived_project_paths: vec![archived_root.clone()],
+                ..AppSettings::default()
+            },
+            Arc::clone(&session_mgr2),
+            Arc::clone(&pty_mgr),
+        );
+        assert!(
+            enforce_creation_gate(
+                app2.handle(),
+                &missing_under_archived,
+                CreationGateEnforcement::Enforce
+            )
+            .await
+            .is_ok(),
+            "archived-root restore-wake is gate-exempt"
+        );
+        close_test_coordinator(&app2).await;
+
+        // Outside-roots cwd: refused.
+        let session_mgr3 = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app3 = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr3),
+            Arc::clone(&pty_mgr),
+        );
+        let outside = archived_dir
+            .path()
+            .join("elsewhere")
+            .to_string_lossy()
+            .to_string();
+        let err = enforce_creation_gate(app3.handle(), &outside, CreationGateEnforcement::Enforce)
+            .await
+            .unwrap_err();
+        assert!(err.contains("sessionCreateBlocked"), "{err}");
+        close_test_coordinator(&app3).await;
+    }
+
+    /// Test 16 (S5/N4): the Tauri `create_session` command with `cwd: None`
+    /// resolves to the home dir and (in the test build, where the gate defaults
+    /// to Skip) creates Ok. The production refusal of that default is covered by
+    /// the pure-function predicate tests in sessions_persistence.
+    #[tokio::test]
+    async fn create_session_command_without_cwd_falls_back_to_home() {
+        // §1295 S5: the command resolves cwd:None to the home dir (gate Skip in
+        // the test build lets the inner create through). The production refusal
+        // of the home-dir default is covered by the pure predicate test in
+        // sessions_persistence.
+        let resolved = super::resolve_create_session_cwd(None);
+        let expected_home = dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !expected_home.is_empty() {
+            assert_eq!(
+                resolved,
+                crate::path_utils::normalize_windows_verbatim_path(&expected_home),
+                "cwd: None falls back to home"
+            );
+        }
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            AppSettings::default(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        // The inner create (gate defaults to Skip in the test build) succeeds at
+        // the home cwd, mirroring the `cwd: None` command path.
+        super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "codex".to_string(),
+            Vec::new(),
+            resolved,
+            Some("home-default".to_string()),
+            None,
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("create with home default succeeds in the test build");
+        assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
+        close_test_coordinator(&app).await;
+    }
+
+    // --- #1271 configured default-shell propagation --------------------------
+
+    /// Captures every `BackendSpawnSpec` the PTY manager hands to the backend,
+    /// so tests can assert the resolved-agent host-shell snapshot propagated
+    /// unchanged from the creation seam. Spawned ids count as live sessions so
+    /// the finalized-create path can display them, mirroring
+    /// `ScriptedSpawnBackend`.
+    #[derive(Default)]
+    struct CapturingSpawnBackend {
+        specs: Mutex<Vec<crate::pty::backend::BackendSpawnSpec>>,
+        live: Mutex<HashSet<Uuid>>,
+    }
+
+    impl PtyBackend for CapturingSpawnBackend {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn spawn(
+            &self,
+            spec: crate::pty::backend::BackendSpawnSpec,
+        ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(spec.id);
+                self.specs.lock().unwrap().push(spec);
+                Ok(())
+            })
+        }
+
+        fn write(
+            &self,
+            _authority: &crate::pty::manager::BackendWriteAuthority,
+            id: Uuid,
+            _data: &[u8],
+        ) -> Result<(), crate::errors::AppError> {
+            Err(crate::errors::AppError::SessionNotFound(id.to_string()))
+        }
+
+        fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+            Ok(())
+        }
+
+        fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+            self.live.lock().unwrap().remove(&id);
+            Ok(())
+        }
+
+        fn has_session(&self, id: Uuid) -> bool {
+            self.live.lock().unwrap().contains(&id)
+        }
+
+        fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+            None
+        }
+
+        fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+            None
+        }
+
+        fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+        }
+
+        fn register_response_watcher(
+            &self,
+            _session_id: Uuid,
+            _request_id: String,
+            _response_dir: std::path::PathBuf,
+        ) {
+        }
+
+        fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+            false
+        }
+
+        fn kill_all_jobs(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_default_shell_snapshot_reaches_backend_for_resolved_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        // Drive the resolved-agent path exactly as `create_session` does: the
+        // resolved agent stays the command-to-run, and the configured host shell
+        // (copied from the same config snapshot) travels separately.
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 propagation".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+        assert_eq!(created.agent_id.as_deref(), Some("claude"));
+
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs
+                .last()
+                .expect("the resolved-agent create reached the backend");
+            assert_eq!(spec.cmd, "claude", "agent program stays the command-to-run");
+            let host = spec
+                .resolved_agent_host_shell
+                .as_ref()
+                .expect("host shell snapshot must reach the backend");
+            assert_eq!(
+                host.program,
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+            );
+            assert_eq!(host.args, vec!["-NoProfile".to_string()]);
+        }
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1271 - the observable session metadata seam (`set_pending_effective_shell_args`,
+    /// surfaced as `effective_shell_args`) keeps the LOGICAL agent argv; the
+    /// configured host-shell arguments travel only in the backend spec's
+    /// `resolved_agent_host_shell`. The two must remain distinct: host-shell args
+    /// are never written into the metadata channel.
+    #[tokio::test]
+    async fn configured_default_shell_metadata_keeps_logical_agent_argv_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        settings.default_shell =
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string();
+        settings.default_shell_args = vec!["-NoProfile".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd,
+            None,
+        )
+        .expect("resolve claude")
+        .expect("claude is configured in test_settings");
+        let host_shell = crate::pty::backend::ResolvedAgentHostShell {
+            program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+            args: vec!["-NoProfile".to_string()],
+        };
+        let created = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd.clone(),
+            Some("1271 metadata".to_string()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(host_shell),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("resolved-agent create succeeds");
+
+        // The claude test agent gets auto-injected logical args (`--session-id`):
+        // metadata must carry exactly that logical argv, never the configured
+        // host-shell args.
+        let effective = created
+            .effective_shell_args
+            .as_deref()
+            .expect("effective args are captured before spawn");
+        assert!(
+            effective.iter().any(|arg| arg.starts_with("--session-id")),
+            "session metadata carries the logical agent argv: {effective:?}"
+        );
+        assert!(
+            !effective.iter().any(|arg| arg == "-NoProfile"),
+            "host-shell args must never leak into session metadata: {effective:?}"
+        );
+        let session = session_mgr
+            .read()
+            .await
+            .get_session(Uuid::parse_str(&created.id).unwrap())
+            .await
+            .expect("session exists");
+        let stored = session
+            .effective_shell_args
+            .as_deref()
+            .expect("stored effective args");
+        assert!(
+            !stored.iter().any(|arg| arg == "-NoProfile"),
+            "the pending-effective metadata channel stays logical: {stored:?}"
+        );
+
+        {
+            let specs = backend.specs.lock().unwrap();
+            let spec = specs.last().expect("create reached the backend");
+            assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+            assert_eq!(
+                spec.resolved_agent_host_shell
+                    .as_ref()
+                    .expect("host shell present")
+                    .args,
+                vec!["-NoProfile".to_string()],
+                "host-shell args travel only in the paired snapshot"
+            );
+        }
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1271 - native twin of the web invalid-input postcondition test: the
+    /// adapter rejection happens at the TOP of the REAL `spawn_sync`, before
+    /// any spawn accounting or PTY acquisition, so a rejected configured host
+    /// leaves no session, no pending/metadata record, no spawn record, no PTY
+    /// map entry, and no output task. Windows-only (the adapter is the Windows
+    /// host-shell branch); the backend seam proves the same postcondition with
+    /// a known id in `adapter_spawn_sync_tests`.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn configured_default_shell_invalid_input_leaves_no_session_state_native() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+        let mut settings = test_settings();
+        // A conflicting/terminal configured option must fail before any PTY.
+        settings.default_shell = "powershell.exe".to_string();
+        settings.default_shell_args = vec!["-Command".to_string()];
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        // The real local backend: the invalid-input rejection lives inside its
+        // spawn_sync, so a fake capturing backend would accept the spawn.
+        let git_app = Box::leak(Box::new(
+            tauri::Builder::default()
+                .any_thread()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build native invalid-input git watcher app"),
+        ));
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            git_app.handle().clone(),
+        );
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let output_senders: crate::telegram::manager::OutputSenderMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::new(
+            output_senders,
+            idle_detector,
+            git_watcher,
+            None,
+        ));
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend,
+        )));
+        let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
+
+        let error = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "claude".to_string(),
+            Vec::new(),
+            cwd.clone(),
+            Some("1271 native invalid input".to_string()),
+            None,
+            None,
+            false,
+            Vec::new(),
+            true,
+            None,
+            Some(crate::pty::backend::ResolvedAgentHostShell {
+                program: "powershell.exe".to_string(),
+                args: vec!["-Command".to_string()],
+            }),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect_err("invalid configured host must fail the create");
+        assert!(error.contains("conflicting/terminal"), "{error}");
+        assert!(error.contains("agent adapter owns command execution"), "{error}");
+
+        assert!(
+            session_mgr.read().await.list_sessions().await.is_empty(),
+            "no session may appear in the session manager"
+        );
+        // The coordinator worker rolls the pending binding back asynchronously;
+        // while it is still visible, the rejected id must show no launch
+        // provenance, no PTY map entry, and no output task.
+        let pending_ids = session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids;
+        for id in &pending_ids {
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(*id).is_none(),
+                "no launch provenance may be recorded for the rejected session"
+            );
+            assert!(
+                !pty_mgr.lock().unwrap().has_session(*id),
+                "no PTY map entry may exist for the rejected session"
+            );
+            assert!(
+                pty_mgr.lock().unwrap().get_pty_size(*id).is_none(),
+                "no output task may be attached for the rejected session"
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let pending_empty = session_mgr
+                .read()
+                .await
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty();
+            if pending_empty {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no pending session/metadata record may survive the rejection"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        close_test_coordinator(&app).await;
+    }
+
 }

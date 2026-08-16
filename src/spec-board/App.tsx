@@ -1,5 +1,5 @@
 
-import { Component, createEffect, onMount, onCleanup, createSignal, Show } from "solid-js";
+import { Component, onMount, onCleanup, createSignal, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { specBoardStore, setSpecBoardStore } from "./stores/spec-board";
 import { SpecBoardAPI, onSpecBoardChanged, onSpecBoardConflict, onSpecBoardFileMissing } from "../shared/ipc";

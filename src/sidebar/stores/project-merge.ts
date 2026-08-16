@@ -1,6 +1,27 @@
-import type { AcDiscoveryResult, AcWorkgroup } from "../../shared/types";
-import type { ProjectState } from "./project";
+import type {
+  AcAgentMatrix,
+  AcDiscoveryResult,
+  AcLoopSummary,
+  AcTeam,
+  AcWorkgroup,
+  ContextTemplateUpdate,
+} from "../../shared/types";
 import { normalizeProjectPathForCompare } from "./project-refresh";
+
+// #1283 baseline cycle break (2026-08-12 plan amendment): the ProjectState
+// interface moved here from ./project so that project.ts imports from
+// project-merge only and project-merge imports nothing from project. project.ts
+// re-exports this local declaration (import + `export type { ProjectState }`) so
+// every existing consumer keeps compiling unchanged.
+export interface ProjectState {
+  path: string;
+  folderName: string;
+  workgroups: AcWorkgroup[];
+  agents: AcAgentMatrix[];
+  teams: AcTeam[];
+  loops: AcLoopSummary[];
+  contextTemplateUpdates: ContextTemplateUpdate[];
+}
 
 
 export function deepEqual(a: unknown, b: unknown): boolean {

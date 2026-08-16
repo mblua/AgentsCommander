@@ -54,6 +54,21 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
       expect(def.configSeed).toBeUndefined();
     }
   });
+
+  it("#1318/#1325: claude, pi, and codex ship update commands; every entry defaults autoUpdate off", () => {
+    for (const def of FALLBACK_CODING_AGENTS) {
+      expect(def.autoUpdate).toBe(false);
+      if (def.key === "claude") {
+        expect(def.updateCommands).toEqual(["claude --update"]);
+      } else if (def.key === "pi") {
+        expect(def.updateCommands).toEqual(["pi update"]);
+      } else if (def.key === "codex") {
+        expect(def.updateCommands).toEqual(["codex update"]);
+      } else {
+        expect(def.updateCommands).toEqual([]);
+      }
+    }
+  });
 });
 
 describe("definitionToSeed (#769)", () => {
@@ -84,9 +99,15 @@ describe("definitionToSeed (#769)", () => {
       envs: [],
       isolatedHome: false,
       removable: true,
+      updateCommands: [],
+      autoUpdate: false,
     };
     const seed = definitionToSeed(bare);
     expect("instructionsFilename" in seed).toBe(false);
     expect("configSeed" in seed).toBe(false);
+    // #1318: the update fields are catalog-only and must never leak into the
+    // persisted agent.
+    expect("updateCommands" in seed).toBe(false);
+    expect("autoUpdate" in seed).toBe(false);
   });
 });

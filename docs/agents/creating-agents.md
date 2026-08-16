@@ -9,8 +9,8 @@ An agent is a directory with a role-prompt file at its root. The directory IS th
 | Coding agent | Role file |
 |---|---|
 | Claude Code | `CLAUDE.md` |
-| Codex | `AGENTS.md` (or `CLAUDE.md` fallback) |
-| Gemini | `GEMINI.md` (or `CLAUDE.md` fallback) |
+| Codex | `AGENTS.md` |
+| Gemini | `GEMINI.md` |
 | Pi | `AGENTS.md` |
 
 When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`.
@@ -23,30 +23,32 @@ If you need two agents in the same project, give each one its own sibling direct
 
 ## Path 1 — through the UI (recommended)
 
-1. Open the **New Agent** modal from the sidebar (the **+ Agent** button in the project header).
-2. Pick a parent directory. For a team member, this should be inside `.ac/_team_<team>/` (the team will discover the new agent automatically).
-3. Type a name (no slashes, no NUL, lowercase kebab-case recommended).
-4. Pick a role template — see [the role-template picker](../integrations/coding-agents.md#role-template-picker).
-5. Optionally enable skills if the template ships them.
-6. Click **Create**.
+1. Open the **New Agent** modal from the sidebar (the **New Agent** button in the project header).
+2. Type a name (no spaces, slashes, or NUL; lowercase kebab-case recommended).
+3. Pick a role template — see [the role-template picker](../integrations/coding-agents.md#role-template-picker).
+4. Optionally enable skills if the template ships them.
+5. Click **Create**.
 
-AC creates the directory, writes the chosen role into `Role.md` and `CLAUDE.md`, copies skills if requested, and registers the agent.
+AC creates `<project>/.ac/_agent_<name>/` with the matrix layout, writes the chosen role into `Role.md`, copies skills if requested, and registers the agent. The coding-agent role file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) is materialized from `Role.md` plus AC context at launch.
 
 ## Path 2 — through the CLI
 
 ```bash
-agentscommander create-agent --parent "C:\repos\my-project\.ac" --name "dev-rust"
+agentscommander create-agent --project MyProject --name "dev-rust" --description "Implements the Rust backend."
 ```
+
+`--project` is a registered AC project folder name (paths are not accepted), `--name` is sanitized into a lowercase `_agent_<id>` folder id, and `--description` is written into the `Role.md` frontmatter and body. The command creates `<project>/.ac/_agent_<id>/` with the matrix layout (`memory/`, `plans/`, `skills/`, `inbox/`, `outbox/`) and writes `Role.md`.
 
 Optional flags:
 
 | Flag | Meaning |
 |---|---|
-| `--launch claude` | Launch Claude Code in the new agent's directory immediately after creation. Use `codex`, `gemini`, or `pi` for the other first-class coding agents. |
-| `--root <PATH>` | Caller's root directory, for logging only. |
-| `--token <TOKEN>` | Session token from `AGENTSCOMMANDER_TOKEN`. |
+| `--role-template <id>` | Seed the role from a template, e.g. `agency:dev-rust` or `local:my-template`. |
+| `--launch claude` | Launch a coding agent in the new agent's directory immediately after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--root <PATH>` | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
+| `--token <TOKEN>` | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 
-The CLI writes a minimal `CLAUDE.md` with the agent's path-based name (e.g., `repos/my-project/dev-rust`). For a richer role, edit `CLAUDE.md` after creation or use the UI path which exposes templates.
+For a richer role, use the UI path which exposes the role-template picker, or edit `Role.md` afterwards.
 
 Full reference: [`docs/reference/cli.md#create-agent`](../reference/cli.md#create-agent).
 

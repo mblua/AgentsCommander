@@ -11,7 +11,8 @@
       "envs": [],
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".claude" },
-      "removable": true
+      "removable": true,
+      "updateCommands": ["claude --update"]
     },
     {
       "key": "codex",
@@ -23,7 +24,8 @@
       "envs": [],
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".codex" },
-      "removable": true
+      "removable": true,
+      "updateCommands": ["codex update"]
     },
     {
       "key": "hermes",
@@ -56,7 +58,8 @@
       "instructionsFilename": "AGENTS.md",
       "envs": [],
       "isolatedHome": false,
-      "removable": true
+      "removable": true,
+      "updateCommands": ["pi update"]
     },
     {
       "key": "opencode",

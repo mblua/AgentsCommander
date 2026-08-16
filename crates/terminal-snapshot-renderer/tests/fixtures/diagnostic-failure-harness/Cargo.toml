@@ -1,0 +1,20 @@
+[package]
+name = "terminal-snapshot-diagnostic-failure-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+autotests = false
+
+[workspace]
+
+# Deliberately nothing but the crate under test. The nested Cargo run is offline and
+# --locked, and the cache it runs against is populated only by the portable job's own
+# `cargo test -p terminal-snapshot-renderer` step, so every dependency added here must
+# already be inside that closure. Keeping this list at exactly the path dependency makes
+# that true by construction rather than by matching pinned versions.
+[dependencies]
+terminal-snapshot-renderer = { path = "../../.." }
+
+[[test]]
+name = "diagnostic_failures"
+path = "failures.rs"

@@ -13,7 +13,6 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
-import { projectCollapseStore } from "../stores/project-collapse";
 import type { AcDiscoveryResult, AcLoopSummary } from "../../shared/types";
 
 const projectPath = "C:\\Project";
@@ -293,6 +292,32 @@ describe("ProjectPanel collapse state", () => {
       });
       // ...but B's "Workgroups" sub-section collapse choice survives.
       expect(workgroupsHeaderB.querySelector(".ac-discovery-chevron")?.classList.contains("collapsed")).toBe(true);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1351 - the coordinator strip is now a real section: header, count, collapse.
+  it("renders the Coordinators header with a count and collapses its rows", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", projectDiscovery("Stable task title"));
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      const quickRow = '[data-ac-testid="replica.row.quick.wg-2-dev-team.dev-webpage-ui"]';
+      await waitFor(() => expect(rendered.root.querySelector(quickRow)).not.toBeNull());
+
+      const header = headerByName(rendered.root, "Coordinators");
+      expect(header.querySelector(".ac-team-count")?.textContent?.trim()).toBe("1");
+      expect(headerCollapsed(header)).toBe(false);
+
+      click(header);
+      await waitFor(() => {
+        expect(headerCollapsed(headerByName(rendered.root, "Coordinators"))).toBe(true);
+        expect(rendered.root.querySelector(quickRow)).toBeNull();
+      });
     } finally {
       rendered.cleanup();
     }

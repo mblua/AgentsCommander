@@ -10,6 +10,10 @@ use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
+use crate::config::injected_messages::{
+    render, CONTEXT_ALERT_MESSAGE_ID, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_THRESHOLDS,
+    TOKEN_WORKGROUP,
+};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
@@ -198,6 +202,9 @@ impl InternalSystemNotice {
         &self.thresholds
     }
 
+    /// #1157 - the wording now lives in the operator-editable injected-message
+    /// registry. This function keeps its signature and its threshold formatting;
+    /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
     fn line(&self) -> String {
         let thresholds = self
             .thresholds
@@ -205,9 +212,17 @@ impl InternalSystemNotice {
             .map(|threshold| format!("{}%", threshold))
             .collect::<Vec<_>>()
             .join(", ");
-        format!(
-            "[AgentsCommander context alert] Member '{}' in workgroup '{}' was observed at {}% context use, reaching configured threshold(s): {}. No automatic action was taken; the coordinator decides whether follow-up is needed.",
-            self.member, self.workgroup, self.observed, thresholds
+        // `values` borrows, so the observed percentage needs a binding that
+        // outlives the slice.
+        let observed = format!("{}%", self.observed);
+        render(
+            CONTEXT_ALERT_MESSAGE_ID,
+            &[
+                (TOKEN_MEMBER, self.member.as_str()),
+                (TOKEN_WORKGROUP, self.workgroup.as_str()),
+                (TOKEN_THRESHOLDS, thresholds.as_str()),
+                (TOKEN_OBSERVED, observed.as_str()),
+            ],
         )
     }
 }
@@ -537,6 +552,9 @@ struct ResolvedWakeSpawnPlan {
     spawn_args: Vec<String>,
     spawn_label: Option<String>,
     configured_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+    /// #1271 - the configured host shell paired with the resolved agent, built
+    /// from the same settings guard that produced the spawn.
+    resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
 
 fn normalize_agent_for_wake(
@@ -1355,7 +1373,6 @@ pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::fr
 /// - `activity_age >= settle` (`idle_threshold + FRESH_IDLE_GUARD`): long-idle -
 ///   InjectNow (no added latency for a genuinely-ready wake).
 /// - otherwise (the `[idle_threshold, settle)` fresh-idle window): Wait.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn live_settle_action(
     activity_age: Option<std::time::Duration>,
     last_resize_age: Option<std::time::Duration>,
@@ -2390,6 +2407,7 @@ struct MailboxTestHooks {
     internal_payloads: Arc<Mutex<Vec<String>>>,
     internal_bookkeeping: Arc<Mutex<Vec<InternalSystemBookkeeping>>>,
     internal_live_settle_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    internal_live_settle_entered: Arc<tokio::sync::Notify>,
     internal_spawn_gate: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     internal_spawn_started: Arc<tokio::sync::Notify>,
     destroy_calls: Arc<Mutex<Vec<Uuid>>>,
@@ -2441,9 +2459,17 @@ enum MailboxTestEvent {
     },
 }
 
+impl MailboxPoller {
+    pub(crate) fn active_terminal_snapshot_shutdown_owner(
+    ) -> Option<crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner> {
+        crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner::active()
+    }
+}
+
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
+    snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
     #[cfg(test)]
     test_hooks: Option<MailboxTestHooks>,
 }
@@ -2613,6 +2639,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             #[cfg(test)]
             test_hooks: None,
         }
@@ -2623,6 +2650,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             test_hooks: Some(test_hooks),
         }
     }
@@ -2701,6 +2729,7 @@ impl MailboxPoller {
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<(), String> {
+        self.snapshot_scanner.begin_cycle();
         if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
             if let Ok(store) = &state.store {
                 let active = state.active_operations.snapshot();
@@ -2735,6 +2764,8 @@ impl MailboxPoller {
             let mgr = session_mgr.read().await;
             mgr.get_sessions_working_dirs().await
         };
+        let snapshot_session_dirs = session_dirs.clone();
+        let archived_for_snapshot = archived.clone();
         let session_dirs = if archived.is_empty() {
             session_dirs
         } else {
@@ -2746,10 +2777,84 @@ impl MailboxPoller {
             .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
         };
 
+        let mut startup_project_paths = repo_paths.clone();
+        for path in &archived_for_snapshot {
+            if !startup_project_paths.contains(path) {
+                startup_project_paths.push(path.clone());
+            }
+        }
         let mut all_paths: Vec<String> = repo_paths;
         for (_, dir) in &session_dirs {
             if !all_paths.contains(dir) {
                 all_paths.push(dir.clone());
+            }
+        }
+
+        // One bounded startup sweep covers canonical Root plus verified WG
+        // replicas under active and archived projects. Fresh artifacts are
+        // registered so the monotonic cleanup task continues after this poll.
+        if self.snapshot_scanner.startup_sweep_pending() {
+            if let Some(state) =
+                app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
+            {
+                let mut startup_objects = std::collections::HashSet::new();
+                if let Ok(root) = crate::config::root_agent::root_agent_dir() {
+                    let root = PathBuf::from(root);
+                    if let Ok(identity) = crate::path_identity::verify_directory(&root) {
+                        if startup_objects.insert(identity.object_id) {
+                            self.snapshot_scanner.startup_sweep_root(&state, &root);
+                        }
+                    }
+                }
+                let mut target_count = 0usize;
+                for project in &startup_project_paths {
+                    let Ok(targets) =
+                        crate::config::teams::discover_verified_terminal_snapshot_targets(
+                            std::slice::from_ref(project),
+                        )
+                    else {
+                        continue;
+                    };
+                    for target in targets {
+                        target_count = target_count.saturating_add(1);
+                        if target_count > 4_096 {
+                            break;
+                        }
+                        let Ok(identity) =
+                            crate::path_identity::verify_directory(&target.replica_root)
+                        else {
+                            continue;
+                        };
+                        if startup_objects.insert(identity.object_id) {
+                            self.snapshot_scanner
+                                .startup_sweep_root(&state, &target.replica_root);
+                        }
+                    }
+                    if target_count > 4_096 {
+                        break;
+                    }
+                }
+            }
+            self.snapshot_scanner.finish_startup_sweep();
+        }
+
+        // Snapshot ingress derives exact replica roots before checking ordinary
+        // outbox spellings, so a live session CWD below its replica cannot make
+        // the dedicated protocol invisible. Physical roots are scanned once.
+        let mut snapshot_root_objects = std::collections::HashSet::new();
+        for (_, discovered) in &snapshot_session_dirs {
+            let Some(requester_root) =
+                crate::phone::terminal_snapshot::verified_requester_root_from_discovered_path(
+                    Path::new(discovered),
+                )
+            else {
+                continue;
+            };
+            let Ok(identity) = crate::path_identity::verify_directory(&requester_root) else {
+                continue;
+            };
+            if snapshot_root_objects.insert(identity.object_id) {
+                self.snapshot_scanner.scan_root(app, &requester_root);
             }
         }
 
@@ -2772,6 +2877,7 @@ impl MailboxPoller {
             if !outbox_dir.is_dir() {
                 continue;
             }
+            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
                 if let Ok(store) = &state.store {
                     self.scrub_stale_pty_input_temps(outbox_dir, store);
@@ -2791,7 +2897,6 @@ impl MailboxPoller {
                 Err(_) => continue,
             };
 
-            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
                 let standard_content = match classify_outbox_document(&path) {
                     OutboxClassification::PrivilegedCandidate { bytes, identity } => {
@@ -2889,6 +2994,8 @@ impl MailboxPoller {
                 }
             }
         }
+
+        self.snapshot_scanner.finish_cycle();
 
         // Prune tracker entries for files that no longer exist
         self.retry_tracker.retain(|path, _| path.exists());
@@ -4640,38 +4747,9 @@ impl MailboxPoller {
                 return;
             }
         };
-        let final_api_guard = if source_plane
-            == crate::phone::types::PtyInputSourcePlane::ContainerApi
-        {
-            let Some(client_store) = api_client_store else {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                return;
-            };
-            let (Some(client_id), Some(generation)) = (
-                claimed.authority_client_id.as_deref(),
-                claimed.authority_client_generation.as_deref(),
-            ) else {
-                reject_pty_input_before_boundary(
-                    &store,
-                    &mut heartbeat,
-                    injection_id,
-                    C::AuthorityChanged,
-                )
-                .await;
-                return;
-            };
-            match client_store
-                .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
-                .await
-            {
-                Ok(Some(guard)) => Some(guard),
-                Ok(None) => {
+        let final_api_guard =
+            if source_plane == crate::phone::types::PtyInputSourcePlane::ContainerApi {
+                let Some(client_store) = api_client_store else {
                     reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
@@ -4680,22 +4758,54 @@ impl MailboxPoller {
                     )
                     .await;
                     return;
-                }
-                Err(_) => {
-                    finish_pty_input_before_boundary(
+                };
+                let (Some(client_id), Some(generation)) = (
+                    claimed.authority_client_id.as_deref(),
+                    claimed.authority_client_generation.as_deref(),
+                ) else {
+                    reject_pty_input_before_boundary(
                         &store,
                         &mut heartbeat,
                         injection_id,
-                        &lease_owner,
-                        C::StoreTransient,
+                        C::AuthorityChanged,
                     )
                     .await;
                     return;
+                };
+                match client_store
+                    .load_active_binding_fresh_offloaded(
+                        client_id.to_string(),
+                        generation.to_string(),
+                        crate::api::auth::SCOPE_PTY_INPUT,
+                    )
+                    .await
+                {
+                    Ok(Some(guard)) => Some(guard),
+                    Ok(None) => {
+                        reject_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            C::AuthorityChanged,
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(_) => {
+                        finish_pty_input_before_boundary(
+                            &store,
+                            &mut heartbeat,
+                            injection_id,
+                            &lease_owner,
+                            C::StoreTransient,
+                        )
+                        .await;
+                        return;
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let final_authority = if let Some(fresh) = final_api_guard.as_ref() {
             self.validate_claimed_api_authority_with_fresh(app, &claimed, fresh)
                 .await
@@ -5136,7 +5246,11 @@ impl MailboxPoller {
             return Ok(None);
         };
         let Some(fresh) = client_store
-            .load_active_binding_fresh_offloaded(client_id.to_string(), generation.to_string())
+            .load_active_binding_fresh_offloaded(
+                client_id.to_string(),
+                generation.to_string(),
+                crate::api::auth::SCOPE_PTY_INPUT,
+            )
             .await?
         else {
             return Ok(None);
@@ -5369,6 +5483,13 @@ impl MailboxPoller {
             }
         }
         let (agent_id, spawn) = resolved.ok_or(C::UnsupportedProfile)?;
+        // #1271 - same-snapshot host shell: built from the SAME cloned
+        // AppSettings that resolved the spawn above (mailbox.rs:5420), before
+        // any await, so the pair can never mix across a configuration change.
+        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings.default_shell.clone(),
+            args: settings.default_shell_args.clone(),
+        });
         let expected_backend = SessionBackendKind::from(&spawn.backend);
         let carried = exited.map(|session| {
             (
@@ -5467,6 +5588,7 @@ impl MailboxPoller {
             Vec::new(),
             exited.is_none(),
             Some(spawn),
+            resolved_agent_host_shell,
             None,
             crate::commands::session::CreateSelectionIntent::Background,
             target_ownership,
@@ -6208,10 +6330,12 @@ impl MailboxPoller {
         // postcondition. This is a BACKSTOP, not the primary defense: the DB
         // dispatcher must skip its tick before leasing (see `api/dispatcher.rs`,
         // #885 F-5); reaching this Err from there would burn an attempt and can
-        // POISON the message. The two callers for which this Err is safe:
+        //   POISON the message. The one caller for which this Err is safe:
         //   - filesystem poller: non-permanent error, retried at the 3s poll
         //     interval up to MAX_DELIVERY_ATTEMPTS. Deferred, not lost.
-        //   - inline API send: mapped to DeliveryOutcome::Rejected. No retry.
+        //   The inline API send that used to map this to a rejected outcome no
+        //   longer exists (#1177), so the DB dispatcher is now the only other
+        //   caller, and it is exactly the one F-5 must keep out of this window.
         if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
         {
             if g.blocks_agent(&msg.to) {
@@ -6473,6 +6597,7 @@ impl MailboxPoller {
             spawn_args,
             spawn_label,
             configured_spawn,
+            resolved_agent_host_shell,
         } = plan;
         let spawn_source = resolved_command.source.clone();
         let spawn_raw = resolved_command.raw_command.clone();
@@ -6501,6 +6626,7 @@ impl MailboxPoller {
                 spawn_args.clone(),
                 spawn_label,
                 configured_spawn,
+                resolved_agent_host_shell,
             )
             .await
             .map_err(|e| {
@@ -6734,6 +6860,14 @@ impl MailboxPoller {
             let snapshot = settings.read().await.clone();
             snapshot
         };
+        // #1271 - copy the configured default host shell from the SAME snapshot
+        // that builds the spawn below, before the snapshot moves into the
+        // resolution task (Phase 1 items 1-2: never read one half of the pair
+        // after configuration has changed).
+        let resolved_agent_host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: settings_snapshot.default_shell.clone(),
+            args: settings_snapshot.default_shell_args.clone(),
+        });
         let spawn_agent_id = agent_id.to_string();
         let spawn_cwd = cwd.clone();
         let resolved_spawn = tokio::task::spawn_blocking(move || {
@@ -6798,6 +6932,7 @@ impl MailboxPoller {
             resolved_spawn.shell_args.clone(),
             Some(resolved_spawn.trusted_agent_label.clone()),
             Some(resolved_spawn),
+            resolved_agent_host_shell,
         );
         tokio::pin!(spawn);
         let spawn_result = tokio::select! {
@@ -6861,6 +6996,9 @@ impl MailboxPoller {
         if let Some(hooks) = &self.test_hooks {
             let gate = hooks.internal_live_settle_gate.lock().unwrap().take();
             if let Some(gate) = gate {
+                // notify_one, not notify_waiters: this stores a permit when the canceller
+                // has not been polled yet, which on a current_thread runtime is the norm.
+                hooks.internal_live_settle_entered.notify_one();
                 let _ = gate.await;
                 return;
             }
@@ -7305,6 +7443,7 @@ impl MailboxPoller {
         spawn_args: Vec<String>,
         spawn_label: Option<String>,
         resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
+        resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
     ) -> Result<SessionInfo, String> {
         #[cfg(not(test))]
         let _ = msg;
@@ -7382,6 +7521,9 @@ impl MailboxPoller {
             Vec::new(),       // git_repos
             skip_auto_resume, // see deliver_wake top
             resolved_spawn,
+            // #1271 - the configured host shell paired with the resolved agent,
+            // built from the same settings snapshot that produced the spawn.
+            resolved_agent_host_shell,
             // #973 - headless caller: no terminal to measure, keep 120x30.
             None,
             crate::commands::session::CreateSelectionIntent::Background,
@@ -9688,6 +9830,9 @@ impl MailboxPoller {
                     true,
                     crate::session::selection::TrustedRestartIntent::Background,
                     carried_communication,
+                    // §1295 6.6 / 5.1b: the mailbox wake-restart passes Enforce
+                    // explicitly, unlike the default-preferring user restart.
+                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
                 )
                 .await;
                 result.map(|info| info.id)
@@ -10392,15 +10537,27 @@ impl MailboxPoller {
             let (_, local) = crate::config::teams::split_project_prefix(&msg.to);
             local.to_string()
         };
-        let configured_spawn = if let Some(agent_id) = resolved_command.agent_id.as_deref() {
-            let settings = app.state::<SettingsState>();
-            let cfg = settings.read().await;
-            crate::commands::session::resolve_configured_agent_spawn_for_cwd(
-                &cfg, agent_id, &cwd, None,
-            )?
-        } else {
-            None
-        };
+        let (configured_spawn, resolved_agent_host_shell) =
+            if let Some(agent_id) = resolved_command.agent_id.as_deref() {
+                let settings = app.state::<SettingsState>();
+                let cfg = settings.read().await;
+                let spawn = crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+                    &cfg, agent_id, &cwd, None,
+                )?;
+                // #1271 - same-guard host shell: copied from the exact snapshot
+                // that built the spawn, before any await.
+                let host_shell = if spawn.is_some() {
+                    Some(crate::pty::backend::ResolvedAgentHostShell {
+                        program: cfg.default_shell.clone(),
+                        args: cfg.default_shell_args.clone(),
+                    })
+                } else {
+                    None
+                };
+                (spawn, host_shell)
+            } else {
+                (None, None)
+            };
         let (spawn_shell, spawn_args, spawn_label) = if let Some(spawn) = configured_spawn.as_ref()
         {
             (
@@ -10424,6 +10581,7 @@ impl MailboxPoller {
             spawn_args,
             spawn_label,
             configured_spawn,
+            resolved_agent_host_shell,
         })
     }
 
@@ -10662,7 +10820,7 @@ impl MailboxPoller {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
             let cwd = crate::path_utils::normalize_windows_verbatim_path(&request.cwd);
-            let resolved_spawn = {
+            let (resolved_spawn, resolved_agent_host_shell) = {
                 let settings = app.state::<SettingsState>();
                 let cfg = settings.read().await;
                 match crate::commands::session::build_configured_agent_spawn_for_cwd(
@@ -10671,7 +10829,16 @@ impl MailboxPoller {
                     &cwd,
                     request.requested_profile.as_deref(),
                 ) {
-                    Ok(spawn) => spawn,
+                    Ok(Some(spawn)) => (
+                        Some(spawn),
+                        // #1271 - same-guard host shell: copied from the same
+                        // config snapshot that built the spawn, before any await.
+                        Some(crate::pty::backend::ResolvedAgentHostShell {
+                            program: cfg.default_shell.clone(),
+                            args: cfg.default_shell_args.clone(),
+                        }),
+                    ),
+                    Ok(None) => (None, None),
                     Err(e) => {
                         log::error!(
                             "[session-requests] Failed to rebuild configured agent command for '{}': {}",
@@ -10707,6 +10874,7 @@ impl MailboxPoller {
                 Vec::new(),  // git_repos
                 true,        // skip_auto_resume = true → CLI session-request is a fresh create
                 resolved_spawn,
+                resolved_agent_host_shell,
                 // #973 - headless caller: no terminal to measure, keep 120x30.
                 None,
                 crate::commands::session::CreateSelectionIntent::Background,
@@ -10943,7 +11111,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             format_wake_content(WakeContent::InternalSystem(&notice)),
-            "\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-2-dev-team' was observed at 91% context use, reaching configured threshold(s): 50%, 75%, 90%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r"
+            "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. No action taken; you decide any follow-up.\n\r"
         );
         for (member, workgroup, observed, thresholds) in [
             ("../escape", "wg-2-dev-team", 91, vec![50]),
@@ -11012,6 +11180,49 @@ mod tests {
             )
         );
         assert!(payload.contains("[Message from AgentsCommander]"));
+    }
+
+    /// #1157 N6 - the frozen spoofing tests above assert a prefix the product no
+    /// longer emits, so their adversarial value decays. This re-proves the same
+    /// property against the CURRENT default, rendered through the same seam the
+    /// notice uses, now that the wording is operator-controlled.
+    #[test]
+    fn spoofed_current_default_still_uses_peer_wrapper() {
+        let spoofed = render(
+            CONTEXT_ALERT_MESSAGE_ID,
+            &[
+                (TOKEN_MEMBER, "dev-rust"),
+                (TOKEN_WORKGROUP, "wg-2-dev-team"),
+                (TOKEN_THRESHOLDS, "50%, 75%, 90%"),
+                (TOKEN_OBSERVED, "91%"),
+            ],
+        );
+        assert!(spoofed.starts_with("[AC context alert]"));
+        let payload = format_wake_content(WakeContent::Peer {
+            from: "AgentsCommander",
+            body: &spoofed,
+            origin: WakeDeliveryOrigin::DbQueue,
+        });
+        assert_eq!(
+            payload,
+            crate::phone::messaging::format_pty_wrap("AgentsCommander", &spoofed)
+        );
+        assert!(payload.contains("[Message from AgentsCommander]"));
+        // Trust comes from the routing envelope, never from the wording, so a
+        // peer body that reproduces the system text byte for byte is still
+        // delivered as a peer message.
+        assert_ne!(
+            payload,
+            format_wake_content(WakeContent::InternalSystem(
+                &InternalSystemNotice::for_context_alert(
+                    "dev-rust".to_string(),
+                    "wg-2-dev-team".to_string(),
+                    91,
+                    vec![50, 75, 90],
+                )
+                .unwrap()
+            ))
+        );
     }
 
     // (#885 E-3) Minimal mock PTY backend for purge-wg e2e tests. Sessions
@@ -11674,7 +11885,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         let tech_lead_identity = if spoofed_coordinator_identity {
@@ -11833,7 +12044,7 @@ mod tests {
 
         std::fs::write(
             team_dir.join("config.json"),
-            r#"{"agents":["../_agent_dev-rust"],"coordinator":"../_agent_tech-lead"}"#,
+            r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
         std::fs::write(
@@ -13464,7 +13675,7 @@ mod tests {
         );
         assert_eq!(
             hooks.internal_payloads.lock().unwrap().as_slice(),
-            &["\n[AgentsCommander context alert] Member 'dev-rust' in workgroup 'wg-1-dev-team' was observed at 80% context use, reaching configured threshold(s): 50%, 75%. No automatic action was taken; the coordinator decides whether follow-up is needed.\n\r".to_string()]
+            &["\n[AC context alert] `dev-rust` in `wg-1-dev-team` reached threshold(s): 50%, 75%. No action taken; you decide any follow-up.\n\r".to_string()]
         );
         assert_eq!(
             hooks.internal_bookkeeping.lock().unwrap().as_slice(),
@@ -14203,22 +14414,11 @@ mod tests {
         let cancel_when_settling = cancellation.clone();
         let settle_hooks = hooks.clone();
         let canceller = tokio::spawn(async move {
-            for _ in 0..2_000 {
-                if settle_hooks
-                    .internal_live_settle_gate
-                    .lock()
-                    .unwrap()
-                    .is_none()
-                {
-                    cancel_when_settling.cancel();
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-            panic!("internal settle gate was not entered");
+            settle_hooks.internal_live_settle_entered.notified().await;
+            cancel_when_settling.cancel();
         });
         let result = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(60),
             MailboxPoller::new_with_test_hooks(hooks.clone()).deliver_internal_system_notice(
                 &app,
                 InternalSystemTarget::for_context_alert(
@@ -14239,7 +14439,10 @@ mod tests {
         )
         .await
         .expect("cancellation must not wait for the settle cap");
-        canceller.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), canceller)
+            .await
+            .expect("internal settle gate was not entered")
+            .unwrap();
         drop(settle_release);
         assert!(result.unwrap_err().contains("canceled during live settle"));
         assert!(hooks.inject_calls.lock().unwrap().is_empty());
@@ -17271,7 +17474,6 @@ mod tests {
         (session.id, session.token)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_self_switch_message(
         cwd: &Path,
         msg_id: &str,

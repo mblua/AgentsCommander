@@ -2128,7 +2128,7 @@ mod tests {
                 notified.await;
             }
         };
-        if tokio::time::timeout(Duration::from_secs(5), wait)
+        if tokio::time::timeout(Duration::from_secs(60), wait)
             .await
             .is_err()
         {

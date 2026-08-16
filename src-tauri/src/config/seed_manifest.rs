@@ -1,20 +1,29 @@
-//! Activated v1 project seed-manifest recorder.
+//! Activated project seed-manifest recorder.
 //!
 //! Stage F introduces the sole production [`ManifestActivationToken`] constructor
 //! ([`ManifestActivationToken::production`]) and threads it through every
-//! `coverage_version = 1` publisher and lifecycle hook named in
-//! [`V1_COVERAGE_BOUNDARIES`], so a production build now emits
-//! `.ac/seed-manifest.toml`. Stages A through E kept the module reachable only
-//! from `#[cfg(test)]` builds; that dormancy ends here. The coverage declaration
-//! is the exhaustive compile-time checklist; it is not by itself wiring evidence.
-//! Real-boundary coverage lives in `tests/seed_manifest_activation.rs` plus the
-//! CLI integration suites: boundaries reachable from a plain entry point are
-//! driven end-to-end through the library compiled in non-test mode and assert the
-//! resulting manifest mutation, while the `#[cfg(not(test))]`-gated and GUI-only
-//! boundaries are guarded by source-scrape wiring assertions that red if a
-//! boundary's `ManifestActivationToken::production()` threading (or its recording
-//! adapter) is removed. Either way, removing an actual adapter call turns a test
-//! red while this list stays green.
+//! publisher and lifecycle hook named in [`V1_COVERAGE_BOUNDARIES`], so a
+//! production build now emits `.ac/seed-manifest.toml`. Stages A through E kept
+//! the module reachable only from `#[cfg(test)]` builds; that dormancy ends here.
+//! The coverage declaration is the exhaustive compile-time checklist; it is not
+//! by itself wiring evidence. Real-boundary coverage lives in
+//! `tests/seed_manifest_activation.rs` plus the CLI integration suites:
+//! boundaries reachable from a plain entry point are driven end-to-end through
+//! the library compiled in non-test mode and assert the resulting manifest
+//! mutation, while the `#[cfg(not(test))]`-gated and GUI-only boundaries are
+//! guarded by source-scrape wiring assertions that red if a boundary's
+//! `ManifestActivationToken::production()` threading (or its recording adapter)
+//! is removed. Either way, removing an actual adapter call turns a test red
+//! while this list stays green.
+//!
+//! #1318 - coverage grew to v2 (`coding_agent_catalog` kind): an existing v1
+//! manifest is upgraded IN PLACE on the first writer/reader acquire (see
+//! [`ProjectSeedManifestGuard::try_upgrade_v1_to_v2`]) with every row and
+//! timestamp preserved verbatim; a v2 manifest written by this build is NOT
+//! readable by an old build (writer strictness is a one-way door; an old build
+//! preserves its bytes exactly). [`V1CoverageBoundary::CatalogSeed`] is the
+//! first coverage-v2-era publisher; the declaration remains the exhaustive
+//! production-publisher checklist across coverage versions.
 
 #![allow(dead_code)]
 
@@ -39,8 +48,12 @@ const SEED_MANIFEST_TEMP_SUFFIX: &str = ".tmp";
 const MANAGED_HEADER: &str =
     "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n";
 const SCHEMA_VERSION: u32 = 1;
-const COVERAGE_VERSION: u32 = 1;
-const COVERAGE: [&str; 2] = ["project_context_templates", "replica_config_folders"];
+const COVERAGE_VERSION: u32 = 2;
+const COVERAGE: [&str; 3] = [
+    "project_context_templates",
+    "replica_config_folders",
+    "coding_agent_catalog",
+];
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const MAX_MANIFEST_ROWS: usize = 250_000;
 pub(crate) const MAX_FIELD_BYTES: usize = 256 * 1024;
@@ -362,6 +375,9 @@ impl ManifestPathEncoding {
 pub(crate) enum ManifestFileKind {
     ProjectContextTemplate,
     ReplicaConfigFile,
+    /// #1318 - the coding-agent catalog manifest published per project at
+    /// `.ac/coding-agents/agents.json` (scope `catalog:coding-agents`).
+    CodingAgentCatalog,
 }
 
 impl ManifestFileKind {
@@ -369,6 +385,7 @@ impl ManifestFileKind {
         match self {
             Self::ProjectContextTemplate => "project_context_template",
             Self::ReplicaConfigFile => "replica_config_file",
+            Self::CodingAgentCatalog => "coding_agent_catalog",
         }
     }
 }
@@ -951,6 +968,25 @@ impl PublishedManifestRow {
         Ok(row)
     }
 
+    /// #1318 - one coding-agent catalog publication row: `.ac/coding-agents/
+    /// agents.json`, `builtin` source, scope `catalog:coding-agents`. Records
+    /// the WRITE, not content validity: a verbatim-migrated legacy catalog that
+    /// does not parse still records its copy (the read path self-heals).
+    pub(crate) fn coding_agent_catalog(
+        path: ManifestPathIdentity,
+        published_at: DateTime<Utc>,
+    ) -> Result<Self, SeedManifestError> {
+        let row = Self {
+            path,
+            kind: ManifestFileKind::CodingAgentCatalog,
+            scope: "catalog:coding-agents".to_string(),
+            source: ManifestSource::Builtin,
+            published_at,
+        };
+        validate_row(&row)?;
+        Ok(row)
+    }
+
     fn to_wire(&self) -> SeedManifestRowWire {
         SeedManifestRowWire {
             path: self.path.serialized.clone(),
@@ -1251,6 +1287,28 @@ fn validate_row(row: &PublishedManifestRow) -> Result<(), SeedManifestError> {
                 )));
             }
         }
+        ManifestFileKind::CodingAgentCatalog => {
+            if row.path.encoding != ManifestPathEncoding::Utf8
+                || row.source != ManifestSource::Builtin
+            {
+                return Err(SeedManifestError::Validation(
+                    "coding-agent catalog rows require utf8 encoding and builtin source"
+                        .to_string(),
+                ));
+            }
+            if row.path.serialized != ".ac/coding-agents/agents.json" {
+                return Err(SeedManifestError::Validation(format!(
+                    "unsupported coding-agent catalog path {}",
+                    row.path.serialized
+                )));
+            }
+            if row.scope != "catalog:coding-agents" {
+                return Err(SeedManifestError::Validation(format!(
+                    "coding-agent catalog path {} requires scope catalog:coding-agents",
+                    row.path.serialized
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -1369,8 +1427,8 @@ pub(crate) fn exact_config_row_serialized_len(
 pub(crate) fn config_batch_base_serialized_len() -> usize {
     MANAGED_HEADER.len()
         + "schema_version = 1\n".len()
-        + "coverage_version = 1\n".len()
-        + "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n".len()
+        + "coverage_version = 2\n".len()
+        + "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n".len()
 }
 
 fn exact_serialized_len(state: &ManifestState) -> Result<usize, SeedManifestError> {
@@ -1391,10 +1449,10 @@ fn exact_serialized_len_with_limit(
 
     let mut length = MANAGED_HEADER.len();
     checked_add(&mut length, "schema_version = 1\n".len())?;
-    checked_add(&mut length, "coverage_version = 1\n".len())?;
+    checked_add(&mut length, "coverage_version = 2\n".len())?;
     checked_add(
         &mut length,
-        "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n".len(),
+        "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n".len(),
     )?;
     if state.rows.is_empty() {
         checked_add(&mut length, "files = []\n".len())?;
@@ -2190,6 +2248,12 @@ impl ProjectSeedManifestGuard {
                 return Err(error);
             }
         }
+        // #1318 - one-shot v1 -> v2 coverage upgrade. Runs after the prior-temp
+        // policy evaluated the PRE-migration state, and its own temp (created
+        // and renamed inside `write_canonical`, cleaned on failure) never
+        // interacts with that inventory. After a successful upgrade the strict
+        // parse succeeds, so the next acquire never re-enters the migration.
+        guard.try_upgrade_v1_to_v2();
         Ok(guard)
     }
 
@@ -2351,6 +2415,178 @@ impl ProjectSeedManifestGuard {
                     canonical: Some(canonical),
                 })
             }
+        }
+    }
+
+    /// #1318 - one-shot v1 -> v2 coverage upgrade, run under the held lock on
+    /// the first acquire of an exact-shape v1 manifest. Deterministic and
+    /// lossless: the v2 state is built by SUBSTITUTION from the parsed v1 wire
+    /// (`coverage_version` and the coverage list only), so every existing strict
+    /// row check and bound runs verbatim and no timestamp is invented. The
+    /// atomic write goes through [`Self::write_canonical`] DIRECTLY (not
+    /// `persist_current_state`, whose `Unchanged` fast path and `Recorded`
+    /// classification are publication semantics, not migration semantics):
+    /// `verify_canonical_unchanged` stream-compares the CURRENT disk file
+    /// against the retained v1 bytes under the lock, so a concurrent external
+    /// edit between the re-read and the write fails the raw-conflict check.
+    ///
+    /// Only a `ReadOnly { reason: InvalidCanonical, canonical: Some(..) }`
+    /// snapshot is migratable; every other degraded reason (ResourceBound,
+    /// FutureSchema, ExternalEdit, ReadOnlyCanonical, UnsafePath,
+    /// PersistenceFailure) is preserved as-is. Detection keys ONLY on the wire
+    /// pre-parse, never on the sanitized message string.
+    fn try_upgrade_v1_to_v2(&mut self) {
+        let snapshot = std::mem::replace(
+            &mut self.snapshot,
+            CanonicalSnapshot::ReadOnly {
+                reason: ManifestDegradedReason::InvalidCanonical,
+                canonical: None,
+            },
+        );
+        let mut canonical = match snapshot {
+            CanonicalSnapshot::ReadOnly {
+                reason: ManifestDegradedReason::InvalidCanonical,
+                canonical: Some(canonical),
+            } => canonical,
+            other => {
+                self.snapshot = other;
+                return;
+            }
+        };
+        let canonical_path = canonical.path.clone();
+        let restore = |guard: &mut Self, canonical: OpenedRegularFile| {
+            guard.snapshot = CanonicalSnapshot::ReadOnly {
+                reason: ManifestDegradedReason::InvalidCanonical,
+                canonical: Some(canonical),
+            };
+        };
+
+        // b. Re-read the raw bytes from the retained handle (the ReadOnly
+        // snapshot holds no raw copy; the handle stays valid under the lock).
+        let raw = match read_bounded_file(
+            &mut canonical.file,
+            canonical.length,
+            MAX_MANIFEST_BYTES,
+            &canonical_path,
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                log::warn!(
+                    "[seed_manifest] v1->v2 upgrade re-read failed path={} error={}; manifest stays preserved read-only",
+                    canonical_path.display(),
+                    error
+                );
+                restore(self, canonical);
+                return;
+            }
+        };
+
+        // c. Lenient pre-parse. The wire deserializers enforce the MAX_* bounds,
+        // so a bound-violating v1 file fails here and stays preserved (the v2
+        // strict parse would reject the same rows).
+        let text = match std::str::from_utf8(&raw) {
+            Ok(text) => text,
+            Err(error) => {
+                log::warn!(
+                    "[seed_manifest] v1->v2 upgrade skipped: manifest is not UTF-8 at byte offset {} path={}; manifest stays preserved read-only",
+                    error.valid_up_to(),
+                    canonical_path.display()
+                );
+                restore(self, canonical);
+                return;
+            }
+        };
+        let wire = match toml::from_str::<SeedManifestWire>(text) {
+            Ok(wire) => wire,
+            Err(error) => {
+                log::warn!(
+                    "[seed_manifest] v1->v2 upgrade skipped path={} error={}; manifest stays preserved read-only",
+                    canonical_path.display(),
+                    classify_toml_parse_error(error)
+                );
+                restore(self, canonical);
+                return;
+            }
+        };
+
+        // Exact v1 shape: schema 1, coverage 1, the exact two-item list in that
+        // order, nothing else. Any other shape (including `coverage_version = 2`
+        // with the old list, or a v1 file with a different list) keeps the
+        // strict-invalid handling unchanged.
+        const V1_COVERAGE: [&str; 2] = ["project_context_templates", "replica_config_folders"];
+        if wire.schema_version != 1
+            || wire.coverage_version != 1
+            || wire.coverage != V1_COVERAGE.map(str::to_string).to_vec()
+        {
+            restore(self, canonical);
+            return;
+        }
+
+        // d. Build the v2 state by SUBSTITUTION and run the existing strict
+        // checks verbatim (per-row validate_row, duplicate-identity rejection,
+        // mixed-source/timestamp batch checks, MAX_* bounds).
+        let mut v2 = wire;
+        v2.coverage_version = COVERAGE_VERSION;
+        v2.coverage = COVERAGE.map(str::to_string).to_vec();
+        let state = match ManifestState::from_wire(v2) {
+            Ok(state) => state,
+            Err(error) => {
+                log::warn!(
+                    "[seed_manifest] v1 manifest rows failed v2 validation path={} error={}; manifest stays preserved read-only",
+                    canonical_path.display(),
+                    sanitize_canonical_validation_error(error)
+                );
+                restore(self, canonical);
+                return;
+            }
+        };
+
+        // e. Serialize and write under the held lock. `write_canonical` updates
+        // the snapshot itself on success; on failure its temp is cleaned and the
+        // pre-migration degraded snapshot is restored (bytes preserved exactly,
+        // writer disabled, published-unrecorded).
+        let bytes = match serialize_state(&state) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!(
+                    "[seed_manifest] v1->v2 upgrade serialize failed path={} error={}; manifest stays preserved read-only",
+                    canonical_path.display(),
+                    error
+                );
+                restore(self, canonical);
+                return;
+            }
+        };
+        self.snapshot = CanonicalSnapshot::Writable {
+            raw,
+            state,
+            canonical: Some(canonical),
+        };
+        if let Err(error) = self.write_canonical(bytes) {
+            log::warn!(
+                "[seed_manifest] v1->v2 upgrade write failed path={} error={}; manifest stays preserved read-only",
+                canonical_path.display(),
+                error
+            );
+            let canonical = match std::mem::replace(
+                &mut self.snapshot,
+                CanonicalSnapshot::ReadOnly {
+                    reason: ManifestDegradedReason::InvalidCanonical,
+                    canonical: None,
+                },
+            ) {
+                CanonicalSnapshot::Writable { canonical, .. } => canonical,
+                other => {
+                    // Unreachable: write_canonical leaves the snapshot untouched
+                    // on error, so it is still the Writable we just installed.
+                    self.snapshot = other;
+                    None
+                }
+            };
+            self.snapshot = CanonicalSnapshot::ReadOnly {
+                reason: ManifestDegradedReason::InvalidCanonical,
+                canonical,
+            };
         }
     }
 
@@ -2966,17 +3202,22 @@ impl ManifestActivationToken {
     fn authorize(&self) {}
 }
 
-/// Exhaustive Stage F v1 activation coverage (plan section 9 item 6, acceptance
+/// Exhaustive Stage F activation coverage (plan section 9 item 6, acceptance
 /// item 22).
 ///
-/// Every `coverage_version = 1` production publisher and lifecycle hook that
-/// threads a real [`ManifestActivationToken`] is named here exactly once, next to
-/// the module and adapter that wires it. This declaration is the compile-time
-/// checklist; it is NOT by itself wiring evidence. Real-boundary coverage in
-/// `tests/seed_manifest_activation.rs` and the CLI integration suites reds if any
-/// variant's production `ManifestActivationToken::production()` threading (or its
-/// recording adapter) is removed, so a declaration cannot silently stay green
+/// Every production publisher and lifecycle hook that threads a real
+/// [`ManifestActivationToken`] is named here exactly once, next to the module
+/// and adapter that wires it. This declaration is the compile-time checklist; it
+/// is NOT by itself wiring evidence. Real-boundary coverage in
+/// `tests/seed_manifest_activation.rs` and the CLI integration suites reds if
+/// any variant's production `ManifestActivationToken::production()` threading (or
+/// its recording adapter) is removed, so a declaration cannot silently stay green
 /// after its adapter call was removed (which would be insufficient).
+///
+/// #1318 - [`V1CoverageBoundary::CatalogSeed`] is the first coverage-v2-era
+/// publisher; the enum keeps its historical name (minimal diff) while the
+/// declaration remains the exhaustive production-publisher checklist across
+/// coverage versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V1CoverageBoundary {
     /// `commands::ac_discovery::create_ac_project` fresh-root context creation.
@@ -3012,13 +3253,18 @@ pub(crate) enum V1CoverageBoundary {
     LifecycleAgentMatrixDeletion,
     /// Agent Matrix pending-inclusive delete protection staged-rollback prune.
     PendingInclusiveDeleteProtection,
+    /// `config::coding_agents_catalog` per-project catalog seed + seed-manifest
+    /// publication (`ensure_seeded_for_project` / `record_catalog_publication`,
+    /// #1318). The first coverage-v2-era publisher: the catalog row kind only
+    /// exists at `coverage_version = 2`.
+    CatalogSeed,
 }
 
-/// The exhaustive, ordered v1 coverage set. Its length equals the number of
+/// The exhaustive, ordered coverage set. Its length equals the number of
 /// [`V1CoverageBoundary`] variants; the `v1_coverage_declaration_is_exhaustive`
 /// test enforces that a new boundary is added here and matched, so a coverage
 /// entry cannot be dropped from the checklist silently.
-pub(crate) const V1_COVERAGE_BOUNDARIES: [V1CoverageBoundary; 16] = [
+pub(crate) const V1_COVERAGE_BOUNDARIES: [V1CoverageBoundary; 17] = [
     V1CoverageBoundary::DirectCreateAcProjectFreshRoot,
     V1CoverageBoundary::ContextCreate,
     V1CoverageBoundary::ContextUpdate,
@@ -3035,6 +3281,7 @@ pub(crate) const V1_COVERAGE_BOUNDARIES: [V1CoverageBoundary; 16] = [
     V1CoverageBoundary::LifecycleTeamDeletion,
     V1CoverageBoundary::LifecycleAgentMatrixDeletion,
     V1CoverageBoundary::PendingInclusiveDeleteProtection,
+    V1CoverageBoundary::CatalogSeed,
 ];
 
 const BLOCKING_WORK_QUEUED: u8 = 0;
@@ -3541,7 +3788,6 @@ fn log_record_failure(scope: &str, error: &SeedManifestError) {
 
 #[cfg(test)]
 // The shared test module deliberately precedes the cfg-gated Windows implementation it exercises.
-#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -3967,8 +4213,8 @@ mod tests {
             concat!(
                 "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
                 "schema_version = 1\n",
-                "coverage_version = 1\n",
-                "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+                "coverage_version = 2\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
                 "files = []\n"
             )
             .as_bytes()
@@ -3984,8 +4230,8 @@ mod tests {
         let expected = concat!(
             "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
             "schema_version = 1\n",
-            "coverage_version = 1\n",
-            "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+            "coverage_version = 2\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
             "\n",
             "[[files]]\n",
             "path = \".ac/Context.AgentsCommander.md\"\n",
@@ -4048,7 +4294,7 @@ mod tests {
             Err(SeedManifestError::Parse(_))
         ));
 
-        let wrong_coverage = empty.replace("coverage_version = 1", "coverage_version = 2");
+        let wrong_coverage = empty.replace("coverage_version = 2", "coverage_version = 3");
         assert!(matches!(
             parse_manifest_bytes(wrong_coverage.as_bytes()),
             Err(SeedManifestError::Validation(_))
@@ -4083,7 +4329,7 @@ mod tests {
         .to_wire();
         let duplicate_wire = SeedManifestWire {
             schema_version: 1,
-            coverage_version: 1,
+            coverage_version: 2,
             coverage: COVERAGE.map(str::to_string).to_vec(),
             files: vec![row.clone(), row.clone()],
         };
@@ -4097,7 +4343,7 @@ mod tests {
         mixed.source = ManifestSource::MatrixBase;
         let mixed_wire = SeedManifestWire {
             schema_version: 1,
-            coverage_version: 1,
+            coverage_version: 2,
             coverage: COVERAGE.map(str::to_string).to_vec(),
             files: vec![
                 PublishedManifestRow::replica_config(
@@ -4375,8 +4621,8 @@ mod tests {
         let invalid_wire = format!(
             concat!(
                 "schema_version = 1\n",
-                "coverage_version = 1\n",
-                "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+                "coverage_version = 2\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
                 "\n",
                 "[[files]]\n",
                 "path = \".ac/{secret}\"\n",
@@ -4612,6 +4858,364 @@ mod tests {
         );
         guard.release();
         assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), external);
+    }
+
+    // ---- #1318 v1 -> v2 coverage migration + catalog row -------------------
+
+    /// A byte-exact v1 manifest (context row + replica-config row with distinct
+    /// timestamps), exactly what an old build wrote.
+    fn v1_manifest_fixture() -> String {
+        concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 1\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/Context.AgentsCommander.md\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"project_context_template\"\n",
+            "scope = \"context:agentscommander\"\n",
+            "source = \"builtin\"\n",
+            "last_seeded_at = \"2026-07-16T19:40:07.123Z\"\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/wg-1-dev-team/__agent_alpha/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn v1_manifest_upgrades_to_v2_preserving_rows_and_timestamps() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        let v1 = v1_manifest_fixture();
+        std::fs::write(&path, &v1).unwrap();
+
+        // First acquire runs the one-shot upgrade under the held lock.
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            disk.contains("coverage_version = 2"),
+            "upgraded manifest must declare coverage v2: {disk}"
+        );
+        assert!(
+            disk.contains(
+                "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]"
+            ),
+            "upgraded manifest must carry the 3-item v2 coverage: {disk}"
+        );
+        // Rows and timestamps preserved verbatim.
+        let state = read_disk_state(&project);
+        assert_eq!(state.rows.len(), 2);
+        assert!(disk.contains("2026-07-16T19:40:07.123Z"));
+        assert!(disk.contains("2026-07-16T19:41:12.456Z"));
+        // The guard is a fully writable tracked snapshot: publications record.
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.coordinator.md",
+                    "context:coordinator",
+                    "2026-07-16T19:42:00.000Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::Recorded
+        );
+        guard.release();
+
+        // Runs exactly once: a second acquire parses v2 strictly and never
+        // re-enters the migration (bytes only change by the recorded row).
+        let after_first = std::fs::read(&path).unwrap();
+        let guard2 = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        guard2.release();
+        assert_eq!(std::fs::read(&path).unwrap(), after_first);
+        let state = read_disk_state(&project);
+        assert_eq!(state.rows.len(), 3);
+    }
+
+    #[test]
+    fn v1_with_different_coverage_list_stays_strictly_invalid() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        // v1 header with a DIFFERENT (3-item, wrong order) coverage list.
+        let v1 = v1_manifest_fixture().replace(
+            "coverage = [\"project_context_templates\", \"replica_config_folders\"]",
+            "coverage = [\"replica_config_folders\", \"project_context_templates\"]",
+        );
+        std::fs::write(&path, &v1).unwrap();
+
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::InvalidCanonical)
+        );
+        guard.release();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            v1,
+            "non-exact v1 shape stays byte-preserved"
+        );
+    }
+
+    #[test]
+    fn coverage_version_three_stays_invalid_and_non_migratable() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        // v1 -> v2 -> the WRONG value for this build (3): the strict parse
+        // rejects it and the migration must not touch it (not the exact v1
+        // shape: coverage_version != 1).
+        let wrong = v1_manifest_fixture().replace("coverage_version = 1", "coverage_version = 3");
+        std::fs::write(&path, &wrong).unwrap();
+
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::InvalidCanonical)
+        );
+        guard.release();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            wrong,
+            "wrong coverage version stays byte-preserved"
+        );
+    }
+
+    #[test]
+    fn bound_violating_v1_file_stays_preserved_read_only() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        // An over-long path field: the wire deserializers enforce MAX_FIELD_BYTES
+        // on the strict parse (ResourceBound, never migratable) AND on the
+        // migration's lenient pre-parse, so the file stays preserved either way.
+        let overlong = format!("x{}\n", "a".repeat(MAX_FIELD_BYTES + 1));
+        let v1 = format!(
+            concat!(
+                "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+                "schema_version = 1\n",
+                "coverage_version = 1\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+                "\n",
+                "[[files]]\n",
+                "path = \"{}\"\n",
+                "path_encoding = \"utf8\"\n",
+                "kind = \"project_context_template\"\n",
+                "scope = \"context:agentscommander\"\n",
+                "source = \"builtin\"\n",
+                "last_seeded_at = \"2026-07-16T19:40:07.123Z\"\n"
+            ),
+            overlong
+        );
+        std::fs::write(&path, &v1).unwrap();
+
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        // The strict parse classifies the over-long path as a parse failure on
+        // this TOML surface (the lenient pre-parse fails the same way), and the
+        // migration is never entered; either way the contract is preservation
+        // with the writer disabled.
+        let outcome = guard.publication_permit().record_file(
+            &ManifestActivationToken::for_test(),
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            outcome,
+            ManifestRecordOutcome::PublishedUnrecorded(
+                ManifestDegradedReason::InvalidCanonical | ManifestDegradedReason::ResourceBound(_)
+            )
+        ));
+        guard.release();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            v1.as_bytes(),
+            "bound-violating v1 file stays byte-preserved"
+        );
+    }
+
+    #[test]
+    fn future_schema_snapshot_never_migrated() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        let future = concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 2\n",
+            "coverage_version = 1\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\"]\n",
+            "files = []\n"
+        );
+        std::fs::write(&path, future).unwrap();
+
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::FutureSchema)
+        );
+        guard.release();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            future.as_bytes(),
+            "future-schema manifest stays byte-preserved"
+        );
+    }
+
+    #[test]
+    fn external_edit_conflict_during_upgrade_preserves_v1_bytes() {
+        let (_temp, project) = setup_project();
+        let path = canonical_path(&project);
+        std::fs::write(&path, v1_manifest_fixture()).unwrap();
+
+        // A lock-unaware external writer replaces the file between the
+        // migration's re-read and its atomic write: `write_canonical`'s
+        // raw-conflict check must fail and preserve the external bytes.
+        let external = b"external lock-unaware edit\n".to_vec();
+        let hooks = TestFilesystemHooks {
+            before_raw_conflict_check: Some(Arc::new({
+                let external = external.clone();
+                move |canonical| std::fs::write(canonical, &external).unwrap()
+            })),
+            ..TestFilesystemHooks::default()
+        };
+        let mut guard =
+            ProjectSeedManifestGuard::acquire_with_hooks(&project, Duration::from_secs(1), hooks)
+                .unwrap();
+        // The migration's own write fails the raw-conflict check and restores the
+        // pre-migration degraded snapshot (InvalidCanonical), so the next
+        // publication reports the restored reason; the load-bearing assertion is
+        // that the external bytes win and no partial v2 upgrade ever lands.
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.coordinator.md",
+                    "context:coordinator",
+                    "2026-07-16T19:42:00.000Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::InvalidCanonical)
+        );
+        guard.release();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            external,
+            "the external edit wins; v1 bytes never partially upgraded"
+        );
+    }
+
+    #[test]
+    fn coding_agent_catalog_row_requires_exact_path_scope_source_encoding() {
+        let at = timestamp("2026-07-16T19:43:00.000Z");
+        let ok = PublishedManifestRow::coding_agent_catalog(
+            ManifestPathIdentity::parse(
+                ManifestPathEncoding::Utf8,
+                ".ac/coding-agents/agents.json".to_string(),
+            )
+            .unwrap(),
+            at,
+        )
+        .expect("exact catalog row is accepted");
+        assert_eq!(ok.kind, ManifestFileKind::CodingAgentCatalog);
+        assert_eq!(ok.scope, "catalog:coding-agents");
+        assert_eq!(ok.source, ManifestSource::Builtin);
+        assert_eq!(ok.path.serialized, ".ac/coding-agents/agents.json");
+        assert_eq!(ok.path.encoding, ManifestPathEncoding::Utf8);
+
+        // Wrong path -> rejected.
+        assert!(PublishedManifestRow::coding_agent_catalog(
+            ManifestPathIdentity::parse(
+                ManifestPathEncoding::Utf8,
+                ".ac/coding-agents/other.json".to_string(),
+            )
+            .unwrap(),
+            at,
+        )
+        .is_err());
+        // Non-utf8 encoding -> rejected. A WindowsUtf16Hex wire shape only
+        // parses for paths that are NOT valid Unicode (e.g. an unpaired
+        // surrogate), exactly like the existing round-trip fixtures.
+        let mut windows_units: Vec<u16> = ".ac/coding-agents/agents.json".encode_utf16().collect();
+        windows_units.push(0xd800);
+        let windows_hex = windows_units
+            .iter()
+            .map(|unit| format!("{unit:04x}"))
+            .collect::<String>();
+        assert!(PublishedManifestRow::coding_agent_catalog(
+            ManifestPathIdentity::parse(ManifestPathEncoding::WindowsUtf16Hex, windows_hex)
+                .unwrap(),
+            at,
+        )
+        .is_err());
+
+        // A catalog row records under a held gate, alongside context rows.
+        let (_temp, project) = setup_project();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::Recorded
+        );
+        assert_eq!(
+            guard.publication_permit().record_file(
+                &ManifestActivationToken::for_test(),
+                PublishedManifestRow::coding_agent_catalog(
+                    ManifestPathIdentity::parse(
+                        ManifestPathEncoding::Utf8,
+                        ".ac/coding-agents/agents.json".to_string(),
+                    )
+                    .unwrap(),
+                    at,
+                )
+                .unwrap(),
+            ),
+            ManifestRecordOutcome::Recorded
+        );
+        guard.release();
+        let disk = std::fs::read_to_string(canonical_path(&project)).unwrap();
+        assert!(disk.contains("kind = \"coding_agent_catalog\""));
+        assert!(disk.contains("scope = \"catalog:coding-agents\""));
+        assert!(disk.contains("path = \".ac/coding-agents/agents.json\""));
+        assert!(disk.contains("source = \"builtin\""));
     }
 
     #[test]
@@ -4964,11 +5568,11 @@ mod tests {
 
     #[test]
     fn v1_coverage_declaration_is_exhaustive() {
-        // The declaration must name every coverage_version = 1 boundary exactly
+        // The declaration must name every coverage boundary exactly
         // once. The exhaustive match makes adding a `V1CoverageBoundary` variant
         // without listing it here (or vice versa) a compile/count failure, so the
         // Stage F coverage checklist cannot silently drop a boundary.
-        assert_eq!(V1_COVERAGE_BOUNDARIES.len(), 16);
+        assert_eq!(V1_COVERAGE_BOUNDARIES.len(), 17);
         for boundary in V1_COVERAGE_BOUNDARIES {
             // Exhaustive match: a new variant forces an update here.
             match boundary {
@@ -4987,7 +5591,8 @@ mod tests {
                 | V1CoverageBoundary::LifecycleWorkgroupRemoval
                 | V1CoverageBoundary::LifecycleTeamDeletion
                 | V1CoverageBoundary::LifecycleAgentMatrixDeletion
-                | V1CoverageBoundary::PendingInclusiveDeleteProtection => {}
+                | V1CoverageBoundary::PendingInclusiveDeleteProtection
+                | V1CoverageBoundary::CatalogSeed => {}
             }
         }
         // No duplicates: every declared boundary is distinct.
@@ -7293,8 +7898,10 @@ mod stage_e_conformance {
         s.push_str(MANAGED_HEADER);
         s.push('\n');
         s.push_str("schema_version = 1\n");
-        s.push_str("coverage_version = 1\n");
-        s.push_str("coverage = [\"project_context_templates\", \"replica_config_folders\"]\n");
+        s.push_str("coverage_version = 2\n");
+        s.push_str(
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+        );
         s
     }
 

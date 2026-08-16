@@ -8,7 +8,7 @@ src-tauri/gen/schemas/
 .husky/_
 .visual-specs/
 .vscode/
-plans/
+/plans/
 _logbooks/
 
 # AgentsCommander delete sentinels/orphans.
@@ -24,3 +24,11 @@ AGENTS.md
 
 # npm wrapper downloaded binaries
 npm/bin/
+
+# #480 guard run artifacts
+npm-test.log
+npm-test.normalized.log
+npm-test-results.json
+
+artifacts/
+/graph.json

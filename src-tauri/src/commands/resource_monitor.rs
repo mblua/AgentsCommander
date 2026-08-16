@@ -93,6 +93,7 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
             .unwrap_or_else(|error| error.into_inner())
             .terminate_job_for_session(session_id)
     };
+
     log::info!(
         "[resource-monitor] job-fire session={} job_present={}",
         session_id,
@@ -114,11 +115,34 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
         // backstop, reaps the child, tears down idle/git/watchers/parser), then flip
         // the tile to Exited. This is the only path that consumes the job.
         {
-            if let Err(error) = pty_mgr
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .kill(session_id)
-            {
+            // Drop the std-Mutex guard before the S1 re-check below: the defer test
+            // proved a re-entrant same-thread relock (`runtime_snapshot` re-locks the
+            // pty) deadlocks. `kill` itself is quick and side-effect-free on the
+            // failure arm, so no lock is held across the re-check.
+            let kill_result = {
+                let guard = pty_mgr
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let r = guard.kill(session_id);
+                drop(guard);
+                r
+            };
+            if let Err(error) = kill_result {
+                // §1295 S1: the PTY `kill` returned Err. Re-check whether the PTY is
+                // still live (`.has_pty` == `pty_mgr.has_session`). If it is, schedule
+                // the GUARANTEED bounded deferred teardown (round-3 finding-1(b)) so the
+                // route is torn down and the tile released within bounded wall time.
+                if transaction.runtime_snapshot(session_id).has_pty {
+                    log::warn!(
+                        "[resource-monitor] PTY teardown failed after verified kill and PTY still live session={}: {}; retrying bounded deferred teardown",
+                        session_id,
+                        error
+                    );
+                    finalize_dead_pty_route_bounded(transaction, session_id, intent, &pty_mgr)
+                        .await?;
+                    result.finalized = true;
+                    return Ok(result);
+                }
                 log::warn!(
                     "[resource-monitor] PTY teardown failed after verified kill session={}: {}",
                     session_id,
@@ -126,50 +150,7 @@ pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
                 );
             }
         }
-        transaction
-            .app()
-            .state::<crate::DetachedSessionsState>()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&session_id);
-        let window_label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-        if let Some(window) = transaction.app().get_webview_window(&window_label) {
-            if let Err(error) = window.destroy() {
-                log::warn!(
-                    "[resource-monitor] detached window close failed session={}: {}",
-                    session_id,
-                    error
-                );
-            }
-        }
-        let snapshot = transaction.aggregate_snapshot().await;
-        let decision = if snapshot.selection.id() == Some(session_id) {
-            CommitDecision::Clear
-        } else {
-            CommitDecision::Keep
-        };
-        let mut mutations = LifecycleMutations::default();
-        mutations.mark_exited(session_id, 0);
-        let committed = transaction
-            .commit(decision, SelectionCause::ResourceMonitor(intent), mutations)
-            .await?;
-        if !committed.changed_rows.is_empty() {
-            transaction
-                .persist(SelectionSource::ResourceMonitor, Some(session_id))
-                .await;
-            transaction.publish_destroyed(session_id);
-            for row in &committed.changed_rows {
-                if row.id == session_id.to_string() {
-                    transaction.publish_created(row);
-                }
-            }
-            for cleared in &committed.cleared_raise_hand_ids {
-                transaction.publish_communication_cleared(*cleared);
-            }
-            if let Some(selection) = committed.selection.as_ref() {
-                transaction.publish_selection(selection);
-            }
-        }
+        finalize_verified_dead_session(transaction, session_id, intent).await?;
         result.finalized = true;
     } else {
         // NOT verified dead (kernel-AV residual, no job, or a concurrent kill that did
@@ -252,11 +233,151 @@ fn should_finalize_kill(state: ResourceGroupState) -> bool {
     matches!(state, ResourceGroupState::Terminated)
 }
 
+/// Round-3 finding-1(b): how many times the bounded deferred PTY-route teardown retries
+/// a still-live route before escalating to a best-effort force-close. Finite and small;
+/// wall time is bounded by `ATTEMPTS * DELAY`.
+const PTY_ROUTE_RETRY_ATTEMPTS: u32 = 3;
+/// Real delay between deferred teardown retries.
+const PTY_ROUTE_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// The shared verified-dead finalize used by BOTH the happy finalize path and the
+/// bounded deferred teardown. Removes the detached-state record, destroys the terminal
+/// window, commits the Exited flip, then persists and publishes, so the tile is released
+/// and the FE modal resolves. Idempotent for a missing/Exited row: `commit` / `mark_exited`
+/// on a gone row is a no-op and must not error.
+async fn finalize_verified_dead_session<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedResourceIntent,
+) -> Result<(), String> {
+    transaction
+        .app()
+        .state::<crate::DetachedSessionsState>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&session_id);
+    let window_label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+    if let Some(window) = transaction.app().get_webview_window(&window_label) {
+        if let Err(error) = window.destroy() {
+            log::warn!(
+                "[resource-monitor] detached window close failed session={}: {}",
+                session_id,
+                error
+            );
+        }
+    }
+    let snapshot = transaction.aggregate_snapshot().await;
+    let decision = if snapshot.selection.id() == Some(session_id) {
+        CommitDecision::Clear
+    } else {
+        CommitDecision::Keep
+    };
+    let mut mutations = LifecycleMutations::default();
+    mutations.mark_exited(session_id, 0);
+    let committed = transaction
+        .commit(decision, SelectionCause::ResourceMonitor(intent), mutations)
+        .await?;
+    if !committed.changed_rows.is_empty() {
+        transaction
+            .persist(SelectionSource::ResourceMonitor, Some(session_id))
+            .await;
+        transaction.publish_destroyed(session_id);
+        for row in &committed.changed_rows {
+            if row.id == session_id.to_string() {
+                transaction.publish_created(row);
+            }
+        }
+        for cleared in &committed.cleared_raise_hand_ids {
+            transaction.publish_communication_cleared(*cleared);
+        }
+        if let Some(selection) = committed.selection.as_ref() {
+            transaction.publish_selection(selection);
+        }
+    }
+    Ok(())
+}
+
+/// Round-3 finding-1(b): a guaranteed bounded teardown for a still-live PTY route after a
+/// verified-dead kill whose `PtyManager::kill` returned Err. Runs on the local async task
+/// with a real delay between attempts; once the route clears it runs the shared
+/// verified-dead finalize. If the route never clears within `PTY_ROUTE_RETRY_ATTEMPTS`, it
+/// escalates to a best-effort force-close of the route and then finalizes anyway, accepting
+/// a residual leaked route over a permanent Running strand. The std-Mutex guard is dropped
+/// before any await or re-lock (same re-entrant-discipline as the S1 fix).
+async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    intent: TrustedResourceIntent,
+    pty_mgr: &Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>,
+) -> Result<(), String> {
+    for attempt in 1..=PTY_ROUTE_RETRY_ATTEMPTS {
+        tokio::time::sleep(PTY_ROUTE_RETRY_DELAY).await;
+        let route_gone = {
+            let guard = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+            let kill_ok = guard.kill(session_id).is_ok();
+            let live = guard.has_session(session_id);
+            drop(guard);
+            kill_ok || !live
+        };
+        if route_gone {
+            log::info!(
+                "[resource-monitor] bounded deferred PTY teardown succeeded session={} attempt={}",
+                session_id,
+                attempt
+            );
+            return finalize_verified_dead_session(transaction, session_id, intent).await;
+        }
+        log::warn!(
+            "[resource-monitor] bounded deferred PTY teardown attempt {}/{} still live session={}",
+            attempt,
+            PTY_ROUTE_RETRY_ATTEMPTS,
+            session_id
+        );
+        #[cfg(test)]
+        DEFER_RETRY_FAILURES.with(|c| c.set(c.get() + 1));
+    }
+    log::error!(
+        "[resource-monitor] bounded deferred PTY teardown exhausted {} attempts session={}; escalating to best-effort force-close",
+        PTY_ROUTE_RETRY_ATTEMPTS,
+        session_id
+    );
+    {
+        let guard = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(kind) = guard.backend_kind(session_id) {
+            let _ = guard.try_remove_route_if_kind(session_id, kind);
+        }
+        drop(guard);
+    }
+    finalize_verified_dead_session(transaction, session_id, intent).await
+}
+
+#[cfg(test)]
+use std::cell::Cell;
+
+// Per-test count of bounded-deferred-teardown retry failures. `#[tokio::test]` (current
+// thread runtime) runs each test body on one thread, so a thread-local isolates tests
+// that run in parallel and is reset at the start of each retry test.
+#[cfg(test)]
+thread_local! {
+    static DEFER_RETRY_FAILURES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn defer_retry_failures() -> usize {
+    DEFER_RETRY_FAILURES.with(|c| c.get())
+}
+
+#[cfg(test)]
+fn reset_defer_retry_failures() {
+    DEFER_RETRY_FAILURES.with(|c| c.set(0));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_resource_kill_transaction, kill_resource_group, should_finalize_kill,
-        verify_kill_settled,
+        defer_retry_failures, execute_resource_kill_transaction, kill_resource_group,
+        reset_defer_retry_failures, should_finalize_kill, verify_kill_settled,
+        PTY_ROUTE_RETRY_ATTEMPTS,
     };
     use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
     use crate::pty::manager::PtyManager;
@@ -271,8 +392,8 @@ mod tests {
     use crate::resource_monitor::ResourceMonitorState;
     use crate::session::manager::SessionManager;
     use crate::session::selection::{
-        CriticalAdmissionKind, CriticalAdmissionOutcome, SelectionCoordinator, SelectionMode,
-        SelectionSource, SelectionTransaction, TrustedResourceIntent,
+        CriticalAdmissionKind, SelectionCoordinator, SelectionMode, SelectionSource,
+        SelectionTransaction, TrustedResourceIntent, WatchdogKillOutcome,
     };
     use crate::session::session::SessionStatus;
     use crate::web::broadcast::WsBroadcaster;
@@ -292,6 +413,9 @@ mod tests {
         live: Mutex<HashSet<Uuid>>,
         terminate_count: AtomicUsize,
         kill_count: AtomicUsize,
+        fail_kill: AtomicBool,
+        fail_kill_remaining: AtomicUsize,
+        kill_fail_count: AtomicUsize,
     }
 
     #[derive(Default)]
@@ -339,6 +463,20 @@ mod tests {
         fn set_live(&self, id: Uuid) {
             self.live.lock().unwrap().insert(id);
         }
+
+        /// Fixture: when set, `kill` returns Err while `has_session` stays true,
+        /// simulating a PTY teardown failure with a still-live route (S1 defer
+        /// branch).
+        fn set_fail_kill(&self, fail: bool) {
+            self.fail_kill.store(fail, Ordering::SeqCst);
+        }
+
+        /// Fixture: fail the next `n` `kill` calls then succeed, so the deferred
+        /// teardown retry loop observes a bounded number of failures before the route
+        /// clears (round-3 test 19).
+        fn set_fail_kill_remaining(&self, n: usize) {
+            self.fail_kill_remaining.store(n, Ordering::SeqCst);
+        }
     }
 
     impl PtyBackend for ResourcePtyBackend {
@@ -377,6 +515,19 @@ mod tests {
 
         fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
             self.kill_count.fetch_add(1, Ordering::SeqCst);
+            if self.fail_kill_remaining.load(Ordering::SeqCst) > 0 {
+                self.fail_kill_remaining.fetch_sub(1, Ordering::SeqCst);
+                self.kill_fail_count.fetch_add(1, Ordering::SeqCst);
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic kill failure".into(),
+                ));
+            }
+            if self.fail_kill.load(Ordering::SeqCst) {
+                self.kill_fail_count.fetch_add(1, Ordering::SeqCst);
+                return Err(crate::errors::AppError::PtyError(
+                    "synthetic kill failure".into(),
+                ));
+            }
             self.live.lock().unwrap().remove(&id);
             Ok(())
         }
@@ -541,6 +692,276 @@ mod tests {
                 .unwrap()
                 .status,
             SessionStatus::Active
+        );
+    }
+
+    /// Build the 4-state mock app (manager, PtyManager, ResourceMonitorState,
+    /// DetachedSessionsState) with a Group-neutral GatedBackend (supports process
+    /// tree enforcement = true) but NO group registration, so `kill_group` reports
+    /// Terminated immediately with no coordinator/reaper barrier. Used by the S1
+    /// defer-arm test without any coordinator.
+    async fn run_kill_error_branch(
+        fail_kill: bool,
+        keep_pty_live: bool,
+    ) -> (
+        ResourceKillResult,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+        Uuid,
+        Arc<ResourcePtyBackend>,
+        Arc<Mutex<PtyManager>>,
+    ) {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/kill-error-defer".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session");
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5400,
+            creation_time_100ns: 910,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build kill-error app");
+        pty_backend.set_fail_kill(fail_kill);
+        if !keep_pty_live {
+            // Simulate the PTY route already gone while `kill` still errors.
+            pty_backend.live.lock().unwrap().remove(&session.id);
+        }
+        let transaction = SelectionTransaction::for_test(app.handle().clone());
+        let result = execute_resource_kill_transaction(
+            &transaction,
+            session.id,
+            TrustedResourceIntent::Watchdog,
+        )
+        .await
+        .expect("kill transaction");
+        (result, manager, session.id, pty_backend, pty)
+    }
+
+    /// Test 18 (replaces test 17): the S1 kill-error path. Round-3 finding-1(b) replaces
+    /// indefinite deferral with a GUARANTEED bounded teardown, so with a still-live PTY
+    /// whose `kill` keeps erroring the transaction escalates to a best-effort force-close
+    /// and finalizes within bounded time (finalized true, row Exited, route dropped). When
+    /// the PTY is already gone, the same `kill` error falls through and finalizes as today.
+    /// Both branches call `execute_resource_kill_transaction` DIRECTLY (no coordinator)
+    /// under a hard timeout.
+    #[tokio::test]
+    async fn resource_monitor_kill_error_defers_exited_while_pty_live() {
+        let (result, manager, session_id, _pty_backend, pty) =
+            tokio::time::timeout(Duration::from_secs(10), run_kill_error_branch(true, true))
+                .await
+                .expect("branch 1 (escalate) did not complete in time");
+        assert!(
+            result.finalized,
+            "bounded teardown finalizes even while the PTY route stays live (escalation)"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row present after finalize");
+        assert!(
+            matches!(row.status, SessionStatus::Exited(_)),
+            "row Exited after escalation finalize"
+        );
+        assert!(
+            !pty.lock().unwrap().has_session(session_id),
+            "escalation force-close dropped the PTY route"
+        );
+
+        let (result, manager, session_id, _pty_backend, _pty) =
+            tokio::time::timeout(Duration::from_secs(10), run_kill_error_branch(true, false))
+                .await
+                .expect("branch 2 (finalize) did not complete in time");
+        assert!(
+            result.finalized,
+            "finalize proceeds when the PTY route is already gone"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row present after finalize");
+        assert!(
+            matches!(row.status, SessionStatus::Exited(_)),
+            "row Exited after the finalize branch"
+        );
+    }
+
+    /// Builds the 4-state mock app for the round-3 bounded-deferred-teardown tests
+    /// (tests 19-20): a GatedBackend with no group registration so `kill_group` reports
+    /// Terminated immediately, and a backend-setup closure so each test configures how the
+    /// PTY `kill` fails. Returns the result, manager, session id, backend, and pty manager.
+    async fn run_bounded_teardown_branch(
+        backend_setup: impl FnOnce(Arc<ResourcePtyBackend>),
+    ) -> (
+        ResourceKillResult,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+        Uuid,
+        Arc<ResourcePtyBackend>,
+        Arc<Mutex<PtyManager>>,
+    ) {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/bounded-teardown".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create session");
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let process_backend = Arc::new(GatedBackend::new(ProcessIdentity {
+            pid: 5600,
+            creation_time_100ns: 1200,
+        }));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        backend_setup(Arc::clone(&pty_backend));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build bounded teardown app");
+        let transaction = SelectionTransaction::for_test(app.handle().clone());
+        let result = execute_resource_kill_transaction(
+            &transaction,
+            session.id,
+            TrustedResourceIntent::Watchdog,
+        )
+        .await
+        .expect("kill transaction");
+        (result, manager, session.id, pty_backend, pty)
+    }
+
+    /// Test 19 (round-3): the bounded deferred teardown retries the still-live PTY route
+    /// and finalizes once the route clears on the last attempt. The mock `kill` fails the
+    /// initial verified-kill call and the first N-1 retry attempts (so exactly N-1 teardown
+    /// WARNs), then succeeds on the Nth attempt: the route clears, the row flips to Exited,
+    /// and `result.finalized` is true. Deterministic and bounded.
+    #[tokio::test]
+    async fn s1_defer_retries_pty_teardown_then_finalizes_when_route_clears() {
+        reset_defer_retry_failures();
+        let (result, manager, session_id, pty_backend, pty) = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_bounded_teardown_branch(|backend| {
+                backend.set_fail_kill(false);
+                backend.set_fail_kill_remaining(PTY_ROUTE_RETRY_ATTEMPTS as usize);
+            }),
+        )
+        .await
+        .expect("bounded teardown (route clears) did not complete in time");
+        assert!(
+            result.finalized,
+            "finalized after the route clears on the last retry attempt"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row present after finalize");
+        assert!(
+            matches!(row.status, SessionStatus::Exited(_)),
+            "row Exited after the bounded teardown finalize"
+        );
+        assert!(
+            !pty.lock().unwrap().has_session(session_id),
+            "PTY route cleared on the final retry attempt"
+        );
+        assert_eq!(
+            defer_retry_failures(),
+            (PTY_ROUTE_RETRY_ATTEMPTS - 1) as usize,
+            "exactly N-1 teardown WARNs emitted before the route cleared"
+        );
+        assert_eq!(
+            pty_backend.kill_fail_count.load(Ordering::SeqCst),
+            PTY_ROUTE_RETRY_ATTEMPTS as usize,
+            "the initial kill plus N-1 retries failed before the route cleared"
+        );
+    }
+
+    /// Test 20 (round-3): when the PTY route never clears, the bounded deferred teardown
+    /// escalates after exactly N failed attempts to a best-effort force-close of the route
+    /// and still runs the finalize, so the tile is released (row Exited, finalized true)
+    /// instead of stranding in Running forever. No infinite retry.
+    #[tokio::test]
+    async fn s1_defer_escalates_force_close_after_n_failures() {
+        reset_defer_retry_failures();
+        let (result, manager, session_id, _pty_backend, pty) = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_bounded_teardown_branch(|backend| {
+                backend.set_fail_kill(true);
+            }),
+        )
+        .await
+        .expect("bounded teardown (escalate) did not complete in time");
+        assert!(
+            result.finalized,
+            "escalating force-close releases the tile via the Exited flip"
+        );
+        let row = manager
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .expect("row present after escalation");
+        assert!(
+            matches!(row.status, SessionStatus::Exited(_)),
+            "row Exited after escalation force-close"
+        );
+        assert_eq!(
+            defer_retry_failures(),
+            PTY_ROUTE_RETRY_ATTEMPTS as usize,
+            "exactly N failed retry attempts before escalation"
+        );
+        assert!(
+            !pty.lock().unwrap().has_session(session_id),
+            "best-effort force-close dropped the PTY route on escalation"
         );
     }
 
@@ -843,7 +1264,7 @@ mod tests {
             let watchdog_result = watchdog.await.unwrap().unwrap();
             assert!(matches!(
                 watchdog_result,
-                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+                WatchdogKillOutcome::Completed(ref result) if result.finalized
             ));
             assert!(user.await.unwrap().unwrap().finalized);
         } else {
@@ -877,7 +1298,7 @@ mod tests {
             let watchdog_result = watchdog.await.unwrap().unwrap();
             assert!(matches!(
                 watchdog_result,
-                CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+                WatchdogKillOutcome::Completed(ref result) if result.finalized
             ));
         }
 
@@ -989,7 +1410,7 @@ mod tests {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::AlreadyPending
+            WatchdogKillOutcome::AlreadyInFlight
         ));
 
         drop(reservations.pop());
@@ -1010,7 +1431,7 @@ mod tests {
         let result = waiter.await.unwrap().unwrap();
         assert!(matches!(
             result,
-            CriticalAdmissionOutcome::Completed(ref result) if result.finalized
+            WatchdogKillOutcome::Completed(ref result) if result.finalized
         ));
         drop(reservations);
 
@@ -1030,7 +1451,7 @@ mod tests {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::Completed(_)
+            WatchdogKillOutcome::Completed(_)
         ));
         assert!(events_rx.try_recv().is_err());
         coordinator.close_and_join().await;
@@ -1111,6 +1532,450 @@ mod tests {
 
         drop(reservations);
         guard.finish();
+        coordinator.close_and_join().await;
+    }
+
+    /// #1151 (W6) - a backend that quarantines the first cleanup on a stubborn child and,
+    /// once armed, BLOCKS inside `observe_tree`, which is `kill_group_inner`'s first
+    /// backend call and therefore a deterministic barrier. Releasing the gate also makes
+    /// the child verifiably gone, so the parked retry settles to Terminated.
+    ///
+    /// The barrier is announced through a Condvar rather than an AtomicBool so the test
+    /// thread can wait for it with a plain `std` wait. W6 must never need the async
+    /// runtime to make progress in order to report, because the defect it exists to catch
+    /// is exactly the one that stops the runtime from making progress.
+    struct QuarantineGatedBackend {
+        root: ProcessIdentity,
+        armed: AtomicBool,
+        entered: (Mutex<bool>, Condvar),
+        /// The thread that ran the armed `observe_tree`, recorded before it blocks. This
+        /// is the subject of W6's assertion 1.
+        observer: Mutex<Option<std::thread::ThreadId>>,
+        child_gone: AtomicBool,
+        gate: (Mutex<bool>, Condvar),
+    }
+
+    impl QuarantineGatedBackend {
+        fn new(root: ProcessIdentity) -> Self {
+            Self {
+                root,
+                armed: AtomicBool::new(false),
+                entered: (Mutex::new(false), Condvar::new()),
+                observer: Mutex::new(None),
+                child_gone: AtomicBool::new(false),
+                gate: (Mutex::new(false), Condvar::new()),
+            }
+        }
+
+        /// Blocks the calling thread, using `std` only, until the armed `observe_tree` has
+        /// recorded its thread and is about to park on the release gate. Returns false on
+        /// timeout so the caller reports an assertion failure instead of hanging.
+        fn wait_entered(&self, timeout: Duration) -> bool {
+            let (lock, condvar) = &self.entered;
+            let (entered, wait) = condvar
+                .wait_timeout_while(lock.lock().unwrap(), timeout, |entered| !*entered)
+                .unwrap();
+            !wait.timed_out() && *entered
+        }
+
+        fn observer(&self) -> Option<std::thread::ThreadId> {
+            *self.observer.lock().unwrap()
+        }
+
+        fn child(&self) -> ProcessIdentity {
+            ProcessIdentity {
+                pid: self.root.pid + 1,
+                creation_time_100ns: self.root.creation_time_100ns + 1,
+            }
+        }
+
+        fn released(&self) -> bool {
+            *self.gate.0.lock().unwrap()
+        }
+
+        fn release(&self) {
+            self.child_gone.store(true, Ordering::SeqCst);
+            *self.gate.0.lock().unwrap() = true;
+            self.gate.1.notify_all();
+        }
+
+        fn observed(
+            identity: ProcessIdentity,
+            depth: u32,
+            parent_pid: Option<u32>,
+        ) -> ObservedProcess {
+            ObservedProcess {
+                identity,
+                parent_pid,
+                parent_identity: None,
+                exe_name: format!("p{}", identity.pid),
+                depth,
+                private_bytes: None,
+                working_set_bytes: None,
+                cpu_percent: None,
+                kill_allowed: true,
+            }
+        }
+    }
+
+    impl ProcessTreeBackend for QuarantineGatedBackend {
+        fn observe_tree(
+            &self,
+            _root: ProcessIdentity,
+        ) -> Result<ObservedProcessTree, ResourceError> {
+            if self.armed.load(Ordering::SeqCst) {
+                // Record the observer BEFORE announcing the barrier, so a waiter that
+                // sees `entered` always sees the thread id too.
+                *self.observer.lock().unwrap() = Some(std::thread::current().id());
+                {
+                    let (lock, condvar) = &self.entered;
+                    *lock.lock().unwrap() = true;
+                    condvar.notify_all();
+                }
+                let mut released = self.gate.0.lock().unwrap();
+                while !*released {
+                    released = self.gate.1.wait(released).unwrap();
+                }
+            }
+            let mut processes = vec![Self::observed(self.root, 0, None)];
+            if !self.child_gone.load(Ordering::SeqCst) {
+                processes.push(Self::observed(self.child(), 1, Some(self.root.pid)));
+            }
+            Ok(ObservedProcessTree {
+                processes,
+                errors: Vec::new(),
+            })
+        }
+
+        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+            if pid == self.root.pid {
+                return Ok(Some(self.root));
+            }
+            if pid == self.child().pid && !self.child_gone.load(Ordering::SeqCst) {
+                return Ok(Some(self.child()));
+            }
+            Ok(None)
+        }
+
+        fn terminate_verified(
+            &self,
+            process: &ObservedProcess,
+        ) -> Result<TerminateOutcome, ResourceError> {
+            if process.identity == self.child() && !self.child_gone.load(Ordering::SeqCst) {
+                return Err(ResourceError::Message(format!(
+                    "pid {}: process still alive after terminate",
+                    process.identity.pid
+                )));
+            }
+            Ok(TerminateOutcome::AlreadyGone)
+        }
+
+        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+            Ok(ProcessMemory::default())
+        }
+    }
+
+    // #1151 (W2) - a LIVE public session keeps the coordinator plus Job Object path
+    // exactly as before: the transaction runs, the session finalizes once, and the
+    // registry-only orphan path is never entered.
+    #[tokio::test]
+    async fn live_public_session_still_uses_coordinator() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/orphan-live-session".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        pty_backend.set_live(session.id);
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(session.id, SessionBackendKind::LocalProcess);
+        let root = ProcessIdentity {
+            pid: 5300,
+            creation_time_100ns: 900,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        assert_eq!(monitor.active_agent_groups(), 1);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build live-session orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        let report = crate::resource_monitor::watchdog::retry_quarantined_group(
+            monitor.as_ref(),
+            &coordinator,
+            session.id,
+            root,
+        )
+        .await;
+
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Coordinator
+        );
+        assert_eq!(report.root_pid, root.pid);
+        assert_eq!(report.state, Some(ResourceGroupState::Terminated));
+        assert!(!report.still_counts_toward_admission);
+        assert_eq!(report.active_agent_groups, 0);
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        // Finalized exactly once, through the coordinator: one PTY teardown and the route
+        // gone. The registry-only path never touches the PTY at all.
+        assert_eq!(pty_backend.terminate_count.load(Ordering::SeqCst), 1);
+        assert!(!pty.lock().unwrap().has_session(session.id));
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (W5) - NON-REGRESSION. A destroy-retained root agent keeps its row as Exited,
+    // so contains_public_or_pending is still true and the coordinator path stays. An
+    // implementation that keyed the orphan decision on "the PTY is gone" rather than "the
+    // session row is gone" would silently divert this working path onto the new one.
+    #[tokio::test]
+    async fn exited_row_still_uses_coordinator() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/orphan-exited-row".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        // mark_exited's bool reports whether a raise-hand flag was cleared, not success.
+        manager.read().await.mark_exited(session.id, 0).await;
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        let pty_backend = Arc::new(ResourcePtyBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(pty_backend.clone())));
+        let root = ProcessIdentity {
+            pid: 5400,
+            creation_time_100ns: 1000,
+        };
+        let process_backend = Arc::new(GatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        register_running(monitor.as_ref(), session.id, root);
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(Arc::clone(&pty))
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build exited-row orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        let report = crate::resource_monitor::watchdog::retry_quarantined_group(
+            monitor.as_ref(),
+            &coordinator,
+            session.id,
+            root,
+        )
+        .await;
+
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Coordinator
+        );
+        assert_eq!(
+            manager
+                .read()
+                .await
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .status,
+            SessionStatus::Exited(0)
+        );
+        coordinator.close_and_join().await;
+    }
+
+    // #1151 (W6) - the orphan retry runs OFF the async runtime. kill_group can cost about
+    // two seconds per stubborn PID, so inlining it would stall a Tokio worker.
+    //
+    // Exactly ONE worker thread is load-bearing, not a style choice: it makes "the async
+    // runtime" an enumerable set of one OS thread, so the thread-identity assertion below
+    // is a complete statement rather than a sample. At two workers it degrades to sampling
+    // one worker out of two, and whether the mutation is caught becomes scheduler
+    // dependent. That is not acceptable for a regression pin, however it happens to land
+    // in any one environment.
+    //
+    // Every wait here is a `std` wait on the test thread, capped so a failure is an
+    // assertion and not a hang. `tokio::time` must not appear in this test: a shape that
+    // needs the runtime to make progress in order to REPORT cannot report the very defect
+    // that stops the runtime from making progress.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn orphan_retry_runs_off_the_async_runtime() {
+        // Harness self-check, taken while the runtime is still idle: spawned tasks really
+        // do run on a worker thread rather than on the block_on thread. If a future Tokio
+        // ever changed that, every assertion below would be silently vacuous.
+        let test_thread = std::thread::current().id();
+        let worker_thread = tokio::spawn(async { std::thread::current().id() })
+            .await
+            .expect("the worker identity probe joins");
+        assert_ne!(
+            worker_thread, test_thread,
+            "spawned tasks must run on the runtime's worker thread, not on the test thread"
+        );
+
+        let root = ProcessIdentity {
+            pid: 5500,
+            creation_time_100ns: 1100,
+        };
+        let process_backend = Arc::new(QuarantineGatedBackend::new(root));
+        let monitor = Arc::new(ResourceMonitorState::with_backend(
+            process_backend.clone() as Arc<dyn ProcessTreeBackend>
+        ));
+        // No session row is ever created: that is what makes this group an orphan.
+        let session_id = Uuid::new_v4();
+        register_running(monitor.as_ref(), session_id, root);
+        let quarantine = monitor
+            .kill_group(session_id, ResourceKillReason::SessionDestroy)
+            .expect("first cleanup runs");
+        assert!(quarantine.quarantined);
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            ResourcePtyBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(Arc::clone(&monitor))
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build off-runtime orphan-retry app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        struct ReleaseOnDrop(Arc<QuarantineGatedBackend>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let _release_guard = ReleaseOnDrop(process_backend.clone());
+        process_backend.armed.store(true, Ordering::SeqCst);
+
+        // tokio::spawn is load-bearing too: it is what puts an inlined blocking call on
+        // the worker thread, instead of on the test thread where it would satisfy
+        // assertion 1 for the wrong reason.
+        let retry = {
+            let monitor = Arc::clone(&monitor);
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                crate::resource_monitor::watchdog::retry_quarantined_group(
+                    monitor.as_ref(),
+                    &coordinator,
+                    session_id,
+                    root,
+                )
+                .await
+            })
+        };
+        assert!(
+            process_backend.wait_entered(Duration::from_secs(5)),
+            "the orphan retry enters the backend barrier"
+        );
+        let observer = process_backend
+            .observer()
+            .expect("the barrier records its thread before parking");
+
+        // Assertion 2's probe, taken while the gate is still held: a task that the runtime
+        // polls right now proves the runtime is still polling tasks. The channel is `std`,
+        // so its result reaches the test thread whether or not the runtime is alive.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(());
+        });
+        let runtime_polled_a_task = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+
+        assert!(
+            !process_backend.released(),
+            "the barrier must still be held while both facts are captured"
+        );
+        process_backend.release();
+
+        // Assertion 1: the blocking work ran on neither the runtime's single worker nor
+        // the test thread, so it ran on the blocking pool. With one worker those two are
+        // the only non-blocking-pool threads, so this is exhaustive. It rejects an inline
+        // call and tokio::task::block_in_place alike.
+        assert_ne!(
+            observer, worker_thread,
+            "the orphan retry must not run on the async runtime's worker thread"
+        );
+        assert_ne!(
+            observer, test_thread,
+            "the orphan retry must not run on the test thread"
+        );
+        // Assertion 2: the runtime kept making progress while the blocking call was in
+        // flight. This is what rejects std::thread::spawn(..).join(), which is off the
+        // runtime by identity yet parks the worker for the whole call. Never assert WHICH
+        // thread sent it: block_in_place legitimately migrates the scheduler to a
+        // replacement thread, so pinning the sender would add a false-failure mode.
+        assert!(
+            runtime_polled_a_task,
+            "the async runtime must keep polling tasks while the orphan retry blocks"
+        );
+
+        let report = retry.await.unwrap();
+        assert_eq!(
+            report.path,
+            crate::resource_monitor::watchdog::QuarantineRetryPath::Orphan
+        );
+        assert_eq!(report.state, Some(ResourceGroupState::Terminated));
+        assert!(!report.still_counts_toward_admission);
         coordinator.close_and_join().await;
     }
 }

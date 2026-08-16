@@ -29,6 +29,7 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     apiServerEnabled: false,
     apiServerPort: 8766,
     apiServerBind: "127.0.0.1",
+    terminalSnapshotsEnabled: false,
     voiceToTextEnabled: false,
     voiceAutoExecute: false,
     voiceAutoExecuteDelay: 15,
@@ -60,6 +61,8 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     autoGenerateTaskTitle: true,
     agentTemplatesPath: null,
     specBoardEnabled: false,
+    gitSweepConcurrency: 1,
+    gitSweepMinIntervalSecs: 10,
     resourceMonitorEnabled: true,
     maxConcurrentAgentProcesses: 3,
     resourceWatchdogAction: "warn",
@@ -77,8 +80,10 @@ function settings(overrides: Partial<AppSettings>): AppSettings {
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
+    agentAutoUpdateByCommand: {},
     containerCredentialsFromHost: true,
     logLevel: null,
+    activityLogEnabled: false,
     ...overrides,
     archivedProjectPaths: overrides.archivedProjectPaths ?? [],
   };
@@ -101,6 +106,22 @@ describe("mergeSettingsForSavePreservingProjects", () => {
       soundsEnabled: false,
       projectPaths: ["C:\\Fresh", "D:\\Other"],
       projectPath: "C:\\Fresh",
+    });
+  });
+
+  it("keeps terminal snapshots under the dedicated setting owner", () => {
+    const draft = settings({
+      soundsEnabled: false,
+      terminalSnapshotsEnabled: true,
+    });
+    const fresh = settings({
+      soundsEnabled: true,
+      terminalSnapshotsEnabled: false,
+    });
+
+    expect(mergeSettingsForSavePreservingProjects(draft, fresh)).toMatchObject({
+      soundsEnabled: false,
+      terminalSnapshotsEnabled: false,
     });
   });
 });

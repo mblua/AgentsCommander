@@ -42,9 +42,155 @@ pub struct ApiServerStart {
     pub readiness: oneshot::Receiver<Result<SocketAddr, String>>,
 }
 
+pub(crate) const WINDOW_SCREENSHOT_MAX_ACTIVE: usize = 1;
+pub(crate) const WINDOW_SCREENSHOT_MAX_QUEUED: usize = 2;
+pub(crate) const WINDOW_SCREENSHOT_MAX_ADMITTED: usize =
+    WINDOW_SCREENSHOT_MAX_ACTIVE + WINDOW_SCREENSHOT_MAX_QUEUED;
+pub(crate) const WINDOW_SCREENSHOT_ADVISORY_SOURCE_PIXELS: u64 = 16_777_216;
+pub(crate) const WINDOW_SCREENSHOT_MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WindowScreenshotAdmissionError {
+    CaptureBusy,
+}
+
+/// Process-local admission and active-slot limiter for native window
+/// screenshots. Two permits gate every request:
+///
+/// - `admission` (capacity `WINDOW_SCREENSHOT_MAX_ADMITTED`) bounds the
+///   requests that are queued or running at once. `try_admit` acquires it
+///   synchronously and returns `CaptureBusy` when full, so the handler refuses
+///   with 429 before any native work starts.
+/// - `active` (capacity `WINDOW_SCREENSHOT_MAX_ACTIVE`) bounds the single
+///   native capture worker. `acquire_active` awaits a free slot, so admitted
+///   requests queue here instead of launching concurrent captures.
+///
+/// Permit ownership protocol: the handler holds the admission permit while it
+/// awaits the active slot, then moves both permits into a
+/// `WindowScreenshotLease` and into the worker. A request future dropped
+/// while waiting drops its admission permit and frees that slot; a dropped
+/// request whose worker already started keeps the lease until the native work
+/// ends, so detached workers cannot exceed the one-active, three-admitted
+/// bound. Covered by `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
+/// and the route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`.
+pub(crate) struct WindowScreenshotLimiter {
+    admission: std::sync::Arc<tokio::sync::Semaphore>,
+    active: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+/// Owned admission and active permit pair. Created only after both permits are
+/// held, moved into the capture worker, and released together when the
+/// worker's native capture and PNG encoding finish. Holding both for the full
+/// worker lifetime keeps the limiter bounds intact even when the requesting
+/// HTTP client disconnects and the route future is dropped.
+pub(crate) struct WindowScreenshotLease {
+    _admission: tokio::sync::OwnedSemaphorePermit,
+    _active: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl WindowScreenshotLimiter {
+    pub(crate) fn new() -> Self {
+        Self {
+            admission: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                WINDOW_SCREENSHOT_MAX_ADMITTED,
+            )),
+            active: std::sync::Arc::new(tokio::sync::Semaphore::new(WINDOW_SCREENSHOT_MAX_ACTIVE)),
+        }
+    }
+
+    pub(crate) fn try_admit(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, WindowScreenshotAdmissionError> {
+        self.admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| WindowScreenshotAdmissionError::CaptureBusy)
+    }
+
+    pub(crate) async fn acquire_active(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, WindowScreenshotAdmissionError> {
+        self.active
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| WindowScreenshotAdmissionError::CaptureBusy)
+    }
+}
+
+impl WindowScreenshotLease {
+    pub(crate) fn new(
+        admission: tokio::sync::OwnedSemaphorePermit,
+        active: tokio::sync::OwnedSemaphorePermit,
+    ) -> Self {
+        Self {
+            _admission: admission,
+            _active: active,
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_screenshot_limiter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission() {
+        let limiter = std::sync::Arc::new(WindowScreenshotLimiter::new());
+        let first_admission = match limiter.try_admit() {
+            Ok(permit) => permit,
+            Err(error) => panic!("first request must be admitted: {error:?}"),
+        };
+        let first_active = match limiter.acquire_active().await {
+            Ok(active) => active,
+            Err(error) => panic!("first request must acquire the active slot: {error:?}"),
+        };
+        let first_lease = WindowScreenshotLease::new(first_admission, first_active);
+
+        let waiting_admission = match limiter.try_admit() {
+            Ok(permit) => permit,
+            Err(error) => panic!("second request must be admitted: {error:?}"),
+        };
+        let queued_admission = match limiter.try_admit() {
+            Ok(permit) => permit,
+            Err(error) => panic!("third request must be admitted: {error:?}"),
+        };
+        assert!(matches!(
+            limiter.try_admit(),
+            Err(WindowScreenshotAdmissionError::CaptureBusy)
+        ));
+
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let waiter_limiter = std::sync::Arc::clone(&limiter);
+        let mut waiter = tokio::spawn(async move {
+            let _ = started_sender.send(());
+            let active = waiter_limiter.acquire_active().await?;
+            Ok::<_, WindowScreenshotAdmissionError>(WindowScreenshotLease::new(
+                waiting_admission,
+                active,
+            ))
+        });
+        assert!(started_receiver.await.is_ok());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err()
+        );
+
+        waiter.abort();
+        let _ = waiter.await;
+        assert!(limiter.try_admit().is_ok());
+
+        drop(queued_admission);
+        drop(first_lease);
+    }
+}
+
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
+    #[allow(private_interfaces)]
+    pub window_screenshot_limiter: std::sync::Arc<WindowScreenshotLimiter>,
     /// Read-through client-token registry (mtime-gated).
     pub store: Arc<auth::ApiClientStore>,
     /// Durable inline send queue and idempotency store.
@@ -63,9 +209,13 @@ pub struct ApiState {
 /// Build the router (state already assembled). Split out so tests can mount it
 /// without a socket.
 pub fn build_router(state: ApiState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/api/v1/send", post(handlers::send::handle))
         .route("/api/v1/pty-input", post(handlers::pty_input::post))
+        .route(
+            "/api/v1/terminal-snapshot",
+            post(handlers::terminal_snapshot::post),
+        )
         .route("/api/v1/pty-input/{op_id}", get(handlers::pty_input::get))
         .route("/api/v1/peers", get(handlers::list_peers::handle))
         .route(
@@ -73,7 +223,15 @@ pub fn build_router(state: ApiState) -> Router {
             get(handlers::session_transport::handle),
         )
         // Unauthenticated liveness; body pinned to {"ok":true} (§0.5 G9).
-        .route("/api/v1/healthz", get(handlers::health))
+        .route("/api/v1/healthz", get(handlers::health));
+
+    #[cfg(target_os = "windows")]
+    let router = router.route(
+        handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
+        handlers::window_screenshot::route(),
+    );
+
+    router
         .layer(DefaultBodyLimit::max(MAX_BODY_LIMIT_BYTES))
         .with_state(state)
 }
@@ -143,6 +301,7 @@ pub fn start_server(
     };
 
     let state = ApiState {
+        window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
         store: store.clone(),
         message_store: message_store.clone(),
         lockout: Arc::new(auth::FailedAuthLockout::default()),

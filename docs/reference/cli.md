@@ -16,7 +16,9 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all.
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-wg` requires the caller to be the identity-verified workgroup coordinator, and the master/root token does NOT bypass that check (a root token has no workgroup).
+
+`terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
 ## Exit codes
 
@@ -24,7 +26,9 @@ All subcommands return:
 
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
-- `2` — special: outcome unknown (used by `close-session` when delivery succeeded but no response landed in the poll window)
+- `2` — special: outcome unknown. Used by `close-session` when delivery succeeded but no response landed in the poll window, by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-wg` when the response is unparseable.
+- `3` — `purge-wg` only: gate rejected (one or more peers are busy)
+- `4` — `purge-wg` only: a destroy failed after the gate passed
 
 Exception: `harness` returns `0` for successful `--explain` and `--dry-run`, returns `1` for deny, validation, spawn, or audit-log failures, and propagates the child process exit code when it actually executes a command.
 
@@ -35,7 +39,7 @@ agentscommander --help                  # list every subcommand
 agentscommander <subcommand> --help     # full args + after-help block for one subcommand
 ```
 
-The `--help` text is the source of truth; this page is a curated index.
+The `--help` text is the source of truth; this page is a curated index. Internal test-only verbs (`role-experiment`, `test-reset`, `window-info`, `ui-*`) and test-only top-level flags are hidden from `--help` by design and are not documented here; the test harness invokes them by name.
 
 ---
 
@@ -167,6 +171,49 @@ See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary
 
 Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
 
+### `self-handoff-and-switch`
+
+Two-phase handoff that also switches the caller's OWN session coding agent and/or profile: phase 1 waits for 30 seconds of sustained idle, respawns the session fresh with the requested agent/profile (or the same recipe when both flags are omitted), phase 2 waits a fresh 30 seconds of idle in the new session, archives `SELF-HANDOFF.md` into `self-clear/`, and injects a resume prompt naming that exact archive.
+
+```bash
+agentscommander self-handoff-and-switch \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --coding-agent agent_1719526800000_3 \
+  --profile C
+
+agentscommander self-handoff-and-switch --list-coding-agents
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. Shape-validated. |
+| `--root` | Yes | Caller's agent root directory. |
+| `--coding-agent` | No | Configured coding-agent entry id from `settings.json → agents[]`, not a backend kind or AC peer name. Omit to keep the live session's agent. |
+| `--profile` | No | Profile slot letter A through Z. Omit to keep the live session's effective profile. |
+| `--list-coding-agents` | No | Print valid coding-agent ids and profile letters, then exit. Requires neither token nor root. |
+| `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
+
+Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is WG replicas only (`__agent_*` under a `wg-*` workgroup); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
+
+---
+
+## `raise-hand`
+
+Raise the caller session's communication indicator in the Sidebar coordinator row.
+
+```bash
+agentscommander raise-hand --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. Shape-validated. |
+| `--root` | Yes | Caller's agent root directory. |
+| `--timeout` | No | Seconds to wait for the daemon's response. Default 15. |
+
+The daemon raises the indicator only when the caller token belongs to a live coordinator session with a visible `TASK.md` title slot. The indicator persists across app restarts until cleared by real user input to the session. On success stdout is exactly `true` or `false`. Exit codes: `0` valid boolean response, `1` auth/IO/delivery failure, `2` malformed response or no response within the timeout.
+
 ---
 
 ## `list-peers`
@@ -191,15 +238,87 @@ For automation in scripts, prefer `list-peers-lean` (smaller, stable shape).
 
 ## `list-peers-lean`
 
-Compact JSON list of peers — ideal for in-session discovery.
+Compact JSON list of peers, ideal for in-session discovery.
 
 ```bash
 agentscommander list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
 ```
 
-Each entry contains: `name`, `working`, `sessionStatus`, `waitingForInput`, `reachable`, `teams`, `roleSummary` (one-line, ≤80 chars).
+Each default entry contains: `name`, `working`, `sessionStatus`, `waitingForInput`, `reachable`, `teams`, `roleSummary` (one line, at most 80 characters).
 
-Same peer set and `--peer` filter as `list-peers`. The `name` field is the canonical FQN — pass it verbatim to `send --to`.
+The default peer set and `--peer` filter match `list-peers`. The `name` field is the canonical FQN. Pass it verbatim to `send --to`.
+
+For terminal snapshot target discovery only, add `--snapshot-targets`:
+
+```bash
+agentscommander list-peers-lean \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --snapshot-targets
+```
+
+This capability view returns every verified workgroup Coordinator and member in active registered projects for canonical Root, or same-workgroup non-Coordinator members for a verified Coordinator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
+
+---
+
+## `terminal-snapshot`
+
+Read one authorized live backend terminal viewport as versioned JSON or a deterministic PNG. The operation is read-only and never wakes, spawns, focuses, selects, resizes, writes to, or captures OS pixels from the target.
+
+```bash
+# JSON, the default
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:wg-1-team/member"
+
+# PNG
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:wg-1-team/member" \
+  --format png \
+  --output "/absolute/new/snapshot.png" \
+  --timeout 15
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Canonical live-session UUID v4. A persisted Root or master token is rejected. |
+| `--root` | Yes | Exact verified requester replica root or canonical Root Agent directory, not a descendant. |
+| `--to` | Yes | Exact canonical target FQN from `list-peers-lean --snapshot-targets`. |
+| `--format` | No | `json` or `png`. Default `json`. |
+| `--output` | PNG only | Absolute path to a new `.png` file. JSON forbids it. Existing, linked, unsafe, or non-PNG paths are rejected. |
+| `--timeout` | No | Whole seconds from 5 through 60. Default 15. |
+
+JSON success writes exactly one compact ASCII-only `TerminalSnapshotDocument` plus LF to stdout. PNG success fully validates and creates the output first, then writes exactly one compact ASCII-only metadata receipt plus LF. PNG bytes and base64 never appear on stdout. The command never overwrites an existing output. A failed write or final identity check can leave an incomplete caller-owned file.
+
+After Clap parses the command, success exits 0. Every semantic, authorization, unavailable, rate, timeout, transport, or output failure exits 1, writes no normal stdout, and writes one fixed line:
+
+```text
+terminal_snapshot_error code=<code> detail=<fixed-detail>
+```
+
+Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior. If an OS failure occurs after a stdout write begins, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` without attempting a second document. See [Terminal snapshots](../features/terminal-snapshots.md#stable-errors) for every stable code, exact detail, and recovery step.
+
+Authorized host routes are canonical live Root to verified workgroup Coordinators or members in active registered projects, and a live workgroup Coordinator to a verified non-Coordinator member in the same exact project and workgroup. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
+
+A container Coordinator uses the API helper instead of the host mailbox:
+
+```bash
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member"
+
+agentscommander-api-helper terminal-snapshot \
+  --to "project:wg-1-team/member" \
+  --format png \
+  --output "/workspace/evidence/snapshot.png" \
+  --timeout 15
+```
+
+The helper reads authority only from `AGENTSCOMMANDER_API_URL` and `AGENTSCOMMANDER_API_TOKEN`. It has the same format, timeout, stdout, output, and post-parse error contract. It rejects `--token`, `--root`, duplicate flags, JSON output paths, and PNG without an output path. A manual API token cannot gain this live capability merely by listing the `terminal-snapshot` scope.
+
+See [Terminal snapshots](../features/terminal-snapshots.md) for schema, renderer, fidelity, privacy, authorization, limits, and cleanup.
 
 ---
 
@@ -504,6 +623,53 @@ Subcommands:
 
 ---
 
+## `injected-messages`
+
+Reset operator-editable injected PTY message templates to the defaults this binary ships.
+
+```bash
+agentscommander injected-messages reseed --id context-alert
+agentscommander injected-messages reseed --all
+```
+
+| Flag | Description |
+|---|---|
+| `--id <id>` | Exact message id to reset (e.g. `context-alert`). Conflicts with `--all`. |
+| `--all` | Reset every known message id. |
+
+Edits `<config-dir>/injected-messages.toml` next to the executable; `injected-messages.default.toml` is the canonical reference set. A timestamped `.bak-` copy is written before anything is overwritten; comments, unknown keys, entry order, and untargeted entries are preserved. `--all` applies the same surgical writer to every known id; it is deliberately not a whole-file rewrite.
+
+**No token required** — this touches the user-local config directory next to the executable, the same boundary as `open-project` and `coding-agent`. Exit 0 on success, 1 on error.
+
+---
+
+## `api-client`
+
+Mint, revoke, and list control-plane API client tokens. Every subcommand requires HOST AUTHORITY: the master/root token. A container (which has no master token by construction) cannot self-mint.
+
+```bash
+agentscommander api-client mint \
+  --token "$MASTER_TOKEN" \
+  --root "D:\path\to\wg-8-dev-v5-team\__agent_dev-rust" \
+  --scopes send,list-peers-lean \
+  --label "CI bot"
+
+agentscommander api-client list --token "$MASTER_TOKEN"
+agentscommander api-client revoke --token "$MASTER_TOKEN" --client-id <uuid>
+```
+
+| Subcommand | Description |
+|---|---|
+| `mint` | Create a scoped, revocable client token bound to exactly one replica FQN derived from `--root`. Prints the secret exactly once as JSON on stdout; the registry stores only a SHA-256 hash. The Root Agent is rejected. |
+| `revoke` | Revoke a client by `--client-id`. Takes effect on the next API request. |
+| `list` | List registered clients. Secrets and hashes are never shown. |
+
+Mint flags: `--token` (master/root token, required), `--root` (replica working directory to bind, the identity source), `--scopes` (comma-separated: `send`, `list-peers-lean`, `session-transport`, `pty-input`, `terminal-snapshot`), `--label` (optional human label), `--expires` (optional RFC3339, e.g. `2026-12-31T00:00:00Z`).
+
+Manually minted privileged scopes (`pty-input`, `terminal-snapshot`) never gain live authority by themselves; both require a matching automatically bound container credential.
+
+---
+
 ## `close-session`
 
 Close all sessions for a target agent. Coordinator-only.
@@ -531,6 +697,33 @@ Exit codes:
 - `2` — outcome unknown (delivered, no response in the poll window).
 
 Only coordinators of the target's team can close. The master/root token bypasses the check.
+
+---
+
+## `purge-wg`
+
+Destroy every session of every peer in the caller's OWN workgroup. Coordinator-only.
+
+```bash
+agentscommander purge-wg \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --wg wg-8-dev-v5-team
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. The caller must be the identity-verified coordinator of its workgroup; the master/root token does NOT bypass this (a root token has no workgroup). |
+| `--root` | Yes | Coordinator's root directory. |
+| `--wg` | No | Safety assertion, not a scope selector: fail unless the resolved workgroup has exactly this name. |
+| `--graceful` | No | Inject the exit command and wait per session instead of killing immediately. Warning: it stalls ALL inter-agent messaging daemon-wide for the duration of the purge (the message poller is sequential). |
+| `--timeout` | No | Graceful shutdown timeout in seconds per session. Default 5. |
+| `--dry-run` | No | Evaluate the gate and print the per-peer table. Destroy nothing. |
+| `--quiet-period-ms` | No | Printable-silence a peer must show to be purgeable. Clamped daemon-side to a floor of 2500. Default 3000. |
+
+The caller itself and the Root Agent are never purged; cross-workgroup purge is not supported. If ANY in-scope peer has produced printable output within `--quiet-period-ms`, the command purges NOBODY and exits 3.
+
+Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcome unknown, `3` gate rejected (a peer is busy), `4` a destroy failed after the gate passed.
 
 ---
 
@@ -718,6 +911,64 @@ Files ≤10 MB with extensions `jpg/jpeg/png/webp` use `sendPhoto`. Everything e
 
 ---
 
+## `window-list`
+
+List live native windows as `id<TAB>title` lines so you can discover the canonical decimal `window_id` that `window-screenshot` requires. Windows only; the subcommand does not exist on other targets.
+
+```bash
+agentscommander window-list
+```
+
+The command takes no flags. Success exits 0 and prints one `id<TAB>title` line per enumerated live window on stdout, in xcap enumeration order (unsorted). A window whose id cannot be read is skipped; a window whose title cannot be read prints an empty title. Titles are printed verbatim, with no sanitization; a title containing a tab or newline breaks the line contract for downstream parsers.
+
+Enumeration failure exits 1 with one stderr line:
+
+```text
+window_list_error code=window_list_unavailable detail=<error>
+```
+
+**No token required**: this is a local in-process enumeration of the invoking user's own desktop; there is no HTTP request, daemon, token, or audit. See [Window capture](../features/window-capture.md) for the capture flow, the API endpoint, and the shared window-id rule.
+
+---
+
+## `window-screenshot`
+
+Capture exactly one live native window to a PNG file by its canonical decimal `window_id` as printed by `window-list`. Windows only; the subcommand does not exist on other targets.
+
+```bash
+agentscommander window-screenshot \
+  --window-id 983044 \
+  --output "C:\path\shot.png"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--window-id` | Yes | Canonical decimal window id as printed by `window-list`. |
+| `--output` | Yes | Destination PNG file path. Overwritten if it exists; parent directories are not created. |
+
+The capture runs fully in-process against the live Windows desktop, reusing the same bounded capture worker as the API route: no HTTP request, no daemon, no token. Success exits 0, writes no stdout, and leaves the output file containing exactly the raw PNG bytes.
+
+Every failure exits 1, writes no normal stdout, and writes exactly one stderr line:
+
+```text
+window_screenshot_error code=<code> detail=<detail>
+```
+
+| Code | Condition |
+|---|---|
+| `invalid_window_id` | `--window-id` is empty, non-decimal, signed, whitespace-padded, leading-zero, over 20 digits, or over `u64::MAX`. |
+| `window_not_found` | The canonical id matches no live window in the current enumeration snapshot. |
+| `capture_busy` | Capture capacity is full (local one-shot limiter; kept for completeness). |
+| `capture_too_large` | The window exceeds the advisory pixel limit or the encoded PNG exceeds the hard 16 MiB bound. |
+| `capture_unavailable` | Enumeration, minimized/inaccessible window, capture, encode, or runtime failure. |
+| `output_write_failed` | The output file could not be written (missing parent, permission, disk full). |
+
+A minimized window yields `capture_unavailable`; that is documented behavior, not a bug. Capture-side failures leave an existing output file untouched; a failed write may leave a partial file and can destroy prior content of an existing `--output`. Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior.
+
+**No token required**: the verb is a local in-process capture with the invoking process's own privileges; it reads no `--root`, token, registry, or config state and records no API audit. See [Window capture](../features/window-capture.md) for the API endpoint contract, limits, and audit model.
+
+---
+
 ## Backwards compatibility
 
 The CLI surface follows AC's project version (`agentscommander --version`). Flags may be added; existing flags will not silently change meaning. Output formats (`list-peers`, `list-sessions`, `create-agent`) are JSON — fields can be added but existing fields stay stable within a major version.
@@ -729,4 +980,6 @@ If you discover a regression, file an issue with the exact command, the output, 
 - [Settings reference](settings.md)
 - [Log filtering](log-filtering.md)
 - [Inter-agent messaging](../agents/inter-agent-messaging.md)
+- [Terminal snapshots](../features/terminal-snapshots.md)
+- [Window capture](../features/window-capture.md)
 - [Teams and workgroups](../agents/teams-and-workgroups.md)

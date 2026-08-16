@@ -73,7 +73,6 @@ pub struct ResolvedConfigSeed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct ConfigSeedPublication {
     pub tier: ConfigSeedTier,
     pub dest: PathBuf,
@@ -82,7 +81,6 @@ pub(crate) struct ConfigSeedPublication {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum CollectedSeedFiles {
     Exact(Vec<PathBuf>),
     OverBound {
@@ -92,7 +90,6 @@ pub(crate) enum CollectedSeedFiles {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ConfigSeedSkipReason {
     NoSource,
     InvalidDestination {
@@ -116,7 +113,6 @@ pub(crate) enum ConfigSeedSkipReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ConfigSeedFailure {
     Staging {
         source: PathBuf,
@@ -131,7 +127,6 @@ pub(crate) enum ConfigSeedFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ConfigSeedRollbackFailure {
     PreviousScopeStillStaged {
         scope: String,

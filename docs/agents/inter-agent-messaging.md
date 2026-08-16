@@ -126,10 +126,6 @@ Conversational `--get-output` is reserved for future modes. Today, after `send`,
 
 Build your turn-by-turn loop around that: send a message, wait for a notification, read the reply, repeat.
 
-## Conversation files
-
-Beyond `messaging/`, AC also persists a per-peer conversation snapshot at `<config-dir>/conversations/<NNNN>-<from>_<to>.json`. This is a structured copy of the back-and-forth, useful for offline analysis. It is **not** the canonical source — the messaging files are.
-
 ## Remote logical PTY actions
 
 `send --command` carries a logical action, not literal slash-command text:
@@ -200,6 +196,47 @@ The operation holds one per-session writer permit across the exact text write an
 
 Host confirmation uses metadata-only artifacts in `outbox/delivered`, `outbox/rejected`, or `outbox/indeterminate`. Container confirmation uses `GET /api/v1/pty-input/{opId}` through `pty-input-status`. Neither terminal surface contains the text, bearer token, raw nonce, path, argv, or environment. The nonterminal host request and SQLite queue remain sensitive while they still retain the exact text.
 
+## Terminal snapshots are a separate read plane
+
+`terminal-snapshot` reads one authorized live backend terminal viewport as JSON or deterministic PNG. It is not a message, remote logical action, privileged PTY write, transcript, or OS screenshot.
+
+A snapshot:
+
+- does not create a workgroup `messaging/*.md` file;
+- does not use ordinary outbox delivery, conversations, delivered or rejected message artifacts, the message database, or PTY-input queue state;
+- does not wake, spawn, focus, select, resize, repaint, or write to the target;
+- does not change ordinary messaging `reachable` semantics or PTY-input authority; and
+- works independently of frontend visibility because it reads the backend VT mirror.
+
+Discover the separate capability target set with:
+
+```bash
+agentscommander list-peers-lean \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --snapshot-targets
+```
+
+This is shape-only identity discovery, not authorization or a session-liveness view. Pass the returned canonical `name` exactly to the host read:
+
+```bash
+agentscommander terminal-snapshot \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --to "project:wg-1-team/member"
+```
+
+Root can read verified workgroup members and Coordinators in active registered projects through the host plane. A verified workgroup Coordinator can read a non-Coordinator member in the same exact project and workgroup. An automatically bound container Coordinator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
+
+The host transport uses only these transient requester-side protocol directories:
+
+```text
+<requester-root>/<agent-local-dir>/outbox/terminal-snapshot-requests/
+<requester-root>/<agent-local-dir>/terminal-snapshot-responses/
+```
+
+The CLI removes a consumed response, and the daemon performs identity-safe 60-second cleanup while files remain discoverable. It never places snapshot content in the canonical workgroup `messaging/` directory. See [Terminal snapshots](../features/terminal-snapshots.md) for the schema, renderer, privacy warning, stable errors, authorization checks, output-file contract, and crash residual.
+
 ## Common errors
 
 | Error | Cause | Fix |
@@ -216,3 +253,4 @@ More cases: [`docs/troubleshooting.md#inter-agent-messaging`](../troubleshooting
 - [Teams and workgroups](teams-and-workgroups.md)
 - [CLI reference — `send`](../reference/cli.md#send)
 - [Security model — inter-agent routing](../security.md#inter-agent-routing)
+- [Terminal snapshots](../features/terminal-snapshots.md)

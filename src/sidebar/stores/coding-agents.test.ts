@@ -18,6 +18,8 @@ function def(key: string): CodingAgentDefinition {
     envs: [],
     isolatedHome: false,
     removable: true,
+    updateCommands: [],
+    autoUpdate: false,
   };
 }
 

@@ -119,6 +119,18 @@ fn run_success(bin: &Path, args: &[&str]) {
     );
 }
 
+fn run_json(bin: &Path, args: &[&str]) -> serde_json::Value {
+    let out = Command::new(bin).args(args).output().expect("spawn");
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("stdout json")
+}
+
 fn run_failure(bin: &Path, args: &[&str]) {
     let out = Command::new(bin).args(args).output().expect("spawn");
     assert!(
@@ -293,7 +305,7 @@ fn new_project_emits_seed_manifest_and_open_does_not_backfill() {
         "manifest: {manifest}"
     );
     assert!(
-        manifest.contains("coverage_version = 1"),
+        manifest.contains("coverage_version = 2"),
         "manifest: {manifest}"
     );
     assert!(
@@ -462,7 +474,7 @@ async fn create_ac_project_fresh_root_emits_seed_manifest_in_production_build() 
         "manifest: {manifest}"
     );
     assert!(
-        manifest.contains("coverage_version = 1"),
+        manifest.contains("coverage_version = 2"),
         "manifest: {manifest}"
     );
     assert!(
@@ -605,5 +617,120 @@ fn projects_rs_threads_production_tokens_for_new_project_registration() {
     assert!(
         production.contains("prepare_new_project_impl(raw_path,activation.as_ref(),"),
         "the GUI/web new-project registration (ContextCreate GUI) must thread the activation token"
+    );
+}
+
+// #1318: a fresh `new-project` registration seeds the coding-agent catalog +
+// masters into `<project>/.ac/coding-agents/` immediately (no restart needed)
+// and records one `coding_agent_catalog` row in the seed manifest (production
+// binary: the token gate emits the row under `CatalogSeed`). Re-running
+// `new-project` must not change a byte of the catalog (whole-file seed-once).
+#[test]
+fn new_project_seeds_catalog_into_ac() {
+    let tmp = Tmp::new("new-project-catalog");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, &[]);
+    let project = tmp.path().join("ProjectAlpha");
+    let project_arg = project.to_string_lossy().to_string();
+
+    run_success(&bin, &["new-project", &project_arg]);
+    let catalog_path = project
+        .join(".ac")
+        .join("coding-agents")
+        .join("agents.json");
+    let catalog = std::fs::read_to_string(&catalog_path)
+        .expect("fresh new-project must seed .ac/coding-agents/agents.json");
+    let parsed: serde_json::Value = serde_json::from_str(&catalog).expect("catalog parses");
+    assert_eq!(
+        parsed["agents"].as_array().map(Vec::len),
+        Some(6),
+        "the seeded catalog carries the 6 built-ins: {catalog}"
+    );
+    let claude = parsed["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["key"] == "claude")
+        .expect("claude entry");
+    assert_eq!(
+        claude["updateCommands"],
+        serde_json::json!(["claude --update"]),
+        "claude carries its update command in the seeded file"
+    );
+    // Masters seeded per built-in dest.
+    for (dest, file) in [
+        (".claude", "settings.json"),
+        (".codex", "config.toml"),
+        (".opencode", "opencode.json"),
+    ] {
+        assert!(
+            project
+                .join(".ac")
+                .join("coding-agents")
+                .join("_seed")
+                .join(dest)
+                .join(file)
+                .is_file(),
+            "{dest} master must be seeded"
+        );
+    }
+    // Seed manifest declares the catalog publication (coverage v2 after the
+    // one-shot upgrade).
+    let manifest = std::fs::read_to_string(project.join(".ac").join("seed-manifest.toml"))
+        .expect("seed manifest");
+    assert!(
+        manifest.contains("kind = \"coding_agent_catalog\""),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("scope = \"catalog:coding-agents\""),
+        "manifest: {manifest}"
+    );
+    assert!(
+        manifest.contains("path = \".ac/coding-agents/agents.json\""),
+        "manifest: {manifest}"
+    );
+
+    // Re-run new-project: seed-once keeps the catalog bytes identical.
+    run_success(&bin, &["new-project", &project_arg]);
+    assert_eq!(
+        std::fs::read_to_string(&catalog_path).expect("catalog still exists"),
+        catalog,
+        "a second registration must not touch the seeded catalog"
+    );
+}
+
+// #1318 CLI read contract: `coding-agent catalog` with no registered project
+// serves the legacy `<config_dir>/coding-agents/agents.json` when one exists
+// (read-only fallback; pre-migration installs keep today's read behavior), else
+// the 6 embedded built-ins. Never an Err for file reasons.
+#[test]
+fn cli_catalog_serves_legacy_fallback_then_embedded_without_projects() {
+    let tmp = Tmp::new("cli-catalog-legacy");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, &[]);
+
+    // Legacy catalog present -> served verbatim (custom entry observable).
+    let legacy_dir = config_dir.join("coding-agents");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    let legacy = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]}"##;
+    std::fs::write(legacy_dir.join("agents.json"), legacy).unwrap();
+    let out = run_json(&bin, &["coding-agent", "catalog"]);
+    assert_eq!(
+        out.as_array().map(Vec::len),
+        Some(1),
+        "the legacy catalog is served when no project is registered: {out}"
+    );
+    assert_eq!(out[0]["key"], "mine");
+
+    // No legacy -> 6 embedded built-ins.
+    std::fs::remove_dir_all(&legacy_dir).unwrap();
+    let out = run_json(&bin, &["coding-agent", "catalog"]);
+    assert_eq!(
+        out.as_array().map(Vec::len),
+        Some(6),
+        "without a legacy catalog the embedded default is served: {out}"
     );
 }

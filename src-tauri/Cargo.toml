@@ -7,7 +7,6 @@ description = "AgentsCommander: Run multiple teams of AI coding agents"
 
 [dependencies]
 tauri = { version = "2", features = ["image-png"] }
-tauri-build = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -24,8 +23,10 @@ thiserror = "2"
 dirs = "6"
 reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
 base64 = "0.22"
+getrandom = "=0.3.4"
+terminal-snapshot-renderer = { path = "../crates/terminal-snapshot-renderer", features = ["render"] }
 tokio-util = "0.7"
-vt100 = "0.15"
+vt100 = "=0.15.2"
 regex = "1"
 toml = "0.8"
 open = "5"
@@ -70,6 +71,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"
 tauri = { version = "2", features = ["image-png", "test"] }
 

@@ -8,6 +8,7 @@ RUN mkdir -p src-tauri/src \
     && printf 'fn main() {}\n' > src-tauri/src/main.rs \
     && printf '' > src-tauri/src/lib.rs
 COPY crates/session-bridge crates/session-bridge
+COPY crates/terminal-snapshot-renderer crates/terminal-snapshot-renderer
 RUN cargo build --locked --release -p session-bridge --bins
 
 FROM debian:bookworm-slim

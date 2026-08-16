@@ -7,10 +7,6 @@ pub fn canonical_workspace_dir_label() -> &'static str {
     CANONICAL_WORKSPACE_DIR
 }
 
-pub fn workspace_dir_label() -> &'static str {
-    ".ac"
-}
-
 pub fn workspace_dir_for_project(project: &Path) -> PathBuf {
     project.join(CANONICAL_WORKSPACE_DIR)
 }

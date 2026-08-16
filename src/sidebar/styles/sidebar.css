@@ -92,6 +92,27 @@ html, body, #root {
 /* .titlebar-wg-badge canonical definition lives in terminal.css.
    Both stylesheets are bundled together, so the badge is styled in both windows. */
 
+.screenshot-hotkey-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.screenshot-hotkey-status-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.screenshot-hotkey-status-text {
+  white-space: nowrap;
+}
+
 .titlebar-controls {
   display: flex;
   gap: 0;
@@ -726,6 +747,13 @@ html, body, #root {
   gap: 4px;
   margin-top: 2px;
 }
+/* #1167 - after the sidebar coding-agent badge moved to .ac-discovery-badge.agent,
+   the ONLY consumer of .agent-badge left in the app is the Open-Agent modal's
+   repo-tooling chip (OpenAgentModal.tsx:156-167), which never sets `running`.
+   The `.running` variant that used to brighten a live session row is therefore
+   unreachable and was deleted with the migration. Per-tool colours for the modal
+   live further down, on .agent-modal-item-badges. Do not repurpose this rule for
+   a sidebar badge: that is the divergence #1167 removed. */
 .agent-badge {
   font-size: 9px;
   font-weight: 600;
@@ -735,11 +763,6 @@ html, body, #root {
   background: var(--sidebar-border);
   color: var(--sidebar-fg-dim);
   opacity: 0.4;
-}
-.agent-badge.running {
-  opacity: 1;
-  background: var(--sidebar-hover);
-  color: var(--sidebar-fg);
 }
 
 .profile-badge {
@@ -803,11 +826,13 @@ html, body, #root {
   vertical-align: middle;
 }
 
-/* #624 - spacing for the coding-agent badge inside the inline root subtitle
-   (the badge itself only carries color/size via .agent-badge).
-   text-transform:none overrides the uppercase inherited from
-   .root-agent-subtitle so the badge reads mixed-case (e.g. "Claude Code AMP"),
-   matching the session/coordinator rows. */
+/* #624 / #1167 - spacing for the coding-agent badge inside the inline root
+   subtitle. Colour and size now come from .ac-discovery-badge.agent, the same
+   pair the Coordinator rows use, so this rule carries only inline placement.
+   text-transform:none is kept deliberately, as a local guarantee against the
+   uppercase on .root-agent-subtitle: .ac-discovery-badge.agent already sets none
+   and wins on specificity, but the banner should not depend on a rule 4800 lines
+   away to read mixed-case (e.g. "Claude Code AMP"). */
 .root-agent-badge {
   margin-left: 6px;
   vertical-align: middle;
@@ -1215,6 +1240,61 @@ html.light-theme .root-agent-avatar {
   justify-content: center;
   z-index: 1000;
   backdrop-filter: blur(2px);
+}
+
+/* #1327 startup coding-agent update overlay (splash + SI/NO prompt). Above
+   .modal-overlay so the update question is never buried under other modals. */
+.agent-update-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  backdrop-filter: blur(2px);
+}
+
+.agent-update-card {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  padding: var(--spacing-lg);
+  min-width: 320px;
+  max-width: 92%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.agent-update-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--sidebar-border);
+  border-top-color: var(--accent-color, #0a84ff);
+  border-radius: 50%;
+  animation: agent-update-spin 0.9s linear infinite;
+}
+
+@keyframes agent-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-update-text {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  color: var(--sidebar-text);
+  text-align: center;
+}
+
+.agent-update-prompt-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: center;
 }
 
 .modal-container {
@@ -3191,6 +3271,18 @@ html.light-theme .settings-hint-warning {
   color: #b45309;
 }
 
+/* Red variant of the settings hint (#1313): clearly stronger than the amber
+   .settings-hint-warning. Reuses the base .settings-hint layout; colors match
+   the existing .settings-api-client-error precedent (#f87171 dark, #b91c1c
+   light), with the same per-theme override convention as the warning variant. */
+.settings-hint-error {
+  color: #f87171;
+}
+
+html.light-theme .settings-hint-error {
+  color: #b91c1c;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
@@ -3784,16 +3876,29 @@ html.light-theme .settings-hint-warning {
   flex-wrap: wrap;
 }
 
-/* Agent-specific badge colors (non-running only) */
-.agent-badge:not(.running)[data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
-.agent-badge:not(.running)[data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
-.agent-badge:not(.running)[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.agent-badge:not(.running)[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
-/* Running badge: brighter version of agent color */
-.agent-badge.running[data-agent="Claude"] { background: rgba(217, 119, 6, 0.3); color: #fbbf24; }
-.agent-badge.running[data-agent="Codex"] { background: rgba(16, 185, 129, 0.3); color: #34d399; }
-.agent-badge.running[data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.3); color: #60a5fa; }
-.agent-badge.running[data-agent="Cursor"] { background: rgba(139, 92, 246, 0.3); color: #a78bfa; }
+/* #1167 - per-TOOL colours for the Open-Agent modal's repo chips, and ONLY those.
+   These are NOT coding-agent labels: the four values come from AGENT_DETECTORS in
+   src-tauri/src/commands/repos.rs:9-14 ("Claude", "Codex", "OpenCode", "Cursor"),
+   which reports which tooling directories a repo contains. That vocabulary is
+   closed and exhaustive, so every chip the modal renders is coloured here and none
+   falls through to the grey .agent-badge base.
+
+   Anchored on .agent-modal-item-badges, which occurs exactly once in the repo
+   (OpenAgentModal.tsx:156), so these rules cannot reach a sidebar row. Before
+   #1167 they were written as `.agent-badge:not(.running)[data-agent=...]` and were
+   shared with the sidebar badge, which is what produced the divergence the issue
+   fixes; the sidebar badge no longer emits data-agent at all.
+
+   Specificity: (0,2,0), still above the .agent-badge base (0,1,0) for background
+   and color, while opacity: 0.4 keeps coming from that base exactly as before. The
+   rendered chip is unchanged.
+
+   The four `.running` variants that used to follow were deleted: nothing in the app
+   emits `running` on an .agent-badge any more. */
+.agent-modal-item-badges [data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
+.agent-modal-item-badges [data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.agent-modal-item-badges [data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.agent-modal-item-badges [data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
 
 /* Agent choice (after repo selected) */
 .agent-choice {
@@ -6066,9 +6171,14 @@ html.light-theme .ac-discovery-badge.running-peer {
   padding-left: calc(var(--spacing-md) + 20px);
 }
 
-[data-sidebar-style="noir-minimal"] .coord-quick-access {
+/* #1351 — box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
+   the same 12px left inset and the same 1px separator, so the Coordinators header
+   lines up with its sibling section headers instead of sitting 6px to their left.
+   margin-right drops to 0 so the separator spans the same width as theirs. */
+[data-sidebar-style="noir-minimal"] .coord-quick-access-group {
   display: block;
-  margin: 4px 6px 2px;
+  margin: 4px 0 2px 12px;
+  border-top: 1px solid var(--sidebar-border);
   padding: 4px 0;
 }
 
@@ -6666,7 +6776,7 @@ html.light-theme[data-sidebar-style="arctic-ops"] .replica-item.active {
   box-shadow: 0 0 6px rgba(100, 180, 255, 0.5);
 }
 
-[data-sidebar-style="arctic-ops"] .coord-quick-access {
+[data-sidebar-style="arctic-ops"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
   padding: 4px 0;
@@ -6675,7 +6785,7 @@ html.light-theme[data-sidebar-style="arctic-ops"] .replica-item.active {
   border-radius: 6px;
 }
 
-html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access {
+html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access-group {
   background: rgba(100, 160, 220, 0.08);
   border-color: rgba(100, 160, 220, 0.2);
 }
@@ -7164,11 +7274,15 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
 
 /* =============================================================================
    COORDINATOR QUICK-ACCESS SECTION
-   Hidden by default. Styles that want coordinator-first layout enable it
-   via display override. Shows coordinators pulled out of workgroup nesting.
+   #1351 — the section is a real collapsible section: .coord-quick-access-group
+   wraps the ac-wg-header and the .coord-quick-access row list. The visibility
+   gate lives on the GROUP, never on the inner strip: if it slid back onto the
+   strip, the header would stay visible in every style that hides the strip and
+   each of them would grow an orphan header. Hidden by default; the five styles
+   that want coordinator-first layout override display on the group.
    ============================================================================= */
 
-.coord-quick-access {
+.coord-quick-access-group {
   display: none;
 }
 
@@ -7232,7 +7346,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
 
 /* ---- Deep Space: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="deep-space"] .coord-quick-access {
+[data-sidebar-style="deep-space"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
   padding: 4px 0;
@@ -7246,17 +7360,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
   overflow: hidden;
 }
 
-[data-sidebar-style="deep-space"] .coord-quick-access::before {
-  content: "COORDINATORS";
-  display: block;
-  padding: 3px 12px 5px;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: rgba(255, 180, 40, 0.5);
-}
-
-html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access {
+html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access-group {
   background: linear-gradient(
     135deg,
     rgba(255, 180, 40, 0.06) 0%,
@@ -7265,59 +7369,37 @@ html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access {
   border-color: rgba(200, 140, 20, 0.15);
 }
 
-html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access::before {
-  color: rgba(160, 100, 10, 0.5);
-}
-
 /* ---- Obsidian Mesh: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
+[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
   display: block;
   margin: 2px 0;
-  padding: 2px 0;
+  padding: 2px 0 2px 6px;
   border-left: 3px solid rgba(255, 100, 40, 0.3);
   background: rgba(255, 80, 40, 0.03);
 }
 
-[data-sidebar-style="obsidian-mesh"] .coord-quick-access::before {
-  content: "COORD";
-  display: block;
-  padding: 2px 10px 3px;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.2em;
-  color: rgba(255, 100, 40, 0.45);
-}
-
-html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
+html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
   border-left-color: rgba(200, 80, 20, 0.25);
   background: rgba(200, 100, 20, 0.04);
 }
 
 /* ---- Neon Circuit: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="neon-circuit"] .coord-quick-access {
+/* #1351 — 6px margin + 1px border + 7px padding = the 14px left inset of
+   [data-sidebar-style="neon-circuit"] .ac-wg-group (4 + 2 + 8), so the header
+   lines up with its siblings. The frame keeps its own 6px right margin. */
+[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
-  padding: 4px 0;
+  padding: 4px 0 4px 7px;
   border: 1px solid rgba(255, 0, 180, 0.1);
   border-radius: 4px;
   position: relative;
   overflow: hidden;
 }
 
-[data-sidebar-style="neon-circuit"] .coord-quick-access::before {
-  content: "COORD";
-  display: block;
-  padding: 2px 10px 4px;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  color: rgba(255, 0, 180, 0.45);
-  font-family: var(--font-mono);
-}
-
-[data-sidebar-style="neon-circuit"] .coord-quick-access::after {
+[data-sidebar-style="neon-circuit"] .coord-quick-access-group::after {
   content: "";
   position: absolute;
   top: 0;
@@ -7332,7 +7414,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
   );
 }
 
-html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
+html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   border-color: rgba(200, 0, 140, 0.12);
 }
 

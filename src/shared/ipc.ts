@@ -15,18 +15,22 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
+  TerminalOutputActivationResult,
+  TerminalOutputControlState,
+  TerminalRendererMetrics,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
   UpdateInfo,
+  AgentUpdateResult,
+  AgentUpdateStatus,
+  AgentUpdatePrompt,
   CodingAgentEnv,
   CodingAgentDefinition,
   ReseedResult,
   CodingAgentProfilesConfig,
   RepoMatch,
   BridgeInfo,
-  PhoneMessage,
-  AgentInfo,
   AcDiscoveryResult,
   ContextTemplateOverwriteResult,
   ContextTemplateUpdate,
@@ -75,6 +79,12 @@ import type {
   ApiClientMintRequest,
   ApiClientMintResponse,
   SessionSelection,
+  WatcherActivitySnapshot,
+  WatcherAgentDraftEntry,
+  WatcherDraftEntry,
+  WatcherMatchBatch,
+  WatcherPatternPreview,
+  WatcherReachRow,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -240,6 +250,49 @@ export const PtyAPI = {
   getSessionContext: (sessionId: string) =>
     transport.invoke<number | null>("get_session_context", { sessionId }),
 
+  /** #1171 - the session's watcher activity ring plus its loss and warm-up signals.
+   *  A session with no buffer answers with an empty snapshot, never null and never an
+   *  error, so the window's states are read from values and not from nullability. */
+  getWatcherActivity: (sessionId: string, limit?: number) =>
+    transport.invoke<WatcherActivitySnapshot>("get_watcher_activity", {
+      sessionId,
+      limit: limit ?? null,
+    }),
+
+  /** #1171 - compile a candidate pattern and, with a session, run it against its live rows.
+   *  Omitting `sessionId` compiles only, which is the common case: writing a regex in
+   *  Settings with no agent session running. A pattern that does not compile comes back as
+   *  `compiles: false` with the message, not as a rejected call. */
+  previewWatcherPattern: (pattern: string, sessionId?: string) =>
+    transport.invoke<WatcherPatternPreview>("preview_watcher_pattern", {
+      sessionId: sessionId ?? null,
+      pattern,
+    }),
+
+  /**
+   * #1171 - resolve the WHOLE Settings draft, watchers and agents, and answer per row which
+   * agents its selector reaches and which of those it holds a slot on.
+   *
+   * Both halves travel because both are properties of the set, not of one row. Whether a
+   * watcher is inside an agent's 8 slots depends on every other enabled row and on where
+   * their ids fall in key order; and the modal edits agents and watchers in one store that
+   * one Save writes together, so resolving against the saved agent list would answer about a
+   * state the user has already left. A row-level call could only answer by inventing the rest
+   * of the set, and with an empty saved map nine rows added before Save would all report that
+   * they run while only eight do -- a positive claim about a watcher that will not run.
+   *
+   * Neither the stem rule nor the `BTreeMap` key order nor the number 8 is written a second
+   * time here: they stay in Rust, and the frontend's `starts_with` rule must not be ported.
+   *
+   * `null` and an absent selector both mean "every agent"; `[]` means "none". The three stay
+   * distinct all the way to Rust's `Option<Vec<String>>`.
+   */
+  previewWatcherReach: (
+    watchers: WatcherDraftEntry[],
+    agents: WatcherAgentDraftEntry[]
+  ) =>
+    transport.invoke<WatcherReachRow[]>("preview_watcher_reach", { watchers, agents }),
+
   subscribe: (sessionId: string) =>
     transport.invoke<{ rows: number; cols: number } | null>("subscribe_session", { sessionId }),
 
@@ -286,6 +339,8 @@ export const SettingsAPI = {
     transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
+  setTerminalSnapshotsEnabled: (expected: boolean, enabled: boolean) =>
+    transport.invoke<void>("set_terminal_snapshots_enabled", { expected, enabled }),
   setThemeLight: (value: boolean) =>
     transport.invoke<void>("set_theme_light", { value }),
   setMainResourceMonitorAttached: (value: boolean) =>
@@ -338,6 +393,13 @@ export const SettingsAPI = {
     transport.invoke<UpdateInfo | null>("get_update_status"),
 };
 
+export const AgentUpdateAPI = {
+  getStatus: () =>
+    transport.invoke<AgentUpdateStatus | null>("get_agent_update_status"),
+  answer: (command: string, enabled: boolean) =>
+    transport.invoke<boolean>("agent_update_answer", { command, enabled }),
+};
+
 export const ReposAPI = {
   search: (query: string) =>
     transport.invoke<RepoMatch[]>("search_repos", { query }),
@@ -351,6 +413,73 @@ export function onPtyOutput(
 ): Promise<UnlistenFn> {
   return transport.listen<PtyOutputEvent>("pty_output", callback);
 }
+
+/**
+ * #1283 - typed wrappers for the five terminal-output control commands. All
+ * generation/sequence arguments are canonical unsigned base-10 strings; the
+ * backend validates them before any state mutation. TerminalView routes every
+ * control call through these wrappers; components never invoke Tauri directly.
+ */
+export const TerminalOutputAPI = {
+  // #1355 - `includeHistory` asks the backend to replay its retained output ring
+  // instead of the current viewport. Only a fresh xterm instance may request it:
+  // replaying the ring over a terminal that already has content duplicates
+  // history cumulatively (plan 12.1). Callers pass `!entry.hasRenderedOutput`.
+  activate: (
+    sessionId: string,
+    includeHistory: boolean
+  ): Promise<TerminalOutputActivationResult> =>
+    transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
+      sessionId,
+      includeHistory,
+    }),
+
+  ready: (
+    sessionId: string,
+    generation: string,
+    snapshotSequence: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("ready_terminal_output", {
+      sessionId,
+      generation,
+      snapshotSequence,
+    }),
+
+  deactivate: (
+    sessionId: string,
+    generation: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("deactivate_terminal_output", {
+      sessionId,
+      generation,
+    }),
+
+  acknowledgeDelivery: (
+    sessionId: string,
+    generation: string,
+    firstSequence: string,
+    sequence: string
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("ack_terminal_output_delivery", {
+      sessionId,
+      generation,
+      firstSequence,
+      sequence,
+    }),
+
+  /** Sends only the documented valid metrics shape; the backend wire wrapper
+   *  rejects any malformed value with `invalid terminal renderer metrics`. */
+  reportMetrics: (
+    sessionId: string,
+    generation: string,
+    metrics: TerminalRendererMetrics
+  ): Promise<TerminalOutputControlState> =>
+    transport.invoke<TerminalOutputControlState>("report_terminal_renderer_metrics", {
+      sessionId,
+      generation,
+      metrics,
+    }),
+};
 
 export function onSessionCreated(
   callback: (session: Session) => void
@@ -484,6 +613,32 @@ export const WindowAPI = {
 
   dockResourceMonitor: () =>
     transport.invoke<void>("dock_resource_monitor_window"),
+
+  /** #1171 - open the watcher activity window, or focus it and re-scope it to this session.
+   *  Tauri-only: the web client has no such window and this command has no no-op arm there,
+   *  so callers gate on `isTauri`. */
+  openWatchers: (sessionId: string) =>
+    transport.invoke<void>("open_watchers_window", { sessionId }),
+
+  /**
+   * #1171 - the durable half of the scope handover: what `open_watchers_window` last asked
+   * for, whether or not a listener existed at the time.
+   *
+   * The window label exists the moment the builder returns, while the JavaScript listener
+   * exists only after the bundle loads, Solid mounts and the subscription completes a round
+   * trip. Tauri queues nothing for a listener that does not exist yet and the emit returns
+   * `Ok` either way, so a second open during the load would drop the user's order in silence.
+   * The window therefore subscribes first and then pulls this, exactly as it does for
+   * matches. `null` means nothing has been requested yet.
+   */
+  getWatchersScope: () =>
+    transport.invoke<string | null>("get_watchers_scope"),
+
+  /** #1171 - persist the watcher window's geometry through a dedicated one-field command
+   *  rather than `initWindowGeometry`, whose read-modify-write of the whole AppSettings
+   *  races the Settings save that edits the watcher map. */
+  setWatchersGeometry: (geometry: WindowGeometry) =>
+    transport.invoke<void>("set_watchers_geometry", { geometry }),
 };
 
 export const ScreenshotAPI = {
@@ -671,6 +826,31 @@ export function onSessionContext(
   return transport.listen<SessionContextPayload>("session_context", callback);
 }
 
+/**
+ * #1171 - one tick's watcher matches for one session.
+ *
+ * Delivery is directed at the `watchers` window label and coalesced into one batch per
+ * `(session, tick)`, and nothing is emitted at all while that window does not exist. The
+ * ring still records, so opening the window later shows the history.
+ */
+export function onWatcherMatches(
+  callback: (data: WatcherMatchBatch) => void
+): Promise<UnlistenFn> {
+  return transport.listen<WatcherMatchBatch>("watcher_matches", callback);
+}
+
+/**
+ * #1171 - re-scope an already-open watcher window.
+ *
+ * The window is a singleton, so its `?sessionId=` query parameter is only read on first
+ * creation; every later open focuses the existing window and arrives through here instead.
+ */
+export function onWatchersScopeRequest(
+  callback: (data: { sessionId: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ sessionId: string }>("watchers_scope_request", callback);
+}
+
 export function onTelegramBridgeAttached(
   callback: (data: BridgeInfo) => void
 ): Promise<UnlistenFn> {
@@ -703,16 +883,6 @@ export function onSessionEnvWarning(
     callback
   );
 }
-
-export const PhoneAPI = {
-  sendMessage: (from: string, to: string, body: string, team: string) =>
-    transport.invoke<string>("phone_send_message", { from, to, body, team }),
-  getInbox: (agentName: string) =>
-    transport.invoke<PhoneMessage[]>("phone_get_inbox", { agentName }),
-  listAgents: () => transport.invoke<AgentInfo[]>("phone_list_agents"),
-  ackMessages: (agentName: string, messageIds: string[]) =>
-    transport.invoke<void>("phone_ack_messages", { agentName, messageIds }),
-};
 
 export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
@@ -968,11 +1138,6 @@ export const EntityAPI = {
 
   deleteWorkgroup: (projectPath: string, workgroupName: string, force?: boolean) =>
     transport.invoke<void>("delete_workgroup", { projectPath, workgroupName, force: force ?? false }),
-
-  syncWorkgroupRepos: (projectPath: string, teamName: string) =>
-    transport.invoke<{ workgroupsUpdated: number; replicasUpdated: number; errors: { replica: string; error: string }[] }>(
-      "sync_workgroup_repos", { projectPath, teamName }
-    ),
 };
 
 export const AgentCreatorAPI = {
@@ -1031,6 +1196,33 @@ export function onNpmUpdateAvailable(
 ): Promise<UnlistenFn> {
   return transport.listen<UpdateInfo>("npm_update_available", (info) =>
     callback(info)
+  );
+}
+
+export function onAgentUpdatesStarted(callback: () => void): Promise<UnlistenFn> {
+  // Rust emits a unit payload (serializes to null).
+  return transport.listen<null>("agent_updates_started", () => callback());
+}
+
+export function onAgentUpdatePrompt(
+  callback: (prompt: AgentUpdatePrompt) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdatePrompt>("agent_update_prompt", (prompt) =>
+    callback(prompt)
+  );
+}
+
+/** The backend timed the prompt out (no answer within 60s): clear the modal. */
+export function onAgentUpdatePromptClosed(callback: () => void): Promise<UnlistenFn> {
+  return transport.listen<null>("agent_update_prompt_closed", () => callback());
+}
+
+export function onAgentUpdatesFinished(
+  callback: (payload: { results: AgentUpdateResult[] }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ results: AgentUpdateResult[] }>(
+    "agent_updates_finished",
+    (payload) => callback(payload)
   );
 }
 

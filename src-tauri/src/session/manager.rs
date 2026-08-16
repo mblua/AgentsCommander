@@ -44,6 +44,55 @@ pub enum UniqueLiveTokenError {
     Ambiguous,
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) struct TerminalSnapshotRequesterFact {
+    pub id: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub working_directory: String,
+    pub backend_kind: SessionBackendKind,
+    pub is_coordinator: bool,
+    pub is_root_agent: bool,
+}
+
+impl std::fmt::Debug for TerminalSnapshotRequesterFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotRequesterFact")
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .field("is_coordinator", &self.is_coordinator)
+            .field("is_root_agent", &self.is_root_agent)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct TerminalSnapshotSessionFact {
+    pub id: Uuid,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub name: String,
+    pub status: SessionStatus,
+    pub working_directory: String,
+    pub backend_kind: SessionBackendKind,
+}
+
+impl std::fmt::Debug for TerminalSnapshotSessionFact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalSnapshotSessionFact")
+            .field("name_bytes", &self.name.len())
+            .field("status", &self.status)
+            .field("working_directory_bytes", &self.working_directory.len())
+            .field("backend_kind", &self.backend_kind)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSnapshotFactsError {
+    TooMany,
+}
+
 struct SessionManagerState {
     sessions: HashMap<Uuid, Session>,
     order: Vec<Uuid>,
@@ -130,6 +179,47 @@ pub(crate) struct CommitResult {
     /// than appended in place because the guard is a local of
     /// `commit_selection_transition` and no append may hold it.
     pub activity: Vec<crate::config::activity_log::ActivityRecord>,
+}
+
+const TERMINAL_SNAPSHOT_MAX_ROWS: usize = 4_096;
+const TERMINAL_SNAPSHOT_MAX_CWD_BYTES: usize = 32_768;
+const TERMINAL_SNAPSHOT_MAX_NAME_BYTES: usize = 1_024;
+const TERMINAL_SNAPSHOT_MAX_AGGREGATE_BYTES: usize = 4 * 1024 * 1024;
+
+fn requester_fact(session: &Session) -> Option<TerminalSnapshotRequesterFact> {
+    if session.working_directory.len() > TERMINAL_SNAPSHOT_MAX_CWD_BYTES {
+        return None;
+    }
+    Some(TerminalSnapshotRequesterFact {
+        id: session.id,
+        created_at: session.created_at,
+        working_directory: session.working_directory.clone(),
+        backend_kind: session.backend_kind,
+        is_coordinator: session.is_coordinator,
+        is_root_agent: session.is_root_agent,
+    })
+}
+
+fn snapshot_session_fact_by_id(
+    state: &SessionManagerState,
+    id: Uuid,
+) -> Option<TerminalSnapshotSessionFact> {
+    state
+        .sessions
+        .get(&id)
+        .filter(|session| !state.pending_create.contains_key(&session.id))
+        .filter(|session| {
+            session.working_directory.len() <= TERMINAL_SNAPSHOT_MAX_CWD_BYTES
+                && session.name.len() <= TERMINAL_SNAPSHOT_MAX_NAME_BYTES
+        })
+        .map(|session| TerminalSnapshotSessionFact {
+            id: session.id,
+            created_at: session.created_at,
+            name: session.name.clone(),
+            status: session.status.clone(),
+            working_directory: session.working_directory.clone(),
+            backend_kind: session.backend_kind,
+        })
 }
 
 impl Default for SessionManager {
@@ -1366,6 +1456,135 @@ impl SessionManager {
         Ok(SessionInfo::from(first))
     }
 
+    /// Secret-free projection for the terminal snapshot requester boundary.
+    /// No `SessionInfo`, token, shell, prompt, task file, or repository state
+    /// leaves the manager guard.
+    pub(crate) async fn find_unique_live_snapshot_requester_by_token(
+        &self,
+        token: Uuid,
+    ) -> Result<TerminalSnapshotRequesterFact, UniqueLiveTokenError> {
+        let state = self.state.read().await;
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        requester_fact(first).ok_or(UniqueLiveTokenError::NotFound)
+    }
+
+    pub(crate) async fn live_snapshot_requester_by_id(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotRequesterFact> {
+        let state = self.state.read().await;
+        state
+            .sessions
+            .get(&id)
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .and_then(requester_fact)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn find_unique_live_snapshot_requester_by_token_blocking(
+        &self,
+        token: Uuid,
+    ) -> Result<TerminalSnapshotRequesterFact, UniqueLiveTokenError> {
+        let state = self.state.blocking_read();
+        let mut matches = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| session.token == token)
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)));
+        let first = matches.next().ok_or(UniqueLiveTokenError::NotFound)?;
+        if matches.next().is_some() {
+            return Err(UniqueLiveTokenError::Ambiguous);
+        }
+        requester_fact(first).ok_or(UniqueLiveTokenError::NotFound)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn live_snapshot_requester_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotRequesterFact> {
+        let state = self.state.blocking_read();
+        state
+            .sessions
+            .get(&id)
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .and_then(requester_fact)
+    }
+
+    /// One capped, typed selection boundary for terminal snapshots. This takes
+    /// one manager guard and performs no filesystem work.
+    pub(crate) async fn terminal_snapshot_session_facts(
+        &self,
+    ) -> Result<Vec<TerminalSnapshotSessionFact>, TerminalSnapshotFactsError> {
+        let state = self.state.read().await;
+        let row_count = state
+            .sessions
+            .values()
+            .filter(|session| !state.pending_create.contains_key(&session.id))
+            .count();
+        if row_count > TERMINAL_SNAPSHOT_MAX_ROWS {
+            return Err(TerminalSnapshotFactsError::TooMany);
+        }
+        let mut facts = Vec::new();
+        facts
+            .try_reserve_exact(row_count)
+            .map_err(|_| TerminalSnapshotFactsError::TooMany)?;
+        let mut aggregate_bytes = 0usize;
+        for session in state.sessions.values() {
+            if state.pending_create.contains_key(&session.id) {
+                continue;
+            }
+            if session.working_directory.len() > TERMINAL_SNAPSHOT_MAX_CWD_BYTES
+                || session.name.len() > TERMINAL_SNAPSHOT_MAX_NAME_BYTES
+            {
+                return Err(TerminalSnapshotFactsError::TooMany);
+            }
+            aggregate_bytes = aggregate_bytes
+                .checked_add(session.working_directory.len())
+                .and_then(|bytes| bytes.checked_add(session.name.len()))
+                .filter(|bytes| *bytes <= TERMINAL_SNAPSHOT_MAX_AGGREGATE_BYTES)
+                .ok_or(TerminalSnapshotFactsError::TooMany)?;
+            facts.push(TerminalSnapshotSessionFact {
+                id: session.id,
+                created_at: session.created_at,
+                name: session.name.clone(),
+                status: session.status.clone(),
+                working_directory: session.working_directory.clone(),
+                backend_kind: session.backend_kind,
+            });
+        }
+        Ok(facts)
+    }
+
+    pub(crate) async fn terminal_snapshot_session_fact_by_id(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotSessionFact> {
+        let state = self.state.read().await;
+        snapshot_session_fact_by_id(&state, id)
+    }
+
+    /// Blocking projection used only by the dedicated host snapshot finalizer.
+    pub(crate) fn terminal_snapshot_session_fact_by_id_blocking(
+        &self,
+        id: Uuid,
+    ) -> Option<TerminalSnapshotSessionFact> {
+        let state = self.state.blocking_read();
+        snapshot_session_fact_by_id(&state, id)
+    }
+
     pub(crate) async fn selection_payload(&self) -> SessionSelection {
         self.state.read().await.selection.clone()
     }
@@ -1833,6 +2052,79 @@ impl SessionManager {
 
         Ok(result)
     }
+
+    /// §1295 5.6 — remove dormant orphan rows by id (production impl). The
+    /// ORACLE is re-verified right here against the LIVE row: a row is removed
+    /// only if it exists AND `status == Exited(_)` AND it has no pending create.
+    /// This also skips a row that was `Exited` at snapshot time but got restarted
+    /// in between.
+    ///
+    /// The section between acquiring and dropping the interior write lock is
+    /// PURELY SYNCHRONOUS (no awaits), mirroring `destroy_session` (dev-rust
+    /// caveat A). Selection repair mirrors `destroy_session` but with
+    /// `SelectionCause::BackgroundCleanup` (NOT ManualClose): the prune is not
+    /// user-initiated, so the next selection is not attributed to a close.
+    ///
+    /// Missing ids are not an error. Returns the number of rows removed. The
+    /// method never calls any persist helper, never touches the archive, and
+    /// never awaits while holding the interior write. A benign race: a
+    /// concurrent `close-session` that listed an id just before the prune fails
+    /// once with `AppError::SessionNotFound` and reports a now-missing row;
+    /// one-shot, no retry loop (dev-rust caveat B).
+    pub(crate) async fn remove_exited_sessions(&self, ids: &[Uuid]) -> usize {
+        let mut state = self.state.write().await;
+        let mut removed = 0usize;
+        let mut removed_selection = false;
+        let mut removed_ids: Vec<Uuid> = Vec::new();
+        for &id in ids {
+            let Some(session) = state.sessions.get(&id) else {
+                continue;
+            };
+            if !matches!(session.status, SessionStatus::Exited(_)) {
+                continue;
+            }
+            if state.pending_create.contains_key(&id) {
+                continue;
+            }
+            state.sessions.remove(&id);
+            removed += 1;
+            removed_ids.push(id);
+            if state.selection.id() == Some(id) {
+                removed_selection = true;
+            }
+        }
+        if !removed_ids.is_empty() {
+            state
+                .order
+                .retain(|candidate| !removed_ids.contains(candidate));
+        }
+        if removed_selection {
+            state.revision += 1;
+            let next = state
+                .order
+                .iter()
+                .copied()
+                .find(|candidate| !state.pending_create.contains_key(candidate));
+            if let Some(next_id) = next {
+                if let Some(session) = state.sessions.get_mut(&next_id) {
+                    session.status = SessionStatus::Active;
+                }
+                state.selection = SessionSelection::live(
+                    state.epoch,
+                    state.revision,
+                    SelectionCause::BackgroundCleanup,
+                    next_id,
+                );
+            } else {
+                state.selection = SessionSelection::none(
+                    state.epoch,
+                    state.revision,
+                    SelectionCause::BackgroundCleanup,
+                );
+            }
+        }
+        removed
+    }
 }
 
 fn binding_matches(state: &SessionManagerState, binding: PendingCreateBinding) -> bool {
@@ -2074,6 +2366,42 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    #[test]
+    fn terminal_snapshot_fact_debug_uses_only_structural_fields() {
+        const NAME_CANARY: &str = "NAME_1173_S2K9";
+        const PATH_CANARY: &str = r"C:\PATH_1173_S2K9\replica";
+        let id = Uuid::parse_str("11730000-0000-4000-8000-00000000c229").unwrap();
+        let requester = TerminalSnapshotRequesterFact {
+            id,
+            created_at: chrono::Utc::now(),
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::ContainerTransport,
+            is_coordinator: true,
+            is_root_agent: false,
+        };
+        let session = TerminalSnapshotSessionFact {
+            id,
+            created_at: chrono::Utc::now(),
+            name: NAME_CANARY.to_string(),
+            status: SessionStatus::Running,
+            working_directory: PATH_CANARY.to_string(),
+            backend_kind: SessionBackendKind::LocalProcess,
+        };
+        let diagnostic = format!("{requester:?}\n{session:?}");
+        let id_text = id.to_string();
+        for forbidden in [NAME_CANARY, PATH_CANARY, id_text.as_str()] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        for structural in [
+            "working_directory_bytes",
+            "name_bytes",
+            "status: Running",
+            "backend_kind: ContainerTransport",
+        ] {
+            assert!(diagnostic.contains(structural));
+        }
+    }
 
     #[tokio::test]
     async fn set_effective_shell_args_writes_field() {
@@ -4367,5 +4695,108 @@ mod tests {
             outcome.is_err(),
             "no CommitResult, therefore no activity records, may reach the caller"
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // §1295 — remove_exited_sessions
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Test 9: of a mixed set (Running, Exited, pending) only the Exited
+    /// non-pending row is removed; the selection is repaired to the next
+    /// non-pending row with `SelectionCause::BackgroundCleanup`; count is
+    /// correct.
+    #[tokio::test]
+    async fn remove_exited_sessions_removes_only_exited_non_pending() {
+        let mgr = SessionManager::new();
+        let a = mgr
+            .create_session(
+                "running".into(),
+                vec![],
+                "C:/x/a".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create running");
+        let b = mgr
+            .create_session(
+                "exited".into(),
+                vec![],
+                "C:/x/b".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create exited");
+        let c_pending = mgr.insert_pending_session_for_test("C:/x/c".into()).await;
+        mgr.mark_exited(b.id, 0).await;
+        // Make the soon-to-remove Exited row the current selection.
+        mgr.set_active_only(b.id).await.expect("select b");
+        assert_eq!(mgr.selection_payload().await.id(), Some(b.id));
+
+        let removed = mgr.remove_exited_sessions(&[a.id, b.id, c_pending]).await;
+        assert_eq!(removed, 1, "only the Exited non-pending row is removed");
+
+        // b gone; a (Running) and c (pending) remain.
+        assert_eq!(mgr.get_session(b.id).await.map(|s| s.name), None);
+        assert!(mgr.get_session(a.id).await.is_some());
+        // Pending rows are hidden from the public read path; assert the pending
+        // create is still present instead.
+        assert!(mgr.contains_public_or_pending(c_pending).await);
+
+        // Selection repaired to the next non-pending row (a) with BackgroundCleanup.
+        let selection = mgr.selection_payload().await;
+        assert_eq!(selection.id(), Some(a.id));
+        assert_eq!(
+            selection.source(),
+            crate::session::selection::SelectionSource::BackgroundCleanup
+        );
+    }
+
+    /// Test 10: rows that are live (Running) or pending are never removed.
+    #[tokio::test]
+    async fn remove_exited_sessions_never_removes_live_or_pending() {
+        let mgr = SessionManager::new();
+        let a = mgr
+            .create_session(
+                "running-a".into(),
+                vec![],
+                "C:/x/a".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create a");
+        let b = mgr
+            .create_session(
+                "running-b".into(),
+                vec![],
+                "C:/x/b".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .expect("create b");
+        let c_pending = mgr.insert_pending_session_for_test("C:/x/c".into()).await;
+
+        let removed = mgr.remove_exited_sessions(&[a.id, b.id, c_pending]).await;
+        assert_eq!(removed, 0, "no live/pending row is ever removed");
+        assert!(mgr.get_session(a.id).await.is_some());
+        assert!(mgr.get_session(b.id).await.is_some());
+        // Pending rows are hidden from the public read path (by design), so assert
+        // the pending create is still present rather than via get_session.
+        assert!(mgr.contains_public_or_pending(c_pending).await);
     }
 }

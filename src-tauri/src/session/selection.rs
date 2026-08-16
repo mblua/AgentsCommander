@@ -407,6 +407,17 @@ pub enum CriticalAdmissionOutcome<T> {
     AlreadyPending,
 }
 
+/// #1151 - `watchdog_resource_kill` must distinguish two conditions that the shared
+/// `CriticalAdmissionOutcome::AlreadyPending` conflates: a genuinely in-flight critical
+/// admission for the same UUID, and a session that is no longer public or pending. Only
+/// the second may fall back to a registry-only quarantine retry.
+#[derive(Debug, Clone)]
+pub(crate) enum WatchdogKillOutcome {
+    Completed(crate::resource_monitor::ResourceKillResult),
+    AlreadyInFlight,
+    NoPublicSession,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoordinatorPhase {
     Bootstrapping = 0,
@@ -1278,7 +1289,7 @@ impl SelectionCoordinator {
     pub(crate) async fn watchdog_resource_kill(
         &self,
         session_id: Uuid,
-    ) -> Result<CriticalAdmissionOutcome<crate::resource_monitor::ResourceKillResult>, String> {
+    ) -> Result<WatchdogKillOutcome, String> {
         if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
@@ -1293,7 +1304,7 @@ impl SelectionCoordinator {
         }
         let manager = self.inner.manager.read().await.clone();
         if !manager.contains_public_or_pending(session_id).await {
-            return Ok(CriticalAdmissionOutcome::AlreadyPending);
+            return Ok(WatchdogKillOutcome::NoPublicSession);
         }
         let key = CriticalAdmissionKey {
             session_id,
@@ -1305,7 +1316,7 @@ impl SelectionCoordinator {
             guard,
         }) = self.reserve_critical_admission(key).await?
         else {
-            return Ok(CriticalAdmissionOutcome::AlreadyPending);
+            return Ok(WatchdogKillOutcome::AlreadyInFlight);
         };
         let (response, receiver) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
@@ -1321,7 +1332,7 @@ impl SelectionCoordinator {
         let result = receiver
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())??;
-        Ok(CriticalAdmissionOutcome::Completed(result))
+        Ok(WatchdogKillOutcome::Completed(result))
     }
 
     pub(crate) async fn background_destroy(
@@ -3046,6 +3057,7 @@ mod tests {
             coding_agent: None,
             cmd: "container".to_string(),
             args: Vec::new(),
+            resolved_agent_host_shell: None,
             cwd,
             selected_cwd: None,
             cols: 120,
@@ -3577,9 +3589,9 @@ mod tests {
             let coordinator = coordinator.clone();
             tokio::spawn(async move {
                 if capped {
-                    coordinator.close_and_join_with_budget(close_budget).await;
+                    coordinator.close_and_join_with_budget(close_budget).await
                 } else {
-                    coordinator.close_and_join().await;
+                    coordinator.close_and_join().await
                 }
             })
         };
@@ -3632,11 +3644,14 @@ mod tests {
             .expect("late runtime handle stop starts")
             .expect("late runtime handle stop witness is delivered");
         assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
-        tokio::time::timeout(Duration::from_secs(2), close)
+        let close_report = tokio::time::timeout(Duration::from_secs(2), close)
             .await
             .expect("real pending-container close obeys the shared deadline")
             .expect("join real pending-container close task");
         let close_elapsed = close_started.elapsed();
+        // Sampled before the bounded drain wait below, so it can still witness
+        // work the close gave up on.
+        let work_state_at_close = container_backend.shutdown_work_state_for_test();
         let close_bound = if capped {
             close_budget + Duration::from_millis(550)
         } else {
@@ -3646,6 +3661,34 @@ mod tests {
             close_elapsed <= close_bound,
             "real container close elapsed {close_elapsed:?}, bound {close_bound:?}"
         );
+        if capped {
+            // Only the abandoned side is asserted. A capped close may retain work
+            // without ever reaching its absolute deadline: the
+            // `container-shutdown-signal` and `coordinator-worker-handle` reasons are
+            // raised immediately on a `try_lock` failure, `critical-key-clear` is not
+            // deadline-driven at all, and `blocking-seed-transaction-await` is raised
+            // at the worker deadline, one finalization reserve before the absolute
+            // one. A close that returns under budget is therefore free to retain, so
+            // asserting an empty retained set there would fail runs the production
+            // contract permits.
+            if close_elapsed >= close_budget && work_state_at_close != (true, 0, 0) {
+                // The registry only drains, never refills, so work outstanding
+                // here was outstanding at the close's deadline too. The predicate
+                // couples the report to something observed independently of it, so
+                // it does not restate `persistence_safe == retained.is_empty()`.
+                assert!(
+                    !close_report.persistence_safe,
+                    "a capped close that gave up on {work_state_at_close:?} must report abandoned ownership: {close_report:?}"
+                );
+                assert!(
+                    !close_report.retained.is_empty(),
+                    "a capped close that gave up on {work_state_at_close:?} must name what it abandoned: {close_report:?}"
+                );
+            }
+            // The remaining cases, a close that returned under budget and a close
+            // that reached its deadline against a registry that then drained before
+            // this sample, are undecidable from outside and are left unasserted.
+        }
         if let Some(guard) = restore_guard.take() {
             guard.finish();
         }
@@ -3677,6 +3720,27 @@ mod tests {
             }),
             "retained cleanup must identify runtime-backed ownership separately from non-runtime residue: {retained_contexts:?}"
         );
+        if capped {
+            // The bounded close may abandon ownership at its absolute deadline,
+            // and reports it when it does, so the canceled-start cleanup can
+            // still be owned for a moment after the join. Wait for that bounded
+            // work instead of racing it; the close-latency assertion above
+            // already pins that the capped budget itself was honored.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while container_backend.shutdown_work_state_for_test() != (true, 0, 0) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "capped shutdown work did not drain after the bounded close: state={:?} workers={} retained={:?}",
+                    container_backend.shutdown_work_state_for_test(),
+                    container_backend.shutdown_worker_count_for_test(),
+                    container_backend.retained_cleanup_contexts_for_test()
+                )
+            });
+        }
         assert_eq!(
             container_backend.shutdown_work_state_for_test(),
             (true, 0, 0)
@@ -3743,11 +3807,12 @@ mod tests {
     /// production. Each one either records the working-state edge it causes or is
     /// covered by the heartbeat backstop; an assignment anywhere else silently
     /// reintroduces an unrecorded edge.
-    const STATUS_WRITER_OWNERS: [&str; 4] = [
+    const STATUS_WRITER_OWNERS: [&str; 5] = [
         "mark_idle",
         "mark_busy",
         "prepare_pty_input_boundary",
         "commit_selection_transition",
+        "remove_exited_sessions",
     ];
 
     fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
@@ -4789,7 +4854,7 @@ fn commit_selection_transition() {
                 .watchdog_resource_kill(session.id)
                 .await
                 .unwrap(),
-            CriticalAdmissionOutcome::AlreadyPending
+            WatchdogKillOutcome::AlreadyInFlight
         ));
         assert!(matches!(
             coordinator.background_destroy(session.id).await.unwrap(),
@@ -4810,6 +4875,162 @@ fn commit_selection_transition() {
         }
         assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
         assert!(coordinator.inner.worker.lock().unwrap().is_none());
+    }
+
+    // #1151 (S1) - an absent session UUID reports NoPublicSession, distinctly from the
+    // in-flight case, and does so before any admission is reserved or job enqueued.
+    #[tokio::test]
+    async fn watchdog_kill_reports_no_public_session_for_absent_uuid() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build no-public-session app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let restore = coordinator.submit_restore_first().await.unwrap();
+
+        // Every envelope slot is taken and the restore barrier is still held, so ANY
+        // attempt to reserve a critical admission would park indefinitely. Returning
+        // promptly is therefore proof that the absent-session check runs before the
+        // reservation and before a CoordinatorJob::ResourceKill can be enqueued.
+        let mut reservations = Vec::new();
+        while let Ok(reservation) = coordinator.reserve_auto_close() {
+            reservations.push(reservation);
+        }
+        assert!(!reservations.is_empty());
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.watchdog_resource_kill(Uuid::new_v4()),
+        )
+        .await
+        .expect("absent-session watchdog kill returns without reserving admission")
+        .unwrap();
+        assert!(matches!(outcome, WatchdogKillOutcome::NoPublicSession));
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+
+        restore.finish();
+        coordinator.close_and_join().await;
+        drop(reservations);
+    }
+
+    // #1151 (S2) - with the WatchdogKill critical key held for a PUBLIC uuid, the second
+    // call reports AlreadyInFlight, never NoPublicSession. The orphan fallback keys off
+    // the second variant only, so conflating them would re-enter a live cleanup.
+    #[tokio::test]
+    async fn watchdog_kill_reports_already_in_flight_when_key_held() {
+        use crate::pty::backend::SessionBackendKind;
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = manager
+            .read()
+            .await
+            .create_session(
+                "shell".to_string(),
+                Vec::new(),
+                "C:/watchdog-in-flight".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build already-in-flight app");
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let reservations = (0..COORDINATOR_QUEUE_CAPACITY)
+            .map(|_| coordinator.reserve_auto_close().unwrap())
+            .collect::<Vec<_>>();
+
+        let waiter = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !coordinator
+                .critical_key_registered_for_test(session.id, CriticalAdmissionKind::WatchdogKill)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first watchdog kill registers its critical key");
+
+        assert!(matches!(
+            coordinator
+                .watchdog_resource_kill(session.id)
+                .await
+                .unwrap(),
+            WatchdogKillOutcome::AlreadyInFlight
+        ));
+
+        coordinator
+            .close_and_join_with_budget(Duration::from_millis(25))
+            .await;
+        guard.finish();
+        drop(reservations);
+        assert_eq!(
+            waiter.await.unwrap().unwrap_err(),
+            SelectionCoordinatorError::Unavailable.to_string()
+        );
+    }
+
+    // #1151 (S3) - the absent-session outcomes of the two SIBLING entry points are
+    // deliberately inconsistent with each other and are left exactly as they are. A
+    // dedicated WatchdogKillOutcome exists so nobody normalizes all three at once.
+    #[tokio::test]
+    async fn absent_session_outcomes_for_route_loss_and_background_destroy_are_unchanged() {
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .manage(pty)
+            .manage(DetachedSessionsState::default())
+            .manage(WsBroadcaster::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build absent-session sibling app");
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+
+        assert!(matches!(
+            coordinator
+                .container_lifecycle_sender()
+                .route_lost(Uuid::new_v4(), 7)
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::Completed(())
+        ));
+        assert!(matches!(
+            coordinator
+                .background_destroy(Uuid::new_v4())
+                .await
+                .unwrap(),
+            CriticalAdmissionOutcome::AlreadyPending
+        ));
+        assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+        coordinator.close_and_join().await;
     }
 
     #[tokio::test]

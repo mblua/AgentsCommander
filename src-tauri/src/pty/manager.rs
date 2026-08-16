@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, TryLockError};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
+use crate::pty::backend::{
+    BackendSpawnSpec, PtyBackend, SessionBackendKind, TerminalScreenCopyRead, TerminalScreenRead,
+};
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::container_tokens::ContainerApiTokenManager;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
@@ -12,8 +14,13 @@ use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
-use crate::pty::output::PtyScreenSnapshot;
+use crate::pty::output::{PtyScreenSnapshot, TerminalOutputCoordinator};
 use crate::telegram::manager::OutputSenderMap;
+
+pub(crate) use crate::pty::output::{
+    TerminalOutputActivationResult, TerminalOutputControlState, TerminalRendererMetrics,
+    TerminalRendererMetricsWire,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingSpawn {
@@ -83,6 +90,19 @@ pub(crate) struct PtyAuthorityRouteProof {
     route_lifecycle: Arc<std::sync::Mutex<()>>,
 }
 
+/// Non-writing proof for one frozen PTY route generation. It carries no input
+/// gate and cannot mint a backend write authority.
+pub(crate) struct PtySnapshotRouteProof {
+    session_id: Uuid,
+    route_generation: u64,
+    route_kind: SessionBackendKind,
+    route_registry: Arc<std::sync::Mutex<SpawnRegistry>>,
+    route_lifecycle: Arc<std::sync::Mutex<()>>,
+    backend: Arc<dyn PtyBackend>,
+    saved_cwd: crate::path_identity::VerifiedPathIdentity,
+    saved_replica: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
 /// A short-lived route lifecycle guard for one synchronous backend write.
 pub struct PtyRouteWriteGuard<'a> {
     session_id: Uuid,
@@ -132,6 +152,60 @@ pub struct PtyManager {
     container_backend: Arc<ContainerTransportBackend>,
 }
 
+/// An owned shallow route selected while PtyManager is locked. All forwarding happens after the
+/// caller has dropped that manager lock, so the shared output coordinator never inherits it.
+pub(crate) struct PtyTerminalOutputRoute {
+    session_id: Uuid,
+    backend: Arc<dyn PtyBackend>,
+}
+
+impl PtyTerminalOutputRoute {
+    pub(crate) fn activate_terminal_output(
+        &self,
+        include_history: bool,
+    ) -> TerminalOutputActivationResult {
+        self.backend
+            .activate_terminal_output(self.session_id, include_history)
+    }
+
+    pub(crate) fn ready_terminal_output(
+        &self,
+        generation: u64,
+        snapshot_sequence: u64,
+    ) -> TerminalOutputControlState {
+        self.backend
+            .ready_terminal_output(self.session_id, generation, snapshot_sequence)
+    }
+
+    pub(crate) fn deactivate_terminal_output(&self, generation: u64) -> TerminalOutputControlState {
+        self.backend
+            .deactivate_terminal_output(self.session_id, generation)
+    }
+
+    pub(crate) fn ack_terminal_output_delivery(
+        &self,
+        generation: u64,
+        first_sequence: u64,
+        sequence: u64,
+    ) -> TerminalOutputControlState {
+        self.backend.ack_terminal_output_delivery(
+            self.session_id,
+            generation,
+            first_sequence,
+            sequence,
+        )
+    }
+
+    pub(crate) fn report_terminal_renderer_metrics(
+        &self,
+        generation: u64,
+        metrics: TerminalRendererMetrics,
+    ) -> TerminalOutputControlState {
+        self.backend
+            .report_terminal_renderer_metrics(self.session_id, generation, metrics)
+    }
+}
+
 impl PtyManager {
     pub fn new(
         output_senders: OutputSenderMap,
@@ -140,20 +214,25 @@ impl PtyManager {
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
         lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {
-        let local_backend = Arc::new(LocalProcessBackend::new(
+        let coordinator = TerminalOutputCoordinator::new();
+        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::with_coordinator(
             output_senders.clone(),
             idle_detector.clone(),
             git_watcher,
             ws_broadcaster.clone(),
+            Arc::clone(&coordinator),
         ));
-        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime_and_coordinator(
             output_senders,
             idle_detector,
             ws_broadcaster,
             lifecycle_sender,
             Arc::new(DockerRuntime::new()),
             ContainerApiTokenManager::at_config_dir(),
+            coordinator,
         ));
+        debug_assert!(local_backend.as_any().is::<LocalProcessBackend>());
+        debug_assert!(container_backend.as_any().is::<ContainerTransportBackend>());
         Self {
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
@@ -189,7 +268,7 @@ impl PtyManager {
         }
     }
 
-    pub fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
+    pub(crate) fn backend_for_kind(&self, kind: SessionBackendKind) -> Arc<dyn PtyBackend> {
         match kind {
             SessionBackendKind::LocalProcess => self.local_backend.clone(),
             SessionBackendKind::ContainerTransport => self.container_backend.clone(),
@@ -198,6 +277,17 @@ impl PtyManager {
 
     pub fn container_backend(&self) -> Arc<ContainerTransportBackend> {
         self.container_backend.clone()
+    }
+
+    pub(crate) fn terminal_output_route(
+        &self,
+        session_id: Uuid,
+    ) -> Result<PtyTerminalOutputRoute, AppError> {
+        let kind = self.kind_for_session(session_id)?;
+        Ok(PtyTerminalOutputRoute {
+            session_id,
+            backend: self.backend_for_kind(kind),
+        })
     }
 
     pub fn start_container_pending_reaper(&self, shutdown: crate::shutdown::ShutdownSignal) {
@@ -447,7 +537,7 @@ impl PtyManager {
         (pending, live)
     }
 
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         manager: &Arc<Mutex<Self>>,
         backend_kind: SessionBackendKind,
         spec: BackendSpawnSpec,
@@ -579,6 +669,25 @@ impl PtyManager {
         self.backend_for_kind(kind).get_screen_rows(id)
     }
 
+    /// #1171 - forwards to the routed backend. A missing route is `Gone` for the same reason
+    /// it is `SessionOver` above: every route removal is preceded by parser removal, so the
+    /// session really is over.
+    ///
+    /// **The watcher engine does not call this on its tick.** It resolves the backend `Arc`
+    /// once at registration through `backend_for_kind` and calls the backend directly, which
+    /// is what keeps both this mutex and the `registry` mutex out of a 200 ms loop. This
+    /// exists for completeness and for callers that hold no `Arc` of their own.
+    pub fn screen_rows_since(
+        &self,
+        id: Uuid,
+        seen: Option<crate::pty::watchers::FrameStamp>,
+    ) -> crate::pty::watchers::ScreenRowsSince {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return crate::pty::watchers::ScreenRowsSince::Gone;
+        };
+        self.backend_for_kind(kind).screen_rows_since(id, seen)
+    }
+
     pub fn register_response_watcher(
         &self,
         session_id: Uuid,
@@ -611,6 +720,46 @@ impl PtyManager {
         authority_route_proof(manager, session_id)
     }
 
+    pub(crate) fn snapshot_route_proof(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_id: Uuid,
+    ) -> Result<PtySnapshotRouteProof, AppError> {
+        snapshot_route_proof(manager, session_id)
+    }
+
+    pub(crate) fn snapshot_route_proofs(
+        manager: &Arc<std::sync::Mutex<PtyManager>>,
+        session_ids: &[Uuid],
+    ) -> Result<Vec<Option<PtySnapshotRouteProof>>, AppError> {
+        let manager_guard = manager
+            .lock()
+            .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+        let registry = manager_guard
+            .registry
+            .lock()
+            .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        let mut proofs = Vec::new();
+        proofs
+            .try_reserve_exact(session_ids.len())
+            .map_err(|_| AppError::PtyError("snapshot_route_capacity".to_string()))?;
+        for session_id in session_ids {
+            let proof = registry.routes.get(session_id).and_then(|entry| {
+                Some(PtySnapshotRouteProof {
+                    session_id: *session_id,
+                    route_generation: entry.generation,
+                    route_kind: entry.kind,
+                    route_registry: Arc::clone(&manager_guard.registry),
+                    route_lifecycle: Arc::clone(&entry.lifecycle_gate),
+                    backend: manager_guard.backend_for_kind(entry.kind),
+                    saved_cwd: entry.canonical_cwd_identity.clone()?,
+                    saved_replica: entry.verified_replica_anchor.clone(),
+                })
+            });
+            proofs.push(proof);
+        }
+        Ok(proofs)
+    }
+
     pub fn lock_route_for_write(
         permit: &PtyInputPermit,
     ) -> Result<PtyRouteWriteGuard<'_>, AppError> {
@@ -629,6 +778,38 @@ impl PtyManager {
     pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
         write_with_permit(permit, bytes)
     }
+}
+
+fn snapshot_route_proof(
+    manager: &Arc<std::sync::Mutex<PtyManager>>,
+    session_id: Uuid,
+) -> Result<PtySnapshotRouteProof, AppError> {
+    let manager_guard = manager
+        .lock()
+        .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+    let registry = manager_guard
+        .registry
+        .lock()
+        .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+    let entry = registry
+        .routes
+        .get(&session_id)
+        .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
+    let saved_cwd = entry
+        .canonical_cwd_identity
+        .clone()
+        .ok_or_else(|| AppError::PtyError("unsafe_route_cwd".to_string()))?;
+    let saved_replica = entry.verified_replica_anchor.clone();
+    Ok(PtySnapshotRouteProof {
+        session_id,
+        route_generation: entry.generation,
+        route_kind: entry.kind,
+        route_registry: Arc::clone(&manager_guard.registry),
+        route_lifecycle: Arc::clone(&entry.lifecycle_gate),
+        backend: manager_guard.backend_for_kind(entry.kind),
+        saved_cwd,
+        saved_replica,
+    })
 }
 
 fn authority_route_proof(
@@ -720,6 +901,154 @@ fn acquire_route_lifecycle(
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+    }
+}
+
+impl PtySnapshotRouteProof {
+    pub(crate) fn backend_kind(&self) -> SessionBackendKind {
+        self.route_kind
+    }
+
+    pub(crate) fn liveness(&self) -> ContextSessionLiveness {
+        self.backend.context_session_liveness(self.session_id)
+    }
+
+    pub(crate) fn saved_cwd(&self) -> &crate::path_identity::VerifiedPathIdentity {
+        &self.saved_cwd
+    }
+
+    pub(crate) fn saved_replica(&self) -> Option<&crate::path_identity::VerifiedPathIdentity> {
+        self.saved_replica.as_ref()
+    }
+
+    pub(crate) fn matches_requester_route(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> bool {
+        let Ok(registry) = self.route_registry.lock() else {
+            return false;
+        };
+        registry
+            .routes
+            .get(&self.session_id)
+            .is_some_and(|current| {
+                let replica_matches = match (
+                    current.verified_replica_anchor.as_ref(),
+                    self.saved_replica.as_ref(),
+                    expected_replica,
+                ) {
+                    (Some(current), Some(saved), Some(expected)) => {
+                        crate::path_identity::same_object(current, saved)
+                            && crate::path_identity::same_object(current, expected)
+                    }
+                    (None, None, None) => true,
+                    _ => false,
+                };
+                current.generation == self.route_generation
+                    && current.kind == self.route_kind
+                    && current.kind == expected_kind
+                    && current
+                        .canonical_cwd_identity
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_cwd)
+                                && crate::path_identity::same_object(identity, &self.saved_cwd)
+                        })
+                    && replica_matches
+            })
+    }
+
+    pub(crate) fn capture_verified(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> TerminalScreenRead {
+        let lifecycle_guard = match acquire_route_lifecycle(&self.route_lifecycle) {
+            Ok(guard) => guard,
+            Err(_) => return TerminalScreenRead::Unavailable,
+        };
+        {
+            let registry = match self.route_registry.lock() {
+                Ok(registry) => registry,
+                Err(_) => return TerminalScreenRead::Unavailable,
+            };
+            let Some(current) = registry.routes.get(&self.session_id) else {
+                return TerminalScreenRead::Unavailable;
+            };
+            let cwd_matches = current
+                .canonical_cwd_identity
+                .as_ref()
+                .is_some_and(|identity| {
+                    crate::path_identity::same_object(identity, expected_cwd)
+                        && crate::path_identity::same_object(identity, &self.saved_cwd)
+                });
+            let replica_matches =
+                current
+                    .verified_replica_anchor
+                    .as_ref()
+                    .is_some_and(|identity| {
+                        crate::path_identity::same_object(identity, expected_replica)
+                            && self.saved_replica.as_ref().is_some_and(|saved| {
+                                crate::path_identity::same_object(identity, saved)
+                            })
+                    });
+            if current.generation != self.route_generation
+                || current.kind != self.route_kind
+                || current.kind != expected_kind
+                || !cwd_matches
+                || !replica_matches
+            {
+                return TerminalScreenRead::Unavailable;
+            }
+        }
+        let copied = self.backend.copy_terminal_screen(self.session_id);
+        drop(lifecycle_guard);
+        match copied {
+            TerminalScreenCopyRead::Copied(captured) => captured
+                .into_model(self.session_id, self.route_kind)
+                .map(TerminalScreenRead::Captured)
+                .unwrap_or(TerminalScreenRead::Unavailable),
+            TerminalScreenCopyRead::Unavailable => TerminalScreenRead::Unavailable,
+            TerminalScreenCopyRead::TooLarge => TerminalScreenRead::TooLarge,
+        }
+    }
+
+    pub(crate) fn matches_current(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: &crate::path_identity::VerifiedPathIdentity,
+    ) -> bool {
+        let Ok(registry) = self.route_registry.lock() else {
+            return false;
+        };
+        registry
+            .routes
+            .get(&self.session_id)
+            .is_some_and(|current| {
+                current.generation == self.route_generation
+                    && current.kind == self.route_kind
+                    && current.kind == expected_kind
+                    && current
+                        .canonical_cwd_identity
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_cwd)
+                                && crate::path_identity::same_object(identity, &self.saved_cwd)
+                        })
+                    && current
+                        .verified_replica_anchor
+                        .as_ref()
+                        .is_some_and(|identity| {
+                            crate::path_identity::same_object(identity, expected_replica)
+                                && self.saved_replica.as_ref().is_some_and(|saved| {
+                                    crate::path_identity::same_object(identity, saved)
+                                })
+                        })
+            })
     }
 }
 
@@ -831,6 +1160,13 @@ pub(crate) fn lock_route_for_verified_write<'a>(
 
 pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
     lock_route_for_write(permit)?.write(bytes)
+}
+
+impl Drop for PtyManager {
+    fn drop(&mut self) {
+        self.local_backend.shutdown_terminal_output();
+        self.container_backend.shutdown_terminal_output();
+    }
 }
 
 #[cfg(test)]
@@ -1050,6 +1386,7 @@ mod tests {
             coding_agent: None,
             cmd: "cmd".to_string(),
             args: Vec::new(),
+            resolved_agent_host_shell: None,
             cwd: ".".to_string(),
             selected_cwd: None,
             cols: 80,
@@ -1143,6 +1480,107 @@ mod tests {
             manager.context_session_liveness(missing_id),
             ContextSessionLiveness::SessionOver
         );
+    }
+
+    /// #1171, 9.1.9 - a session with no route is `Gone`, not `Missing`.
+    ///
+    /// Same reading `get_screen_rows` already gives a routeless id (`:573-580`): every route
+    /// removal is preceded by parser removal, so the session really is over. The engine
+    /// retires on `Gone`, which is exactly what should happen here; `Missing` would keep it
+    /// sampling an id that can never come back.
+    #[test]
+    fn screen_rows_since_reports_gone_for_a_session_with_no_route() {
+        let manager = PtyManager::new_for_test(Arc::new(RecordingBackend::default()));
+
+        assert!(matches!(
+            manager.screen_rows_since(Uuid::new_v4(), None),
+            crate::pty::watchers::ScreenRowsSince::Gone
+        ));
+    }
+
+    /// #1171, 9.1.8 - a backend that never heard of the seam keeps working through the trait
+    /// default: it reports a frame with NO stamp, and it never reports `Unchanged`, whatever
+    /// stamp it is handed. That is the property that lets `stamp` be an `Option` instead of a
+    /// fabricated value, and it is what keeps the two `PtyBackend` test fakes compiling.
+    #[test]
+    fn the_defaulted_seam_reports_no_stamp_and_never_reports_unchanged() {
+        use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
+
+        struct DefaultSeamBackend;
+
+        impl PtyBackend for DefaultSeamBackend {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn spawn(
+                &self,
+                _spec: BackendSpawnSpec,
+            ) -> futures::future::BoxFuture<'_, Result<(), AppError>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn write(
+                &self,
+                _authority: &BackendWriteAuthority,
+                _id: Uuid,
+                _data: &[u8],
+            ) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn kill(&self, _id: Uuid) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn has_session(&self, _id: Uuid) -> bool {
+                true
+            }
+            fn get_screen_snapshot(&self, _id: Uuid) -> Option<PtyScreenSnapshot> {
+                None
+            }
+            fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+                None
+            }
+            fn get_screen_rows(&self, _id: Uuid) -> ScreenRowsRead {
+                ScreenRowsRead::Rows(vec!["only row".to_string()])
+            }
+            fn register_response_watcher(
+                &self,
+                _session_id: Uuid,
+                _request_id: String,
+                _response_dir: std::path::PathBuf,
+            ) {
+            }
+            fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+                false
+            }
+            fn kill_all_jobs(&self) -> (usize, usize) {
+                (0, 0)
+            }
+        }
+
+        let id = Uuid::new_v4();
+        let manager = PtyManager::new_for_test(Arc::new(DefaultSeamBackend));
+        manager.record_route(id, SessionBackendKind::LocalProcess);
+
+        let first = manager.screen_rows_since(id, None);
+        let frame = first.frame().expect("the default must produce a frame");
+        assert!(frame.stamp.is_none());
+        assert_eq!(frame.rows, vec!["only row".to_string()]);
+        assert_eq!(frame.wrapped, vec![false]);
+        assert_eq!(frame.cursor_row, 0);
+
+        // Handed a stamp that would match anything, it still refuses to claim "unchanged":
+        // it has no sequence of its own to compare against.
+        let seen = FrameStamp {
+            sequence: 0,
+            rows: 1,
+            cols: 1,
+        };
+        assert!(matches!(
+            manager.screen_rows_since(id, Some(seen)),
+            ScreenRowsSince::Frame(_)
+        ));
     }
 
     #[test]

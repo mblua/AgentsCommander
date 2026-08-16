@@ -42,7 +42,7 @@ Keyboard shortcut: **Ctrl+Shift+R** toggles voice recording on the active sessio
 
 ## Cancelling
 
-- **Mid-recording**: press Escape, or release before 500ms (very short clips are discarded automatically).
+- **Mid-recording**: press Escape to cancel; a clip that captured no audio chunks is discarded automatically.
 - **Mid-transcription** (after release, before AC writes the text): click the **Cancel** button that appears next to the mic indicator.
 - **Before auto-execute**: edit or delete the transcribed text in the terminal before the delay elapses.
 
@@ -63,7 +63,7 @@ For the canonical statement, see [`PRIVACY.md`](../../PRIVACY.md).
 |---|---|---|
 | Mic button is greyed out | Voice disabled or API key missing | Toggle on, paste a key, save |
 | Transcription is wildly wrong | Background noise or accent mismatch | Switch model to `gemini-1.5-pro` |
-| Transcription is empty | Recording <500ms or muted mic | Hold longer; check OS mic permissions |
+| Transcription is empty | Very short recording (no audio chunks) or muted mic | Hold longer; check OS mic permissions |
 | Browser-level mic permission prompt | First use on this machine | Allow microphone for the AC process |
 | Auto-execute fires too fast | Delay too short | Settings → Integrations → Voice → Delay |
 

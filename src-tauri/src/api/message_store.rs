@@ -757,6 +757,25 @@ impl MessageStore {
         &self.path
     }
 
+    /// Test-only teardown: release the SQLite/WAL/SHM file handles held by the
+    /// live connection even while other `Arc` clones of this store (managed
+    /// app state, API state) still exist. The connection is replaced with an
+    /// in-memory one so the stored `Mutex<Connection>` stays usable and the
+    /// dropped file-backed connection closes its handles; callers must not use
+    /// the store afterwards. `AcceptanceFixture` calls this before its
+    /// temporary directory is removed, because on Windows a directory cannot
+    /// be deleted while the SQLite connection keeps it open.
+    #[cfg(test)]
+    pub(crate) fn close_for_test(&self) {
+        let mut guard = match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Ok(in_memory) = rusqlite::Connection::open_in_memory() {
+            let _ = std::mem::replace(&mut *guard, in_memory);
+        }
+    }
+
     fn migrate(&self) -> Result<(), MessageStoreError> {
         let mut conn = self
             .conn
@@ -2752,18 +2771,6 @@ impl MessageStore {
     ) -> Result<usize, MessageStoreError> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || store.recover_pty_input_runtime(&active, now))
-            .await
-            .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
-    }
-
-    pub async fn due_pty_input_ids_offloaded(
-        &self,
-        source_plane: crate::phone::types::PtyInputSourcePlane,
-        now: DateTime<Utc>,
-        limit: usize,
-    ) -> Result<Vec<String>, MessageStoreError> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || store.due_pty_input_ids(source_plane, now, limit))
             .await
             .map_err(|error| MessageStoreError::BlockingTask(error.to_string()))?
     }

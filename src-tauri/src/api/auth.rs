@@ -29,6 +29,8 @@ pub const SCOPE_LIST_PEERS: &str = "list-peers-lean";
 pub const SCOPE_SESSION_TRANSPORT: &str = "session-transport";
 /// Dedicated privileged exact PTY-input scope.
 pub const SCOPE_PTY_INPUT: &str = "pty-input";
+/// Dedicated read-only live terminal snapshot scope.
+pub const SCOPE_TERMINAL_SNAPSHOT: &str = "terminal-snapshot";
 /// Scopes accepted by the registry. Possession of `pty-input` alone is not
 /// authority; the handler also requires an automatic live container binding.
 pub const VALID_SCOPES: &[&str] = &[
@@ -36,6 +38,7 @@ pub const VALID_SCOPES: &[&str] = &[
     SCOPE_LIST_PEERS,
     SCOPE_SESSION_TRANSPORT,
     SCOPE_PTY_INPUT,
+    SCOPE_TERMINAL_SNAPSHOT,
 ];
 
 /// Registry file basename in `config_dir()`.
@@ -154,14 +157,21 @@ impl std::fmt::Debug for RegistrySnapshot {
 
 /// SHA-256 the secret, formatted `"sha256:<lowercase-hex>"`.
 pub fn hash_token(secret: &str) -> String {
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
     let digest = Sha256::digest(secret.as_bytes());
     let mut hex = String::with_capacity(64);
     for byte in digest {
-        // Two lowercase hex chars per byte.
-        hex.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-        hex.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+        let Some(high) = LOWER_HEX.get(usize::from(byte >> 4)) else {
+            return "sha256:invalid".to_string();
+        };
+        let Some(low) = LOWER_HEX.get(usize::from(byte & 0x0f)) else {
+            return "sha256:invalid".to_string();
+        };
+        hex.push(char::from(*high));
+        hex.push(char::from(*low));
     }
-    format!("sha256:{}", hex)
+    format!("sha256:{hex}")
 }
 
 /// Constant-time equality over two equal-length strings (the fixed-length hex
@@ -380,7 +390,7 @@ impl ApiClientStore {
 
     /// Fresh, cross-process-locked authentication for privileged PTY input.
     /// The ordinary mtime cache is deliberately bypassed.
-    pub fn authenticate_pty_input_fresh(
+    pub fn authenticate_privileged_fresh(
         &self,
         presented: &str,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
@@ -401,20 +411,43 @@ impl ApiClientStore {
         }))
     }
 
-    pub async fn authenticate_pty_input_fresh_offloaded(
+    pub async fn authenticate_privileged_fresh_offloaded(
         self: &std::sync::Arc<Self>,
         presented: String,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let store = std::sync::Arc::clone(self);
-        tokio::task::spawn_blocking(move || store.authenticate_pty_input_fresh(&presented))
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(move || {
+                store.authenticate_privileged_fresh(&presented)
+            })
+        })
+        .await;
+        match crate::logging::collapse_payload_task(joined) {
+            Ok(result) => result,
+            Err(_) => Err(FreshRegistryError::Internal),
+        }
+    }
+
+    pub fn authenticate_pty_input_fresh(
+        &self,
+        presented: &str,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        self.authenticate_privileged_fresh(presented)
+    }
+
+    pub async fn authenticate_pty_input_fresh_offloaded(
+        self: &std::sync::Arc<Self>,
+        presented: String,
+    ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
+        self.authenticate_privileged_fresh_offloaded(presented)
             .await
-            .map_err(|_| FreshRegistryError::Internal)?
     }
 
     pub fn load_active_binding_fresh(
         &self,
         client_id: &str,
         generation: &str,
+        required_scope: &str,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let Some((registry, lock)) = self.read_fresh_registry()? else {
             return Ok(None);
@@ -425,7 +458,7 @@ impl ApiClientStore {
                 && client.credential_generation.as_deref() == Some(generation)
                 && !client.revoked
                 && !is_expired(client, now)
-                && client.has_scope(SCOPE_PTY_INPUT)
+                && client.has_scope(required_scope)
         });
         Ok(client.map(|client| ApiClientFreshGuard {
             presented_token_hash: client.token_hash.clone(),
@@ -438,13 +471,19 @@ impl ApiClientStore {
         self: &std::sync::Arc<Self>,
         client_id: String,
         generation: String,
+        required_scope: &'static str,
     ) -> Result<Option<ApiClientFreshGuard>, FreshRegistryError> {
         let store = std::sync::Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            store.load_active_binding_fresh(&client_id, &generation)
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::logging::catch_payload_unwind(move || {
+                store.load_active_binding_fresh(&client_id, &generation, required_scope)
+            })
         })
-        .await
-        .map_err(|_| FreshRegistryError::Internal)?
+        .await;
+        match crate::logging::collapse_payload_task(joined) {
+            Ok(result) => result,
+            Err(_) => Err(FreshRegistryError::Internal),
+        }
     }
 }
 
@@ -1227,6 +1266,7 @@ mod tests {
                     .load_active_binding_fresh_offloaded(
                         "container-client".to_string(),
                         uuid::Uuid::new_v4().to_string(),
+                        SCOPE_PTY_INPUT,
                     )
                     .await
             })

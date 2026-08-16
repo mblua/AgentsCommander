@@ -7,7 +7,11 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
-use crate::pty::output::{PtyOutputTarget, PtyScreenSnapshot};
+use crate::pty::output::{
+    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputActivationResult,
+    TerminalOutputControlState, TerminalRendererMetrics,
+};
+use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
 use crate::session::profile::{CodingAgentKind, IdleTuning};
 
@@ -16,6 +20,44 @@ use crate::session::profile::{CodingAgentKind, IdleTuning};
 /// The payload is handed to a backend in one call. It is never split into
 /// chunks, appended with Enter, or interpreted as a command line.
 pub const PTY_INPUT_MAX_BYTES: usize = 65_536;
+
+pub(crate) enum TerminalScreenCopyRead {
+    Copied(CapturedVtScreen),
+    Unavailable,
+    TooLarge,
+}
+
+impl std::fmt::Debug for TerminalScreenCopyRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Copied(captured) => formatter
+                .debug_tuple("TerminalScreenCopyRead::Copied")
+                .field(captured)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenCopyRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenCopyRead::TooLarge"),
+        }
+    }
+}
+
+pub(crate) enum TerminalScreenRead {
+    Captured(std::sync::Arc<terminal_snapshot_renderer::TerminalScreenModel>),
+    Unavailable,
+    TooLarge,
+}
+
+impl std::fmt::Debug for TerminalScreenRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Captured(model) => formatter
+                .debug_tuple("TerminalScreenRead::Captured")
+                .field(model)
+                .finish(),
+            Self::Unavailable => formatter.write_str("TerminalScreenRead::Unavailable"),
+            Self::TooLarge => formatter.write_str("TerminalScreenRead::TooLarge"),
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,7 +132,21 @@ impl PtyViewport {
     }
 }
 
-pub struct BackendSpawnSpec {
+/// #1271 - one immutable snapshot of the configured default host shell paired
+/// with a resolved agent command. Internal plumbing only: never serialized,
+/// never an IPC field, never part of the frontend contract. `Some` only for a
+/// resolved agent; the local backend uses it to launch a non-direct Windows
+/// agent command through the configured shell instead of the historical
+/// unconditional `cmd.exe /C` fallback. It must be `pub` (not `pub(crate)`)
+/// because it appears in the signature of the `pub` session-creation family
+/// that the Windows integration regression calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAgentHostShell {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
     /// opaque string like `agent_1782513272568_0`), or None. It is NOT the CLI:
@@ -103,6 +159,10 @@ pub struct BackendSpawnSpec {
     pub coding_agent: Option<CodingAgentKind>,
     pub cmd: String,
     pub args: Vec<String>,
+    /// #1271 - the configured host shell paired with a resolved agent command.
+    /// `Some` only for a resolved agent; `None` for ordinary shell sessions and
+    /// direct `.exe` agents. Backend-facing plumbing only, never an IPC field.
+    pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     pub cwd: String,
     pub selected_cwd: Option<String>,
     pub cols: u16,
@@ -124,7 +184,7 @@ pub struct BackendSpawnSpec {
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
 }
 
-pub trait PtyBackend: Any + Send + Sync {
+pub(crate) trait PtyBackend: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 
     fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>>;
@@ -155,6 +215,13 @@ pub trait PtyBackend: Any + Send + Sync {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
 
+    /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
+    /// production fanouts remain source-compatible and report unavailable.
+    #[allow(private_interfaces)]
+    fn copy_terminal_screen(&self, _id: Uuid) -> TerminalScreenCopyRead {
+        TerminalScreenCopyRead::Unavailable
+    }
+
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)>;
 
     /// #1032 - the session's screen rows for the context scrape, plus what this backend
@@ -167,6 +234,26 @@ pub trait PtyBackend: Any + Send + Sync {
     /// - `SessionOver`: there is no session here any more. Report unavailable once, then
     ///   stop sampling it.
     fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead;
+
+    /// #1171 - the session's screen, but only when it CHANGED since `seen`, plus the wrap
+    /// flags and cursor row the watcher engine's frame diff needs.
+    ///
+    /// **Defaulted**, following `context_session_liveness` above, so the two `PtyBackend` test
+    /// fakes (`pty/manager.rs:926`, `:1025`) and any out-of-tree implementor keep compiling.
+    /// The default delegates to `get_screen_rows` and reports `stamp: None`, which reads as
+    /// "changed": the property "the default never reports `Unchanged`" therefore falls out of
+    /// the type instead of out of a rule an implementor has to remember.
+    ///
+    /// - `Unchanged`: the stamp matched. No rows were cloned.
+    /// - `Frame`: the live grid.
+    /// - `Missing`: no reading this tick, and NO claim about the session. Keep sampling it.
+    /// - `Gone`: there is no session behind this id. Retire it now.
+    ///
+    /// The `Missing` / `Gone` split is the same distinction `get_screen_rows` draws between
+    /// `Unavailable` and `SessionOver`, carried on a type that can also say "nothing changed".
+    fn screen_rows_since(&self, id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
+        crate::pty::watchers::frame_from_screen_rows_read(self.get_screen_rows(id))
+    }
 
     fn register_response_watcher(
         &self,
@@ -182,6 +269,57 @@ pub trait PtyBackend: Any + Send + Sync {
     /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
     /// backends with no local child (container transport).
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
+
+    /// Terminal-output controls are deliberately defaulted so all existing test-only backends
+    /// remain source-compatible. Only the two production adapters forward to their fanouts.
+    fn activate_terminal_output(
+        &self,
+        id: Uuid,
+        _include_history: bool,
+    ) -> TerminalOutputActivationResult {
+        TerminalOutputActivationResult::recovery(
+            id,
+            crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,
+        )
+    }
+
+    fn ready_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _snapshot_sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn deactivate_terminal_output(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn ack_terminal_output_delivery(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _first_sequence: u64,
+        _sequence: u64,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn report_terminal_renderer_metrics(
+        &self,
+        _id: Uuid,
+        _generation: u64,
+        _metrics: TerminalRendererMetrics,
+    ) -> TerminalOutputControlState {
+        TerminalOutputControlState::stale()
+    }
+
+    fn shutdown_terminal_output(&self) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
 }

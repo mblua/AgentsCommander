@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, WorkgroupGroup } from "../../shared/types";
+import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
 import { projectStore } from "../stores/project";
 import { projectCollapseStore } from "../stores/project-collapse";
@@ -44,7 +44,8 @@ interface GroupButton {
 
 type RailContextTarget =
   | { kind: "project"; projectPath: string }
-  | { kind: "group"; projectPath: string; groupId: string };
+  | { kind: "group"; projectPath: string; groupId: string }
+  | { kind: "nonstop"; projectPath: string };
 
 const REORDER_HOLD_MS = 2000;
 const REORDER_MOVE_CANCEL_PX = 6;
@@ -128,6 +129,19 @@ function favoriteRailTestIds(folderName: string, groupId: string): RailButtonTes
   };
 }
 
+// (#1257) A DISJOINT prefix on purpose, not `favoriteRailTestIds(folderName, "nonstop")`.
+// That helper keys on the group id, and nothing reserves the string "nonstop":
+// `createGroupId` falls back to `group-N` (:373-382) and project-settings.json is
+// hand-editable. A real group with id "nonstop" would then emit a duplicate
+// data-ac-testid, which the automation bridge rejects as `duplicate_selector`.
+function nonStopFavoriteRailTestIds(folderName: string): RailButtonTestIds {
+  return {
+    button: `workgroupGroups.favoriteNonStopButton.${folderName}`,
+    raiseHand: `workgroupGroups.favoriteNonStopRaiseHand.${folderName}`,
+    dot: `workgroupGroups.favoriteNonStopDot.${folderName}`,
+  };
+}
+
 function groupButtonFor(
   project: ProjectState,
   group: WorkgroupGroup,
@@ -145,6 +159,33 @@ function groupButtonFor(
     groupId: group.id,
     groupIndex,
   };
+}
+
+// (#1257) Built here, not inline in ProjectRailSection, because the Favorites
+// section renders the SAME entry. Two copies would drift on display name,
+// counter, running dot, raise-hand or tooltip.
+function nonStopButtonFor(project: ProjectState, nonStop: NonStopGroupConfig): GroupButton {
+  const workgroups = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(nonStop, wg));
+  return {
+    key: "nonstop",
+    ...buttonContent(nonStopDisplayName(nonStop.name), workgroups),
+    selection: { kind: "nonstop" },
+    workgroups,
+    title: tooltipFor(project.folderName, workgroups),
+    reorderable: false,
+    groupId: null,
+    groupIndex: null,
+  };
+}
+
+// (#1257) Keyed on the selection, not on `groupId`. The Non-stop button carries
+// `groupId: null` because it is not a `groups[]` record, so the previous
+// `button.groupId ? group : project` ternary routed it to the project target and
+// the Favorite item never rendered.
+function railContextTargetFor(projectPath: string, button: GroupButton): RailContextTarget {
+  if (button.selection.kind === "nonstop") return { kind: "nonstop", projectPath };
+  if (button.groupId) return { kind: "group", projectPath, groupId: button.groupId };
+  return { kind: "project", projectPath };
 }
 
 function isSelected(projectPath: string, button: GroupButton): boolean {
@@ -237,19 +278,44 @@ const RailButton: Component<{
   </button>
 );
 
+type FavoriteEntry =
+  | { kind: "group"; project: ProjectState; group: WorkgroupGroup; button: GroupButton }
+  | { kind: "nonstop"; project: ProjectState; button: GroupButton };
+
 const FavoritesRailSection: Component<{
   projects: ProjectState[];
   onOpenContextMenu: (event: MouseEvent, target: RailContextTarget) => void;
 }> = (props) => {
   const collapsed = () => railCollapseStore.isFavoritesCollapsed();
 
-  const entries = createMemo(() =>
-    props.projects.flatMap((project) =>
-      workgroupGroupsStore
-        .config(project.path)
-        .groups.filter((group) => group.favorite)
-        .map((group) => ({ project, group, button: groupButtonFor(project, group, null, false) }))
-    )
+  const entries = createMemo<FavoriteEntry[]>(() =>
+    props.projects.flatMap((project) => {
+      const config = workgroupGroupsStore.config(project.path);
+      const result: FavoriteEntry[] = [];
+      const nonStop = config.nonStop;
+      // (#1257 D3) `show` is part of the condition on purpose. The rail only draws
+      // the Non-stop button when `show` (:338) and `normalizeSelection` bounces a
+      // {kind:"nonstop"} selection to All/Ungrouped when it is off
+      // (workgroup-groups.ts:191-193), so a favorite rendered while Non-stop is off
+      // would be a ghost button that jumps elsewhere on click. The flag is kept,
+      // not cleared: turning Non-stop back on brings the entry back.
+      // (#1257 D4) Pushed BEFORE the groups so the block mirrors the project
+      // section's order and the list is deterministic.
+      if (nonStop?.show && nonStop.favorite) {
+        result.push({ kind: "nonstop", project, button: nonStopButtonFor(project, nonStop) });
+      }
+      for (const group of config.groups) {
+        if (group.favorite) {
+          result.push({
+            kind: "group",
+            project,
+            group,
+            button: groupButtonFor(project, group, null, false),
+          });
+        }
+      }
+      return result;
+    })
   );
 
   return (
@@ -270,14 +336,23 @@ const FavoritesRailSection: Component<{
               {(entry) => (
                 <RailButton
                   button={entry.button}
-                  testIds={favoriteRailTestIds(entry.project.folderName, entry.group.id)}
+                  testIds={
+                    entry.kind === "nonstop"
+                      ? nonStopFavoriteRailTestIds(entry.project.folderName)
+                      : favoriteRailTestIds(entry.project.folderName, entry.group.id)
+                  }
                   selected={isSelected(entry.project.path, entry.button)}
                   onContextMenu={(event) =>
-                    props.onOpenContextMenu(event, {
-                      kind: "group",
-                      projectPath: entry.project.path,
-                      groupId: entry.group.id,
-                    })
+                    props.onOpenContextMenu(
+                      event,
+                      entry.kind === "nonstop"
+                        ? { kind: "nonstop", projectPath: entry.project.path }
+                        : {
+                            kind: "group",
+                            projectPath: entry.project.path,
+                            groupId: entry.group.id,
+                          }
+                    )
                   }
                   onClick={() => selectFromRail(entry.project, entry.button.selection)}
                 />
@@ -336,19 +411,7 @@ const ProjectRailSection: Component<{
     }
     const nonStop = config().nonStop;
     if (nonStop?.show) {
-      const workgroups = props.project.workgroups.filter((wg) =>
-        nonStopMatchesWorkgroup(nonStop, wg)
-      );
-      result.push({
-        key: "nonstop",
-        ...buttonContent(nonStopDisplayName(nonStop.name), workgroups),
-        selection: { kind: "nonstop" },
-        workgroups,
-        title: tooltipFor(props.project.folderName, workgroups),
-        reorderable: false,
-        groupId: null,
-        groupIndex: null,
-      });
+      result.push(nonStopButtonFor(props.project, nonStop));
     }
     for (const [groupIndex, group] of config().groups.entries()) {
       result.push(groupButtonFor(props.project, group, groupIndex, true));
@@ -600,12 +663,7 @@ const ProjectRailSection: Component<{
               onPointerUp={finishPress}
               onPointerCancel={cancelPress}
               onContextMenu={(event) =>
-                openContextMenu(
-                  event,
-                  button.groupId
-                    ? { kind: "group", projectPath: props.project.path, groupId: button.groupId }
-                    : { kind: "project", projectPath: props.project.path }
-                )
+                openContextMenu(event, railContextTargetFor(props.project.path, button))
               }
               onClick={(event) => {
                 if (button.groupId && suppressClickGroupId === button.groupId) {
@@ -711,7 +769,10 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
         !workgroupGroupsStore
           .config(target.projectPath)
           .groups.some((group) => group.id === target.groupId);
-      if (projectGone || groupGone) closeContextMenu();
+      const nonStopGone =
+        target.kind === "nonstop" &&
+        !workgroupGroupsStore.config(target.projectPath).nonStop?.show;
+      if (projectGone || groupGone || nonStopGone) closeContextMenu();
     }
     const editing = editingProjectPath();
     if (editing && !live.has(editing)) setEditingProjectPath(null);
@@ -721,6 +782,9 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
 
   const favoriteTargetIsFavorited = () => {
     const target = contextTarget();
+    if (target?.kind === "nonstop") {
+      return !!workgroupGroupsStore.config(target.projectPath).nonStop?.favorite;
+    }
     if (target?.kind !== "group") return false;
     return !!workgroupGroupsStore
       .config(target.projectPath)
@@ -736,13 +800,15 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
 
   const toggleFavoriteFromContextMenu = () => {
     const target = contextTarget();
-    if (target?.kind !== "group") return;
+    if (!target || target.kind === "project") return;
     const next = !favoriteTargetIsFavorited();
     closeContextMenu();
-    void workgroupGroupsStore
-      .setGroupFavorite(target.projectPath, target.groupId, next)
-      .catch(() => {
-      });
+    const write =
+      target.kind === "nonstop"
+        ? workgroupGroupsStore.setNonStopFavorite(target.projectPath, next)
+        : workgroupGroupsStore.setGroupFavorite(target.projectPath, target.groupId, next);
+    void write.catch(() => {
+    });
   };
 
   return (
@@ -795,7 +861,11 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
             >
               Edit
             </button>
-            <Show when={contextTarget()?.kind === "group"}>
+            <Show
+              when={
+                contextTarget()?.kind === "group" || contextTarget()?.kind === "nonstop"
+              }
+            >
               <button
                 class="session-context-option"
                 onClick={toggleFavoriteFromContextMenu}

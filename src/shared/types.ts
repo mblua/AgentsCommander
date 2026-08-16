@@ -124,60 +124,314 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
-export interface SessionGroup {
-  id: string;
-  name: string;
-  color: string;
-  collapsed: boolean;
-  order: string[];
-}
+/** #1171 - what a watcher match means. Mirrors `WatcherMode` (`config/settings.rs`). */
+export type WatcherMode = "state" | "occurrence";
 
-export interface ShellProfile {
-  name: string;
-  command: string;
-  args: string[];
-  icon: string;
-  color: string;
-  env: Record<string, string>;
-  workingDirectory: string;
-}
+/** #1171 - what makes two `occurrence` matches the same one inside the dedupe window. */
+export type WatcherDedupe = "row" | "capture" | "none";
 
-export interface AppConfig {
-  general: GeneralConfig;
-  sidebar: SidebarConfig;
-  terminal: TerminalConfig;
-  keybindings: Record<string, string>;
-}
-
-export interface GeneralConfig {
-  defaultShell: string;
-  defaultShellArgs: string[];
-  theme: string;
-  confirmOnClose: boolean;
-}
-
-export interface SidebarConfig {
-  width: number;
-  alwaysOnTop: boolean;
-  opacity: number;
-  showShellType: boolean;
-  showStatusIcon: boolean;
-}
-
-export interface TerminalConfig {
-  fontFamily: string;
-  fontSize: number;
-  lineHeight: number;
-  scrollback: number;
-  cursorStyle: "block" | "underline" | "bar";
-  cursorBlink: boolean;
-  webglRenderer: boolean;
-}
-
-export interface PtyOutputEvent {
+/**
+ * #1171 - one watcher activation.
+ *
+ * Mirrors `WatcherMatchPayload` (`pty/watchers/mod.rs`), pinned field for field by
+ * `the_payload_serializes_to_the_exact_camel_case_contract`. **No field is ever absent**:
+ * the Rust struct carries no `skip_serializing_if`, so absent never becomes a third state
+ * beside null and the value.
+ */
+export interface WatcherMatchPayload {
   sessionId: string;
+  /**
+   * Monotonic per session. The same value the ring stores, so the window merges snapshot
+   * and stream on `(sessionId, seq)`. Two matches from one tick share `at` and are only
+   * distinguishable by this.
+   */
+  seq: number;
+  /** The key of the root `watchers` map. The same grouping key everywhere. */
+  watcherId: string;
+  mode: WatcherMode;
+  /** RFC3339 UTC. The tick's instant, not the match's: a match has no instant of its own. */
+  at: string;
+  /** Groups 1..n in order, without group 0. `null` per element means "did not capture". */
+  captures: (string | null)[];
+  /** The logical row, truncated to 256 bytes on a char boundary. */
+  row: string;
+  /** Whether `row` lost bytes to the cap; `row.length` cannot answer it, the cap is on bytes. */
+  rowTruncated: boolean;
+}
+
+/** #1171 - one tick's matches for one session, coalesced. Payload of `watcher_matches`. */
+export interface WatcherMatchBatch {
+  sessionId: string;
+  matches: WatcherMatchPayload[];
+}
+
+/** #1171 - one watcher's standing on one session. Present even when `count` is 0. */
+export interface WatcherActivityCounter {
+  watcherId: string;
+  mode: WatcherMode;
+  count: number;
+  /** True while this watcher is hitting a per-tick cap or is suspended. */
+  degraded: boolean;
+}
+
+/** #1171 - everything `get_watcher_activity` answers with. */
+export interface WatcherActivitySnapshot {
+  /** Oldest first. `limit` trims from the new end: the n most recent, still oldest first. */
+  matches: WatcherMatchPayload[];
+  /** The highest `seq` ever inserted for this session; the merge fence against the stream. */
+  lastSeq: number;
+  /** The ring dropped at least one entry since the session started. */
+  truncated: boolean;
+  /** Monotonic since the session started. NOT a count of lost matches. */
+  possiblyMissedFrames: number;
+  /**
+   * False until the engine has ticked this session at least once. Without it an empty
+   * `activeWatchers` cannot tell "no watcher reaches this agent" from "the engine has not
+   * run yet".
+   */
+  warmedUp: boolean;
+  activeWatchers: WatcherActivityCounter[];
+}
+
+/** #1171 - what a candidate pattern does, before it is saved. */
+export interface WatcherPatternPreview {
+  compiles: boolean;
+  error: string | null;
+  /**
+   * False when no session was given, or the session had no readable frame. This is what
+   * distinguishes "matched nothing" from "could not look".
+   */
+  sampled: boolean;
+  matchedRows: number;
+  totalRows: number;
+  /** Up to 3 matched logical rows, each truncated to 256 bytes. */
+  samples: string[];
+  /**
+   * True when the captures of the lowest match differed between two samples taken about a
+   * second apart: a pattern capturing a clock matches one row and still emits constantly.
+   */
+  capturesVolatile: boolean;
+}
+
+/**
+ * #1171 - one watcher row of the draft the Settings modal holds in memory.
+ *
+ * Only the three fields `reaches` and the budget depend on. `pattern`, `mode`, `dedupe` and
+ * `capturedAgainst` take part in neither and are deliberately not sent: the row already shows
+ * its pattern, and `previewWatcherPattern` answers compilability separately, so carrying it
+ * here would inflate every debounced payload to restate an answer already on screen.
+ */
+export interface WatcherDraftEntry {
+  id: string;
+  enabled: boolean;
+  commands?: string[] | null;
+}
+
+/**
+ * #1171 - one agent row of the same draft.
+ *
+ * The modal edits agents and watchers in ONE store and one Save writes both, so resolving
+ * against the SAVED agent list would answer about a state the user has already left. Two of
+ * the three agent edits over-report that way: deleting an agent leaves it named in a reach
+ * list it will not be in, and changing an agent's `command` leaves a watcher reported as
+ * reaching it under the old stem. Only adding an agent under-reports.
+ */
+export interface WatcherAgentDraftEntry {
+  id: string;
+  label: string;
+  command: string;
+}
+
+/** #1171 - one agent that a draft row's selector reaches. */
+export interface WatcherReachEntry {
+  agentId: string;
+  agentLabel: string;
+  commandStem: string;
+  /**
+   * Whether this row is enabled in the draft AND holds one of this agent's 8 slots once every
+   * other enabled row of the draft is counted. It is slot assignment, **not** a promise that
+   * the watcher will emit anything: a resolved watcher whose pattern does not compile is
+   * allocated a slot and is inert, and compilability is answered separately by
+   * `previewWatcherPattern`. A disabled row is always false here, and the editor, which owns
+   * `enabled`, says "disabled" rather than "budget".
+   */
+  allocated: boolean;
+}
+
+/**
+ * #1171 - the reach of one draft row.
+ *
+ * Exactly one per requested row, in request order. It carries `id` back because the editor
+ * filters unrecognised rows out of the request, so its table positions do not match the
+ * response positions. A row that reaches nobody is still present, with `entries: []`.
+ */
+export interface WatcherReachRow {
+  id: string;
+  /**
+   * Every agent this row's selector reaches, whether or not the row is enabled: reach is a
+   * property of the selector alone, and `allocated` is where enablement and budget land.
+   * Ordered by `agentLabel` with `agentId` as the tie-break, so the list does not reshuffle
+   * between keystrokes.
+   */
+  entries: WatcherReachEntry[];
+}
+
+/** #1171 - one user-configured watcher. Mirrors `WatcherConfig` (`config/settings.rs`). */
+export interface WatcherConfig {
+  enabled: boolean;
+  mode: WatcherMode;
+  pattern: string;
+  /**
+   * Absent or null reaches every configured agent; present reaches only entries whose
+   * command executable stem matches exactly; `[]` reaches none. **Absent and `[]` are
+   * opposites**, which is why this is not a plain `string[]`.
+   */
+  commands?: string[] | null;
+  dedupe: WatcherDedupe;
+  dedupeWindowMs: number;
+  /** Free text, e.g. "claude 2.1.212". Never validated, never parsed. */
+  capturedAgainst?: string | null;
+}
+
+/**
+ * #1171 - one entry of the root `watchers` map, valid or not.
+ *
+ * Mirrors the untagged `WatcherEntry` (`config/settings.rs`), which exists so a hand-written
+ * `"mode": "State"` skips one watcher instead of failing the whole `AppSettings` parse and
+ * starting with no agents configured. The invalid value is kept verbatim so a save
+ * round-trips the user's bytes; typing this map as `WatcherConfig` alone would claim a
+ * guarantee the backend deliberately does not make, and an editor built on that claim would
+ * delete what it could not read.
+ */
+export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
+
+/**
+ * An entry that did not deserialize as a `WatcherConfig`, preserved verbatim.
+ *
+ * This is `serde_json::Value` and therefore **any** JSON value, not only an object: a
+ * hand-written `"permission": "claude"`, `"permission": 7`, `"permission": null` or
+ * `"permission": ["claude"]` all land here and are all written back unchanged. Modelling
+ * only objects made the contract claim a narrowness Rust does not have, and forced every
+ * test of a real case through `as unknown as WatcherEntry` -- a cast is what a type says
+ * when it is wrong.
+ */
+export type UnrecognizedWatcherEntry = JsonValue;
+
+// ── #1283 terminal output activation/admission contract ──────────────────────
+//
+// All generation and sequence values on this wire are canonical unsigned
+// base-10 strings (the backend serializes u64 counters as decimal strings).
+// The frontend validates each value exactly once at the admission boundary and
+// compares with BigInt, never with JavaScript `number`.
+
+/** #1283: the activation snapshot carried by an `activated` result. The legacy
+ *  `PtyScreenSnapshot` (number sequence, nullable dimensions) is the separate
+ *  `getScreenSnapshot` surface; activation replay renders ONLY this payload and
+ *  must never fetch the legacy snapshot. */
+export interface TerminalOutputActivationSnapshot {
   data: number[];
-  sequence?: number;
+  rows: number;
+  cols: number;
+  sequence: string;
+}
+
+export interface TerminalOutputActivation {
+  sessionId: string;
+  generation: string;
+  snapshot: TerminalOutputActivationSnapshot;
+}
+
+export type TerminalOutputActivationRecoveryCode =
+  | "parserUnavailable"
+  | "snapshotTooLarge"
+  | "snapshotMalformed"
+  | "counterExhausted"
+  | "outputTargetUnavailable";
+
+export type TerminalOutputActivationResult =
+  | { kind: "activated"; activation: TerminalOutputActivation }
+  | {
+      kind: "recoveryError";
+      sessionId: string;
+      code: TerminalOutputActivationRecoveryCode;
+    };
+
+/** #1283: the `pty_output` listener payload. The preserved public name is now
+ *  the tagged delivery union; `sequence` stays the inclusive final output
+ *  sequence and `firstSequence` makes a sequence hole detectable. */
+export type TerminalOutputDelivery =
+  | {
+      kind: "data";
+      sessionId: string;
+      generation: string;
+      firstSequence: string;
+      sequence: string;
+      data: number[];
+    }
+  | {
+      kind: "resyncRequired";
+      sessionId: string;
+      generation: string;
+      sequence: string;
+    };
+
+/** @deprecated legacy browser/websocket fallback only: the Tauri path emits the
+ *  #1283 tagged `TerminalOutputDelivery` union under this same event name. */
+export type PtyOutputEvent = TerminalOutputDelivery;
+
+export type TerminalOutputControlState =
+  | { kind: "active"; sessionId: string; generation: string }
+  | {
+      kind: "awaitingFrontendReady";
+      sessionId: string;
+      generation: string;
+      snapshotSequence: string;
+    }
+  | {
+      kind: "resyncRequired";
+      sessionId: string;
+      generation: string;
+      sequence: string;
+    }
+  | {
+      kind: "recoveryError";
+      sessionId: string;
+      generation: string;
+      code: "counterExhausted";
+    }
+  | { kind: "inactive"; sessionId: string; generation: string }
+  | { kind: "stale" };
+
+/** #1283: the valid `reportTerminalRendererMetrics` payload. The backend wire
+ *  wrapper is permissive and validates the complete object; this frontend shape
+ *  is the only documented valid object. All values are non-negative integers;
+ *  gauge/millisecond fields carry the narrower bounds declared per field. */
+export interface TerminalRendererMetrics {
+  retainedTerminalCount: number;
+  visibleTerminalCount: number;
+  webglContextCount: number;
+  webglContextLossCount: number;
+  lruEvictionCount: number;
+  outputEventsReceived: number;
+  inactiveOrStaleEventsRejected: number;
+  bytesAccepted: number;
+  bytesWritten: number;
+  replayPendingBytes: number;
+  livePendingBytes: number;
+  writeInFlightBytes: number;
+  combinedAdmissionHighWaterBytes: number;
+  pendingHighWaterBytes: number;
+  resyncCount: number;
+  activationReadyAcknowledgements: number;
+  activationReadyRejections: number;
+  activationReadyTimeouts: number;
+  generationHealthPollsScheduled: number;
+  generationHealthPollsStarted: number;
+  generationHealthPollsCancelled: number;
+  replayPendingLivenessRecoveries: number;
+  snapshotReplayDurationMs: number;
+  retiredWriteCallbacksIgnoredAfterDisposal: number;
+  maxAnimationFrameLagMs: number;
 }
 
 export interface PtyViewport {
@@ -236,6 +490,14 @@ export interface CodingAgentDefinition {
   isolatedHome: boolean;
   configSeed?: ConfigSeedConfig;
   removable: boolean;
+  /** #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
+   * array of COMPLETE command strings, each executed sequentially (e.g.
+   * ["claude --update"] or ["claude --update", "npm i -g @scope/cli"]).
+   * NOT argv tokens. Empty = no update command. Inert until the follow-up
+   * update-check feature reads it. */
+  updateCommands: string[];
+  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert until the follow-up feature reads it. */
+  autoUpdate: boolean;
 }
 
 export interface ReseedResult {
@@ -451,6 +713,7 @@ export interface AppSettings {
   apiServerEnabled: boolean;
   apiServerPort: number;
   apiServerBind: string;
+  terminalSnapshotsEnabled: boolean;
   projectPath: string | null;
   projectPaths: string[];
   archivedProjectPaths: string[];
@@ -464,6 +727,8 @@ export interface AppSettings {
   railCollapsedProjects?: string[];
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
+  gitSweepConcurrency: number;
+  gitSweepMinIntervalSecs: number;
   resourceMonitorEnabled: boolean;
   maxConcurrentAgentProcesses: number;
   resourceWatchdogAction: ResourceWatchdogAction;
@@ -481,9 +746,25 @@ export interface AppSettings {
   npmUpdateNotificationsEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
+  /** #1327 - per-command auto-update policy, keyed by the catalog COMMAND
+   * string (not the agent id: several profiles can share one command; the
+   * software is the update unit). Absent = never asked (the startup dialog
+   * asks once, default No); true = run this command's updateCommands at
+   * startup; false = never ask again. Replaces the two inert #1318
+   * agent-id-keyed maps. */
+  agentAutoUpdateByCommand: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
+  activityLogEnabled: boolean;
   screenshotCaptureHotkey?: string;
+  /**
+   * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
+   * field skips serializing while the map is empty, so a user who configures nothing never
+   * sees the key appear.
+   */
+  watchers?: Record<string, WatcherEntry>;
+  /** #1171 - geometry of the watcher activity window; skipped while unset. */
+  watchersGeometry?: WindowGeometry;
 }
 
 // ── #1077 Portable dual project paths: get_settings resolution report ────────
@@ -590,12 +871,36 @@ export interface ProjectPathResolution {
  *  the structured resolution report. */
 export interface SettingsSnapshot extends AppSettings {
   projectPathResolution: ProjectPathResolution;
+  /** #1347 - absolute path of the instance settings.json this snapshot came
+   *  from, or null when the backend could not resolve its config dir. Read-only
+   *  metadata: it is never edited, never part of a save payload. */
+  settingsFilePath: string | null;
 }
 
 export interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;
   upgradeCommand: string;
+}
+
+export interface AgentUpdateResult {
+  command: string;
+  label: string;
+  ok: boolean;
+  error?: string | null;
+}
+
+export interface AgentUpdatePrompt {
+  command: string;
+  label: string;
+}
+
+export interface AgentUpdateStatus {
+  inProgress: boolean;
+  /** The currently displayed prompt (sequential phase: at most one);
+   * restored from the snapshot by a late-mounting sidebar. */
+  prompt: AgentUpdatePrompt | null;
+  results: AgentUpdateResult[];
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
@@ -827,31 +1132,6 @@ export interface SessionsState {
 }
 
 
-export interface PhoneMessage {
-  id: string;
-  from: string;
-  to: string;
-  team: string;
-  content: string;
-  timestamp: string;
-  status: "pending" | "delivered" | "error";
-}
-
-export interface PhoneConversation {
-  id: string;
-  participants: string[];
-  createdAt: string;
-  messages: PhoneMessage[];
-}
-
-export interface AgentInfo {
-  name: string;
-  path: string;
-  teams: string[];
-  isCoordinatorOf: string[];
-}
-
-
 export interface AcAgentMatrix {
   name: string;
   path: string;
@@ -920,6 +1200,7 @@ export interface NonStopGroupConfig {
   toleranceSeconds: number;
   telegram: NonStopTelegramConfig;
   sound: NonStopSoundConfig;
+  favorite?: boolean;
 }
 
 export interface WorkgroupGroupsConfig {

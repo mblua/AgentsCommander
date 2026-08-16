@@ -1,14 +1,14 @@
-//! The non-forking actuation seam (#791 §8, §0.5 HIGH-1 + HIGH-3).
+//! The resolution and routing seam for API sends (#791 §8, §0.5 HIGH-3).
 //!
-//! Both the filesystem poller and the API funnel through the SAME
-//! `MailboxPoller::deliver_wake` and the SAME `can_communicate` /
-//! `resolve_agent_target`, so the two planes cannot diverge in canonicalization
-//! or actuation for the non-root verb set. `deliver_wake` is an instance method
-//! and `MailboxPoller` is never `.manage()`d, so the bridge calls it on a
-//! throwaway `MailboxPoller::new()` (delivery-stateless: it and its whole
-//! `&self` callee chain read only `app.state::<...>()`). Root-Agent routing is
-//! intentionally API-excluded in increment 1 (`can_communicate` does not model
-//! the root branches) and rejected at the boundary.
+//! Both the filesystem poller and the API resolve and route through the SAME
+//! `can_communicate` / `resolve_agent_target`, so the two planes cannot diverge
+//! in canonicalization for the non-root verb set. Actuation is NOT performed
+//! here: `api/handlers/send.rs` queues the send durably and `api/dispatcher.rs`
+//! delivers it through `MailboxPoller::deliver_wake_with_origin` with
+//! `WakeDeliveryOrigin::DbQueue` (#1177 removed the inline delivery path that
+//! used to live in this file). Root-Agent routing is intentionally API-excluded
+//! in increment 1 (`can_communicate` does not model the root branches) and
+//! rejected at the boundary.
 
 use std::path::Path;
 
@@ -16,18 +16,8 @@ use tauri::Manager;
 
 use crate::api::message_store::INLINE_BODY_MAX_BYTES;
 use crate::config::settings::SettingsState;
-use crate::phone::types::OutboxMessage;
 
 use super::error::ApiError;
-
-/// Outcome of an actuation attempt after routing/resolution succeeded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// The wake was injected/spawned (HTTP 200).
-    Delivered { to: String },
-    /// The engine refused delivery (HTTP 422); `reason` is unscrubbed.
-    Rejected { to: String, reason: String },
-}
 
 /// Reject either direction of a Root-Agent send (§0.5 HIGH-3). Pure, so it is
 /// unit-testable without an `AppHandle`.
@@ -145,70 +135,6 @@ pub async fn resolve_api_send_target<R: tauri::Runtime>(
         )));
     }
     Ok(resolved_to)
-}
-
-pub fn build_inline_wake_message(id: &str, from: &str, to: &str, body: String) -> OutboxMessage {
-    // token = None (§0.5 open-item 4):
-    // the API bypasses process_message and deliver_wake never reads the sender
-    // token; the invariant is never a master/root token, never a token not owned
-    // by `from`.
-    OutboxMessage {
-        id: id.to_string(),
-        token: None,
-        from: from.to_string(),
-        to: to.to_string(),
-        body,
-        mode: "wake".to_string(),
-        get_output: false,
-        request_id: None,
-        sender_agent: None,
-        preferred_agent: String::new(),
-        priority: "normal".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        command: None,
-        action: None,
-        target: None,
-        force: None,
-        timeout_secs: None,
-        switch_coding_agent: None,
-        switch_profile: None,
-        dry_run: None,
-        quiet_period_ms: None,
-        pty_input: None,
-    }
-}
-
-/// Resolve + route + actuate a `send` through the shared engine.
-///
-/// Errors returned as `Err(ApiError)` are pre-actuation failures (400 resolve,
-/// 403 root/routing). A successful resolution+route yields `Ok(DeliveryOutcome)`
-/// carrying the engine's delivered/rejected result (200 / 422).
-pub async fn deliver_wake_via_api<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    from: &str,
-    to: &str,
-    body: String,
-    op_id: &str,
-) -> Result<DeliveryOutcome, ApiError> {
-    let resolved_to = resolve_api_send_target(app, from, to).await?;
-    let msg = build_inline_wake_message(op_id, from, &resolved_to, body);
-
-    // (4) actuate through the SAME engine the poller uses. A throwaway
-    // MailboxPoller is delivery-stateless (§0.5 HIGH-1).
-    match crate::phone::mailbox::MailboxPoller::new()
-        .deliver_wake_with_origin(
-            app,
-            &msg,
-            crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
-        )
-        .await
-    {
-        Ok(()) => Ok(DeliveryOutcome::Delivered { to: resolved_to }),
-        Err(reason) => Ok(DeliveryOutcome::Rejected {
-            to: resolved_to,
-            reason,
-        }),
-    }
 }
 
 /// In-process `list-peers-lean` for the caller's bound replica, reusing the

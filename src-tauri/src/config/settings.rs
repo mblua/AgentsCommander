@@ -403,6 +403,11 @@ pub struct AppSettings {
     /// non-loopback bind logs a loud startup warning.
     #[serde(default = "default_api_bind")]
     pub api_server_bind: String,
+    /// #1173 - disclosure gate for authorized backend terminal snapshots.
+    /// Whole-settings writers preserve the authoritative value. Only the
+    /// dedicated compare-and-set command may change it.
+    #[serde(default)]
+    pub terminal_snapshots_enabled: bool,
     /// Currently loaded project path (legacy single-project, kept for backward compat)
     #[serde(default)]
     pub project_path: Option<String>,
@@ -444,6 +449,8 @@ pub struct AppSettings {
     /// Phase 2 (UI dropdown) and Phase 3 (live reload) are deferred per the issue.
     #[serde(default)]
     pub log_level: Option<String>,
+    #[serde(default)]
+    pub activity_log_enabled: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).
@@ -480,6 +487,24 @@ pub struct AppSettings {
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
     pub spec_board_enabled: bool,
+    /// #1298 - how many repositories the global git sweeper detects at once.
+    /// Default 1, i.e. strictly sequential, which is the property the sweeper
+    /// exists for. Read once per round and clamped to 1..=4 at the read site, which
+    /// keeps the app from rewriting the user's hand-edited settings.json; changing
+    /// it needs a RESTART, since the sweeper reads the in-memory settings state and
+    /// nothing reloads that from disk. Raising it to 2 halves worst-case
+    /// head-of-line blocking (see INV-1) at the cost of reintroducing bounded
+    /// concurrency. No UI: same manual-opt-in shape as `spec_board_enabled`;
+    /// documented in docs/reference/settings.md.
+    #[serde(default = "default_git_sweep_concurrency")]
+    pub git_sweep_concurrency: u8,
+    /// #1298 - lower bound, in seconds, on one sweeper round. GUARD, not an
+    /// optimization: with an empty work list a round takes ~0ms and an unfloored
+    /// loop spins a core. Clamped to 1..=3600 at the read site; 0 is rejected by the
+    /// clamp for that reason. The effective period is max(this, round duration), so
+    /// on a large workgroup set the round duration dominates and this never fires.
+    #[serde(default = "default_git_sweep_min_interval_secs")]
+    pub git_sweep_min_interval_secs: u64,
     #[serde(default = "default_resource_monitor_enabled")]
     pub resource_monitor_enabled: bool,
     #[serde(default = "default_max_concurrent_agent_processes")]
@@ -529,12 +554,129 @@ pub struct AppSettings {
     /// while the global master is on; absent = use the class default.
     #[serde(default)]
     pub auto_self_clear_by_agent: std::collections::BTreeMap<String, bool>,
+    /// #1327 - per-command auto-update policy for the startup update run, keyed by
+    /// the catalog COMMAND string (not the agent id: several profiles can share one
+    /// command; the software is the update unit). Absent = never asked (the startup
+    /// dialog asks once, default No); present = last answer (true = run this
+    /// command's updateCommands at startup, false = never ask again). Replaces the
+    /// two inert #1318 agent-id-keyed maps. Read and
+    /// written by the #1327 startup update flow only.
+    #[serde(default)]
+    pub agent_auto_update_by_command: std::collections::BTreeMap<String, bool>,
     /// #930 - when true (default), container coding-agent sessions copy the host
     /// user's credential file for that agent into the replica config dir at spawn
     /// and delete it on teardown. When false, the user supplies credentials
     /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
     #[serde(default = "default_true")]
     pub container_credentials_from_host: bool,
+    /// #1171 - root-level watcher patterns, keyed by watcher id.
+    ///
+    /// Root-level and not a field on `AgentConfig`, so the 20-plus struct-construction sites
+    /// that already had to write `context_regex: None` are untouched, AND so a pattern can
+    /// apply to every agent - which is exactly what the per-agent shape cannot express. Same
+    /// shape as `auto_self_clear_by_agent` (`:530-531`). `BTreeMap` for a stable on-disk
+    /// order and clean diffs, and because the 8-watcher budget resolves in key order.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watchers: BTreeMap<String, WatcherEntry>,
+    /// #1171 - geometry of the watcher activity window.
+    ///
+    /// `skip_serializing_if` and deliberately NOT a copy of `main_geometry` (`:367-369`),
+    /// which lacks it: without the skip, `"watchersGeometry": null` would appear in every
+    /// user's file on the next save, so configuring nothing would still leave a trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchers_geometry: Option<WindowGeometry>,
+}
+
+/// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
+///
+/// **This wrapper is what stops a malformed watcher from destroying the settings file.**
+/// `parse_settings_json` (`:870-871`) deserializes `AppSettings` in ONE shot and
+/// `load_settings_from_path` (`:1661-1664`) replaces any failure with
+/// `AppSettings::default()`, leaving one log line. A hand-written `"mode": "State"`,
+/// `"commands": "claude"` or `"dedupeWindowMs": "2000"` would therefore start
+/// AgentsCommander with NO AGENTS CONFIGURED, and every later save would be refused by the
+/// #1077 write gate (`read_disk_object_for_write`, `:2565-2591`). With the wrapper the
+/// consequence is one skipped watcher.
+///
+/// `untagged` tries `Valid` first, so `Invalid` only ever catches what `WatcherConfig`
+/// rejected. The value is kept verbatim so a save round-trips the user's bytes instead of
+/// deleting what it could not read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WatcherEntry {
+    Valid(WatcherConfig),
+    /// Anything that did not deserialize as a `WatcherConfig`. Skipped by resolution and
+    /// logged once per changed value.
+    Invalid(serde_json::Value),
+}
+
+impl WatcherEntry {
+    pub fn valid(&self) -> Option<&WatcherConfig> {
+        match self {
+            WatcherEntry::Valid(config) => Some(config),
+            WatcherEntry::Invalid(_) => None,
+        }
+    }
+}
+
+/// #1171 - one user-configured watcher.
+///
+/// `mode` and `pattern` stay REQUIRED. A watcher without either is not a watcher, and with
+/// the wrapper above the consequence of omitting one is a single skipped entry rather than a
+/// lost configuration. A defaulted `mode` would silently run a watcher the user never
+/// described.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub mode: WatcherMode,
+    pub pattern: String,
+    /// Absent or null: reaches every configured agent. Present: only entries whose `command`
+    /// executable stem matches EXACTLY. Present and empty: reaches none.
+    ///
+    /// `Option` and not `#[serde(default)] Vec`, because absent and `[]` are opposites here
+    /// and only `Option` lets serde tell them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<String>>,
+    #[serde(default)]
+    pub dedupe: WatcherDedupe,
+    #[serde(default = "default_dedupe_window_ms")]
+    pub dedupe_window_ms: u64,
+    /// Free text, e.g. "claude 2.1.212". Never validated, never parsed. It exists because
+    /// `context_scrape/rows.rs:183-186` documents that a TUI format already had to be
+    /// re-captured once, and that fact currently lives only in a Rust comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_against: Option<String>,
+}
+
+/// #1171 - what a match means.
+///
+/// `state` is a reading: idempotent, gated, taken over the whole frame. `occurrence` is an
+/// event: every match the frame diff declares evaluable counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatcherMode {
+    State,
+    Occurrence,
+}
+
+/// #1171 - what makes two `occurrence` matches "the same one" inside the dedupe window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatcherDedupe {
+    /// The matched logical row text.
+    #[default]
+    Row,
+    /// The joined capture groups: two rows truncated differently that capture the same path
+    /// are one event.
+    Capture,
+    /// Every match counts.
+    None,
+}
+
+fn default_dedupe_window_ms() -> u64 {
+    2000
 }
 
 fn default_true() -> bool {
@@ -638,6 +780,14 @@ fn default_main_sidebar_width() -> f64 {
     240.0
 }
 
+fn default_git_sweep_concurrency() -> u8 {
+    1
+}
+
+fn default_git_sweep_min_interval_secs() -> u64 {
+    10
+}
+
 fn default_resource_monitor_enabled() -> bool {
     true
 }
@@ -727,6 +877,7 @@ impl Default for AppSettings {
             api_server_enabled: false,
             api_server_port: default_api_port(),
             api_server_bind: default_api_bind(),
+            terminal_snapshots_enabled: false,
             project_path: None,
             project_paths: vec![],
             archived_project_paths: vec![],
@@ -737,12 +888,15 @@ impl Default for AppSettings {
             coord_sort_by_activity: false,
             always_show_selected_workgroup: true,
             log_level: None,
+            activity_log_enabled: false,
             auto_generate_task_title: true,
             agent_templates_path: None,
             theme_light: false,
             rail_collapsed_projects: Vec::new(),
             rail_favorites_collapsed: false,
             spec_board_enabled: false,
+            git_sweep_concurrency: default_git_sweep_concurrency(),
+            git_sweep_min_interval_secs: default_git_sweep_min_interval_secs(),
             resource_monitor_enabled: default_resource_monitor_enabled(),
             max_concurrent_agent_processes: default_max_concurrent_agent_processes(),
             resource_watchdog_action: default_resource_watchdog_action(),
@@ -760,7 +914,10 @@ impl Default for AppSettings {
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
+            agent_auto_update_by_command: std::collections::BTreeMap::new(),
             container_credentials_from_host: true,
+            watchers: BTreeMap::new(),
+            watchers_geometry: None,
         }
     }
 }
@@ -1268,10 +1425,6 @@ pub fn validate_expanded_codex_home_value(value: &str, context: &str) -> Result<
         return Err(format!("{context}: CODEX_HOME must be an absolute path"));
     }
     Ok(path)
-}
-
-pub fn validate_codex_home_value(value: &str, context: &str) -> Result<PathBuf, String> {
-    validate_expanded_codex_home_value(value, context)
 }
 
 fn reject_unknown_codex_home_template_markers(value: &str, context: &str) -> Result<(), String> {
@@ -1946,6 +2099,25 @@ pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
 }
 
+fn read_activity_log_enabled_from_path(path: &std::path::Path) -> bool {
+    let Some(contents) = std::fs::read_to_string(path).ok() else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    v.get("activityLogEnabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub fn read_activity_log_enabled_only() -> bool {
+    match settings_path() {
+        Some(path) => read_activity_log_enabled_from_path(&path),
+        None => false,
+    }
+}
+
 /// #774: counter feeding the per-call unique temp filename for settings saves.
 /// Combined with the PID it makes `settings.json.<pid>.<op_id>.tmp` distinct from
 /// any concurrent cross-process save (GUI startup, CLI verbs, closing flush) and
@@ -1985,6 +2157,7 @@ const FIELD_PROJECT_PATHS: &str = "projectPaths";
 const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance";
 const FIELD_ARCHIVED: &str = "archivedProjectPaths";
 const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
+const FIELD_TERMINAL_SNAPSHOTS_ENABLED: &str = "terminalSnapshotsEnabled";
 
 /// The authoritative instance base for path pairing, canonicalized at the codec
 /// boundary. `None` in any degraded mode (no base, or a base that fails to
@@ -2277,6 +2450,12 @@ pub(crate) fn apply_project_decode_to_value(
 pub(crate) enum ProjectWriteMode {
     Preserve,
     Reconcile { active: bool, archived: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSnapshotGateWriteMode {
+    Preserve,
+    Explicit(bool),
 }
 
 /// A slot value for a retained (unresolved/conflict/missing) raw field: string
@@ -2630,6 +2809,147 @@ pub(crate) fn reconcile_project_state_to_path(
     )
 }
 
+struct SettingsFileLock {
+    file: std::fs::File,
+}
+
+impl SettingsFileLock {
+    fn acquire(settings_path: &Path, timeout: std::time::Duration) -> Result<Self, String> {
+        let parent = settings_path
+            .parent()
+            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
+        std::fs::create_dir_all(parent).map_err(|_| "settings_lock_unavailable".to_string())?;
+        crate::path_identity::verify_component_chain(parent)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        let lock_path = parent.join("settings.json.lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            };
+            options
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options
+            .open(&lock_path)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        if !metadata.is_file() {
+            return Err("settings_lock_unavailable".to_string());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.nlink() != 1 {
+                return Err("settings_lock_unavailable".to_string());
+            }
+            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "settings_lock_unavailable".to_string())?;
+        }
+        #[cfg(windows)]
+        crate::path_identity::verify_regular_file(&lock_path)
+            .map_err(|_| "settings_lock_unavailable".to_string())?;
+
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
+        loop {
+            if try_lock_settings_file(&file)? {
+                return Ok(Self { file });
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("settings_lock_unavailable".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for SettingsFileLock {
+    fn drop(&mut self) {
+        unlock_settings_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)
+    ) {
+        Ok(false)
+    } else {
+        Err("settings_lock_unavailable".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn unlock_settings_file(file: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(windows)]
+fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if result != 0 {
+        return Ok(true);
+    }
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
+        Ok(false)
+    } else {
+        Err("settings_lock_unavailable".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn unlock_settings_file(file: &std::fs::File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let _ = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, String> {
+    Err("settings_lock_unavailable".to_string())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unlock_settings_file(_file: &std::fs::File) {}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -2638,6 +2958,21 @@ fn save_settings_value(
     settings: &AppSettings,
     path: &Path,
     mode: ProjectWriteMode,
+) -> Result<AppSettings, String> {
+    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    save_settings_value_locked(
+        settings,
+        path,
+        mode,
+        TerminalSnapshotGateWriteMode::Preserve,
+    )
+}
+
+fn save_settings_value_locked(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let disk = read_disk_object_for_write(path)?;
@@ -2720,6 +3055,27 @@ fn save_settings_value(
             }
         }
     }
+
+    // #1173: a whole-settings writer cannot opt in or re-enable a stale
+    // terminal snapshot gate. The on-disk boolean is authoritative. An absent
+    // legacy key is authoritative false. Only the dedicated CAS uses Explicit.
+    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
+        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
+        TerminalSnapshotGateWriteMode::Preserve => match &disk {
+            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
+                Some(Value::Bool(enabled)) => *enabled,
+                None => false,
+                Some(_) => {
+                    return Err("terminal_snapshot_setting_invalid".to_string());
+                }
+            },
+            None => false,
+        },
+    };
+    out.insert(
+        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
+        Value::Bool(terminal_snapshots_enabled),
+    );
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
@@ -2817,6 +3173,205 @@ pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
     tokio::task::spawn_blocking(read_pty_input_project_paths_strict)
         .await
         .map_err(|_| "settings_unavailable".to_string())?
+}
+
+pub(crate) fn read_terminal_snapshot_project_paths_strict() -> Result<Vec<String>, String> {
+    let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let (bytes, _) = crate::path_identity::read_bounded_regular(&path, 1024 * 1024)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let Some(paths) = object.get(FIELD_PROJECT_PATHS) else {
+        return Ok(Vec::new());
+    };
+    let paths = paths
+        .as_array()
+        .filter(|paths| paths.len() <= 4_096)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let mut project_paths = Vec::with_capacity(paths.len());
+    let mut aggregate_bytes = 0usize;
+    for value in paths {
+        let path = value
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        aggregate_bytes = aggregate_bytes
+            .checked_add(path.len())
+            .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        project_paths.push(path.to_string());
+    }
+    Ok(project_paths)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TerminalSnapshotSecuritySettings {
+    pub terminal_snapshots_enabled: bool,
+    pub project_paths: Vec<String>,
+}
+
+impl std::fmt::Debug for TerminalSnapshotSecuritySettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let project_path_bytes = self
+            .project_paths
+            .iter()
+            .fold(0usize, |total, path| total.saturating_add(path.len()));
+        formatter
+            .debug_struct("TerminalSnapshotSecuritySettings")
+            .field(
+                "terminal_snapshots_enabled",
+                &self.terminal_snapshots_enabled,
+            )
+            .field("project_paths", &self.project_paths.len())
+            .field("project_path_bytes", &project_path_bytes)
+            .finish()
+    }
+}
+
+/// Read only the security-bearing snapshot gate and active project list. This
+/// path never repairs, migrates, or writes settings. Every ambiguity fails
+/// closed and callers map it to the fixed disabled response.
+pub(crate) fn read_terminal_snapshot_security_settings_strict(
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    read_terminal_snapshot_security_settings_strict_from_path(&path)
+}
+
+fn read_terminal_snapshot_security_settings_strict_from_path(
+    path: &Path,
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let enabled = object
+        .get(FIELD_TERMINAL_SNAPSHOTS_ENABLED)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let paths = object
+        .get(FIELD_PROJECT_PATHS)
+        .and_then(Value::as_array)
+        .filter(|paths| paths.len() <= 4_096)
+        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let mut project_paths = Vec::with_capacity(paths.len());
+    let mut aggregate_bytes = 0usize;
+    for value in paths {
+        let path = value
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= 32 * 1024 && !path.contains('\0'))
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        aggregate_bytes = aggregate_bytes
+            .checked_add(path.len())
+            .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+        project_paths.push(path.to_string());
+    }
+    Ok(TerminalSnapshotSecuritySettings {
+        terminal_snapshots_enabled: enabled,
+        project_paths,
+    })
+}
+
+pub(crate) async fn read_terminal_snapshot_security_settings_strict_offloaded(
+) -> Result<TerminalSnapshotSecuritySettings, String> {
+    let joined = tokio::task::spawn_blocking(|| {
+        crate::logging::catch_payload_unwind(read_terminal_snapshot_security_settings_strict)
+    })
+    .await;
+    match crate::logging::collapse_payload_task(joined) {
+        Ok(result) => result,
+        Err(_) => {
+            log::error!("[terminal-snapshot] stage=gate_read_task code=internal");
+            Err("snapshot_settings_invalid".to_string())
+        }
+    }
+}
+
+/// The sole persistence owner for the #1173 disclosure gate. The caller holds
+/// the managed settings write guard while this function serializes every AC
+/// process with the settings file lock and compares against current disk truth.
+pub(crate) fn compare_and_set_terminal_snapshots_enabled(
+    current: &AppSettings,
+    expected: bool,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let path =
+        settings_path().ok_or_else(|| "terminal_snapshot_setting_save_failed".to_string())?;
+    compare_and_set_terminal_snapshots_enabled_at_path(current, &path, expected, enabled)
+}
+
+fn compare_and_set_terminal_snapshots_enabled_at_path(
+    current: &AppSettings,
+    path: &Path,
+    expected: bool,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let disk = read_disk_object_for_write(path)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let disk_gate = match disk
+        .as_ref()
+        .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
+    {
+        Some(Value::Bool(value)) => *value,
+        None => false,
+        Some(_) => return Err("terminal_snapshot_setting_save_failed".to_string()),
+    };
+    if disk_gate != expected && disk_gate != enabled {
+        return Err("terminal_snapshot_setting_conflict".to_string());
+    }
+
+    let mut candidate = match disk {
+        Some(object) => decode_disk_settings_for_terminal_snapshot_cas(object)
+            .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?,
+        None => current.clone(),
+    };
+    candidate.terminal_snapshots_enabled = enabled;
+    if disk_gate == enabled {
+        return Ok(candidate);
+    }
+
+    let written = save_settings_value_locked(
+        &candidate,
+        path,
+        ProjectWriteMode::Preserve,
+        TerminalSnapshotGateWriteMode::Explicit(enabled),
+    )
+    .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
+        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    if value
+        .as_object()
+        .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
+        .and_then(Value::as_bool)
+        != Some(enabled)
+    {
+        return Err("terminal_snapshot_setting_save_failed".to_string());
+    }
+    Ok(written)
+}
+
+fn decode_disk_settings_for_terminal_snapshot_cas(
+    object: Map<String, Value>,
+) -> Result<AppSettings, String> {
+    let base = production_instance_base();
+    let mut value = Value::Object(object);
+    migrate_settings_value_to_v2(&mut value);
+    let state =
+        apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
+    let mut settings: AppSettings =
+        serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
+    settings.project_path_state = Arc::new(state);
+    Ok(settings)
 }
 
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
@@ -2997,33 +3552,120 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
 /// `rename_with_retry` behavior; still not fsynced.
 fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
+    use std::io::Write as _;
+
     let dir = path
         .parent()
-        .ok_or_else(|| format!("Settings path {} has no parent", path.display()))?;
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create settings directory: {}", e))?;
+        .ok_or_else(|| "settings_save_failed".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|_| "settings_save_failed".to_string())?;
+    crate::path_identity::verify_component_chain(dir)
+        .map_err(|_| "settings_save_failed".to_string())?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err("settings_save_failed".to_string());
+            }
+            crate::path_identity::verify_regular_file(path)
+                .map_err(|_| "settings_save_failed".to_string())?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("settings_save_failed".to_string()),
+    }
 
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let json = serde_json::to_vec_pretty(value).map_err(|_| "settings_save_failed".to_string())?;
+    if json.len() > 16 * 1024 * 1024 {
+        return Err("settings_save_failed".to_string());
+    }
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let tmp_path = dir.join(format!("settings.json.{}.{}.tmp", pid, op_id));
-
-    if let Err(e) = std::fs::write(&tmp_path, &json) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to write temp settings file: {}", e));
-    }
-
-    if let Err((err_msg, _diag)) =
-        crate::config::sessions_persistence::rename_with_retry(&tmp_path, path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
     {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to rename settings file: {}", err_msg));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    let result = (|| {
+        let mut temporary = options
+            .open(&tmp_path)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        temporary
+            .write_all(&json)
+            .and_then(|_| temporary.flush())
+            .and_then(|_| temporary.sync_all())
+            .map_err(|_| "settings_save_failed".to_string())?;
+        crate::path_identity::verify_opened_regular_file(&tmp_path, &temporary, false)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        drop(temporary);
+
+        replace_settings_file_atomic(&tmp_path, path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| "settings_save_failed".to_string())?;
+            std::fs::File::open(dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| "settings_save_failed".to_string())?;
+        }
+        let (written, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
+            .map_err(|_| "settings_save_failed".to_string())?;
+        if written != json {
+            return Err("settings_save_failed".to_string());
+        }
+        Ok(())
+    })();
+    if result.is_err() && tmp_path.exists() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result?;
 
     log::debug!("Saved settings to {:?}", path);
     Ok(())
+}
+
+#[cfg(windows)]
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err("settings_save_failed".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::rename(source, destination).map_err(|_| "settings_save_failed".to_string())
 }
 
 /// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
@@ -3083,6 +3725,91 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn terminal_snapshot_gate_defaults_false_and_strict_reader_fails_closed() {
+        let mut legacy = serde_json::to_value(super::AppSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("terminalSnapshotsEnabled");
+        let decoded: super::AppSettings = serde_json::from_value(legacy).unwrap();
+        assert!(!decoded.terminal_snapshots_enabled);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"projectPaths":[]}"#).unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        std::fs::write(
+            &path,
+            r#"{"terminalSnapshotsEnabled":true,"terminalSnapshotsEnabled":false,"projectPaths":[]}"#,
+        )
+        .unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        std::fs::write(
+            &path,
+            r#"{"terminalSnapshotsEnabled":true,"projectPaths":["one"]}"#,
+        )
+        .unwrap();
+        let strict =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+        assert!(strict.terminal_snapshots_enabled);
+        assert_eq!(strict.project_paths, vec!["one"]);
+
+        const PATH_CANARY: &str = r"C:\PATH_1173_SETTINGS_N3X6\project";
+        let structural = super::TerminalSnapshotSecuritySettings {
+            terminal_snapshots_enabled: true,
+            project_paths: vec![PATH_CANARY.to_string()],
+        };
+        let diagnostic = format!("{structural:?}");
+        assert!(!diagnostic.contains(PATH_CANARY));
+        assert!(diagnostic.contains("terminal_snapshots_enabled: true"));
+        assert!(diagnostic.contains("project_paths: 1"));
+        assert!(diagnostic.contains(&format!("project_path_bytes: {}", PATH_CANARY.len())));
+    }
+
+    #[test]
+    fn terminal_snapshot_gate_cas_is_idempotent_and_rejects_stale_expected_value() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let current = super::AppSettings::default();
+        super::save_settings_to_path(&current, &path).unwrap();
+
+        let enabled =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, true)
+                .unwrap();
+        assert!(enabled.terminal_snapshots_enabled);
+        let idempotent =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&enabled, &path, false, true)
+                .unwrap();
+        assert!(idempotent.terminal_snapshots_enabled);
+        assert_eq!(
+            super::compare_and_set_terminal_snapshots_enabled_at_path(
+                &enabled, &path, false, false,
+            )
+            .unwrap_err(),
+            "terminal_snapshot_setting_conflict"
+        );
+        let disabled =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&enabled, &path, true, false)
+                .unwrap();
+        assert!(!disabled.terminal_snapshots_enabled);
+    }
+
+    #[test]
+    fn whole_settings_writer_preserves_disk_terminal_snapshot_gate() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let enabled = super::AppSettings {
+            terminal_snapshots_enabled: true,
+            ..super::AppSettings::default()
+        };
+        super::save_settings_to_path(&enabled, &path).unwrap();
+
+        let stale = super::AppSettings::default();
+        let written = super::save_settings_to_path_preserving_project_paths(&stale, &path).unwrap();
+        assert!(written.terminal_snapshots_enabled);
+    }
 
     #[test]
     fn privileged_project_paths_reader_rejects_duplicates_and_non_strings() {
@@ -4368,6 +5095,36 @@ mod tests {
     }
 
     #[test]
+    fn agent_auto_update_by_command_default_empty_and_round_trip_camel_case() {
+        // #1327: the per-command override map defaults to empty on a fresh
+        // settings object AND survives the serde round trip with camelCase keys.
+        let defaults = AppSettings::default();
+        assert!(defaults.agent_auto_update_by_command.is_empty());
+
+        let mut s = AppSettings::default();
+        s.agent_auto_update_by_command.insert("claude".to_string(), true);
+        s.agent_auto_update_by_command.insert("codex".to_string(), false);
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json
+            .contains("\"agentAutoUpdateByCommand\":{\"claude\":true,\"codex\":false}"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.agent_auto_update_by_command.get("claude"), Some(&true));
+        assert_eq!(back.agent_auto_update_by_command.get("codex"), Some(&false));
+    }
+
+    #[test]
+    fn agent_auto_update_by_command_absent_key_deserializes_empty() {
+        // An old settings.json without the #1327 key deserializes to an empty
+        // map (serde default), never an error.
+        let mut value =
+            serde_json::to_value(AppSettings::default()).expect("serialize default to value");
+        let obj = value.as_object_mut().expect("settings object");
+        obj.remove("agentAutoUpdateByCommand");
+        let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
+        assert!(back.agent_auto_update_by_command.is_empty());
+    }
+
+    #[test]
     fn validate_resource_settings_rejects_invalid_limits() {
         let s = AppSettings {
             max_concurrent_agent_processes: 0,
@@ -4470,6 +5227,17 @@ mod tests {
         assert!(json.contains("\"coordSortByActivity\":true"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(back.coord_sort_by_activity);
+    }
+
+    #[test]
+    fn activity_log_enabled_round_trips_through_serde() {
+        let mut s = AppSettings::default();
+        assert!(!s.activity_log_enabled);
+        s.activity_log_enabled = true;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"activityLogEnabled\":true"));
+        let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.activity_log_enabled);
     }
 
     #[test]
@@ -4587,6 +5355,53 @@ mod tests {
         std::fs::write(&path, r#"{"logLevel":"","other":"value"}"#).unwrap();
         assert_eq!(super::read_log_level_from_path(&path), Some(String::new()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_returns_true_when_true() {
+        let dir = std::env::temp_dir().join(format!("rale-present-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"activityLogEnabled":true,"other":"x"}"#).unwrap();
+        assert!(super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_key_missing() {
+        let dir = std::env::temp_dir().join(format!("rale-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"other":"value"}"#).unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_null() {
+        let dir = std::env::temp_dir().join(format!("rale-null-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"activityLogEnabled":null}"#).unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_from_path_defaults_false_when_json_malformed() {
+        let dir = std::env::temp_dir().join(format!("rale-malformed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ invalid json no closing brace").unwrap();
+        assert!(!super::read_activity_log_enabled_from_path(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_activity_log_enabled_only_defaults_false_when_settings_missing() {
+        let path =
+            std::env::temp_dir().join(format!("rale-no-such-file-{}.json", std::process::id()));
+        assert!(!super::read_activity_log_enabled_from_path(&path));
     }
 
     // ── #778: disk-authoritative project_paths (Design S) ────────────────────
@@ -5065,6 +5880,157 @@ mod tests {
         assert_eq!(lists.project_paths, vec![a, b]);
     }
 
+    /// #1171, 9.2.17 - **the regression a plain `BTreeMap<String, WatcherConfig>` would let
+    /// through, and whose failure mode is the whole settings file.**
+    ///
+    /// Three hand-written mistakes, one per entry: a capitalized enum variant, a scalar where
+    /// a list belongs, and a quoted number. Without the per-entry wrapper, ONE of them makes
+    /// `serde_json::from_value::<AppSettings>` fail, `load_settings_from_path` replaces
+    /// everything with `AppSettings::default()`, and AgentsCommander starts with no agents
+    /// configured and one log line - after which every save is refused by the #1077 gate.
+    #[test]
+    fn one_malformed_watcher_does_not_take_the_settings_file_down() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": ["-NoLogo"],
+            "agents": [
+                { "id": "a1", "label": "Claude", "command": "claude", "color": "#fff" },
+                { "id": "a2", "label": "Codex", "command": "codex", "color": "#000" }
+            ],
+            "watchers": {
+                "bad-mode": { "mode": "State", "pattern": "x" },
+                "bad-commands": { "mode": "occurrence", "pattern": "x", "commands": "claude" },
+                "bad-window": { "mode": "occurrence", "pattern": "x", "dedupeWindowMs": "2000" },
+                "good": { "mode": "state", "pattern": "Permission required" }
+            }
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect(
+            "a malformed watcher must never fail the whole file: that is what the wrapper is for",
+        );
+
+        // Every OTHER setting survived.
+        assert_eq!(settings.agents.len(), 2);
+        assert_eq!(settings.default_shell, "powershell.exe");
+
+        // Every entry is still there, and exactly one of them resolved.
+        assert_eq!(settings.watchers.len(), 4);
+        let valid: Vec<&str> = settings
+            .watchers
+            .iter()
+            .filter(|(_, entry)| entry.valid().is_some())
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(valid, vec!["good"]);
+
+        // ...and the three bad ones are kept VERBATIM, so a save writes back the user's bytes
+        // instead of deleting what it could not read.
+        let round_tripped = serde_json::to_value(&settings.watchers).expect("serializes");
+        assert_eq!(
+            round_tripped["bad-mode"],
+            serde_json::json!({ "mode": "State", "pattern": "x" })
+        );
+        assert_eq!(
+            round_tripped["bad-commands"],
+            serde_json::json!({ "mode": "occurrence", "pattern": "x", "commands": "claude" })
+        );
+        assert_eq!(
+            round_tripped["bad-window"],
+            serde_json::json!({ "mode": "occurrence", "pattern": "x", "dedupeWindowMs": "2000" })
+        );
+    }
+
+    /// #1171, 9.2.18 - a user who configures nothing never sees either new key appear.
+    #[test]
+    fn a_settings_file_with_no_watchers_round_trips_without_the_new_keys() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": []
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+        assert!(settings.watchers.is_empty());
+        assert!(settings.watchers_geometry.is_none());
+
+        let written = serde_json::to_value(&settings).expect("serializes");
+        let root = written.as_object().expect("object");
+        assert!(
+            !root.contains_key("watchers"),
+            "an empty map must not appear"
+        );
+        assert!(
+            !root.contains_key("watchersGeometry"),
+            "this is why watchersGeometry carries skip_serializing_if and mainGeometry does not"
+        );
+    }
+
+    /// #1171, 9.2.19 - a configured watcher round-trips value for value, INCLUDING the
+    /// absent-against-`[]` distinction for `commands`, which is the one place where the two
+    /// are opposites: absent reaches every agent, `[]` reaches none.
+    #[test]
+    fn watchers_round_trip_through_save_and_load_including_absent_versus_empty() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "watchers": {
+                "all-agents": { "mode": "state", "pattern": "  Permission" },
+                "nobody": { "mode": "occurrence", "pattern": "Read", "commands": [] },
+                "claude-only": {
+                    "enabled": false,
+                    "mode": "occurrence",
+                    "pattern": "Read \\((.+)\\)",
+                    "commands": ["claude"],
+                    "dedupe": "capture",
+                    "dedupeWindowMs": 5000,
+                    "capturedAgainst": "claude 2.1.212"
+                }
+            }
+        })
+        .to_string();
+
+        let (settings, _) = super::parse_settings_json(&contents, "test").expect("parses");
+
+        let all = settings.watchers["all-agents"].valid().expect("valid");
+        assert!(all.enabled, "enabled defaults to true");
+        assert_eq!(all.mode, super::WatcherMode::State);
+        assert_eq!(all.pattern, "  Permission");
+        assert!(all.commands.is_none(), "absent means every agent");
+        assert_eq!(all.dedupe, super::WatcherDedupe::Row);
+        assert_eq!(all.dedupe_window_ms, 2000);
+
+        let nobody = settings.watchers["nobody"].valid().expect("valid");
+        assert_eq!(
+            nobody.commands.as_deref(),
+            Some(&[] as &[String]),
+            "`[]` must survive as `[]` and never collapse into absent"
+        );
+
+        let claude = settings.watchers["claude-only"].valid().expect("valid");
+        assert!(!claude.enabled);
+        assert_eq!(claude.mode, super::WatcherMode::Occurrence);
+        assert_eq!(claude.dedupe, super::WatcherDedupe::Capture);
+        assert_eq!(claude.dedupe_window_ms, 5000);
+        assert_eq!(claude.captured_against.as_deref(), Some("claude 2.1.212"));
+
+        // Byte-stable: what comes back out is what went in, key for key.
+        let written = serde_json::to_value(&settings.watchers).expect("serializes");
+        let original: serde_json::Value = serde_json::from_str(&contents).expect("parses");
+        let mut expected = original["watchers"].clone();
+        // The two defaulted fields the input omitted are written explicitly, since neither
+        // carries `skip_serializing_if`: they are settings with a value, not absent ones.
+        expected["all-agents"]["enabled"] = serde_json::json!(true);
+        expected["all-agents"]["dedupe"] = serde_json::json!("row");
+        expected["all-agents"]["dedupeWindowMs"] = serde_json::json!(2000);
+        expected["nobody"]["enabled"] = serde_json::json!(true);
+        expected["nobody"]["dedupe"] = serde_json::json!("row");
+        expected["nobody"]["dedupeWindowMs"] = serde_json::json!(2000);
+        assert_eq!(written, expected);
+    }
+
     #[test]
     fn save_settings_preserve_twice_succeeds_no_sharing_violation() {
         // G4a: the preserve-read closes its handle before the #774 rename, so two
@@ -5344,6 +6310,39 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.coord_sort_by_activity);
+    }
+
+    #[test]
+    fn activity_log_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "startOnlyCoordinators": true,
+            "sidebarAlwaysOnTop": false,
+            "raiseTerminalOnClick": true,
+            "voiceToTextEnabled": false,
+            "geminiApiKey": "",
+            "geminiModel": "gemini-2.5-flash",
+            "voiceAutoExecute": true,
+            "voiceAutoExecuteDelay": 15,
+            "sidebarZoom": 1.0,
+            "terminalZoom": 1.0,
+            "guideZoom": 1.0,
+            "darkfactoryZoom": 1.0,
+            "sidebarGeometry": null,
+            "terminalGeometry": null,
+            "webServerEnabled": false,
+            "webServerPort": 7777,
+            "webServerBind": "127.0.0.1",
+            "projectPath": null,
+            "projectPaths": [],
+            "sidebarStyle": "noir-minimal",
+            "onboardingDismissed": false
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+        assert!(!s.activity_log_enabled);
     }
 
     #[test]

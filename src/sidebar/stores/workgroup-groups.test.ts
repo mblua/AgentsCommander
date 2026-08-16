@@ -420,4 +420,55 @@ describe("#777 Non-stop group", () => {
       exactGroupRegexForWorkgroup("wg-2-dev-team")
     );
   });
+
+  it("keeps the nonStop favorite flag through load and through an unrelated save (#1257)", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+    fake.resolve(
+      "get_project_groups",
+      config({ nonStop: { ...defaultNonStop(), show: true, favorite: true } })
+    );
+    fake.onInvoke("update_project_groups", (args) => args.config);
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    expect(workgroupGroupsStore.config(projectPath).nonStop?.favorite).toBe(true);
+
+    // `setConfig` runs normalizeNonStop on the save path too, so a field it forgets
+    // to copy is lost on the first save that has nothing to do with favorites.
+    await workgroupGroupsStore.addWorkgroupToNonStop(projectPath, "wg-1-dev-team");
+    expect(
+      (fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig).nonStop
+        ?.favorite
+    ).toBe(true);
+    expect(workgroupGroupsStore.config(projectPath).nonStop?.favorite).toBe(true);
+
+    expect(normalizeNonStop({ ...defaultNonStop(), favorite: true })?.favorite).toBe(true);
+    expect(normalizeNonStop({ ...defaultNonStop() })?.favorite).toBe(false);
+  });
+
+  it("setNonStopFavorite writes the flag, no-ops when unchanged, and refuses an absent nonStop", async () => {
+    const fake = new FakeTransport();
+    restoreTransport?.();
+    restoreTransport = __setTransportForTests(fake);
+    fake.resolve("get_project_groups", config({ nonStop: { ...defaultNonStop(), show: true } }));
+    fake.onInvoke("update_project_groups", (args) => args.config);
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+
+    await workgroupGroupsStore.setNonStopFavorite(projectPath, true);
+    expect(
+      (fake.lastCall("update_project_groups")?.args.config as WorkgroupGroupsConfig).nonStop
+        ?.favorite
+    ).toBe(true);
+
+    // Already true: no second write.
+    await workgroupGroupsStore.setNonStopFavorite(projectPath, true);
+    expect(fake.callsFor("update_project_groups")).toHaveLength(1);
+
+    workgroupGroupsStore.resetForTests();
+    fake.resolve("get_project_groups", config({ nonStop: null }));
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    await expect(workgroupGroupsStore.setNonStopFavorite(projectPath, true)).rejects.toThrow(
+      "Alert me!"
+    );
+  });
 });

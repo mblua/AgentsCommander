@@ -2,6 +2,7 @@ pub mod activity_log;
 pub mod agent_command;
 pub mod agent_config;
 pub mod agent_creation;
+pub(crate) mod agent_memory;
 pub mod archive_gate;
 pub mod coding_agent_mutations;
 pub mod coding_agent_profiles;
@@ -9,6 +10,8 @@ pub mod coding_agents_catalog;
 pub mod config_seed;
 pub mod coordinator_clocks;
 pub mod daemon_pid;
+pub mod injected_messages;
+pub(crate) mod instance_gitignore;
 pub mod local_config_io;
 pub mod loops;
 pub mod placeholders;
@@ -27,6 +30,16 @@ pub mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// #1273: the Root Agent instance directory name.
+///
+/// It lives here because `config::instance_gitignore` needs it to write one
+/// `.gitignore` rule and `config::root_agent` needs it to build the directory,
+/// and `config` is below both. This module already owns the instance-layout
+/// facts of the same family: `agent_local_dir_name()`, `config_dir()` and
+/// `instance_base()`. `config::root_agent` re-exports it, so every existing
+/// reader of `crate::config::root_agent::ROOT_AGENT_DIR_NAME` keeps resolving.
+pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";
 
 /// #1077: authoritative, once-resolved location of the running AgentsCommander
 /// instance. Centralizes the executable-derived facts that `config_dir()`,
