@@ -1,4 +1,5 @@
 use clap::Args;
+#[cfg(target_os = "windows")]
 use serde::Serialize;
 
 #[derive(Debug, Args)]
@@ -42,6 +43,7 @@ pub fn execute(_args: WindowInfoArgs) -> i32 {
     1
 }
 
+#[cfg(target_os = "windows")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowInfoOutput {
@@ -52,6 +54,7 @@ struct WindowInfoOutput {
     windows: Vec<WindowSnapshot>,
 }
 
+#[cfg(target_os = "windows")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowSnapshot {
@@ -63,6 +66,7 @@ struct WindowSnapshot {
     maximized: bool,
 }
 
+#[cfg(target_os = "windows")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowRect {

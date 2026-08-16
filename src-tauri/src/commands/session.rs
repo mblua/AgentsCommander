@@ -10485,8 +10485,7 @@ mod tests {
         // The real local backend: the invalid-input rejection lives inside its
         // spawn_sync, so a fake capturing backend would accept the spawn.
         let git_app = Box::leak(Box::new(
-            tauri::Builder::default()
-                .any_thread()
+            crate::test_support::test_builder()
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .expect("build native invalid-input git watcher app"),
         ));

@@ -3277,7 +3277,7 @@ pub async fn delete_workgroup(
 // via `gated_workgroup_delete_with` and interprets the outcome with
 // `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
 // is retained for tests only.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) async fn delete_workgroup_dir_backend(
     wg_dir: &Path,
     workgroup_name: &str,

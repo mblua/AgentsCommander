@@ -505,8 +505,7 @@ impl AcceptanceFixture {
             crate::api::message_store::MessageStore::open(config.join("api-messages.sqlite3"))
                 .expect("API message store"),
         );
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(Arc::clone(&snapshot_state))
             .manage(settings.clone())
             .manage(Arc::clone(&session_manager))
@@ -752,9 +751,11 @@ async fn submit_host_request(
     scanner.join_pending_tasks_for_test().await;
     let response_path = response_directory.join(format!("{}.json", request.request_id));
     let bytes = std::fs::read(&response_path).expect("host response bytes after task completion");
+    #[cfg(not(unix))]
     let identity = crate::path_identity::verify_regular_file(&response_path)
         .expect("host response identity after task completion");
     std::fs::remove_file(&response_path).expect("remove consumed host response");
+    #[cfg(not(unix))]
     fixture.snapshot_state.untrack_artifact(&identity);
     bytes
 }
@@ -963,9 +964,15 @@ fn consume_host_response(
         .join("terminal-snapshot-responses")
         .join(format!("{}.json", request.request_id));
     let bytes = std::fs::read(&path).expect("host cancellation response bytes");
+    #[cfg(not(unix))]
     let identity = crate::path_identity::verify_regular_file(&path)
         .expect("host cancellation response identity");
     std::fs::remove_file(&path).expect("consume host cancellation response");
+    // `fixture` is read only by the non-Unix untracking below; keep the
+    // signature stable on Unix rather than splitting the helper.
+    #[cfg(unix)]
+    let _ = fixture;
+    #[cfg(not(unix))]
     fixture.snapshot_state.untrack_artifact(&identity);
     bytes
 }
@@ -4092,9 +4099,11 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         assert!(decoded.result.is_none());
         response_reason = decoded.error;
         assert!(response_reason.is_some());
+        #[cfg(not(unix))]
         let identity = crate::path_identity::verify_regular_file(&response_path)
             .expect("shutdown response identity");
         std::fs::remove_file(&response_path).expect("consume shutdown response");
+        #[cfg(not(unix))]
         fixture.snapshot_state.untrack_artifact(&identity);
     }
 
@@ -4106,6 +4115,7 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         assert!(displaced.exists());
         std::fs::remove_file(replacement_path).expect("remove processing replacement");
         std::fs::remove_file(displaced).expect("remove displaced scanner-owned file");
+        #[cfg(not(unix))]
         fixture.snapshot_state.untrack_artifact(&original_identity);
     }
     assert!(!host_cancellation_marker(&request_directory, &request).exists());

@@ -1619,7 +1619,7 @@ impl TerminalSnapshotState {
         #[cfg(unix)]
         {
             let _ = path;
-            return self.cleanup_artifact_unix(expected);
+            self.cleanup_artifact_unix(expected)
         }
         #[cfg(not(unix))]
         {
@@ -1740,7 +1740,7 @@ impl TerminalSnapshotState {
     {
         #[cfg(unix)]
         {
-            return self.relocate_artifact_unix(expected, path);
+            self.relocate_artifact_unix(expected, path)
         }
         #[cfg(not(unix))]
         {
@@ -1806,7 +1806,6 @@ impl TerminalSnapshotState {
             for (path, identity) in files {
                 let _ = self.cleanup_artifact(&path, &identity);
             }
-            return;
         }
         #[cfg(not(unix))]
         {
