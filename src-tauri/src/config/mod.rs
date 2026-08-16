@@ -1,3 +1,4 @@
+pub mod ac_root;
 pub mod activity_log;
 pub mod agent_command;
 pub mod agent_config;
@@ -26,7 +27,6 @@ pub mod session_context;
 pub mod sessions_persistence;
 pub mod settings;
 pub mod teams;
-pub mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

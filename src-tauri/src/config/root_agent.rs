@@ -2677,18 +2677,18 @@ mod tests {
     #[test]
     fn create_default_context_templates_does_not_create_root_template() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
+        let ac_root = temp.path().join(".ac");
 
-        crate::config::session_context::create_default_context_templates(&workspace_dir)
+        crate::config::session_context::create_default_context_templates(&ac_root)
             .expect("create default templates");
 
-        assert!(workspace_dir
+        assert!(ac_root
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
-        assert!(workspace_dir
+        assert!(ac_root
             .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
-        assert!(!workspace_dir
+        assert!(!ac_root
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)
             .exists());
     }

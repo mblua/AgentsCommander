@@ -271,7 +271,7 @@ fn side_status_label(status: SideStatus) -> &'static str {
         SideStatus::Inaccessible => "permission denied",
         SideStatus::ProbeIoError => "filesystem error",
         SideStatus::NotADirectory => "not a directory",
-        SideStatus::WorkspaceOrCollectionMissing => "no .ac project or collection",
+        SideStatus::AcRootOrCollectionMissing => "no .ac project or collection",
         SideStatus::NonUtf8 => "path is not valid UTF-8",
         SideStatus::ValidDirectProject => "valid project",
         SideStatus::ValidCollectionRoot => "valid collection root",
@@ -1411,10 +1411,10 @@ fn enumerate_profile_assignment_targets(
             collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
         }
         ProfileAssignmentScope::Kind => {
-            for workspace in
-                crate::config::coding_agent_profiles::configured_workspace_dirs(settings)
+            for ac_root in
+                crate::config::coding_agent_profiles::configured_ac_roots(settings)
             {
-                collect_kind_replica_dirs(&workspace, &mut candidate_dirs)?;
+                collect_kind_replica_dirs(&ac_root, &mut candidate_dirs)?;
             }
         }
     }
@@ -1541,9 +1541,9 @@ fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut Vec<PathBuf>) -> R
     Ok(())
 }
 
-fn collect_kind_replica_dirs(workspace: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(workspace)
-        .map_err(|e| format!("Failed to read workspace '{}': {}", workspace.display(), e))?;
+fn collect_kind_replica_dirs(ac_root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(ac_root)
+        .map_err(|e| format!("Failed to read workspace '{}': {}", ac_root.display(), e))?;
     for entry in entries.flatten() {
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -1590,7 +1590,7 @@ fn build_profile_assignment_target(
         .unwrap_or("")
         .to_string();
     let origin_project = identity
-        .workspace_dir
+        .ac_root
         .parent()
         .and_then(|project| project.file_name())
         .and_then(|name| name.to_str())
@@ -2588,7 +2588,7 @@ mod tests {
         let live_by_cwd = BTreeMap::new();
         let identity = crate::config::replica_identity::WgReplicaIdentity {
             agent_name: "dev".to_string(),
-            workspace_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac"),
+            ac_root: PathBuf::from(r"\\?\UNC\server\share\repo\.ac"),
             matrix_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac\_agent_dev"),
             identity: "../../_agent_dev".to_string(),
         };
@@ -2690,8 +2690,7 @@ mod tests {
             )
             .expect("open API message store"),
         );
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(ApiServerHandle::default())
             .manage(crate::api::message_store::MessageStoreState::ready(
                 message_store,
@@ -2833,9 +2832,9 @@ mod tests {
     fn mint_api_client_fixture() -> MintApiClientFixture {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_alice");
-        let replica = workspace.join("wg-1-devs").join("__agent_alice");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_alice");
+        let replica = ac_root.join("wg-1-devs").join("__agent_alice");
         std::fs::create_dir_all(&matrix).expect("create matrix");
         std::fs::create_dir_all(&replica).expect("create replica");
         std::fs::write(

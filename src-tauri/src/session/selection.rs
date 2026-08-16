@@ -213,12 +213,12 @@ impl SessionSelection {
         self.displayable
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(crate) fn live_for_test(id: Uuid) -> Self {
         Self::live(Uuid::new_v4(), 1, SelectionCause::UserSwitch, id)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(crate) fn dormant_for_test(id: Uuid, exit_code: i32) -> Self {
         Self::dormant(
             Uuid::new_v4(),
@@ -230,7 +230,7 @@ impl SessionSelection {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "windows"))]
     pub(crate) fn none_for_test() -> Self {
         Self::none(Uuid::new_v4(), 1, SelectionCause::AutoClose)
     }

@@ -573,19 +573,19 @@ fn ac_discovery_rs_threads_production_tokens_for_context_boundaries() {
     // production site; a unit call threading a `for_test()` token cannot satisfy it.
     assert!(
         production.contains(
-            "scan_project_context_templates_recorded(&repo_dir,&workspace_dir,activation.as_ref()"
+            "scan_project_context_templates_recorded(&repo_dir,&ac_root,activation.as_ref()"
         ),
         "the per-repo discovery context-update (ContextUpdate) must thread the activation token"
     );
     assert!(
         production.contains(
-            "scan_project_context_templates_recorded(&base,&workspace_dir,activation.as_ref()"
+            "scan_project_context_templates_recorded(&base,&ac_root,activation.as_ref()"
         ),
         "the workgroup discovery context-update (ContextUpdate) must thread the activation token"
     );
     assert!(
         production.contains(
-            "overwrite_context_template_recorded(Path::new(&path),&workspace_dir,&filename,\
+            "overwrite_context_template_recorded(Path::new(&path),&ac_root,&filename,\
              &current_file_sha256,&current_default_sha256,activation.as_ref()"
         ),
         "the overwrite command (ContextOverwrite) must thread the activation token"

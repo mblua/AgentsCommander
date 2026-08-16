@@ -205,8 +205,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         s
     }));
     let git_app = Box::leak(Box::new(
-        tauri::Builder::default()
-            .any_thread()
+        agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("git handle app"),
     ));
@@ -229,8 +228,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     let selection_coordinator =
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
-    let app = tauri::Builder::default()
-        .any_thread()
+    let app = agentscommander_lib::test_support::test_builder()
         .manage(MasterToken::new("wake-consume-master".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),

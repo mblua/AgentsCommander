@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::cli::workgroup::{
     build_new_team_config, clone_missing_for_config, push_unique, resolve_cli_project,
-    resolve_cli_workspace, write_refresh,
+    resolve_cli_ac_root, write_refresh,
 };
 use crate::commands::entity_creation::{
     acquire_lifecycle_project_gate, agent_ref_bare_name, create_new_team_config_on_disk,
@@ -157,17 +157,17 @@ pub fn execute(args: TeamArgs) -> i32 {
 
 fn create(args: TeamCreateArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let ac_root = resolve_cli_ac_root(&project_path)?;
     let safe_team = sanitize_name(&args.team)?;
     let config = build_new_team_config(
-        &workspace_dir,
+        &ac_root,
         &args.coordinator,
         &args.agents,
         &args.repos,
         &args.repo_agents,
         &args.repo_exclude_agents,
     )?;
-    let team_dir = create_new_team_config_on_disk(&workspace_dir, &safe_team, &config)?;
+    let team_dir = create_new_team_config_on_disk(&ac_root, &safe_team, &config)?;
     write_refresh(&project_path, &team_dir, &safe_team, "teamCreated");
     print_json(&TeamCreateResult {
         team: safe_team,
@@ -181,12 +181,12 @@ fn create(args: TeamCreateArgs) -> Result<(), String> {
 
 fn list(args: TeamListArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let ac_root = resolve_cli_ac_root(&project_path)?;
     let mut items = Vec::new();
     if let Some(workgroup) = args.workgroup {
         validate_existing_name(&workgroup, "Workgroup")?;
         let team = parse_team_from_workgroup_name(&workgroup)?;
-        let config = read_team_config(&workspace_dir, &team)?;
+        let config = read_team_config(&ac_root, &team)?;
         items.push(TeamListItem {
             team,
             workgroup: Some(workgroup),
@@ -195,7 +195,7 @@ fn list(args: TeamListArgs) -> Result<(), String> {
             repos: config.repos,
             context_alert_percentages: config.context_alert_percentages,
         });
-    } else if let Ok(entries) = std::fs::read_dir(&workspace_dir) {
+    } else if let Ok(entries) = std::fs::read_dir(&ac_root) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -205,7 +205,7 @@ fn list(args: TeamListArgs) -> Result<(), String> {
             let Some(team) = name.strip_prefix("_team_") else {
                 continue;
             };
-            if let Ok(config) = read_team_config(&workspace_dir, team) {
+            if let Ok(config) = read_team_config(&ac_root, team) {
                 items.push(TeamListItem {
                     team: team.to_string(),
                     workgroup: None,
@@ -258,24 +258,24 @@ fn remove_member_from_team_config(
 fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let guard = TeamConfigMutationGuard::acquire(&workspace_dir)?;
-    let wg_dir = workspace_dir.join(&args.workgroup);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let guard = TeamConfigMutationGuard::acquire(&ac_root)?;
+    let wg_dir = ac_root.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
     let config = normalize_team_config_for_project(
-        &workspace_dir,
-        &read_team_config(&workspace_dir, &team)?,
+        &ac_root,
+        &read_team_config(&ac_root, &team)?,
     )?;
-    let agent_ref = resolve_agent_ref(&workspace_dir, &args.agent)?;
+    let agent_ref = resolve_agent_ref(&ac_root, &args.agent)?;
     let (config, added) = add_member_to_team_config(config, &agent_ref, args.coordinator)?;
-    write_team_config_guarded(&workspace_dir, &team, &config, &guard)?;
+    write_team_config_guarded(&ac_root, &team, &config, &guard)?;
     drop(guard);
 
     let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-        workspace_dir: workspace_dir.clone(),
+        ac_root: ac_root.clone(),
         wg_dir: wg_dir.clone(),
         agent_path: agent_ref.clone(),
         team_repos: config.repos.clone(),
@@ -328,30 +328,30 @@ fn remove_member_hooked(
 ) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let wg_dir = workspace_dir.join(&args.workgroup);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let wg_dir = ac_root.join(&args.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let agent_ref = resolve_agent_ref(&workspace_dir, &args.agent)?;
+    let agent_ref = resolve_agent_ref(&ac_root, &args.agent)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
     let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
     crate::cli::session_safety::ensure_no_live_sessions_under(&replica_dir)?;
 
     // Blocking commit: project gate first, then the #1056 team-config guard.
     let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
-    after_project_before_team(&workspace_dir);
-    let guard = TeamConfigMutationGuard::acquire(&workspace_dir)?;
+    after_project_before_team(&ac_root);
+    let guard = TeamConfigMutationGuard::acquire(&ac_root)?;
 
     // Re-read and revalidate the current team config under both guards, then
     // recompute the mutation from that current value.
     let config = normalize_team_config_for_project(
-        &workspace_dir,
-        &read_team_config(&workspace_dir, &team)?,
+        &ac_root,
+        &read_team_config(&ac_root, &team)?,
     )?;
     let (config, removed) = remove_member_from_team_config(config, &agent_ref)?;
-    write_team_config_guarded(&workspace_dir, &team, &config, &guard)?;
+    write_team_config_guarded(&ac_root, &team, &config, &guard)?;
 
     // Typed replica removal; prune only after a proven removal or explicit absence.
     match remove_replica_dir(&replica_dir) {
@@ -513,13 +513,13 @@ pub(crate) mod stage_d_lock_order_child {
         pub(crate) fn build_workgroup_fixture(&self) -> String {
             let root = self.control_dir.join(format!("fixture-{}", self.nonce));
             let config_dir = root.join("config");
-            let workspace = root.join("Project").join(".ac");
+            let ac_root = root.join("Project").join(".ac");
             for dir in [
                 config_dir.as_path(),
-                &workspace.join("_agent_coordinator"),
-                &workspace.join("_agent_member"),
-                &workspace.join("wg-1-dev-team").join("__agent_coordinator"),
-                &workspace.join("wg-1-dev-team").join("__agent_member"),
+                &ac_root.join("_agent_coordinator"),
+                &ac_root.join("_agent_member"),
+                &ac_root.join("wg-1-dev-team").join("__agent_coordinator"),
+                &ac_root.join("wg-1-dev-team").join("__agent_member"),
             ] {
                 std::fs::create_dir_all(dir).expect("fixture dir");
             }
@@ -545,7 +545,7 @@ pub(crate) mod stage_d_lock_order_child {
                 context_alert_percentages: Vec::new(),
             };
             crate::commands::entity_creation::create_new_team_config_on_disk(
-                &workspace,
+                &ac_root,
                 "dev-team",
                 &team_config,
             )
@@ -668,7 +668,7 @@ mod tests {
             workgroup: "wg-1-dev-team".to_string(),
             agent: "member".to_string(),
         };
-        let result = remove_member_hooked(args, None, |_workspace: &std::path::Path| {
+        let result = remove_member_hooked(args, None, |_ac_root: &std::path::Path| {
             ctx.report_and_wait()
         });
         println!(

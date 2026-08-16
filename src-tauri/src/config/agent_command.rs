@@ -912,9 +912,9 @@ pub(crate) fn resolve_agent_spawn_command(
                 let dest = cfg.dest.trim();
                 let master_dir = placeholder_context
                     .as_ref()
-                    .and_then(|ctx| ctx.workspace_root.as_ref())
-                    .map(|workspace| {
-                        crate::config::coding_agents_catalog::master_dir_for_dest(workspace, dest)
+                    .and_then(|ctx| ctx.ac_root.as_ref())
+                    .map(|ac_root| {
+                        crate::config::coding_agents_catalog::master_dir_for_dest(ac_root, dest)
                     })
                     .or_else(|| {
                         crate::config::config_dir().map(|config_dir| {
@@ -1490,13 +1490,13 @@ mod tests {
             .strip_prefix(r"\\?\")
             .map(std::path::PathBuf::from)
             .unwrap_or(canonical_root);
-        let expected_workspace = expected_replica
+        let expected_ac_root = expected_replica
             .parent()
             .and_then(|parent| parent.parent())
             .expect("replica has a .ac workspace ancestor");
-        let expected_matrix = expected_workspace.join("_agent_dev-rust");
+        let expected_matrix = expected_ac_root.join("_agent_dev-rust");
 
-        let expected_config = format!("{}\\.claude", expected_workspace.to_string_lossy());
+        let expected_config = format!("{}\\.claude", expected_ac_root.to_string_lossy());
         let expected_matrix_claude = format!("{}\\.claude", expected_matrix.to_string_lossy());
         assert_eq!(env.get("CLAUDE_CONFIG_DIR"), Some(&expected_config));
         assert_eq!(env.get("CLAUDE_MATRIX_DIR"), Some(&expected_matrix_claude));
@@ -2216,8 +2216,8 @@ mod tests {
         let seed = spawn.seed.expect("active seed resolves to Some");
 
         let expected_replica = canonical_replica(&replica);
-        let workspace = expected_replica.parent().unwrap().parent().unwrap();
-        let matrix = workspace.join("_agent_dev-rust");
+        let ac_root = expected_replica.parent().unwrap().parent().unwrap();
+        let matrix = ac_root.join("_agent_dev-rust");
         let letter = spawn
             .profile_resolution
             .effective_profile
@@ -2233,11 +2233,11 @@ mod tests {
         let mut expected = vec![
             (
                 ConfigSeedTier::WorkspaceProfile,
-                workspace.join(format!("default_profile_{}.claude", letter)),
+                ac_root.join(format!("default_profile_{}.claude", letter)),
             ),
             (
                 ConfigSeedTier::WorkspaceBase,
-                workspace.join("default.claude"),
+                ac_root.join("default.claude"),
             ),
             (
                 ConfigSeedTier::MatrixProfile,
@@ -2247,7 +2247,7 @@ mod tests {
         ];
         expected.push((
             ConfigSeedTier::CatalogDefault,
-            workspace
+            ac_root
                 .join("coding-agents")
                 .join("_seed")
                 .join(".claude"),
@@ -2255,11 +2255,11 @@ mod tests {
         assert_eq!(seed.candidates, expected);
         assert_eq!(seed.dest, expected_replica.join(".claude"));
         // Pure resolution: no template dirs were created.
-        assert!(!workspace.join("default.claude").exists());
+        assert!(!ac_root.join("default.claude").exists());
     }
 
     #[test]
-    fn build_spawn_catalog_default_absent_without_workspace() {
+    fn build_spawn_catalog_default_absent_without_ac_root() {
         // A replica-shaped launch root with NO `.ac` workspace ancestor (the
         // only shape that could reach the fill's config-dir legacy fallback).
         // `resolve_config_seed` derives its candidates exclusively from the

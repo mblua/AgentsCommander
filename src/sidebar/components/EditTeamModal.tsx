@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { Component } from "solid-js";
-import { AC_WORKSPACE_DIR } from "../../shared/constants";
+import { CANONICAL_AC_ROOT_DIR } from "../../shared/constants";
 import { EntityAPI } from "../../shared/ipc";
 import type {
   TeamWizardAgentEntry,
@@ -112,7 +112,7 @@ const EditTeamModal: Component<{
         const agentRef = portableAgentRef(configPath);
         if (!discoveredRefs.has(agentRef)) {
           const fallbackPath =
-            `${props.projectPath.replace(/[\\/]+$/, "")}/${AC_WORKSPACE_DIR}/${agentRef}`;
+            `${props.projectPath.replace(/[\\/]+$/, "")}/${CANONICAL_AC_ROOT_DIR}/${agentRef}`;
           entries.push({
             name: agentRef.replace(/^_agent_/, ""),
             path: fallbackPath,
