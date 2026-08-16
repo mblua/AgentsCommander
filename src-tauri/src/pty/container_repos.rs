@@ -135,7 +135,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("wg-"))
         .unwrap_or(false)
-        && crate::config::ac_root::find_workspace_ancestor(&wg_root).is_some();
+        && crate::config::ac_root::find_ac_root_ancestor(&wg_root).is_some();
     if !is_workgroup_root {
         return Ok(RepoMountResolution::default());
     }
@@ -243,7 +243,7 @@ mod tests {
     }
 
     /// Build `<tmp>/.ac/wg-test-team/` with the given replica name, and return
-    /// (tmp, wg_root, replica_root). `find_workspace_ancestor` keys on a `.ac`
+    /// (tmp, wg_root, replica_root). `find_ac_root_ancestor` keys on a `.ac`
     /// ancestor and the wg-root name must start with `wg-`, so both are created.
     fn make_workgroup(replica: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn path_at_or_above_workspace_is_rejected() {
+    fn path_at_or_above_ac_root_is_rejected() {
         let (_tmp, _wg_root, replica) = make_workgroup("__agent_self");
         write_repos(&replica, &["../../.."]);
         assert!(resolve_repo_mounts(&replica).is_err());

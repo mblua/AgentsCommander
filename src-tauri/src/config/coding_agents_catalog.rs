@@ -756,7 +756,7 @@ pub(crate) fn ensure_seeded_for_project_with_token(
         );
         return;
     }
-    let ac_dir = project_root.join(crate::config::ac_root::CANONICAL_WORKSPACE_DIR);
+    let ac_dir = project_root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
 
     // Steady-state pre-check: everything already seeded -> nothing to publish;
     // no lock file, no canonicalize, no bounded manifest read, no write.

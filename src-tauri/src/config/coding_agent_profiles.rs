@@ -6,7 +6,7 @@ use crate::config::settings::{
     empty_profile_cell, normalize_profile_letter, AppSettings, ProfileCellConfig,
 };
 use crate::config::ac_root::{
-    ensure_authoritative_workspace_dir, is_workspace_dir_name, CANONICAL_WORKSPACE_DIR,
+    ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
 
 #[derive(Debug, Clone)]
@@ -128,8 +128,8 @@ fn same_canonical_path(left: &Path, right: &Path) -> bool {
     left == right
 }
 
-fn collect_workspace_candidate(out: &mut Vec<PathBuf>, candidate: &Path) {
-    if !candidate.is_dir() || ensure_authoritative_workspace_dir(candidate).is_err() {
+fn collect_ac_root_candidate(out: &mut Vec<PathBuf>, candidate: &Path) {
+    if !candidate.is_dir() || ensure_authoritative_ac_root(candidate).is_err() {
         return;
     }
     let Ok(canonical) = canonical_existing_dir(candidate, "Project AC Root") else {
@@ -143,19 +143,19 @@ fn collect_workspace_candidate(out: &mut Vec<PathBuf>, candidate: &Path) {
     }
 }
 
-pub(crate) fn configured_workspace_dirs(settings: &AppSettings) -> Vec<PathBuf> {
-    let mut workspaces = Vec::new();
+pub(crate) fn configured_ac_roots(settings: &AppSettings) -> Vec<PathBuf> {
+    let mut ac_roots = Vec::new();
     for project_path in &settings.project_paths {
         let base = Path::new(project_path);
         if base
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(is_workspace_dir_name)
+            .is_some_and(is_ac_root_name)
         {
-            collect_workspace_candidate(&mut workspaces, base);
+            collect_ac_root_candidate(&mut ac_roots, base);
         }
 
-        collect_workspace_candidate(&mut workspaces, &base.join(CANONICAL_WORKSPACE_DIR));
+        collect_ac_root_candidate(&mut ac_roots, &base.join(CANONICAL_AC_ROOT_DIR));
 
         let Ok(entries) = std::fs::read_dir(base) else {
             continue;
@@ -165,32 +165,32 @@ pub(crate) fn configured_workspace_dirs(settings: &AppSettings) -> Vec<PathBuf> 
                 continue;
             };
             if file_type.is_dir() {
-                collect_workspace_candidate(
-                    &mut workspaces,
-                    &entry.path().join(CANONICAL_WORKSPACE_DIR),
+                collect_ac_root_candidate(
+                    &mut ac_roots,
+                    &entry.path().join(CANONICAL_AC_ROOT_DIR),
                 );
             }
         }
     }
-    workspaces
+    ac_roots
 }
 
-fn ensure_workspace_is_configured(
+fn ensure_ac_root_is_configured(
     settings: &AppSettings,
-    workspace_dir: &Path,
+    ac_root: &Path,
 ) -> Result<(), String> {
-    let workspace = canonical_existing_dir(workspace_dir, "Project AC Root")?;
-    let configured = configured_workspace_dirs(settings);
+    let ac_root = canonical_existing_dir(ac_root, "Project AC Root")?;
+    let configured = configured_ac_roots(settings);
     if configured
         .iter()
-        .any(|candidate| same_canonical_path(candidate, &workspace))
+        .any(|candidate| same_canonical_path(candidate, &ac_root))
     {
         return Ok(());
     }
 
     Err(format!(
         "Agent path is outside configured AC project roots: {}",
-        workspace.display()
+        ac_root.display()
     ))
 }
 
@@ -206,13 +206,13 @@ fn validate_authoritative_matrix_dir(matrix_dir: &Path) -> Result<PathBuf, Strin
             matrix_dir.display()
         ));
     }
-    let workspace_dir = matrix_dir.parent().ok_or_else(|| {
+    let ac_root = matrix_dir.parent().ok_or_else(|| {
         format!(
             "Agent Matrix '{}' has no parent Project AC Root",
             matrix_dir.display()
         )
     })?;
-    ensure_authoritative_workspace_dir(workspace_dir)?;
+    ensure_authoritative_ac_root(ac_root)?;
     Ok(matrix_dir)
 }
 
@@ -271,13 +271,13 @@ pub fn validate_profile_selection_agent_path(
 
     if dir_name.starts_with("_agent_") {
         let launch_path = validate_authoritative_matrix_dir(launch_path)?;
-        let workspace_dir = launch_path.parent().ok_or_else(|| {
+        let ac_root = launch_path.parent().ok_or_else(|| {
             format!(
                 "Agent Matrix '{}' has no parent Project AC Root",
                 launch_path.display()
             )
         })?;
-        ensure_workspace_is_configured(settings, workspace_dir)?;
+        ensure_ac_root_is_configured(settings, ac_root)?;
         return Ok(ValidatedProfileAgentPath {
             origin_matrix_dir: launch_path.clone(),
             launch_path,
@@ -286,13 +286,13 @@ pub fn validate_profile_selection_agent_path(
 
     if dir_name.starts_with("__agent_") {
         let (launch_path, origin_matrix_dir) = validated_replica_origin(launch_path)?;
-        let workspace_dir = origin_matrix_dir.parent().ok_or_else(|| {
+        let ac_root = origin_matrix_dir.parent().ok_or_else(|| {
             format!(
                 "Agent Matrix '{}' has no parent Project AC Root",
                 origin_matrix_dir.display()
             )
         })?;
-        ensure_workspace_is_configured(settings, workspace_dir)?;
+        ensure_ac_root_is_configured(settings, ac_root)?;
         return Ok(ValidatedProfileAgentPath {
             launch_path,
             origin_matrix_dir,
@@ -865,9 +865,9 @@ mod tests {
     fn selection_write_dual_writes_profile_and_preserves_last_coding_agent() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_dev-rust");
-        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix).unwrap();
         std::fs::create_dir_all(&replica).unwrap();
         std::fs::write(
@@ -908,9 +908,9 @@ mod tests {
     #[test]
     fn replica_origin_default_is_followed_when_identity_is_valid() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("project").join(".ac");
-        let matrix = workspace.join("_agent_dev-rust");
-        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        let ac_root = temp.path().join("project").join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix).unwrap();
         std::fs::create_dir_all(&replica).unwrap();
         std::fs::write(
@@ -961,9 +961,9 @@ mod tests {
     fn profile_selection_accepts_real_matrix_and_replica_paths() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_dev-rust");
-        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix).unwrap();
         std::fs::create_dir_all(&replica).unwrap();
         std::fs::write(
@@ -1009,9 +1009,9 @@ mod tests {
     fn profile_content_hash_round_trips_and_preserves_profile() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_dev-rust");
-        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix).unwrap();
         std::fs::create_dir_all(&replica).unwrap();
         std::fs::write(

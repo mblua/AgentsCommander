@@ -190,7 +190,7 @@ fn execute_inner(args: TerminalSnapshotArgs) -> Result<(), String> {
 /// #1245: fixed, path-free diagnostic for a local requester-identity failure.
 /// The stable CLI error stays `requester_unavailable`; this text only reaches
 /// `app.log`, never stdout or stderr. Every reason in this chain is a fixed
-/// literal except the five `config::ac_root::ensure_authoritative_workspace_dir`
+/// literal except the five `config::ac_root::ensure_authoritative_ac_root`
 /// messages, which format absolute paths, so anything outside the known set is
 /// reported as `unexpected`.
 fn requester_identity_diagnostic(stage: &'static str, reason: &str) -> String {
@@ -736,7 +736,7 @@ mod tests {
             assert!(text.ends_with(&format!("reason={reason}")), "got {text}");
         }
 
-        // The five `config::ac_root::ensure_authoritative_workspace_dir`
+        // The five `config::ac_root::ensure_authoritative_ac_root`
         // messages are the only non-literal reasons reachable here, and each
         // formats at least one absolute path. All five must collapse to
         // `unexpected`, so no path text can reach `app.log`. One sample proves

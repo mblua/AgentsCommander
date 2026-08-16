@@ -16,7 +16,7 @@ fn archived_root_for_cwd(cwd: &str, archived_roots: &[String]) -> Option<String>
 }
 
 fn probe_spawn_refusal_for_archived_root(root: &str) -> Result<(), String> {
-    if crate::config::ac_root::has_workspace_dir(Path::new(root)) {
+    if crate::config::ac_root::has_ac_root(Path::new(root)) {
         return Ok(());
     }
     Err(format!(
@@ -248,14 +248,14 @@ mod tests {
 
         assert!(matches!(
             err,
-            crate::config::projects::ProjectError::WorkspaceMissing(_)
+            crate::config::projects::ProjectError::AcRootMissing(_)
         ));
         assert!(settings.project_paths.is_empty());
         assert_eq!(settings.archived_project_paths, vec![project]);
     }
 
     #[test]
-    fn probe_spawn_refusal_rejects_an_archived_root_without_a_workspace_dir() {
+    fn probe_spawn_refusal_rejects_an_archived_root_without_a_ac_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("archived-project");
         std::fs::create_dir_all(&project).expect("create project dir");
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_spawn_refusal_accepts_an_archived_root_that_still_has_a_workspace_dir() {
+    fn probe_spawn_refusal_accepts_an_archived_root_that_still_has_a_ac_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("archived-project");
         std::fs::create_dir_all(project.join(".ac")).expect("create workspace");

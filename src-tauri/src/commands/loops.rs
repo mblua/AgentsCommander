@@ -12,7 +12,7 @@ use crate::config::loops::{
     LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
     LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
-use crate::config::ac_root::existing_workspace_dir;
+use crate::config::ac_root::existing_ac_root;
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
 use crate::loops::scheduler::LoopScheduler;
@@ -61,14 +61,14 @@ pub async fn create_loop(
     request: LoopCreateRequest,
 ) -> Result<LoopConfigDetails, String> {
     let project_dir = PathBuf::from(&request.project_path);
-    let workspace_dir = workspace_for_project(&project_dir)?;
-    crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir)?;
+    let ac_root = ac_root_for_project(&project_dir)?;
+    crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root)?;
     let _guard = scheduler.mutation_guard().await;
     let id = match request.id.as_deref() {
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&request.name)?,
     };
-    let dir = loop_dir(&workspace_dir, &id);
+    let dir = loop_dir(&ac_root, &id);
     if dir.exists() {
         return Err(format!("Loop '{}' already exists", id));
     }
@@ -95,7 +95,7 @@ pub async fn create_loop(
         },
     };
     validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = baseline_loop_state(&config, Utc::now())?;
     write_loop_state_atomic(&dir, &state)?;
     let details = details_from_parts(&dir, &config, &state);
@@ -120,10 +120,10 @@ pub async fn update_loop(
 ) -> Result<LoopConfigDetails, String> {
     validate_loop_id(&request.id)?;
     let project_dir = PathBuf::from(&request.project_path);
-    let workspace_dir = workspace_for_project(&project_dir)?;
-    crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir)?;
+    let ac_root = ac_root_for_project(&project_dir)?;
+    crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root)?;
     let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&workspace_dir, &request.id);
+    let dir = loop_dir(&ac_root, &request.id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", request.id));
     }
@@ -141,7 +141,7 @@ pub async fn update_loop(
     )?;
 
     validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = if reset_schedule {
         baseline_loop_state(&config, Utc::now())?
     } else {
@@ -173,9 +173,9 @@ pub async fn delete_loop(
 ) -> Result<(), String> {
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
-    let workspace_dir = workspace_for_project(&project_dir)?;
+    let ac_root = ac_root_for_project(&project_dir)?;
     let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&workspace_dir, &id);
+    let dir = loop_dir(&ac_root, &id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", id));
     }
@@ -195,9 +195,9 @@ pub async fn toggle_loop(
 ) -> Result<LoopConfigDetails, String> {
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
-    let workspace_dir = workspace_for_project(&project_dir)?;
+    let ac_root = ac_root_for_project(&project_dir)?;
     let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&workspace_dir, &id);
+    let dir = loop_dir(&ac_root, &id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", id));
     }
@@ -210,7 +210,7 @@ pub async fn toggle_loop(
         },
     )?;
     validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = if reset_schedule {
         baseline_loop_state(&config, Utc::now())?
     } else {
@@ -263,8 +263,8 @@ pub async fn get_loop_config(
 ) -> Result<LoopConfigDetails, String> {
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(project_path);
-    let workspace_dir = workspace_for_project(&project_dir)?;
-    let dir = loop_dir(&workspace_dir, &id);
+    let ac_root = ac_root_for_project(&project_dir)?;
+    let dir = loop_dir(&ac_root, &id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", id));
     }
@@ -291,8 +291,8 @@ pub async fn preview_loop_cron(expr: String) -> Result<LoopCronPreview, String> 
     })
 }
 
-fn workspace_for_project(project_dir: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project_dir).ok_or_else(|| {
+fn ac_root_for_project(project_dir: &Path) -> Result<PathBuf, String> {
+    existing_ac_root(project_dir).ok_or_else(|| {
         format!(
             "Project AC Root not found in {} (.ac)",
             project_dir.display()

@@ -41,7 +41,7 @@ pub enum PlaceholderRootKind {
 pub struct PlaceholderContext {
     pub replica_root: PathBuf,
     pub root_kind: PlaceholderRootKind,
-    pub workspace_root: Option<PathBuf>,
+    pub ac_root: Option<PathBuf>,
     pub matrix_root: Option<PathBuf>,
 }
 
@@ -69,13 +69,13 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
         PlaceholderRootKind::NormalLaunchCwd
     };
 
-    let workspace_root = crate::config::ac_root::find_workspace_ancestor(&canonical);
-    let matrix_root = derive_matrix_root(&canonical, workspace_root.as_deref());
+    let ac_root = crate::config::ac_root::find_ac_root_ancestor(&canonical);
+    let matrix_root = derive_matrix_root(&canonical, ac_root.as_deref());
 
     Ok(PlaceholderContext {
         replica_root: canonical,
         root_kind,
-        workspace_root,
+        ac_root,
         matrix_root,
     })
 }
@@ -89,7 +89,7 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
 /// the placeholder path must stay pure: no filesystem read, no config repair (#576 §8).
 /// Returns None for the root-agent, for normal (non-replica) launch roots, and for a
 /// degenerate/invalid replica leaf (e.g. `__agent_` empty name, or `__agent_bad.name`).
-fn derive_matrix_root(canonical: &Path, workspace_root: Option<&Path>) -> Option<PathBuf> {
+fn derive_matrix_root(canonical: &Path, ac_root: Option<&Path>) -> Option<PathBuf> {
     if !is_ac_replica_dir(canonical) {
         return None;
     }
@@ -100,7 +100,7 @@ fn derive_matrix_root(canonical: &Path, workspace_root: Option<&Path>) -> Option
         .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         })?;
-    workspace_root.map(|workspace| workspace.join(format!("_agent_{}", agent_name)))
+    ac_root.map(|ac_root| ac_root.join(format!("_agent_{}", agent_name)))
 }
 
 pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<String, String> {
@@ -117,11 +117,11 @@ pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<
     }
 
     if expanded.contains(AC_WORKSPACE_ROOT_PLACEHOLDER) {
-        let workspace = context
-            .workspace_root
+        let ac_root = context
+            .ac_root
             .as_ref()
             .ok_or_else(|| AC_WORKSPACE_ROOT_ERROR.to_string())?;
-        expanded = expanded.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &workspace.to_string_lossy());
+        expanded = expanded.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &ac_root.to_string_lossy());
     }
 
     if expanded.contains(AC_MATRIX_ROOT_PLACEHOLDER) {
@@ -176,7 +176,7 @@ pub fn expand_placeholders_in_content(value: &str, context: &PlaceholderContext)
     if context.root_kind == PlaceholderRootKind::AcReplicaOrRootAgent {
         out = out.replace(AC_REPLICA_ROOT_PLACEHOLDER, &fwd(&context.replica_root));
     }
-    if let Some(ws) = &context.workspace_root {
+    if let Some(ws) = &context.ac_root {
         out = out.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &fwd(ws));
     }
     if let Some(mx) = &context.matrix_root {
@@ -358,15 +358,15 @@ mod tests {
         let ctx = placeholder_context_for_launch_root(&replica).unwrap();
 
         let expected_replica = canonical_stripped(&replica);
-        let expected_workspace = expected_replica
+        let expected_ac_root = expected_replica
             .parent()
             .and_then(|parent| parent.parent())
             .expect("replica has a .ac workspace ancestor");
-        let expected_matrix = expected_workspace.join("_agent_dev-rust");
+        let expected_matrix = expected_ac_root.join("_agent_dev-rust");
 
         assert_eq!(ctx.root_kind, PlaceholderRootKind::AcReplicaOrRootAgent);
         assert_eq!(ctx.replica_root, expected_replica);
-        assert_eq!(ctx.workspace_root.as_deref(), Some(expected_workspace));
+        assert_eq!(ctx.ac_root.as_deref(), Some(expected_ac_root));
         assert_eq!(ctx.matrix_root.as_deref(), Some(expected_matrix.as_path()));
 
         assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
         );
         assert_eq!(
             expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap(),
-            format!(r"{}\x", expected_workspace.to_string_lossy())
+            format!(r"{}\x", expected_ac_root.to_string_lossy())
         );
         assert_eq!(
             expand_placeholders(r"%AC_MATRIX_ROOT%\x", &ctx).unwrap(),
@@ -391,7 +391,7 @@ mod tests {
         let ctx = placeholder_context_for_launch_root(&repo).unwrap();
 
         assert_eq!(ctx.root_kind, PlaceholderRootKind::NormalLaunchCwd);
-        assert_eq!(ctx.workspace_root, None);
+        assert_eq!(ctx.ac_root, None);
         assert_eq!(ctx.matrix_root, None);
 
         assert_eq!(
@@ -457,7 +457,7 @@ mod tests {
         let normal = PlaceholderContext {
             replica_root: PathBuf::from(if cfg!(windows) { r"C:\cwd" } else { "/cwd" }),
             root_kind: PlaceholderRootKind::NormalLaunchCwd,
-            workspace_root: None,
+            ac_root: None,
             matrix_root: None,
         };
         let out = expand_placeholders_in_content(
@@ -577,7 +577,7 @@ mod tests {
                 "/some/replica"
             }),
             root_kind: PlaceholderRootKind::AcReplicaOrRootAgent,
-            workspace_root: None,
+            ac_root: None,
             matrix_root: None,
         };
         assert!(expand_placeholders(r"%AC_REPLICA_ROOT%\x", &root_agent).is_ok());
@@ -597,7 +597,7 @@ mod tests {
                 "/some/cwd"
             }),
             root_kind: PlaceholderRootKind::NormalLaunchCwd,
-            workspace_root: None,
+            ac_root: None,
             matrix_root: None,
         };
         assert_eq!(
@@ -608,33 +608,33 @@ mod tests {
 
     #[test]
     fn derive_matrix_root_matches_canonical_formula() {
-        let workspace = PathBuf::from(if cfg!(windows) {
+        let ac_root = PathBuf::from(if cfg!(windows) {
             r"C:\proj\.ac"
         } else {
             "/proj/.ac"
         });
-        let replica = workspace.join("wg-7-dev-team").join("__agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
         assert_eq!(
-            derive_matrix_root(&replica, Some(&workspace)),
-            Some(workspace.join("_agent_dev-rust"))
+            derive_matrix_root(&replica, Some(&ac_root)),
+            Some(ac_root.join("_agent_dev-rust"))
         );
 
         // Non-replica leaf -> None.
-        let repo = workspace.join("wg-7-dev-team").join("repo-thing");
-        assert_eq!(derive_matrix_root(&repo, Some(&workspace)), None);
+        let repo = ac_root.join("wg-7-dev-team").join("repo-thing");
+        assert_eq!(derive_matrix_root(&repo, Some(&ac_root)), None);
 
-        // Replica leaf but no .ac ancestor -> None (guards the workspace_root.map arm).
+        // Replica leaf but no .ac ancestor -> None (guards the ac_root.map arm).
         assert_eq!(derive_matrix_root(&replica, None), None);
 
         // F1: degenerate / invalid agent name -> None (parity with validate_agent_name).
-        let empty = workspace.join("wg-7-dev-team").join("__agent_");
-        assert_eq!(derive_matrix_root(&empty, Some(&workspace)), None);
-        let dotted = workspace.join("wg-7-dev-team").join("__agent_bad.name");
-        assert_eq!(derive_matrix_root(&dotted, Some(&workspace)), None);
+        let empty = ac_root.join("wg-7-dev-team").join("__agent_");
+        assert_eq!(derive_matrix_root(&empty, Some(&ac_root)), None);
+        let dotted = ac_root.join("wg-7-dev-team").join("__agent_bad.name");
+        assert_eq!(derive_matrix_root(&dotted, Some(&ac_root)), None);
     }
 
     #[test]
-    fn non_replica_inside_ac_resolves_workspace_only() {
+    fn non_replica_inside_ac_resolves_ac_root_only() {
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join(".ac").join("wg-7-dev-team").join("repo-x");
         std::fs::create_dir_all(&repo).unwrap();
@@ -644,15 +644,15 @@ mod tests {
         assert_eq!(ctx.matrix_root, None);
 
         let expected_replica = canonical_stripped(&repo);
-        let expected_workspace = expected_replica
+        let expected_ac_root = expected_replica
             .parent()
             .and_then(|parent| parent.parent())
             .expect("repo-x has a .ac workspace ancestor");
-        assert_eq!(ctx.workspace_root.as_deref(), Some(expected_workspace));
+        assert_eq!(ctx.ac_root.as_deref(), Some(expected_ac_root));
 
         assert_eq!(
             expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap(),
-            format!(r"{}\x", expected_workspace.to_string_lossy())
+            format!(r"{}\x", expected_ac_root.to_string_lossy())
         );
         assert_eq!(
             expand_placeholders(r"%AC_REPLICA_ROOT%\x", &ctx).unwrap_err(),

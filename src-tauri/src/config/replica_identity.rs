@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::config::ac_root::{ensure_authoritative_workspace_dir, find_workspace_ancestor};
+use crate::config::ac_root::{ensure_authoritative_ac_root, find_ac_root_ancestor};
 
 pub const ROLE_MD_FILENAME: &str = "Role.md";
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
@@ -11,7 +11,7 @@ const DEPRECATED_REPOS_WORKSPACE_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgReplicaIdentity {
     pub agent_name: String,
-    pub workspace_dir: PathBuf,
+    pub ac_root: PathBuf,
     pub matrix_dir: PathBuf,
     pub identity: String,
 }
@@ -143,7 +143,7 @@ fn relative_path(from: &Path, to: &Path) -> Result<String, String> {
 }
 
 fn validate_local_matrix(
-    workspace_dir: &Path,
+    ac_root: &Path,
     matrix_dir: &Path,
     agent_name: &str,
 ) -> Result<(), String> {
@@ -178,12 +178,12 @@ fn validate_local_matrix(
         ));
     }
 
-    let workspace_abs = std::fs::canonicalize(workspace_dir)
+    let ac_root_abs = std::fs::canonicalize(ac_root)
         .map(strip_unc)
         .map_err(|e| {
             format!(
                 "Failed to canonicalize Project AC Root '{}': {}",
-                display_path(workspace_dir),
+                display_path(ac_root),
                 e
             )
         })?;
@@ -196,11 +196,11 @@ fn validate_local_matrix(
                 e
             )
         })?;
-    if !matrix_abs.starts_with(&workspace_abs) {
+    if !matrix_abs.starts_with(&ac_root_abs) {
         return Err(format!(
             "WG replica identity target '{}' escapes authoritative Project AC Root '{}'",
             display_path(&matrix_abs),
-            display_path(&workspace_abs)
+            display_path(&ac_root_abs)
         ));
     }
 
@@ -244,21 +244,21 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
         ));
     }
 
-    let workspace_dir = find_workspace_ancestor(replica_dir).ok_or_else(|| {
+    let ac_root = find_ac_root_ancestor(replica_dir).ok_or_else(|| {
         format!(
             "WG replica directory '{}' is not inside a Project AC Root",
             display_path(replica_dir)
         )
     })?;
-    ensure_authoritative_workspace_dir(&workspace_dir)?;
+    ensure_authoritative_ac_root(&ac_root)?;
 
-    let matrix_dir = workspace_dir.join(format!("_agent_{}", agent_name));
-    validate_local_matrix(&workspace_dir, &matrix_dir, agent_name)?;
+    let matrix_dir = ac_root.join(format!("_agent_{}", agent_name));
+    validate_local_matrix(&ac_root, &matrix_dir, agent_name)?;
     let identity = relative_path(replica_dir, &matrix_dir)?;
 
     Ok(WgReplicaIdentity {
         agent_name: agent_name.to_string(),
-        workspace_dir,
+        ac_root,
         matrix_dir,
         identity,
     })
@@ -426,14 +426,14 @@ mod tests {
         );
     }
 
-    fn setup_replica(project_workspace_name: &str) -> tempfile::TempDir {
+    fn setup_replica(project_ac_root_name: &str) -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp
+        let ac_root = temp
             .path()
             .join("AgentsCommander_ac")
-            .join(project_workspace_name);
-        let matrix = workspace.join("_agent_tech-lead");
-        let replica = workspace.join("wg-2-dev-team").join("__agent_tech-lead");
+            .join(project_ac_root_name);
+        let matrix = ac_root.join("_agent_tech-lead");
+        let replica = ac_root.join("wg-2-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&matrix).expect("create matrix");
         std::fs::create_dir_all(&replica).expect("create replica");
         std::fs::write(matrix.join(ROLE_MD_FILENAME), "# Tech Lead\n").expect("write Role.md");
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn expected_identity_is_same_workspace_for_canonical_ac() {
+    fn expected_identity_is_same_ac_root_for_canonical_ac() {
         let temp = setup_replica(".ac");
         let replica = temp
             .path()

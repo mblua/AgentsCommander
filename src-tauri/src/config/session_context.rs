@@ -938,25 +938,25 @@ fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn find_workspace_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    crate::config::ac_root::find_workspace_ancestor(path).map(|p| canonical_or_original(&p))
+fn find_ac_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    crate::config::ac_root::find_ac_root_ancestor(path).map(|p| canonical_or_original(&p))
 }
 
-pub fn create_default_context_templates(workspace_dir: &Path) -> Result<(), String> {
+pub fn create_default_context_templates(ac_root: &Path) -> Result<(), String> {
     let mut on_publication =
         |_: &'static str, _: crate::config::seeded_context_templates::ContextPublication| {};
-    create_default_context_templates_with_publications(workspace_dir, &mut on_publication)
+    create_default_context_templates_with_publications(ac_root, &mut on_publication)
 }
 
 pub(crate) fn create_default_context_templates_with_publications(
-    workspace_dir: &Path,
+    ac_root: &Path,
     on_publication: &mut dyn FnMut(
         &'static str,
         crate::config::seeded_context_templates::ContextPublication,
     ),
 ) -> Result<(), String> {
     crate::config::seeded_context_templates::ensure_project_context_templates_with_publications(
-        workspace_dir,
+        ac_root,
         on_publication,
     )
 }
@@ -1101,20 +1101,20 @@ fn cleanup_failed_context_template(path: &Path) {
     }
 }
 
-fn resolve_workspace_context_dir(agent_root: &Path) -> Option<PathBuf> {
+fn resolve_ac_root_context_dir(agent_root: &Path) -> Option<PathBuf> {
     // #979 F.2: the `ac-root-agent` -> parent fallback is deleted. This is NOT
     // sufficient on its own and is NOT what protects the project global.
-    // `find_workspace_root` is the first branch and matches ANY `.ac` ancestor,
+    // `find_ac_root` is the first branch and matches ANY `.ac` ancestor,
     // and `config_dir()` sits inside a `.ac` tree in the dev and workgroup
     // layouts, so there the deletion is a no-op. It closes the installed layout
     // (no `.ac` ancestor) and removes a misleading affordance. The load-bearing
     // defenses are the `resolve_agent_context` guard and the cache-writer branch
     // in `ensure_session_context_with_config`.
-    find_workspace_root(agent_root)
+    find_ac_root(agent_root)
 }
 
 fn read_context_template(agent_root: &str, filename: &str) -> Result<Option<String>, String> {
-    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+    let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
     let path = context_dir.join(filename);
@@ -1203,7 +1203,7 @@ where
         &mut dyn FnMut(&'static str, crate::config::seeded_context_templates::ContextPublication),
     ) -> Result<(), String>,
 {
-    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+    let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) else {
         return Ok(None);
     };
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
@@ -1253,7 +1253,7 @@ fn read_or_create_context_recorded(
     let Some(token) = activation else {
         return read_or_create_context_template(agent_root, filename, default_content);
     };
-    let Some(project_root) = resolve_workspace_context_dir(Path::new(agent_root))
+    let Some(project_root) = resolve_ac_root_context_dir(Path::new(agent_root))
         .and_then(|context_dir| context_dir.parent().map(Path::to_path_buf))
     else {
         return read_or_create_context_template(agent_root, filename, default_content);
@@ -1441,11 +1441,11 @@ fn has_agent_matrix_dir_name(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn path_parent_is_workspace(path: &Path) -> bool {
+fn path_parent_is_ac_root(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .map(crate::config::ac_root::is_workspace_dir_name)
+        .map(crate::config::ac_root::is_ac_root_name)
         .unwrap_or(false)
 }
 
@@ -1475,7 +1475,7 @@ pub(crate) fn is_canonical_agent_matrix_dir(cwd: &str) -> bool {
     let Ok(canonical_path) = std::fs::canonicalize(path) else {
         return false;
     };
-    has_agent_matrix_dir_name(&canonical_path) && path_parent_is_workspace(&canonical_path)
+    has_agent_matrix_dir_name(&canonical_path) && path_parent_is_ac_root(&canonical_path)
 }
 
 fn is_agent_dir(cwd: &str) -> bool {
@@ -1503,8 +1503,8 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
         }
     };
 
-    if let Some(workspace_root) = find_workspace_root(cwd_path) {
-        push_unique(workspace_root);
+    if let Some(ac_root) = find_ac_root(cwd_path) {
+        push_unique(ac_root);
     }
 
     push_unique(cwd_path.to_path_buf());
@@ -2139,7 +2139,7 @@ fn resolve_session_context_content_with_activation(
 
     // #979: never append coordinator prose to Root, and never let a Root cwd reach
     // `read_or_create_context_template`. That call resolves its directory through
-    // `resolve_workspace_context_dir`, so with a `.ac`-ancestor config dir (the dev
+    // `resolve_ac_root_context_dir`, so with a `.ac`-ancestor config dir (the dev
     // and workgroup layouts) a Root would CREATE and SYNC the *project's*
     // `Context.coordinator.md`. `is_coordinator` is false for Root today
     // (`is_coordinator_for_cwd` derives an FQN from the cwd and checks team
@@ -2681,7 +2681,7 @@ fn resolve_agent_context_with_activation(
     // `heal_stale_global_context_template`.
     //
     // In the dev and workgroup layouts `config_dir()` sits INSIDE a `.ac` tree, so
-    // `find_workspace_root` resolves the *project's* `Context.AgentsCommander.md`
+    // `find_ac_root` resolves the *project's* `Context.AgentsCommander.md`
     // for a Root-named path: moving this guard below the template read "where it
     // reads better" silently reopens a project-file create-and-rewrite. Root's
     // context comes from `render_root_runtime_prologue` instead. In production this
@@ -2766,7 +2766,7 @@ fn heal_stale_global_recorded(
     let Some(token) = activation else {
         return heal_stale_global_context_template(agent_root, matrix_root, skills_section);
     };
-    let Some(project_root) = resolve_workspace_context_dir(Path::new(agent_root))
+    let Some(project_root) = resolve_ac_root_context_dir(Path::new(agent_root))
         .and_then(|context_dir| context_dir.parent().map(Path::to_path_buf))
     else {
         return heal_stale_global_context_template(agent_root, matrix_root, skills_section);
@@ -2851,9 +2851,9 @@ fn heal_stale_global_context_template_with_clock(
         TemplatePublication,
     };
 
-    let Some(context_dir) = resolve_workspace_context_dir(Path::new(agent_root)) else {
+    let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) else {
         return ContextTemplateExecution::completed(TemplatePublication::Skipped(
-            ContextTemplateSkipReason::WorkspaceUnavailable,
+            ContextTemplateSkipReason::AcRootUnavailable,
         ));
     };
     let path = context_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
@@ -3498,7 +3498,7 @@ fn default_context_dynamic_values(
 ".to_string(),
     };
     let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
-    let workspace_root_phrase = if has_messaging_exception {
+    let ac_root_phrase = if has_messaging_exception {
         "the workspace root (other than the narrow messaging exception above)"
     } else {
         "the workspace root"
@@ -3508,12 +3508,12 @@ fn default_context_dynamic_values(
     } else if matrix_root.is_some() {
         format!(
             "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
-            ws = workspace_root_phrase,
+            ws = ac_root_phrase,
         )
     } else {
         format!(
             "the entries listed above — including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
-            ws = workspace_root_phrase,
+            ws = ac_root_phrase,
         )
     };
     // #923 D4/D8: whatever messaging read grant this agent got, it lives OUTSIDE the
@@ -3778,7 +3778,7 @@ fn legacy_rendered_default_context_for_generation(
         MessagingContextMode::None => String::new(),
     };
     let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
-    let workspace_root_phrase = if has_messaging_exception {
+    let ac_root_phrase = if has_messaging_exception {
         "the workspace root (other than the narrow messaging exception above)"
     } else {
         "the workspace root"
@@ -3786,12 +3786,12 @@ fn legacy_rendered_default_context_for_generation(
     let forbidden_scope = if matrix_root.is_some() {
         format!(
             "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
-            ws = workspace_root_phrase,
+            ws = ac_root_phrase,
         )
     } else {
         format!(
             "the entries listed above — including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
-            ws = workspace_root_phrase,
+            ws = ac_root_phrase,
         )
     };
     let git_scope = match (git_scope_generation, matrix_root.is_some()) {
@@ -5195,7 +5195,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     /// #923 D6: entry #1 grants `repo-*` by name pattern; discovery needs a listing.
     #[test]
-    fn entry_one_grants_workspace_root_listing_for_repo_discovery() {
+    fn entry_one_grants_ac_root_listing_for_repo_discovery() {
         let out = default_context(
             "C:/fake/wg-7-dev-team/__agent_architect",
             None,
@@ -5580,9 +5580,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn git_scope_materializes_identically_for_all_managed_targets() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
@@ -5651,9 +5651,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn pre_1072_legacy_with_matrix_classifies_stale_and_heals_once() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
@@ -5683,7 +5683,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             LegacyRenderedDefaultContext::StaleGenerated
         ));
 
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
         let first = resolve_agent_context(
             &agent_root,
@@ -5700,7 +5700,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             std::fs::read_to_string(&template_path).expect("read healed template"),
             get_default_agent_template()
         );
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
 
         let second = resolve_agent_context(
             &agent_root,
@@ -5721,8 +5721,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn pre_1072_legacy_without_matrix_classifies_stale_and_heals_once() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
         let agent_root = path_string(&matrix_root);
@@ -5740,7 +5740,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             LegacyRenderedDefaultContext::StaleGenerated
         ));
 
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write pre-1072 template");
         let first =
             resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
@@ -5751,7 +5751,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             std::fs::read_to_string(&template_path).expect("read healed template"),
             get_default_agent_template()
         );
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
 
         let second =
             resolve_agent_context(&agent_root, None, &skills_section, &matrix_root, None, None)
@@ -5766,9 +5766,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn one_byte_edited_pre_1072_git_scope_remains_custom() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
@@ -5813,7 +5813,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             LegacyRenderedDefaultContext::NotLegacy
         ));
 
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, edited.as_bytes()).expect("write edited template");
         let rendered = resolve_agent_context(
             &agent_root,
@@ -5829,7 +5829,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             std::fs::read(&template_path).expect("read preserved template"),
             edited.as_bytes()
         );
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
     }
 
     #[test]
@@ -5972,15 +5972,15 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn custom_agent_template_is_used_for_wg_replica() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
-        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::create_dir_all(&ac_root).expect("create workspace dir");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "root={{AGENT_ROOT}}\n{{MATRIX_SECTION}}\n{{MESSAGING_EXCEPTION}}\n{{SKILLS_SECTION}}",
         )
         .expect("write custom agent template");
@@ -6013,11 +6013,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn legacy_agent_template_is_migrated_to_global_template() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
-        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let legacy_path = ac_root.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let new_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&legacy_path, "LEGACY_BODY {{AGENT_ROOT}}").expect("write legacy template");
         let mut publications = Vec::new();
 
@@ -6058,11 +6058,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn missing_global_template_placeholders_are_force_appended() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_ONLY {{WRITE_RESTRICTIONS}}",
         )
         .expect("write partial template");
@@ -6095,9 +6095,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn legacy_rendered_default_template_is_not_fallback_appended() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
@@ -6111,7 +6111,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
         );
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             &legacy,
         )
         .expect("write legacy rendered template");
@@ -6133,13 +6133,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn stale_generated_legacy_default_for_other_wg_replica_regenerates_current_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6160,7 +6160,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &old_skills_section,
         );
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             &legacy,
         )
         .expect("write stale generated default");
@@ -6185,13 +6185,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn stale_generated_legacy_default_with_generated_skills_regenerates_current_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6217,7 +6217,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &old_skills_section,
         );
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             &legacy,
         )
         .expect("write stale generated default");
@@ -6244,13 +6244,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn edited_legacy_skills_section_preserves_custom_template_content() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6275,7 +6275,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "No valid skills with parseable SKILL.md frontmatter were discovered.\nKEEP_CUSTOM_SKILLS_RULE_IN_CONTEXT",
         );
         assert_ne!(edited, legacy);
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
             .expect("write edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
@@ -6301,13 +6301,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn generated_shaped_manual_legacy_skills_content_is_preserved() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6334,7 +6334,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         let edited = legacy.replace(&old_skills_section, &manual_skills);
         assert_ne!(edited, legacy);
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), edited)
             .expect("write edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
@@ -6364,13 +6364,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn edited_legacy_rendered_default_preserves_custom_template_content() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6390,7 +6390,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         let edited =
             format!("{legacy}\n\n## Project Rules\n\nKEEP_CUSTOM_PROJECT_RULES_IN_CONTEXT\n");
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &edited).expect("write edited rendered legacy template");
 
         let materialized = materialize_agent_context_file(
@@ -6416,13 +6416,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn inline_edited_legacy_rendered_default_preserves_custom_template_content() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6445,7 +6445,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "Your agent root is your current working directory.\n\nKEEP_INLINE_CUSTOM_RULE_IN_CONTEXT",
         );
         assert_ne!(edited, legacy);
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &edited)
             .expect("write inline edited rendered legacy template");
 
@@ -6473,9 +6473,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn stale_generated_legacy_default_for_direct_matrix_regenerates_current_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let target_matrix = workspace_dir.join("_agent_architect");
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let target_matrix = ac_root.join("_agent_architect");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&target_matrix).expect("create target matrix");
 
@@ -6487,7 +6487,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &old_skills_section,
         );
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             &legacy,
         )
         .expect("write stale generated default");
@@ -6525,13 +6525,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn stale_generated_legacy_default_heals_on_disk_and_converges() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -6552,7 +6552,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(!legacy.contains("### Incoming Message Notifications"));
         assert!(!legacy.contains("Process this inter-agent message"));
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write stale generated default");
 
         let new_replica_root = path_string(&new_replica);
@@ -6588,7 +6588,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_eq!(healed, get_default_agent_template());
 
         // (d) no scratch temp file is left behind.
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
 
         // (c) a SECOND resolve reads the healed file, classifies NotLegacy, and
         // returns the same correct render (convergence in exactly one heal).
@@ -6611,13 +6611,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         use crate::config::seeded_context_templates::{ContextPublication, TemplatePublication};
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix_root = workspace_dir.join("_agent_dev-rust");
-        let new_matrix_root = workspace_dir.join("_agent_tech-lead");
-        let old_replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix_root = ac_root.join("_agent_dev-rust");
+        let new_matrix_root = ac_root.join("_agent_tech-lead");
+        let old_replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica_root = workspace_dir
+        let new_replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
@@ -6631,7 +6631,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix_root)),
             &old_skills_section,
         );
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, legacy).expect("write stale generated default");
         let expected = fixed_publication_time();
         let mut clock = || expected;
@@ -6664,12 +6664,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn self_heal_records_to_the_seed_manifest_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix_root = workspace_dir.join("_agent_dev-rust");
-        let old_replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix_root = ac_root.join("_agent_dev-rust");
+        let old_replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica_root = workspace_dir
+        let new_replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
@@ -6682,7 +6682,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix_root)),
             &old_skills_section,
         );
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), legacy)
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), legacy)
             .expect("write stale generated default");
 
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
@@ -6697,7 +6697,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "the self-heal target publishes at its commit point"
         );
 
-        let manifest = std::fs::read_to_string(workspace_dir.join("seed-manifest.toml"))
+        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
             .expect("the self-heal publication is recorded under the gate");
         assert!(
             manifest.contains("scope = \"context:agentscommander\""),
@@ -6708,15 +6708,15 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn current_tokenized_default_on_disk_is_not_rewritten() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
 
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, get_default_agent_template())
             .expect("write tokenized default");
 
@@ -6736,7 +6736,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // NotLegacy arm renders without ever rewriting the on-disk template.
         let on_disk = std::fs::read_to_string(&template_path).expect("read template");
         assert_eq!(on_disk, get_default_agent_template());
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
     }
 
     #[test]
@@ -6746,8 +6746,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         //
         // INVARIANT CARRIED FORWARD from that deleted test: it had to construct temp
         // dirs with NO `.ac` ancestor, precisely because "the context dir resolves via
-        // the root-agent parent fallback in `resolve_workspace_context_dir`". That is
-        // the whole point here. `find_workspace_root` is the FIRST branch and matches
+        // the root-agent parent fallback in `resolve_ac_root_context_dir`". That is
+        // the whole point here. `find_ac_root` is the FIRST branch and matches
         // any `.ac` ancestor, and `config_dir()` sits INSIDE a `.ac` tree in the dev
         // and workgroup layouts, so a Root there resolved the PROJECT's global and
         // could create, sync, and atomically heal it. This test is therefore built on
@@ -6769,7 +6769,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let root_str = path_string(&root);
         // Sanity: this really is the layout the guard exists for.
         assert_eq!(
-            resolve_workspace_context_dir(&root).map(|p| canonical_or_original(&p)),
+            resolve_ac_root_context_dir(&root).map(|p| canonical_or_original(&p)),
             Some(canonical_or_original(&ac_dir)),
             "the Root path must still resolve the `.ac` ancestor; that is why the guard is needed"
         );
@@ -6995,13 +6995,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn stale_generated_legacy_default_heals_after_hard_link_migration() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -7020,7 +7020,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
-        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let legacy_path = ac_root.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&legacy_path, &legacy).expect("write legacy-named template");
 
         let rendered = resolve_agent_context(
@@ -7035,14 +7035,14 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_mandatory_sections_once(&rendered);
         assert_no_raw_template_placeholders(&rendered);
 
-        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let new_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         let healed = std::fs::read_to_string(&new_path).expect("read healed template");
         assert_eq!(healed, get_default_agent_template());
         assert!(
             !legacy_path.exists(),
             "stray legacy-named template left in play after heal"
         );
-        assert_no_context_template_temp_leftover(&workspace_dir);
+        assert_no_context_template_temp_leftover(&ac_root);
     }
 
     #[test]
@@ -7131,13 +7131,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -7152,16 +7152,16 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write stale generated default");
 
         // Make the context dir read-only so the atomic temp-create fails and the
         // heal cannot publish.
-        let mut perms = std::fs::metadata(&workspace_dir)
+        let mut perms = std::fs::metadata(&ac_root)
             .expect("metadata")
             .permissions();
         perms.set_mode(0o555);
-        std::fs::set_permissions(&workspace_dir, perms).expect("set read-only");
+        std::fs::set_permissions(&ac_root, perms).expect("set read-only");
 
         let rendered = resolve_agent_context(
             &path_string(&new_replica),
@@ -7173,11 +7173,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
 
         // Restore write perms before any assertion so tempdir cleanup works.
-        let mut perms = std::fs::metadata(&workspace_dir)
+        let mut perms = std::fs::metadata(&ac_root)
             .expect("metadata")
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&workspace_dir, perms).expect("restore perms");
+        std::fs::set_permissions(&ac_root, perms).expect("restore perms");
 
         // The heal failed, but resolve still returns the correct in-memory
         // render (best-effort, never propagated).
@@ -7192,17 +7192,17 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn workspace_repos_placeholder_uses_repaired_replica_config() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::create_dir_all(&repo_dir).expect("create repo dir");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "{{WORKSPACE_REPOS}}",
         )
         .expect("write repos-only template");
@@ -7230,17 +7230,17 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn workspace_repos_placeholder_uses_missing_context_repaired_to_global() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::create_dir_all(&repo_dir).expect("create repo dir");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "{{WORKSPACE_REPOS}}",
         )
         .expect("write repos-only template");
@@ -7275,17 +7275,17 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn workspace_repos_placeholder_uses_empty_context_repaired_to_global() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let repo_dir = workspace_dir.join("wg-19-dev-team").join("repo-Example");
+        let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::create_dir_all(&repo_dir).expect("create repo dir");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "{{WORKSPACE_REPOS}}",
         )
         .expect("write repos-only template");
@@ -7320,9 +7320,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn deprecated_repos_context_token_is_skipped_without_generated_file() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
@@ -7357,9 +7357,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn edited_agent_template_is_used_for_all_provider_files() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(&template_path, "CUSTOM_AGENT_BODY").expect("write custom agent template");
 
@@ -7389,11 +7389,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn custom_coordinator_template_appends_only_for_coordinator() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_COORDINATOR_BODY",
         )
         .expect("write custom coordinator template");
@@ -7422,7 +7422,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(coordinator_content.contains("# Coordinator Context"));
         assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator template"),
             "CUSTOM_COORDINATOR_BODY"
         );
@@ -7432,11 +7432,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("project-a");
-        let workspace = project.join(".ac");
-        let team = workspace.join("_team_dev-team");
-        let workgroup = workspace.join("wg-1-dev-team");
-        let coordinator_matrix = workspace.join("_agent_tech-lead");
-        let member_matrix = workspace.join("_agent_dev-rust");
+        let ac_root = project.join(".ac");
+        let team = ac_root.join("_team_dev-team");
+        let workgroup = ac_root.join("wg-1-dev-team");
+        let coordinator_matrix = ac_root.join("_agent_tech-lead");
+        let member_matrix = ac_root.join("_agent_dev-rust");
         let coordinator = workgroup.join("__agent_tech-lead");
         let member = workgroup.join("__agent_dev-rust");
         for directory in [
@@ -7464,7 +7464,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write member config");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_COORDINATOR_BYTES",
         )
         .expect("write custom coordinator template");
@@ -7487,7 +7487,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 .expect("member context");
         assert!(!member_content.contains("## Privileged PTY Input"));
         assert_eq!(
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read custom template"),
             "CUSTOM_COORDINATOR_BYTES"
         );
@@ -7564,8 +7564,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // agent's materialized context only when auto_self_clear is true. Driven
         // through the production materialize path, not the raw template.
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let cwd = path_string(&matrix_root);
 
@@ -7602,11 +7602,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // (the new gated one) when ON, and ZERO when OFF (proving OFF truly
         // disables a coordinator that already carried the always-on block).
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "COORD BODY\n\n## Self-Maintenance\n\nLEGACY_SENTINEL old qualitative trigger.\n",
         )
         .expect("write legacy coordinator template");
@@ -7693,7 +7693,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn root_never_appends_creates_or_rewrites_a_coordinator_template() {
         // #979 G.7. `is_coordinator` is false for Root today, but the coordinator
         // branch calls `read_or_create_context_template`, which resolves through the
-        // same `resolve_workspace_context_dir`: with a `.ac`-ancestor config dir an
+        // same `resolve_ac_root_context_dir`: with a `.ac`-ancestor config dir an
         // incorrect flag would CREATE and SYNC the *project's* Context.coordinator.md.
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_dir = temp.path().join(".ac");
@@ -7817,10 +7817,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn managed_read_never_falls_back_to_an_ungated_direct_create() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        let target = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let target = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
 
         for synchronization in [Err("injected synchronization failure".to_string()), Ok(())] {
             let mut on_publication =
@@ -7846,8 +7846,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn missing_templates_are_created_and_used_during_regeneration() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
         let materialized = materialize_agent_context_file(
@@ -7867,12 +7867,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read created agent template"),
             get_default_agent_template()
         );
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read created coordinator template"),
             get_default_coordinator_template()
         );
@@ -7881,8 +7881,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn failed_template_seed_removes_partial_file_and_retry_uses_complete_defaults() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
         for (filename, default_content) in [
@@ -7895,7 +7895,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 get_default_coordinator_template(),
             ),
         ] {
-            let path = workspace_dir.join(filename);
+            let path = ac_root.join(filename);
             let mut clock = chrono::Utc::now;
             let err = write_template_if_missing_with::<PartialFailWriter, _>(
                 &path,
@@ -7920,7 +7920,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 !path.exists(),
                 "partial {filename} must be removed after write failure"
             );
-            let temp_leftovers = std::fs::read_dir(&workspace_dir)
+            let temp_leftovers = std::fs::read_dir(&ac_root)
                 .expect("read workspace dir")
                 .filter_map(|entry| entry.ok())
                 .filter(|entry| {
@@ -7947,12 +7947,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read retried agent template"),
             get_default_agent_template()
         );
         assert_eq!(
-            std::fs::read_to_string(workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read retried coordinator template"),
             get_default_coordinator_template()
         );
@@ -7961,11 +7961,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn concurrent_template_seed_never_exposes_partial_default_content() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
-        let path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         let (partial_written_tx, partial_written_rx) = mpsc::channel();
         let release_barrier = Arc::new(Barrier::new(2));
         let writer_release_barrier = Arc::clone(&release_barrier);
@@ -8035,13 +8035,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn legacy_template_migration_does_not_overwrite_concurrent_new_template() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
-        let legacy_path = workspace_dir.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
-        let new_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create workspace dir");
+        let legacy_path = ac_root.join(LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let new_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&legacy_path, "LEGACY_TEMPLATE").expect("write legacy template");
 
-        migrate_legacy_agent_context_template_with(&workspace_dir, |legacy_path, new_path| {
+        migrate_legacy_agent_context_template_with(&ac_root, |legacy_path, new_path| {
             std::fs::write(new_path, "USER_NEW_TEMPLATE")?;
             std::fs::hard_link(legacy_path, new_path)
         })
@@ -8060,13 +8060,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn empty_agent_template_falls_back_to_mandatory_blocks() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_tech-lead");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::write(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), "")
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), "")
             .expect("write empty agent template");
         std::fs::write(
-            workspace_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             "COORDINATOR_ONLY",
         )
         .expect("write coordinator template");
@@ -8093,10 +8093,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn existing_non_file_agent_template_returns_error() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::create_dir_all(workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+        std::fs::create_dir_all(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
             .expect("create template directory");
 
         let err = materialize_agent_context_file(
@@ -8113,11 +8113,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn invalid_utf8_agent_template_returns_error() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             [0xff, 0xfe],
         )
         .expect("write invalid utf8 template");
@@ -8138,8 +8138,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn materialize_with_filename_writes_custom_and_cleans_builtins_and_extra() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         // Pre-existing managed files that must be removed before the new write.
         std::fs::write(matrix_root.join("CLAUDE.md"), "stale claude").expect("write CLAUDE.md");
@@ -8175,8 +8175,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // R1.6 documented limitation: a custom name NOT in the cleanup set is not
         // removed (a *.md sweep would be too aggressive). This locks the behavior.
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(matrix_root.join("MyTeam.md"), "stale custom").expect("write MyTeam.md");
 
@@ -8205,8 +8205,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn materialize_with_filename_rejects_path_separators() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
 
         let err = materialize_agent_context_file_with_filename(
@@ -8227,8 +8227,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // must remove the link entry and write a fresh regular file, never write
         // THROUGH the link to its target.
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let outside = temp.path().join("outside-secret.txt");
         std::fs::write(&outside, "SENTINEL").expect("write outside target");
@@ -8280,8 +8280,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // regular file. Pre-#529 this bricked the launch (remove_file on a dir
         // failed -> Err -> "context files missing" + rollback).
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         let outside_dir = temp.path().join("outside-dir");
         std::fs::create_dir_all(&outside_dir).expect("create outside dir");
@@ -8709,9 +8709,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn materialize_agent_context_file_includes_skills_for_replica_context() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let matrix_root = workspace_dir.join("_agent_dev-rust");
-        let replica_root = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
@@ -8748,9 +8748,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn materialize_replica_context_repairs_stale_identity_before_role_injection() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("AgentsCommander_ac");
-        let workspace = project.join(".ac");
-        let matrix_root = workspace.join("_agent_tech-lead");
-        let replica_root = workspace.join("wg-2-dev-team").join("__agent_tech-lead");
+        let ac_root = project.join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
+        let replica_root = ac_root.join("wg-2-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::write(
@@ -8791,9 +8791,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn ensure_session_context_rejects_unrepairable_replica_identity() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("AgentsCommander_ac");
-        let workspace = project.join(".ac");
-        let matrix_root = workspace.join("_agent_tech-lead");
-        let replica_root = workspace.join("wg-2-dev-team").join("__agent_tech-lead");
+        let ac_root = project.join(".ac");
+        let matrix_root = ac_root.join("_agent_tech-lead");
+        let replica_root = ac_root.join("wg-2-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::write(
@@ -9444,13 +9444,13 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn legacy_intro_skills_section_still_classifies_stale_generated_and_heals() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let new_matrix = workspace_dir.join("_agent_tech-lead");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let new_matrix = ac_root.join("_agent_tech-lead");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
-        let new_replica = workspace_dir
+        let new_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_tech-lead");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
@@ -9491,7 +9491,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write stale generated default");
 
         // Direct classification: the two-sided compare recognizes the old intro.
@@ -9528,9 +9528,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn edited_legacy_intro_skills_section_is_preserved_not_healed() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = temp.path().join(".ac");
-        let old_matrix = workspace_dir.join("_agent_dev-rust");
-        let old_replica = workspace_dir
+        let ac_root = temp.path().join(".ac");
+        let old_matrix = ac_root.join("_agent_dev-rust");
+        let old_replica = ac_root
             .join("wg-19-dev-team")
             .join("__agent_dev-rust");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
@@ -9561,7 +9561,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             LegacyRenderedDefaultContext::NotLegacy
         ));
 
-        let template_path = workspace_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let template_path = ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(&template_path, &legacy).expect("write edited legacy");
         let rendered = resolve_agent_context(
             &path_string(&old_replica),

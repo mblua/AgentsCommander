@@ -248,9 +248,9 @@ struct ReplicaPaths {
 impl ReplicaPaths {
     fn create(root: &Path) -> Self {
         let collection = root.join("projects");
-        let workspace = collection.join(PROJECT).join(".ac");
-        let team = workspace.join("_team_dev-team");
-        let workgroup = workspace.join(WORKGROUP);
+        let ac_root = collection.join(PROJECT).join(".ac");
+        let team = ac_root.join("_team_dev-team");
+        let workgroup = ac_root.join(WORKGROUP);
         std::fs::create_dir_all(&team).expect("team directory");
         for name in [
             "coordinator",
@@ -259,7 +259,7 @@ impl ReplicaPaths {
             "member-exited",
             "member-tampered",
         ] {
-            std::fs::create_dir_all(workspace.join(format!("_agent_{name}")))
+            std::fs::create_dir_all(ac_root.join(format!("_agent_{name}")))
                 .expect("origin agent directory");
             std::fs::create_dir_all(workgroup.join(format!("__agent_{name}")))
                 .expect("replica directory");

@@ -1390,9 +1390,9 @@ mod tests {
         // replica scope (no confirmation fingerprint required).
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("project");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_codex");
-        let replica = workspace.join("wg-1-team").join("__agent_codex");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_codex");
+        let replica = ac_root.join("wg-1-team").join("__agent_codex");
         std::fs::create_dir_all(&matrix).expect("create matrix");
         std::fs::create_dir_all(&replica).expect("create replica");
         std::fs::write(matrix.join("Role.md"), "# Codex\n").expect("write Role.md");

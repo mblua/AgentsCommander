@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::cli::task_ops::{self, TaskOp};
 use crate::config::settings::SettingsState;
-use crate::config::ac_root::is_workspace_dir_name; // gate 5 (path-based clean, #545)
+use crate::config::ac_root::is_ac_root_name; // gate 5 (path-based clean, #545)
 use crate::session::manager::SessionManager;
 use crate::session::session::find_workgroup_task_path_for_cwd;
 
@@ -132,14 +132,14 @@ fn validate_wg_root(
     //    Discovery only ever surfaces workgroups as direct children of `<base>/.ac`,
     //    so this never rejects a real wg.path the frontend can send, and it blocks
     //    creating/clobbering a TASK.md (perform creates one when missing) in an
-    //    arbitrary `wg-*`-named dir under a project root. `is_workspace_dir_name`
+    //    arbitrary `wg-*`-named dir under a project root. `is_ac_root_name`
     //    is case-insensitive, matching `.ac`/`.AC` on Windows.
-    let parent_is_workspace = canonical
+    let parent_is_ac_root = canonical
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
-        .is_some_and(is_workspace_dir_name);
-    if !parent_is_workspace {
+        .is_some_and(is_ac_root_name);
+    if !parent_is_ac_root {
         return Err(format!(
             "workgroup root is not a direct child of an .ac workspace dir: {}",
             workgroup_root

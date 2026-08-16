@@ -13,7 +13,7 @@ use crate::commands::entity_creation::{
     WorkgroupDiskCreateArgs,
 };
 use crate::config::projects::resolve_project_reference;
-use crate::config::ac_root::existing_workspace_dir;
+use crate::config::ac_root::existing_ac_root;
 
 #[derive(Args)]
 pub struct WorkgroupArgs {
@@ -100,8 +100,8 @@ pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
     Ok(resolved.path)
 }
 
-pub(crate) fn resolve_cli_workspace(project_path: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project_path).ok_or_else(|| {
+pub(crate) fn resolve_cli_ac_root(project_path: &Path) -> Result<PathBuf, String> {
+    existing_ac_root(project_path).ok_or_else(|| {
         format!(
             "Project AC Root not found in {} (.ac)",
             project_path.display()
@@ -145,8 +145,8 @@ pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &s
 
 fn list(args: WorkgroupListArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let items: Vec<WorkgroupListItem> = list_workgroup_dirs(&workspace_dir)
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let items: Vec<WorkgroupListItem> = list_workgroup_dirs(&ac_root)
         .into_iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?.to_string();
@@ -170,18 +170,18 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
 
 fn add(args: WorkgroupAddArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let ac_root = resolve_cli_ac_root(&project_path)?;
     let safe_team = sanitize_name(&args.team)?;
     let has_legacy_team_flags = args.coordinator.is_some()
         || !args.agents.is_empty()
         || !args.repos.is_empty()
         || !args.repo_agents.is_empty()
         || !args.repo_exclude_agents.is_empty();
-    let team_dir = workspace_dir.join(format!("_team_{}", safe_team));
+    let team_dir = ac_root.join(format!("_team_{}", safe_team));
     let config_path = team_dir.join("config.json");
     let team_config_exists = team_dir.exists() || config_path.exists();
     let provisioning_config = if team_config_exists {
-        read_team_config(&workspace_dir, &safe_team)?;
+        read_team_config(&ac_root, &safe_team)?;
         if has_legacy_team_flags {
             return Err(format!(
                 "Team '{}' already exists. `workgroup add` no longer updates team configuration. Use `team create` before `workgroup add`, or `team add-member` for membership changes.",
@@ -197,7 +197,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
             "Warning: created missing team configuration from supplied workgroup details. Prefer creating the team before activating a workgroup."
         );
         Some(build_new_team_config(
-            &workspace_dir,
+            &ac_root,
             coordinator,
             &args.agents,
             &args.repos,
@@ -268,8 +268,8 @@ fn remove_hooked(
 ) -> Result<(), String> {
     validate_existing_name(&args.workgroup, "Workgroup")?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let wg_dir = workspace_dir.join(&args.workgroup);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let wg_dir = ac_root.join(&args.workgroup);
     validate_delete_root_not_link_or_reparse(&wg_dir)?;
     crate::cli::session_safety::ensure_no_live_sessions_under(&wg_dir)?;
     if !args.force_dirty {
@@ -290,7 +290,7 @@ fn remove_hooked(
     // Project-only gate: acquire before the atomic rename, prune Deleted/Partial
     // while held, then release before formatting the outcome. Never take the team guard.
     let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
-    after_project_acquired(&workspace_dir);
+    after_project_acquired(&ac_root);
     let outcome = crate::commands::entity_creation::try_atomic_delete_wg(&wg_dir);
     if outcome.logical_path_removed() {
         prune_workgroup_config_scope(project_gate.as_mut(), activation, &args.workgroup);
@@ -360,20 +360,20 @@ pub(crate) fn cli_remove_refresh_decision(
 }
 
 pub(crate) fn build_new_team_config(
-    workspace_dir: &Path,
+    ac_root: &Path,
     coordinator: &str,
     agents: &[String],
     repos: &[String],
     repo_agents: &[String],
     repo_exclude_agents: &[String],
 ) -> Result<TeamConfigResult, String> {
-    let coordinator = resolve_agent_ref(workspace_dir, coordinator)?;
+    let coordinator = resolve_agent_ref(ac_root, coordinator)?;
     let mut roster = vec![coordinator.clone()];
     for agent in agents {
-        push_unique(&mut roster, resolve_agent_ref(workspace_dir, agent)?);
+        push_unique(&mut roster, resolve_agent_ref(ac_root, agent)?);
     }
     let repo_config = build_repo_assignments(
-        workspace_dir,
+        ac_root,
         &roster,
         repos,
         repo_agents,
@@ -388,7 +388,7 @@ pub(crate) fn build_new_team_config(
 }
 
 fn build_repo_assignments(
-    workspace_dir: &Path,
+    ac_root: &Path,
     roster: &[String],
     repos: &[String],
     repo_agents: &[String],
@@ -428,9 +428,9 @@ fn build_repo_assignments(
     let mut out = Vec::new();
     for url in order {
         let agents = if let Some(list) = include.get(&url) {
-            resolve_assignment_agents(workspace_dir, roster, list)?
+            resolve_assignment_agents(ac_root, roster, list)?
         } else if let Some(list) = exclude.get(&url) {
-            let excluded = resolve_assignment_agents(workspace_dir, roster, list)?;
+            let excluded = resolve_assignment_agents(ac_root, roster, list)?;
             roster
                 .iter()
                 .filter(|agent| !excluded.contains(agent))
@@ -475,13 +475,13 @@ fn parse_assignment_specs(
 }
 
 fn resolve_assignment_agents(
-    workspace_dir: &Path,
+    ac_root: &Path,
     roster: &[String],
     agents: &[String],
 ) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for agent in agents {
-        let resolved = resolve_agent_ref(workspace_dir, agent)?;
+        let resolved = resolve_agent_ref(ac_root, agent)?;
         if !roster.contains(&resolved) {
             return Err(format!(
                 "Repo assignment references agent '{}' which is not in the final team roster",
@@ -563,12 +563,12 @@ mod tests {
     #[test]
     fn cli_team_builder_defaults_context_alerts_to_disabled() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        std::fs::create_dir_all(workspace.join("_agent_coordinator")).expect("coordinator matrix");
-        std::fs::create_dir_all(workspace.join("_agent_member")).expect("member matrix");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir_all(ac_root.join("_agent_coordinator")).expect("coordinator matrix");
+        std::fs::create_dir_all(ac_root.join("_agent_member")).expect("member matrix");
 
         let config = build_new_team_config(
-            &workspace,
+            &ac_root,
             "coordinator",
             &["member".to_string()],
             &[],
@@ -583,8 +583,8 @@ mod tests {
     async fn legacy_workgroup_provisioning_never_upserts_concurrent_team_winner() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("Project");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(workspace.join("_agent_coordinator")).expect("coordinator matrix");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("_agent_coordinator")).expect("coordinator matrix");
         let winner = TeamConfigResult {
             agents: vec!["_agent_coordinator".to_string()],
             coordinator: "_agent_coordinator".to_string(),
@@ -592,7 +592,7 @@ mod tests {
             context_alert_percentages: vec![75],
         };
         crate::commands::entity_creation::create_new_team_config_on_disk(
-            &workspace, "dev-team", &winner,
+            &ac_root, "dev-team", &winner,
         )
         .expect("concurrent winner");
 
@@ -609,12 +609,12 @@ mod tests {
 
         assert!(err.contains("Team 'dev-team' already exists"), "{err}");
         assert_eq!(
-            read_team_config(&workspace, "dev-team")
+            read_team_config(&ac_root, "dev-team")
                 .expect("winner config")
                 .context_alert_percentages,
             vec![75]
         );
-        assert!(list_workgroup_dirs(&workspace).is_empty());
+        assert!(list_workgroup_dirs(&ac_root).is_empty());
     }
 
     // #1063 Stage D-owned exact ignored CHILD HELPER for the CLI workgroup
@@ -637,7 +637,7 @@ mod tests {
             workgroup: "wg-1-dev-team".to_string(),
             force_dirty: false,
         };
-        let result = remove_hooked(args, None, |_workspace: &Path| ctx.report_and_wait());
+        let result = remove_hooked(args, None, |_ac_root: &Path| ctx.report_and_wait());
         if let Err(error) = &result {
             println!("STAGE_D_LOCK_ORDER_ERROR {} workgroup {}", ctx.nonce, error);
         }

@@ -267,7 +267,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
     if cwd
         .file_name()
         .and_then(|name| name.to_str())
-        .map(crate::config::ac_root::is_workspace_dir_name)
+        .map(crate::config::ac_root::is_ac_root_name)
         .unwrap_or(false)
     {
         return Some(format!(
@@ -276,7 +276,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
         ));
     }
 
-    if crate::config::ac_root::has_workspace_dir(cwd) {
+    if crate::config::ac_root::has_ac_root(cwd) {
         return Some(format!(
             "container transport refuses to bind-mount project root '{}' because it directly contains an AC workspace",
             cwd.display()
@@ -288,7 +288,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("wg-"))
         .unwrap_or(false);
-    if is_wg_dir && crate::config::ac_root::find_workspace_ancestor(cwd).is_some() {
+    if is_wg_dir && crate::config::ac_root::find_ac_root_ancestor(cwd).is_some() {
         return Some(format!(
             "container transport refuses to bind-mount workgroup root '{}'",
             cwd.display()
@@ -637,11 +637,11 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
-        let workspace = project.join(".ac");
-        let wg = workspace.join("wg-1-team");
+        let ac_root = project.join(".ac");
+        let wg = ac_root.join("wg-1-team");
         std::fs::create_dir_all(&wg).unwrap();
 
-        assert!(container_mount_source_rejection(&workspace).is_some());
+        assert!(container_mount_source_rejection(&ac_root).is_some());
         assert!(container_mount_source_rejection(&project).is_some());
         assert!(container_mount_source_rejection(&wg).is_some());
     }
@@ -650,10 +650,10 @@ mod tests {
     fn mount_source_rejection_permits_pinned_sources() {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
-        let workspace = project.join(".ac");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
-        let repo = workspace.join("wg-1-team").join("repo-foo");
-        let matrix = workspace.join("_agent_x");
+        let ac_root = project.join(".ac");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        let repo = ac_root.join("wg-1-team").join("repo-foo");
+        let matrix = ac_root.join("_agent_x");
         let plain_repo = tmp.path().join("plain-repo");
         for path in [&replica, &repo, &matrix, &plain_repo] {
             std::fs::create_dir_all(path).unwrap();

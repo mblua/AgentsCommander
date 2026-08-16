@@ -135,9 +135,9 @@ fn default_match_none_regex() -> String {
 }
 
 fn project_settings_path(project_path: &Path) -> Result<PathBuf, String> {
-    let workspace = crate::config::ac_root::existing_workspace_dir(project_path)
+    let ac_root = crate::config::ac_root::existing_ac_root(project_path)
         .ok_or_else(|| format!("Project has no .ac directory: {}", project_path.display()))?;
-    Ok(workspace.join(PROJECT_SETTINGS_FILE))
+    Ok(ac_root.join(PROJECT_SETTINGS_FILE))
 }
 
 fn normalize_groups_config(mut config: WorkgroupGroupsConfig) -> WorkgroupGroupsConfig {
@@ -285,7 +285,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn project_with_workspace() -> tempfile::TempDir {
+    fn project_with_ac_root() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(temp.path().join(".ac")).expect("create .ac");
         temp
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn favorite_flag_round_trips_through_save_load() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let mut config = config_with_groups(vec![
             group("bots", "BOTS", "^(wg-9)$"),
             group("ui", "UI", "^(wg-1)$"),
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn missing_project_settings_returns_default_groups_config() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
 
         let loaded = load_workgroup_groups(project.path()).expect("load groups");
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn empty_object_deserializes_to_defaults() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         std::fs::write(settings_path(project.path()), "{}").expect("write settings");
 
         let loaded = load_workgroup_groups(project.path()).expect("load groups");
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn partial_json_with_only_groups_defaults_toggles_true() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         std::fs::write(
             settings_path(project.path()),
             r#"{"groups":[{"id":"bots","name":"BOTS","regex":"^(wg-9)$"}]}"#,
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn load_both_toggles_false_normalizes_show_all_without_rewriting() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         let original = r#"{"groups":[],"showAll":false,"showUngrouped":false}"#;
         std::fs::write(&path, original).expect("write settings");
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn save_rejects_both_toggles_false() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let config = WorkgroupGroupsConfig {
             groups: Vec::new(),
             show_all: false,
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn save_rejects_invalid_group_structure() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let oversized_id = "i".repeat(MAX_GROUP_ID_LEN + 1);
         let oversized_name = "n".repeat(MAX_GROUP_NAME_LEN + 1);
         let oversized_regex = "r".repeat(MAX_GROUP_REGEX_LEN + 1);
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn load_rejects_invalid_group_structure_after_defaults() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         let too_many = (0..=MAX_WORKGROUP_GROUPS)
             .map(|idx| json!({"id": format!("g{idx}"), "name": format!("G{idx}"), "regex": ".*"}))
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn save_preserves_unknown_root_keys_and_documented_agents_key() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         let original = json!({
             "agents": [
@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_workspace_returns_error() {
+    fn missing_ac_root_returns_error() {
         let project = tempfile::tempdir().expect("tempdir");
 
         let err = load_workgroup_groups(project.path()).expect_err("missing .ac");
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn malformed_json_returns_error_and_save_does_not_clobber_file() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         let malformed = "{ invalid";
         std::fs::write(&path, malformed).expect("write settings");
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn round_trip_save_load_preserves_unknown_root_keys() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         std::fs::write(&path, r#"{"identity":"keep-me","metadata":{"nested":1}}"#)
             .expect("write settings");
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn non_object_root_returns_clear_error() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         std::fs::write(settings_path(project.path()), "[]").expect("write settings");
 
         let err = load_workgroup_groups(project.path()).expect_err("reject non-object root");
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn normalize_migrates_legacy_non_stop_default_name() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let raw = json!({
             "groups": [],
             "showAll": true,
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn save_persists_non_stop_and_preserves_unknown_keys() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         std::fs::write(
             &path,
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn save_none_removes_stale_non_stop_key() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let path = settings_path(project.path());
         let with_ns = WorkgroupGroupsConfig {
             groups: Vec::new(),
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn non_stop_round_trips() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let config = WorkgroupGroupsConfig {
             groups: vec![group("dev", "Dev", "wg-.*")],
             show_all: true,
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn non_stop_favorite_round_trips_and_emits_false_when_unset() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         let config = WorkgroupGroupsConfig {
             groups: Vec::new(),
             show_all: true,
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn non_stop_favorite_survives_deserialization_from_frontend_json() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         // The shape `update_project_groups` receives from the store, favorite included.
         let incoming = r#"{"groups":[],"showAll":true,"showUngrouped":true,"nonStop":{"show":true,"name":"Watchers","regex":"^(wg-1)$","toleranceSeconds":30,"telegram":{"enabled":false},"sound":{"enabled":false,"seconds":3},"favorite":true}}"#;
         let config: WorkgroupGroupsConfig = serde_json::from_str(incoming).expect("parse incoming");
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn normalize_clamps_out_of_range_non_stop_and_keeps_groups() {
-        let project = project_with_workspace();
+        let project = project_with_ac_root();
         // 2 valid groups + a nonStop with tolerance 0 and sound.seconds 999.
         let raw = json!({
             "groups": [

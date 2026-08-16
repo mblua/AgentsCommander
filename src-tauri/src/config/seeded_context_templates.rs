@@ -24,7 +24,7 @@ pub(crate) enum ContextTemplateSkipReason {
     MissingAfterCreate,
     AmbiguousWithoutState,
     IgnoredByUser,
-    WorkspaceUnavailable,
+    AcRootUnavailable,
     TargetMissing,
 }
 
@@ -551,8 +551,8 @@ fn read_validated_snapshot(path: &Path, label: &str) -> Result<Option<FileSnapsh
     }))
 }
 
-fn load_state(workspace_dir: &Path, strict: bool) -> Result<LoadedState, String> {
-    let path = workspace_dir.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, String> {
+    let path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
@@ -683,8 +683,8 @@ fn cleanup_temp(path: &Path) {
     }
 }
 
-fn persist_state(workspace_dir: &Path, state: &SeededContextTemplateState) -> Result<(), String> {
-    let path = workspace_dir.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+fn persist_state(ac_root: &Path, state: &SeededContextTemplateState) -> Result<(), String> {
+    let path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
             if is_link_or_reparse(&metadata) || !metadata.is_file() {
@@ -765,32 +765,32 @@ fn persist_state(workspace_dir: &Path, state: &SeededContextTemplateState) -> Re
     Ok(())
 }
 
-fn persist_state_best_effort(workspace_dir: &Path, loaded: &LoadedState) {
+fn persist_state_best_effort(ac_root: &Path, loaded: &LoadedState) {
     if !loaded.dirty || !loaded.can_persist {
         return;
     }
-    if let Err(e) = persist_state(workspace_dir, &loaded.state) {
+    if let Err(e) = persist_state(ac_root, &loaded.state) {
         log::warn!(
             "[context-templates] failed to persist state in {}: {}",
-            workspace_dir.display(),
+            ac_root.display(),
             e
         );
     }
 }
 
-fn persist_state_strict(workspace_dir: &Path, loaded: &LoadedState) -> Result<(), String> {
+fn persist_state_strict(ac_root: &Path, loaded: &LoadedState) -> Result<(), String> {
     if !loaded.can_persist {
         return Err("Context template state cannot be safely persisted".to_string());
     }
     if loaded.dirty {
-        persist_state(workspace_dir, &loaded.state)?;
+        persist_state(ac_root, &loaded.state)?;
     }
     Ok(())
 }
 
 fn make_update(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     path: &Path,
     spec: SeededContextTemplateSpec,
     current_file_sha256: String,
@@ -798,7 +798,7 @@ fn make_update(
 ) -> ContextTemplateUpdate {
     ContextTemplateUpdate {
         project_path: display_path(project_dir),
-        workspace_path: display_path(workspace_dir),
+        workspace_path: display_path(ac_root),
         file_path: display_path(path),
         filename: spec.filename.to_string(),
         label: spec.label.to_string(),
@@ -894,14 +894,14 @@ where
 
 fn sync_one_template(
     project_dir: Option<&Path>,
-    workspace_dir: &Path,
+    ac_root: &Path,
     spec: SeededContextTemplateSpec,
     loaded: &mut LoadedState,
     allow_create_missing: bool,
     return_pending: bool,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
-    let path = workspace_dir.join(spec.filename);
+    let path = ac_root.join(spec.filename);
     let current_default = (spec.current_content)();
     let current_default_sha256 = sha256_hex(current_default.as_bytes());
     let mut snapshot = match read_validated_snapshot(&path, "Context template") {
@@ -1077,7 +1077,7 @@ fn sync_one_template(
         };
         Some(make_update(
             project_dir,
-            workspace_dir,
+            ac_root,
             &path,
             spec,
             snapshot.sha256,
@@ -1104,11 +1104,11 @@ fn sync_one_template(
 
 fn compute_pending_update(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     spec: SeededContextTemplateSpec,
     loaded: &LoadedState,
 ) -> Result<Option<ContextTemplateUpdate>, String> {
-    let path = workspace_dir.join(spec.filename);
+    let path = ac_root.join(spec.filename);
     let current_default = (spec.current_content)();
     let current_default_sha256 = sha256_hex(current_default.as_bytes());
     let Some(snapshot) = read_validated_snapshot(&path, "Context template")? else {
@@ -1136,7 +1136,7 @@ fn compute_pending_update(
 
     Ok(Some(make_update(
         project_dir,
-        workspace_dir,
+        ac_root,
         &path,
         spec,
         snapshot.sha256,
@@ -1144,31 +1144,31 @@ fn compute_pending_update(
     )))
 }
 
-fn validate_project_workspace_dir(workspace_dir: &Path) -> Result<PathBuf, String> {
-    validate_existing_dir(workspace_dir, "Project AC Root")?;
-    let name = workspace_dir.file_name().and_then(|name| name.to_str());
-    if name != Some(crate::config::ac_root::canonical_workspace_dir_label()) {
+fn validate_project_ac_root(ac_root: &Path) -> Result<PathBuf, String> {
+    validate_existing_dir(ac_root, "Project AC Root")?;
+    let name = ac_root.file_name().and_then(|name| name.to_str());
+    if name != Some(crate::config::ac_root::canonical_ac_root_label()) {
         return Err(format!(
             "{} is not a Project AC Root directory",
-            workspace_dir.display()
+            ac_root.display()
         ));
     }
-    workspace_dir
+    ac_root
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| format!("Project AC Root {} has no parent", workspace_dir.display()))
+        .ok_or_else(|| format!("Project AC Root {} has no parent", ac_root.display()))
 }
 
-fn validate_project_workspace_for_scan(
+fn validate_project_ac_root_for_scan(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
 ) -> Result<(), String> {
-    validate_existing_dir(workspace_dir, "Project AC Root")?;
-    let expected = crate::config::ac_root::workspace_dir_for_project(project_dir);
-    if workspace_dir != expected {
+    validate_existing_dir(ac_root, "Project AC Root")?;
+    let expected = crate::config::ac_root::ac_root_for_project(project_dir);
+    if ac_root != expected {
         return Err(format!(
             "Project AC Root {} is not the canonical child of {}",
-            workspace_dir.display(),
+            ac_root.display(),
             project_dir.display()
         ));
     }
@@ -1193,63 +1193,63 @@ fn consume_template_execution(
     execution.completion
 }
 
-pub fn ensure_project_context_templates(workspace_dir: &Path) -> Result<(), String> {
+pub fn ensure_project_context_templates(ac_root: &Path) -> Result<(), String> {
     let mut on_publication = |_: &'static str, _: ContextPublication| {};
-    ensure_project_context_templates_with_publications(workspace_dir, &mut on_publication)
+    ensure_project_context_templates_with_publications(ac_root, &mut on_publication)
 }
 
 pub(crate) fn ensure_project_context_templates_with_publications(
-    workspace_dir: &Path,
+    ac_root: &Path,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<(), String> {
     let mut clock = chrono::Utc::now;
-    ensure_project_context_templates_with_clock(workspace_dir, &mut clock, on_publication)
+    ensure_project_context_templates_with_clock(ac_root, &mut clock, on_publication)
 }
 
 fn ensure_project_context_templates_with_clock(
-    workspace_dir: &Path,
+    ac_root: &Path,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<(), String> {
-    std::fs::create_dir_all(workspace_dir).map_err(|e| {
+    std::fs::create_dir_all(ac_root).map_err(|e| {
         format!(
             "failed to create context templates directory {}: {}",
-            workspace_dir.display(),
+            ac_root.display(),
             e
         )
     })?;
-    validate_existing_dir(workspace_dir, "Context template directory")?;
-    let mut loaded = load_state(workspace_dir, false)?;
+    validate_existing_dir(ac_root, "Context template directory")?;
+    let mut loaded = load_state(ac_root, false)?;
     for spec in project_specs() {
         let execution =
-            sync_one_template(None, workspace_dir, spec, &mut loaded, true, false, clock);
+            sync_one_template(None, ac_root, spec, &mut loaded, true, false, clock);
         let _ = consume_template_execution(spec, execution, on_publication)?;
     }
-    persist_state_best_effort(workspace_dir, &loaded);
+    persist_state_best_effort(ac_root, &loaded);
     Ok(())
 }
 
 pub fn scan_project_context_template_updates(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
 ) -> Result<Vec<ContextTemplateUpdate>, String> {
     let mut on_publication = |_: &'static str, _: ContextPublication| {};
     scan_project_context_template_updates_with_publications(
         project_dir,
-        workspace_dir,
+        ac_root,
         &mut on_publication,
     )
 }
 
 pub(crate) fn scan_project_context_template_updates_with_publications(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<Vec<ContextTemplateUpdate>, String> {
     let mut clock = chrono::Utc::now;
     scan_project_context_template_updates_with_clock(
         project_dir,
-        workspace_dir,
+        ac_root,
         &mut clock,
         on_publication,
     )
@@ -1257,17 +1257,17 @@ pub(crate) fn scan_project_context_template_updates_with_publications(
 
 fn scan_project_context_template_updates_with_clock(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
     on_publication: &mut dyn FnMut(&'static str, ContextPublication),
 ) -> Result<Vec<ContextTemplateUpdate>, String> {
-    validate_project_workspace_for_scan(project_dir, workspace_dir)?;
-    let mut loaded = load_state(workspace_dir, false)?;
+    validate_project_ac_root_for_scan(project_dir, ac_root)?;
+    let mut loaded = load_state(ac_root, false)?;
     let mut updates = Vec::new();
     for spec in project_specs() {
         let execution = sync_one_template(
             Some(project_dir),
-            workspace_dir,
+            ac_root,
             spec,
             &mut loaded,
             false,
@@ -1280,7 +1280,7 @@ fn scan_project_context_template_updates_with_clock(
             updates.push(update);
         }
     }
-    persist_state_best_effort(workspace_dir, &loaded);
+    persist_state_best_effort(ac_root, &loaded);
     dedupe_context_template_updates(&mut updates);
     Ok(updates)
 }
@@ -1621,7 +1621,7 @@ fn remove_global_state_entry(config_dir: &Path) -> Result<(), String> {
 
 fn validate_expected_hashes(
     project_dir: &Path,
-    workspace_dir: &Path,
+    ac_root: &Path,
     spec: SeededContextTemplateSpec,
     loaded: &LoadedState,
     expected_file_sha256: &str,
@@ -1631,7 +1631,7 @@ fn validate_expected_hashes(
     if current_default_sha256 != expected_default_sha256 {
         return Err(CONTEXT_TEMPLATE_DEFAULT_CHANGED.to_string());
     }
-    let Some(pending) = compute_pending_update(project_dir, workspace_dir, spec, loaded)? else {
+    let Some(pending) = compute_pending_update(project_dir, ac_root, spec, loaded)? else {
         return Err(CONTEXT_TEMPLATE_CHANGED.to_string());
     };
     if pending.current_file_sha256 != expected_file_sha256
@@ -1643,23 +1643,23 @@ fn validate_expected_hashes(
 }
 
 pub fn dismiss_context_template_update(
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
 ) -> Result<(), String> {
     let spec = actionable_project_spec_by_filename(filename)?;
-    let project_dir = validate_project_workspace_dir(workspace_dir)?;
-    let mut loaded = load_state(workspace_dir, true)?;
+    let project_dir = validate_project_ac_root(ac_root)?;
+    let mut loaded = load_state(ac_root, true)?;
     validate_expected_hashes(
         &project_dir,
-        workspace_dir,
+        ac_root,
         spec,
         &loaded,
         expected_file_sha256,
         expected_default_sha256,
     )?;
-    let path = workspace_dir.join(spec.filename);
+    let path = ac_root.join(spec.filename);
     let Some(snapshot) = read_validated_snapshot(&path, "Context template")? else {
         return Err(CONTEXT_TEMPLATE_CHANGED.to_string());
     };
@@ -1667,18 +1667,18 @@ pub fn dismiss_context_template_update(
         return Err(CONTEXT_TEMPLATE_CHANGED.to_string());
     }
     loaded.mark_ignored(spec, expected_file_sha256, expected_default_sha256);
-    persist_state_strict(workspace_dir, &loaded)
+    persist_state_strict(ac_root, &loaded)
 }
 
 pub fn overwrite_context_template_with_default(
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
 ) -> Result<ContextTemplateOverwriteResult, String> {
     let mut on_publication = |_: &'static str, _: ContextPublication| {};
     let execution = overwrite_context_template_with_default_with_publications(
-        workspace_dir,
+        ac_root,
         filename,
         expected_file_sha256,
         expected_default_sha256,
@@ -1695,7 +1695,7 @@ pub fn overwrite_context_template_with_default(
 }
 
 pub(crate) fn overwrite_context_template_with_default_with_publications(
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
@@ -1703,7 +1703,7 @@ pub(crate) fn overwrite_context_template_with_default_with_publications(
 ) -> ContextTemplateExecution<ContextTemplateOverwriteResult> {
     let mut clock = chrono::Utc::now;
     overwrite_context_template_with_default_with(
-        workspace_dir,
+        ac_root,
         filename,
         expected_file_sha256,
         expected_default_sha256,
@@ -1714,24 +1714,24 @@ pub(crate) fn overwrite_context_template_with_default_with_publications(
 }
 
 fn prepare_context_template_overwrite(
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
 ) -> Result<(SeededContextTemplateSpec, LoadedState, PathBuf, PathBuf), String> {
     let spec = actionable_project_spec_by_filename(filename)?;
-    let project_dir = validate_project_workspace_dir(workspace_dir)?;
-    let loaded = load_state(workspace_dir, true)?;
+    let project_dir = validate_project_ac_root(ac_root)?;
+    let loaded = load_state(ac_root, true)?;
     validate_expected_hashes(
         &project_dir,
-        workspace_dir,
+        ac_root,
         spec,
         &loaded,
         expected_file_sha256,
         expected_default_sha256,
     )?;
 
-    let path = workspace_dir.join(spec.filename);
+    let path = ac_root.join(spec.filename);
     let Some(snapshot) = read_validated_snapshot(&path, "Context template")? else {
         return Err(CONTEXT_TEMPLATE_CHANGED.to_string());
     };
@@ -1754,7 +1754,7 @@ fn prepare_context_template_overwrite(
 }
 
 fn overwrite_context_template_with_default_with<P>(
-    workspace_dir: &Path,
+    ac_root: &Path,
     filename: &str,
     expected_file_sha256: &str,
     expected_default_sha256: &str,
@@ -1766,7 +1766,7 @@ where
     P: FnOnce(&Path, &LoadedState) -> Result<(), String>,
 {
     let (spec, mut loaded, path, backup_path) = match prepare_context_template_overwrite(
-        workspace_dir,
+        ac_root,
         filename,
         expected_file_sha256,
         expected_default_sha256,
@@ -1800,7 +1800,7 @@ where
         current_default_sha256: expected_default_sha256.to_string(),
     };
     ContextTemplateExecution::with_publication(
-        persist(workspace_dir, &loaded).map(|()| result),
+        persist(ac_root, &loaded).map(|()| result),
         publication,
     )
 }
@@ -1949,14 +1949,14 @@ mod tests {
     }
 
     fn sync_for_read_at(
-        workspace: &Path,
+        ac_root: &Path,
         filename: &str,
         published_at: chrono::DateTime<chrono::Utc>,
     ) -> Vec<(&'static str, ContextPublication)> {
         let mut clock = || published_at;
         let mut publications = Vec::new();
         sync_project_context_template_for_read_with_clock(
-            workspace,
+            ac_root,
             filename,
             &mut clock,
             &mut |filename, publication| publications.push((filename, publication)),
@@ -1986,8 +1986,8 @@ mod tests {
     fn context_create_records_both_project_templates_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
-        let workspace = project.join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
 
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         let published_at = fixed_publication_time();
@@ -2004,7 +2004,7 @@ mod tests {
                 );
             };
             ensure_project_context_templates_with_clock(
-                &workspace,
+                &ac_root,
                 &mut clock,
                 &mut on_publication,
             )
@@ -2012,7 +2012,7 @@ mod tests {
         }
         guard.release();
 
-        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
             .expect("fresh project context creation records a seed manifest");
         assert!(
             manifest.contains("scope = \"context:agentscommander\""),
@@ -2032,10 +2032,10 @@ mod tests {
     fn coordinator_v3_to_v4_update_records_to_the_seed_manifest_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
-        let workspace = project.join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
@@ -2055,7 +2055,7 @@ mod tests {
                 );
             };
             sync_project_context_template_for_read_with_clock(
-                &workspace,
+                &ac_root,
                 COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
                 &mut clock,
                 &mut on_publication,
@@ -2064,7 +2064,7 @@ mod tests {
         }
         guard.release();
 
-        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
             .expect("a recognized coordinator v3->v4 update records a seed manifest row");
         assert!(
             manifest.contains("scope = \"context:coordinator\""),
@@ -2141,17 +2141,17 @@ mod tests {
         ));
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write pristine v2 coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
@@ -2162,7 +2162,7 @@ mod tests {
         );
 
         let content =
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
@@ -2209,31 +2209,31 @@ mod tests {
         );
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write pristine v1 global");
 
         let published_at = fixed_publication_time();
         let publications =
-            sync_for_read_at(&workspace, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
         assert_one_publication(
             &publications,
             GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
             .expect("read global");
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
             "pristine v1 Context.AgentsCommander.md must auto-upgrade"
         );
-        let state = std::fs::read_to_string(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
@@ -2245,15 +2245,15 @@ mod tests {
     #[test]
     fn scan_existing_ac_does_not_create_missing_templates() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
 
         let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan updates");
+            scan_project_context_template_updates(temp.path(), &ac_root).expect("scan updates");
 
         assert!(updates.is_empty());
-        assert!(!workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
-        assert!(!workspace
+        assert!(!ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
+        assert!(!ac_root
             .join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
     }
@@ -2261,16 +2261,16 @@ mod tests {
     #[test]
     fn equal_default_observation_has_no_publication() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             crate::config::session_context::get_default_agent_template(),
         )
         .expect("write current global default");
 
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             fixed_publication_time(),
         );
@@ -2284,9 +2284,9 @@ mod tests {
     #[test]
     fn generated_update_lost_race_has_no_publication_or_clock_sample() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
-        let path = workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let path = ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(
             &path,
             COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
@@ -2413,16 +2413,16 @@ mod tests {
     #[test]
     fn ensure_consumes_first_publication_before_the_next_target_error() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
-        std::fs::create_dir(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::create_dir(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("block coordinator target with directory");
         let published_at = fixed_publication_time();
         let mut clock = || published_at;
         let mut publications = Vec::new();
 
         let error = ensure_project_context_templates_with_clock(
-            &workspace,
+            &ac_root,
             &mut clock,
             &mut |filename, publication| publications.push((filename, publication)),
         )
@@ -2435,7 +2435,7 @@ mod tests {
             published_at,
         );
         assert_eq!(
-            std::fs::read_to_string(workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read first published target"),
             crate::config::session_context::get_default_agent_template()
         );
@@ -2444,12 +2444,12 @@ mod tests {
     #[test]
     fn read_sync_creates_missing_coordinator_template() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
@@ -2460,7 +2460,7 @@ mod tests {
         );
 
         let content =
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
@@ -2468,17 +2468,17 @@ mod tests {
     #[test]
     fn read_sync_updates_old_generated_coordinator_template() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND,
         )
         .expect("write old coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
@@ -2489,7 +2489,7 @@ mod tests {
         );
 
         let content =
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
@@ -2514,17 +2514,17 @@ mod tests {
         );
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
@@ -2535,7 +2535,7 @@ mod tests {
         );
 
         let content =
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
@@ -2547,15 +2547,15 @@ mod tests {
     #[test]
     fn read_sync_updates_seeded_v3_coordinator_and_bumps_version() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
         std::fs::write(
-            workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
             format!(
                 concat!(
                     r#"{{"schemaVersion":1,"templates":{{"coordinator":{{"#,
@@ -2575,7 +2575,7 @@ mod tests {
         // fixture that never parses still leaves the test green while exercising row 4.
         let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("coordinator spec by filename");
-        let pre_sync = load_state(&workspace, true).expect("load the hand-written v3 state");
+        let pre_sync = load_state(&ac_root, true).expect("load the hand-written v3 state");
         let entry = pre_sync
             .trusted_entry(spec)
             .expect("the v3 fixture must parse into a trusted coordinator entry (row 3)");
@@ -2603,7 +2603,7 @@ mod tests {
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
@@ -2614,7 +2614,7 @@ mod tests {
         );
 
         let content =
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(
             content,
@@ -2622,7 +2622,7 @@ mod tests {
             "a seeded pristine v3 body must auto-upgrade to the v4 default"
         );
 
-        let state = std::fs::read_to_string(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
@@ -2641,11 +2641,11 @@ mod tests {
     #[test]
     fn custom_coordinator_is_preserved_and_reported() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             custom,
         )
         .expect("write custom coordinator");
@@ -2654,7 +2654,7 @@ mod tests {
         let mut publications = Vec::new();
         let updates = scan_project_context_template_updates_with_clock(
             temp.path(),
-            &workspace,
+            &ac_root,
             &mut clock,
             &mut |filename, publication| publications.push((filename, publication)),
         )
@@ -2667,7 +2667,7 @@ mod tests {
         );
         assert_eq!(updates[0].filename, COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
             custom
         );
@@ -2676,16 +2676,16 @@ mod tests {
     #[test]
     fn global_unknown_without_state_is_not_reported() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            workspace.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
             "legacy rendered global body with project paths",
         )
         .expect("write global");
 
         let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan updates");
+            scan_project_context_template_updates(temp.path(), &ac_root).expect("scan updates");
 
         assert!(updates.is_empty());
     }
@@ -2693,11 +2693,11 @@ mod tests {
     #[test]
     fn forged_manifest_does_not_auto_overwrite_custom_content() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator with forged seeded hash";
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             custom,
         )
         .expect("write custom coordinator");
@@ -2713,14 +2713,14 @@ mod tests {
                 ignored_observed_sha256: None,
             },
         );
-        persist_state(&workspace, &state).expect("persist forged state");
+        persist_state(&ac_root, &state).expect("persist forged state");
 
         let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan updates");
+            scan_project_context_template_updates(temp.path(), &ac_root).expect("scan updates");
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
             custom
         );
@@ -2729,21 +2729,21 @@ mod tests {
     #[test]
     fn dismiss_suppresses_same_file_and_default_hash() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             custom,
         )
         .expect("write custom coordinator");
-        let update = scan_project_context_template_updates(temp.path(), &workspace)
+        let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .pop()
             .expect("pending update");
 
         dismiss_context_template_update(
-            &workspace,
+            &ac_root,
             &update.filename,
             &update.current_file_sha256,
             &update.current_default_sha256,
@@ -2754,7 +2754,7 @@ mod tests {
         let mut publications = Vec::new();
         let updates = scan_project_context_template_updates_with_clock(
             temp.path(),
-            &workspace,
+            &ac_root,
             &mut clock,
             &mut |filename, publication| publications.push((filename, publication)),
         )
@@ -2769,22 +2769,22 @@ mod tests {
     #[test]
     fn explicit_keep_repairs_invalid_state_json() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             custom,
         )
         .expect("write custom coordinator");
         std::fs::write(
-            workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
             "not json",
         )
         .expect("write invalid state");
 
         dismiss_context_template_update(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             &hash_text(custom),
             &hash_text(get_default_coordinator_template()),
@@ -2792,7 +2792,7 @@ mod tests {
         .expect("dismiss with invalid state");
 
         let repaired =
-            std::fs::read_to_string(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
                 .expect("read repaired state");
         let parsed: SeededContextTemplateState =
             serde_json::from_str(&repaired).expect("state is repaired JSON");
@@ -2802,21 +2802,21 @@ mod tests {
     #[test]
     fn overwrite_creates_backup_and_writes_default() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
         std::fs::write(
-            workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
             custom,
         )
         .expect("write custom coordinator");
-        let update = scan_project_context_template_updates(temp.path(), &workspace)
+        let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .pop()
             .expect("pending update");
 
         let result = overwrite_context_template_with_default(
-            &workspace,
+            &ac_root,
             &update.filename,
             &update.current_file_sha256,
             &update.current_default_sha256,
@@ -2824,7 +2824,7 @@ mod tests {
         .expect("overwrite");
 
         assert_eq!(
-            std::fs::read_to_string(workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
             get_default_coordinator_template()
         );
@@ -2837,12 +2837,12 @@ mod tests {
     #[test]
     fn overwrite_publication_survives_later_strict_state_save_error() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
-        let path = workspace.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let path = ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
         let custom = "custom coordinator guidance";
         std::fs::write(&path, custom).expect("write custom coordinator");
-        let update = scan_project_context_template_updates(temp.path(), &workspace)
+        let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .pop()
             .expect("pending update");
@@ -2851,7 +2851,7 @@ mod tests {
         let handled_publication = std::cell::Cell::new(None);
 
         let execution = overwrite_context_template_with_default_with(
-            &workspace,
+            &ac_root,
             &update.filename,
             &update.current_file_sha256,
             &update.current_default_sha256,
@@ -2894,14 +2894,14 @@ mod tests {
     #[test]
     fn future_schema_is_not_rewritten_by_scan() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
-        let state_path = workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let state_path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
         std::fs::write(&state_path, r#"{"schemaVersion":999,"templates":{}}"#)
             .expect("write future state");
 
         let updates =
-            scan_project_context_template_updates(temp.path(), &workspace).expect("scan updates");
+            scan_project_context_template_updates(temp.path(), &ac_root).expect("scan updates");
 
         assert!(updates.is_empty());
         assert_eq!(
@@ -2913,13 +2913,13 @@ mod tests {
     #[test]
     fn state_directory_blocks_explicit_commands() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join(".ac");
-        std::fs::create_dir(&workspace).expect("create workspace");
-        std::fs::create_dir(workspace.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::create_dir(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("create state dir");
 
         let err = dismiss_context_template_update(
-            &workspace,
+            &ac_root,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             "file",
             "default",

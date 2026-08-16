@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::config::ac_root::existing_workspace_dir;
+use crate::config::ac_root::existing_ac_root;
 
 pub const LOOP_DIR_PREFIX: &str = "_loop_";
 pub const LOOP_CONFIG_FILE: &str = "config.toml";
@@ -189,7 +189,7 @@ pub struct LoopConfigDetails {
 pub struct ResolvedLoopTarget {
     pub target_fqn: String,
     pub project_dir: PathBuf,
-    pub workspace_dir: PathBuf,
+    pub ac_root: PathBuf,
     pub wg_dir: PathBuf,
     pub coordinator_replica_dir: PathBuf,
     pub coordinator_agent_name: String,
@@ -239,8 +239,8 @@ pub fn sanitize_loop_id(name: &str) -> Result<String, String> {
     Ok(sanitized)
 }
 
-pub fn loop_dir(workspace_dir: &Path, id: &str) -> PathBuf {
-    workspace_dir.join(format!("{}{}", LOOP_DIR_PREFIX, id))
+pub fn loop_dir(ac_root: &Path, id: &str) -> PathBuf {
+    ac_root.join(format!("{}{}", LOOP_DIR_PREFIX, id))
 }
 
 pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
@@ -290,9 +290,9 @@ pub fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopCon
         && current.policy.busy_coordinator == expected.policy.busy_coordinator
 }
 
-pub fn write_loop_config(workspace_dir: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
+pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
     validate_loop_id(&config.loop_def.id)?;
-    let dir = loop_dir(workspace_dir, &config.loop_def.id);
+    let dir = loop_dir(ac_root, &config.loop_def.id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create Loop directory: {}", e))?;
     let content = toml::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize Loop config: {}", e))?;
@@ -376,15 +376,15 @@ fn ensure_loop_config_present(loop_dir: &Path) -> Result<(), String> {
 }
 
 pub fn discover_loops_in_project(project_dir: &Path) -> Vec<AcLoopSummary> {
-    let Some(workspace_dir) = existing_workspace_dir(project_dir) else {
+    let Some(ac_root) = existing_ac_root(project_dir) else {
         return Vec::new();
     };
-    let entries = match std::fs::read_dir(&workspace_dir) {
+    let entries = match std::fs::read_dir(&ac_root) {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!(
                 "[loops] Failed to read Project AC Root {} for Loop discovery: {}",
-                workspace_dir.display(),
+                ac_root.display(),
                 e
             );
             return Vec::new();
@@ -456,13 +456,13 @@ pub fn resolve_loop_target(
     project_dir: &Path,
     config: &LoopConfigToml,
 ) -> Result<ResolvedLoopTarget, String> {
-    let workspace_dir = existing_workspace_dir(project_dir).ok_or_else(|| {
+    let ac_root = existing_ac_root(project_dir).ok_or_else(|| {
         format!(
             "Project AC Root not found in {} (.ac)",
             project_dir.display()
         )
     })?;
-    let wg_dir = workspace_dir.join(&config.target.workgroup);
+    let wg_dir = ac_root.join(&config.target.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!(
             "Workgroup '{}' not found in project {}",
@@ -470,7 +470,7 @@ pub fn resolve_loop_target(
             project_dir.display()
         ));
     }
-    let resolved = crate::config::teams::resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
+    let resolved = crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
         .ok_or_else(|| {
             format!(
                 "Workgroup '{}' has no identity-verified coordinator",
@@ -484,7 +484,7 @@ pub fn resolve_loop_target(
     Ok(ResolvedLoopTarget {
         target_fqn,
         project_dir: project_dir.to_path_buf(),
-        workspace_dir,
+        ac_root,
         wg_dir,
         coordinator_replica_dir: resolved.replica_dir,
         coordinator_agent_name: resolved.agent_name,
@@ -688,10 +688,10 @@ mod tests {
 
     fn fixture_project() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join(".ac");
-        let team_dir = workspace.join("_team_dev-team");
-        let matrix = workspace.join("_agent_tech-lead");
-        let wg = workspace.join("wg-1-dev-team");
+        let ac_root = tmp.path().join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let matrix = ac_root.join("_agent_tech-lead");
+        let wg = ac_root.join("wg-1-dev-team");
         let replica = wg.join("__agent_tech-lead");
         for dir in [&team_dir, &matrix, &replica] {
             std::fs::create_dir_all(dir).expect("create fixture dir");
@@ -828,11 +828,11 @@ mod tests {
     #[test]
     fn storage_writes_config_state_and_dedupes_audit() {
         let tmp = fixture_project();
-        let workspace = tmp.path().join(".ac");
+        let ac_root = tmp.path().join(".ac");
         let config = sample_config();
         validate_loop_config(tmp.path(), &config).expect("valid config");
 
-        let dir = write_loop_config(&workspace, &config).expect("write config");
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
         assert!(dir.join(LOOP_CONFIG_FILE).is_file());
 
         let state = LoopState {
@@ -866,9 +866,9 @@ mod tests {
     #[test]
     fn storage_writes_do_not_recreate_loop_dirs_without_config() {
         let tmp = fixture_project();
-        let workspace = tmp.path().join(".ac");
+        let ac_root = tmp.path().join(".ac");
         let config = sample_config();
-        let dir = write_loop_config(&workspace, &config).expect("write config");
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
         let state = LoopState {
             last_checked_at: Some(Utc::now()),
             ..LoopState::default()
@@ -904,9 +904,9 @@ mod tests {
     #[test]
     fn discovery_omits_prompt_body_and_tolerates_bad_state() {
         let tmp = fixture_project();
-        let workspace = tmp.path().join(".ac");
+        let ac_root = tmp.path().join(".ac");
         let config = sample_config();
-        let dir = write_loop_config(&workspace, &config).expect("write config");
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
         std::fs::write(dir.join(LOOP_STATE_FILE), "{bad json").expect("bad state");
 
         let loops = discover_loops_in_project(tmp.path());

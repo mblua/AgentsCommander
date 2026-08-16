@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::config::replica_identity::{
     agent_bare_name_from_ref, read_and_repair_wg_replica_config, WG_REPLICA_REQUIRED_CONTEXT,
 };
-use crate::config::ac_root::{existing_workspace_dir, find_workspace_segment, has_workspace_dir};
+use crate::config::ac_root::{existing_ac_root, find_ac_root_segment, has_ac_root};
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
@@ -81,7 +81,7 @@ pub fn agent_fqn_from_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
 
-    if let Some(ac_idx) = find_workspace_segment(&parts) {
+    if let Some(ac_idx) = find_ac_root_segment(&parts) {
         if ac_idx > 0 && ac_idx + 2 < parts.len() {
             let project = parts[ac_idx - 1];
             let wg = parts[ac_idx + 1];
@@ -104,7 +104,7 @@ pub fn agent_fqn_from_path(path: &str) -> String {
 /// - Any other shape (origin agent, root agent, ad-hoc shell, unparseable)
 ///   becomes `(None, None)`.
 ///
-/// Anchors on the right-most `.ac` workspace segment via `find_workspace_segment`,
+/// Anchors on the right-most `.ac` workspace segment via `find_ac_root_segment`,
 /// identical to `agent_fqn_from_path`, so subdirectories inside a replica resolve
 /// to the owning replica's identity. The workgroup is the bare `wg-N-team` segment
 /// (not project-prefixed), and the agent is the replica dir with `__agent_` stripped.
@@ -114,7 +114,7 @@ pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<Stri
     let normalized = path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
 
-    if let Some(ac_idx) = find_workspace_segment(&parts) {
+    if let Some(ac_idx) = find_ac_root_segment(&parts) {
         if ac_idx + 2 < parts.len() {
             let wg = parts[ac_idx + 1];
             let agent_dir = parts[ac_idx + 2];
@@ -141,7 +141,7 @@ pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<Stri
 pub fn project_from_path(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-    let ac_idx = find_workspace_segment(&parts)?;
+    let ac_idx = find_ac_root_segment(&parts)?;
     (ac_idx > 0).then(|| parts[ac_idx - 1].to_string())
 }
 
@@ -230,7 +230,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
         }
 
         // Include base itself if it contains a Project AC Root.
-        if has_workspace_dir(base) {
+        if has_ac_root(base) {
             if let Some(name) = base.file_name().and_then(|n| n.to_str()) {
                 out.push((name.to_string(), base.to_path_buf()));
             }
@@ -247,7 +247,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
                 if name.starts_with('.') {
                     continue;
                 }
-                if has_workspace_dir(&p) {
+                if has_ac_root(&p) {
                     out.push((name.to_string(), p));
                 }
             }
@@ -256,24 +256,24 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
     out
 }
 
-fn strict_project_workspace(project: &Path) -> Result<Option<PathBuf>, String> {
-    let workspace = project.join(crate::config::ac_root::CANONICAL_WORKSPACE_DIR);
-    if !workspace
+fn strict_project_ac_root(project: &Path) -> Result<Option<PathBuf>, String> {
+    let ac_root = project.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
+    if !ac_root
         .try_exists()
         .map_err(|_| "unsafe_path".to_string())?
     {
         return Ok(None);
     }
-    let identity = crate::path_identity::verify_directory(&workspace)?;
+    let identity = crate::path_identity::verify_directory(&ac_root)?;
     if identity
         .canonical_path
         .file_name()
         .and_then(|value| value.to_str())
-        != Some(crate::config::ac_root::CANONICAL_WORKSPACE_DIR)
+        != Some(crate::config::ac_root::CANONICAL_AC_ROOT_DIR)
     {
         return Err("unsafe_path".to_string());
     }
-    Ok(Some(workspace))
+    Ok(Some(ac_root))
 }
 
 fn enumerate_project_dirs_strict(
@@ -290,7 +290,7 @@ fn enumerate_project_dirs_strict(
         }
         let base_identity = crate::path_identity::verify_directory(Path::new(configured))?;
         let base = base_identity.canonical_path;
-        if strict_project_workspace(&base)?.is_some() {
+        if strict_project_ac_root(&base)?.is_some() {
             let name = base
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -316,7 +316,7 @@ fn enumerate_project_dirs_strict(
                 continue;
             }
             let child_identity = crate::path_identity::verify_directory(&entry.path())?;
-            if strict_project_workspace(&child_identity.canonical_path)?.is_some() {
+            if strict_project_ac_root(&child_identity.canonical_path)?.is_some() {
                 out.push((name, child_identity.canonical_path));
                 if out.len() > 1_024 {
                     return Err("invalid_target".to_string());
@@ -440,22 +440,22 @@ fn identity_compare_key(path: &Path) -> String {
 }
 
 pub fn resolve_wg_coordinator_replica(
-    workspace_dir: &Path,
+    ac_root: &Path,
     wg_dir: &Path,
 ) -> Option<WgCoordinatorReplica> {
-    let project = workspace_dir.parent()?.file_name()?.to_str()?.to_string();
+    let project = ac_root.parent()?.file_name()?.to_str()?.to_string();
     let wg_name = wg_dir.file_name()?.to_str()?.to_string();
     let team = wg_name
         .strip_prefix("wg-")
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
-    let team_dir = workspace_dir.join(format!("_team_{}", team));
+    let team_dir = ac_root.join(format!("_team_{}", team));
     let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
     let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
-    if !workspace_dir
+    if !ac_root
         .join(format!("_agent_{}", coordinator_name))
         .is_dir()
     {
@@ -506,14 +506,14 @@ pub fn verified_wg_coordinator_target(
         if project_name != project {
             continue;
         }
-        let Some(workspace_dir) = existing_workspace_dir(&project_dir) else {
+        let Some(ac_root) = existing_ac_root(&project_dir) else {
             continue;
         };
-        let wg_dir = workspace_dir.join(wg_name);
+        let wg_dir = ac_root.join(wg_name);
         if !wg_dir.is_dir() {
             continue;
         }
-        if let Some(resolved) = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir) {
+        if let Some(resolved) = resolve_wg_coordinator_replica(&ac_root, &wg_dir) {
             if resolved.agent_name == agent_name {
                 return Some(resolved);
             }
@@ -542,7 +542,7 @@ pub struct VerifiedPtyInputIdentity {
     pub matrix_root: PathBuf,
     pub is_coordinator: bool,
     pub project_identity: crate::path_identity::VerifiedPathIdentity,
-    pub workspace_identity: crate::path_identity::VerifiedPathIdentity,
+    pub ac_root_identity: crate::path_identity::VerifiedPathIdentity,
     pub workgroup_identity: crate::path_identity::VerifiedPathIdentity,
     pub replica_identity: crate::path_identity::VerifiedPathIdentity,
     pub matrix_identity: crate::path_identity::VerifiedPathIdentity,
@@ -767,7 +767,7 @@ fn identity_name_eq(left: &str, right: &str) -> bool {
 }
 
 fn team_members(
-    workspace: &Path,
+    ac_root: &Path,
     team: &str,
 ) -> Result<
     (
@@ -777,7 +777,7 @@ fn team_members(
     ),
     String,
 > {
-    let team_dir = workspace.join(format!("_team_{team}"));
+    let team_dir = ac_root.join(format!("_team_{team}"));
     crate::path_identity::verify_directory(&team_dir)?;
     let (value, config_identity) = read_identity_json(&team_dir.join("config.json"))?;
     let coordinator = value
@@ -806,7 +806,7 @@ fn team_members(
         {
             return Err("sender_identity_invalid".to_string());
         }
-        crate::path_identity::verify_directory(&workspace.join(format!("_agent_{member}")))?;
+        crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{member}")))?;
         seen.push(member.clone());
         // #1245: the application's team-config writer requires the coordinator
         // to appear in `agents` (commands/entity_creation.rs::
@@ -819,13 +819,13 @@ fn team_members(
             members.push(member);
         }
     }
-    crate::path_identity::verify_directory(&workspace.join(format!("_agent_{coordinator}")))?;
+    crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{coordinator}")))?;
     Ok((coordinator, members, config_identity))
 }
 
 fn verify_replica(
     project_dir: &Path,
-    workspace: &Path,
+    ac_root: &Path,
     parsed: &StrictPtyFqn,
 ) -> Result<VerifiedPtyInputIdentity, String> {
     let actual_project = project_dir
@@ -835,12 +835,12 @@ fn verify_replica(
     if actual_project != parsed.project {
         return Err("invalid_target".to_string());
     }
-    let replica_root = workspace
+    let replica_root = ac_root
         .join(&parsed.workgroup)
         .join(format!("__agent_{}", parsed.agent));
     let project_identity = crate::path_identity::verify_directory(project_dir)?;
-    let workspace_identity = crate::path_identity::verify_directory(workspace)?;
-    let workgroup_root = workspace.join(&parsed.workgroup);
+    let ac_root_identity = crate::path_identity::verify_directory(ac_root)?;
+    let workgroup_root = ac_root.join(&parsed.workgroup);
     let workgroup_identity = crate::path_identity::verify_directory(&workgroup_root)?;
     let replica_identity = crate::path_identity::verify_directory(&replica_root)?;
     if workgroup_identity
@@ -873,7 +873,7 @@ fn verify_replica(
     {
         return Err("sender_identity_invalid".to_string());
     }
-    let matrix_root = workspace.join(format!("_agent_{}", parsed.agent));
+    let matrix_root = ac_root.join(format!("_agent_{}", parsed.agent));
     let matrix_identity = crate::path_identity::verify_directory(&matrix_root)?;
     if matrix_identity
         .canonical_path
@@ -883,7 +883,7 @@ fn verify_replica(
     {
         return Err("invalid_target".to_string());
     }
-    let (coordinator, members, team_config_identity) = team_members(workspace, &parsed.team)?;
+    let (coordinator, members, team_config_identity) = team_members(ac_root, &parsed.team)?;
     let is_coordinator = identity_name_eq(&coordinator, &parsed.agent);
     if !is_coordinator
         && !members
@@ -895,7 +895,7 @@ fn verify_replica(
     let canonical_fqn = format!("{}:{}/{}", actual_project, parsed.workgroup, parsed.agent);
     let authority_fingerprint = identity_fingerprint(&[
         &project_identity,
-        &workspace_identity,
+        &ac_root_identity,
         &workgroup_identity,
         &replica_identity,
         &replica_config_identity,
@@ -912,7 +912,7 @@ fn verify_replica(
         matrix_root,
         is_coordinator,
         project_identity,
-        workspace_identity,
+        ac_root_identity,
         workgroup_identity,
         replica_identity,
         incarnation_fingerprint,
@@ -977,10 +977,10 @@ fn verify_sender_replica(cwd: &Path) -> Result<VerifiedPtyInputIdentity, String>
     let workgroup = replica
         .parent()
         .ok_or_else(|| "sender_identity_invalid".to_string())?;
-    let workspace = workgroup
+    let ac_root = workgroup
         .parent()
         .ok_or_else(|| "sender_identity_invalid".to_string())?;
-    let project = workspace
+    let project = ac_root
         .parent()
         .ok_or_else(|| "sender_identity_invalid".to_string())?;
     let fqn = agent_fqn_from_path(
@@ -989,7 +989,7 @@ fn verify_sender_replica(cwd: &Path) -> Result<VerifiedPtyInputIdentity, String>
             .ok_or_else(|| "sender_identity_invalid".to_string())?,
     );
     let parsed = parse_strict_pty_fqn(&fqn)?;
-    let identity = verify_replica(project, workspace, &parsed)?;
+    let identity = verify_replica(project, ac_root, &parsed)?;
     let cwd_identity = crate::path_identity::verify_directory(cwd)?;
     if !crate::path_identity::is_verified_descendant(&cwd_identity, &identity.replica_identity) {
         return Err("sender_identity_invalid".to_string());
@@ -1039,10 +1039,10 @@ fn find_target_identity(
         return Err("invalid_target".to_string());
     }
     let (_, project_dir) = matching_projects.remove(0);
-    let workspace =
-        strict_project_workspace(&project_dir)?.ok_or_else(|| "invalid_target".to_string())?;
-    crate::path_identity::verify_directory(&workspace.join(&parsed.workgroup))?;
-    let identity = verify_replica(&project_dir, &workspace, parsed)?;
+    let ac_root =
+        strict_project_ac_root(&project_dir)?.ok_or_else(|| "invalid_target".to_string())?;
+    crate::path_identity::verify_directory(&ac_root.join(&parsed.workgroup))?;
+    let identity = verify_replica(&project_dir, &ac_root, parsed)?;
     let reconstructed = format!(
         "{}:{}/{}",
         identity.project, identity.workgroup, identity.agent
@@ -1092,9 +1092,9 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
     let mut target_objects = std::collections::HashSet::new();
     let mut scanned_entries = 0usize;
     for (project, project_dir) in projects {
-        let workspace =
-            strict_project_workspace(&project_dir)?.ok_or_else(|| "unsafe_path".to_string())?;
-        let workgroups = std::fs::read_dir(&workspace).map_err(|_| "unsafe_path".to_string())?;
+        let ac_root =
+            strict_project_ac_root(&project_dir)?.ok_or_else(|| "unsafe_path".to_string())?;
+        let workgroups = std::fs::read_dir(&ac_root).map_err(|_| "unsafe_path".to_string())?;
         for workgroup in workgroups {
             let workgroup = workgroup.map_err(|_| "unsafe_path".to_string())?;
             scanned_entries = scanned_entries.saturating_add(1);
@@ -1126,7 +1126,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
                 };
                 let candidate = format!("{project}:{name}/{agent}");
                 let parsed = parse_strict_pty_fqn(&candidate)?;
-                let identity = verify_replica(&project_dir, &workspace, &parsed)?;
+                let identity = verify_replica(&project_dir, &ac_root, &parsed)?;
                 if !target_names.insert(identity.canonical_fqn.clone())
                     || !target_objects.insert(identity.replica_identity.object_id)
                 {
@@ -1163,7 +1163,7 @@ pub(crate) fn verify_terminal_snapshot_root_identity(
         matrix_root: root_identity.canonical_path.clone(),
         is_coordinator: false,
         project_identity: root_identity.clone(),
-        workspace_identity: root_identity.clone(),
+        ac_root_identity: root_identity.clone(),
         workgroup_identity: root_identity.clone(),
         replica_identity: root_identity.clone(),
         matrix_identity: root_identity.clone(),
@@ -1317,10 +1317,10 @@ pub fn resolve_agent_target(
             if name != project {
                 continue;
             }
-            let Some(workspace_dir) = existing_workspace_dir(&dir) else {
+            let Some(ac_root) = existing_ac_root(&dir) else {
                 continue;
             };
-            let candidate = workspace_dir.join(wg).join(&replica_dir);
+            let candidate = ac_root.join(wg).join(&replica_dir);
             if candidate.is_dir() {
                 return Ok(target.to_string());
             }
@@ -1335,10 +1335,10 @@ pub fn resolve_agent_target(
         let replica_dir = format!("__agent_{}", agent);
         let mut candidates: Vec<String> = Vec::new();
         for (name, dir) in enumerate_project_dirs(project_paths) {
-            let Some(workspace_dir) = existing_workspace_dir(&dir) else {
+            let Some(ac_root) = existing_ac_root(&dir) else {
                 continue;
             };
-            let candidate = workspace_dir.join(wg).join(&replica_dir);
+            let candidate = ac_root.join(wg).join(&replica_dir);
             if candidate.is_dir() {
                 let fqn = format!("{}:{}/{}", name, wg, agent);
                 if !candidates.contains(&fqn) {
@@ -1371,7 +1371,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     if trimmed.contains(':') || trimmed.starts_with('/') {
         // Absolute path: extract origin project from folder before the Project AC Root marker
         let parts: Vec<&str> = trimmed.split('/').collect();
-        let origin = find_workspace_segment(&parts)
+        let origin = find_ac_root_segment(&parts)
             .and_then(|i| (i > 0).then_some(parts[i - 1]))
             .unwrap_or(project_folder);
         let dir_name = parts.last().unwrap_or(&trimmed);
@@ -1392,7 +1392,7 @@ fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
 }
 
 /// Resolve an agent ref to an absolute path given the Project AC Root directory.
-fn resolve_agent_path(workspace_dir: &Path, agent_ref: &str) -> Option<PathBuf> {
+fn resolve_agent_path(ac_root: &Path, agent_ref: &str) -> Option<PathBuf> {
     let normalized = agent_ref.replace('\\', "/");
     let trimmed = normalized
         .trim_start_matches("../")
@@ -1408,13 +1408,13 @@ fn resolve_agent_path(workspace_dir: &Path, agent_ref: &str) -> Option<PathBuf> 
     }
 
     // Relative to the Project AC Root directory.
-    let candidate = workspace_dir.join(trimmed);
+    let candidate = ac_root.join(trimmed);
     if candidate.is_dir() {
         return Some(candidate);
     }
 
     // Try parent of the Project AC Root directory (project root).
-    if let Some(project_root) = workspace_dir.parent() {
+    if let Some(project_root) = ac_root.parent() {
         let candidate = project_root.join(trimmed);
         if candidate.is_dir() {
             return Some(candidate);
@@ -1710,7 +1710,7 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
 
 /// Discover teams in a single project directory.
 fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>) {
-    let Some(workspace_dir) = existing_workspace_dir(project_dir) else {
+    let Some(ac_root) = existing_ac_root(project_dir) else {
         return;
     };
 
@@ -1720,7 +1720,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
         .unwrap_or("unknown")
         .to_string();
 
-    let entries = match std::fs::read_dir(&workspace_dir) {
+    let entries = match std::fs::read_dir(&ac_root) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -1815,7 +1815,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             .iter()
             .map(|r| {
                 let name = resolve_agent_ref(&project_folder, r);
-                let path = resolve_agent_path(&workspace_dir, r);
+                let path = resolve_agent_path(&ac_root, r);
                 (name, path)
             })
             .unzip();
@@ -1832,7 +1832,7 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
 
         let coordinator_path = coordinator_ref
             .as_ref()
-            .and_then(|r| resolve_agent_path(&workspace_dir, r));
+            .and_then(|r| resolve_agent_path(&ac_root, r));
 
         teams.push(DiscoveredTeam {
             name: team_name,
@@ -1983,7 +1983,7 @@ mod tests {
 
     /// No `.ac` segment at all (ad-hoc / non-AC shell) -> `None`.
     #[test]
-    fn project_from_path_no_workspace_segment_returns_none() {
+    fn project_from_path_no_ac_root_segment_returns_none() {
         assert_eq!(project_from_path("C:/repos/my-project/tech-lead"), None);
     }
 
@@ -2066,10 +2066,10 @@ mod tests {
         for (proj_name, wgs) in projects {
             let proj_dir = tmp.path().join(proj_name);
             std::fs::create_dir_all(&proj_dir).unwrap();
-            let workspace_dir = proj_dir.join(".ac");
-            std::fs::create_dir_all(&workspace_dir).unwrap();
+            let ac_root = proj_dir.join(".ac");
+            std::fs::create_dir_all(&ac_root).unwrap();
             for (wg_name, agents) in *wgs {
-                let wg_dir = workspace_dir.join(wg_name);
+                let wg_dir = ac_root.join(wg_name);
                 std::fs::create_dir_all(&wg_dir).unwrap();
                 for agent in *agents {
                     let replica = wg_dir.join(format!("__agent_{}", agent));
@@ -2084,11 +2084,11 @@ mod tests {
     fn make_coordinator_fixture(spoofed_coordinator_identity: bool) -> (FixtureRoot, Vec<String>) {
         let tmp = FixtureRoot::new("teams-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -2133,13 +2133,13 @@ mod tests {
     /// consumed; `make_coordinator_fixture` has only one ordinary member.
     fn make_writer_shaped_team_fixture() -> (FixtureRoot, Vec<String>) {
         let tmp = FixtureRoot::new("teams-writer-shape-fixture");
-        let workspace_dir = tmp.path().join("proj-a").join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let wg_dir = ac_root.join("wg-1-dev-team");
 
         std::fs::create_dir_all(&team_dir).unwrap();
         for agent in ["tech-lead", "dev-rust", "dev-ts"] {
-            std::fs::create_dir_all(workspace_dir.join(format!("_agent_{agent}"))).unwrap();
+            std::fs::create_dir_all(ac_root.join(format!("_agent_{agent}"))).unwrap();
             let replica = wg_dir.join(format!("__agent_{agent}"));
             std::fs::create_dir_all(&replica).unwrap();
             std::fs::write(
@@ -2161,8 +2161,8 @@ mod tests {
     #[test]
     fn team_config_with_coordinator_in_agents_verifies_and_excludes_the_coordinator_from_members() {
         let (fixture, paths) = make_writer_shaped_team_fixture();
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let wg_dir = workspace.join("wg-1-dev-team");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead = wg_dir.join("__agent_tech-lead");
         let dev_rust = wg_dir.join("__agent_dev-rust");
 
@@ -2203,7 +2203,7 @@ mod tests {
         // Only a direct call can pin the exclusion. Asserting the whole vector
         // also pins that consuming the coordinator entry leaves the order and
         // the count of the remaining members untouched.
-        let (coordinator, members, _) = team_members(&workspace, "dev-team").unwrap();
+        let (coordinator, members, _) = team_members(&ac_root, "dev-team").unwrap();
         assert_eq!(coordinator, "tech-lead");
         assert_eq!(members, vec!["dev-rust".to_string(), "dev-ts".to_string()]);
     }
@@ -2211,9 +2211,9 @@ mod tests {
     #[test]
     fn team_config_rejects_repeated_agent_and_repeated_coordinator_entries() {
         let (fixture, paths) = make_writer_shaped_team_fixture();
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let team_config = workspace.join("_team_dev-team").join("config.json");
-        let tech_lead = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let team_config = ac_root.join("_team_dev-team").join("config.json");
+        let tech_lead = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
 
         for agents in [
             r#"["../_agent_dev-rust","../_agent_dev-rust","../_agent_tech-lead"]"#,
@@ -2271,8 +2271,8 @@ mod tests {
     #[test]
     fn terminal_snapshot_coordinator_policy_is_distinct_from_pty_input() {
         let (fixture, paths) = make_coordinator_fixture(false);
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let route = verify_terminal_snapshot_route(
             &coordinator,
             false,
@@ -2333,8 +2333,8 @@ mod tests {
     #[test]
     fn privileged_route_is_exact_and_uses_duplicate_free_identity_snapshots() {
         let (fixture, mut paths) = make_coordinator_fixture(false);
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let route =
             verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
                 .unwrap();
@@ -2366,7 +2366,7 @@ mod tests {
         .is_err());
 
         std::fs::write(
-            workspace.join("_team_dev-team").join("config.json"),
+            ac_root.join("_team_dev-team").join("config.json"),
             r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"agents":[],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
@@ -2382,8 +2382,8 @@ mod tests {
     #[test]
     fn sender_incarnation_survives_benign_config_content_changes() {
         let (fixture, paths) = make_coordinator_fixture(false);
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let first =
             verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
                 .unwrap();
@@ -2394,7 +2394,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            workspace.join("_team_dev-team").join("config.json"),
+            ac_root.join("_team_dev-team").join("config.json"),
             r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
         )
         .unwrap();
@@ -2415,8 +2415,8 @@ mod tests {
     #[test]
     fn privileged_route_rejects_noncanonical_identity_and_broken_project_roots() {
         let (fixture, mut paths) = make_coordinator_fixture(false);
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let coordinator_config = coordinator.join("config.json");
         std::fs::write(
             &coordinator_config,
@@ -2455,9 +2455,9 @@ mod tests {
     #[test]
     fn privileged_route_rejects_duplicate_replica_identity_and_worker_sender() {
         let (fixture, paths) = make_coordinator_fixture(false);
-        let workspace = fixture.path().join("proj-a").join(".ac");
-        let coordinator = workspace.join("wg-1-dev-team").join("__agent_tech-lead");
-        let worker = workspace.join("wg-1-dev-team").join("__agent_dev-rust");
+        let ac_root = fixture.path().join("proj-a").join(".ac");
+        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let worker = ac_root.join("wg-1-dev-team").join("__agent_dev-rust");
         assert!(
             verify_pty_input_route(&worker, false, "proj-a:wg-1-dev-team/tech-lead", &paths,)
                 .is_err()
@@ -2481,14 +2481,14 @@ mod tests {
     ) -> (FixtureRoot, PathBuf, PathBuf, Vec<String>) {
         let tmp = FixtureRoot::new("teams-portable-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let local_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let local_dev_rust = workspace_dir.join("_agent_dev-rust");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let local_tech_lead = ac_root.join("_agent_tech-lead");
+        let local_dev_rust = ac_root.join("_agent_dev-rust");
         let origin = tmp.path().join("origin-matrix").join(".ac");
         let origin_tech_lead = origin.join("_agent_tech-lead");
         let origin_dev_rust = origin.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -2531,17 +2531,17 @@ mod tests {
         .unwrap();
 
         let paths = vec![tmp.path().to_string_lossy().to_string()];
-        (tmp, workspace_dir, wg_dir, paths)
+        (tmp, ac_root, wg_dir, paths)
     }
 
     #[test]
     fn resolve_wg_coordinator_replica_uses_identity_not_dir_name() {
         let (tmp, _paths) = make_coordinator_fixture(false);
-        let workspace_dir = tmp.path().join("proj-a").join(".ac");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let wg_dir = ac_root.join("wg-1-dev-team");
 
         let resolved =
-            resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).expect("coordinator");
+            resolve_wg_coordinator_replica(&ac_root, &wg_dir).expect("coordinator");
 
         assert_eq!(resolved.project, "proj-a");
         assert_eq!(resolved.team, "dev-team");
@@ -2556,17 +2556,17 @@ mod tests {
     #[test]
     fn resolve_wg_coordinator_replica_rejects_spoofed_name() {
         let (tmp, _paths) = make_coordinator_fixture(true);
-        let workspace_dir = tmp.path().join("proj-a").join(".ac");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let wg_dir = ac_root.join("wg-1-dev-team");
 
-        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
     }
 
     #[test]
     fn resolve_wg_coordinator_replica_accepts_portable_ref_with_external_identity() {
-        let (_tmp, workspace_dir, wg_dir, _paths) = make_portable_coordinator_fixture(false);
+        let (_tmp, ac_root, wg_dir, _paths) = make_portable_coordinator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
             .expect("portable coordinator ref should match declared identity agent");
 
         assert_eq!(resolved.project, "proj-a");
@@ -2577,9 +2577,9 @@ mod tests {
 
     #[test]
     fn resolve_wg_coordinator_replica_rejects_portable_ref_with_spoofed_identity() {
-        let (_tmp, workspace_dir, wg_dir, _paths) = make_portable_coordinator_fixture(true);
+        let (_tmp, ac_root, wg_dir, _paths) = make_portable_coordinator_fixture(true);
 
-        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
     }
 
     /// Build a fixture where both team config and replica configs reference
@@ -2592,11 +2592,11 @@ mod tests {
     ) -> (FixtureRoot, PathBuf, PathBuf) {
         let tmp = FixtureRoot::new("teams-stale-coord-fixture");
         let project = tmp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_test-team");
-        let wg_dir = workspace_dir.join("wg-1-test-team");
-        let alpha_matrix = workspace_dir.join("_agent_test-alpha");
-        let beta_matrix = workspace_dir.join("_agent_test-beta");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_test-team");
+        let wg_dir = ac_root.join("wg-1-test-team");
+        let alpha_matrix = ac_root.join("_agent_test-alpha");
+        let beta_matrix = ac_root.join("_agent_test-beta");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
         let beta_replica = wg_dir.join("__agent_test-beta");
 
@@ -2658,16 +2658,16 @@ mod tests {
         )
         .unwrap();
 
-        (tmp, workspace_dir, wg_dir)
+        (tmp, ac_root, wg_dir)
     }
 
     /// Stale absolute identity refs are accepted only by repairing them
     /// to the same-workspace local matrix with the same agent basename.
     #[test]
     fn resolve_wg_coordinator_replica_repairs_stale_absolute_refs() {
-        let (_tmp, workspace_dir, wg_dir) = make_stale_coordinator_fixture(false);
+        let (_tmp, ac_root, wg_dir) = make_stale_coordinator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
             .expect("same-workspace repair should resolve coordinator with stale refs");
 
         assert_eq!(resolved.agent_name, "test-alpha");
@@ -2686,13 +2686,13 @@ mod tests {
     /// (e.g. `_agent_test-beta`) must not be accepted as coordinator.
     #[test]
     fn resolve_wg_coordinator_replica_rejects_spoofed_stale_identity() {
-        let (_tmp, workspace_dir, wg_dir) = make_stale_coordinator_fixture(true);
+        let (_tmp, ac_root, wg_dir) = make_stale_coordinator_fixture(true);
 
         // The test-alpha replica has been spoofed to claim the test-beta matrix.
         // The test-beta replica claims the test-beta matrix too. Neither matches
         // the team's coordinator ref (`_agent_test-alpha`), so no coordinator
         // is resolved.
-        assert!(resolve_wg_coordinator_replica(&workspace_dir, &wg_dir).is_none());
+        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
     }
 
     /// Relative identity traversing out of the workspace must be repaired
@@ -2701,10 +2701,10 @@ mod tests {
     fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
         let tmp = FixtureRoot::new("teams-stale-rel-fixture");
         let project = tmp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_test-team");
-        let wg_dir = workspace_dir.join("wg-1-test-team");
-        let alpha_matrix = workspace_dir.join("_agent_test-alpha");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_test-team");
+        let wg_dir = ac_root.join("wg-1-test-team");
+        let alpha_matrix = ac_root.join("_agent_test-alpha");
         let alpha_replica = wg_dir.join("__agent_test-alpha");
 
         for dir in [&team_dir, &alpha_matrix, &alpha_replica] {
@@ -2736,7 +2736,7 @@ mod tests {
         )
         .unwrap();
 
-        let resolved = resolve_wg_coordinator_replica(&workspace_dir, &wg_dir)
+        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
             .expect("same-workspace repair should resolve stale relative identity");
         assert_eq!(resolved.agent_name, "test-alpha");
     }
@@ -2824,7 +2824,7 @@ mod tests {
 
     #[test]
     fn verified_wg_coordinator_target_accepts_portable_ref_with_external_identity() {
-        let (_tmp, _workspace, _wg_dir, paths) = make_portable_coordinator_fixture(false);
+        let (_tmp, _ac_root, _wg_dir, paths) = make_portable_coordinator_fixture(false);
 
         let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
             .expect("portable verified coordinator");

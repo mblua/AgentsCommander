@@ -2205,7 +2205,7 @@ impl ProjectSeedManifestGuard {
         }
 
         let ac_path =
-            canonical_project_path.join(crate::config::ac_root::CANONICAL_WORKSPACE_DIR);
+            canonical_project_path.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
         let ac_root = PinnedDirectory::open(&ac_path)?;
         let lock_path = ac_path.join(SEED_MANIFEST_LOCK_FILENAME);
         let started = Instant::now();
