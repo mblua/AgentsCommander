@@ -404,7 +404,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 5,
+        current_version: 6,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
         project_actionable: false,
