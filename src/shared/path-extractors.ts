@@ -1,25 +1,25 @@
-import { AC_WORKSPACE_DIR } from './constants';
+import { CANONICAL_AC_ROOT_DIR } from './constants';
 
 function pathParts(workDir: string): string[] {
   return workDir.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
 }
 
-function lastWorkspaceIndex(parts: string[]): number {
+function lastAcRootIndex(parts: string[]): number {
   for (let i = parts.length - 1; i >= 0; i--) {
-    if (parts[i] === AC_WORKSPACE_DIR) return i;
+    if (parts[i] === CANONICAL_AC_ROOT_DIR) return i;
   }
   return -1;
 }
 
 export function extractProjectName(workDir: string): string | null {
   const parts = pathParts(workDir);
-  const idx = lastWorkspaceIndex(parts);
+  const idx = lastAcRootIndex(parts);
   return idx > 0 ? parts[idx - 1] : null;
 }
 
 export function extractWorkgroupName(workDir: string): string | null {
   const parts = pathParts(workDir);
-  const idx = lastWorkspaceIndex(parts);
+  const idx = lastAcRootIndex(parts);
   if (idx < 0 || idx + 1 >= parts.length) return null;
   const wg = parts[idx + 1];
   return /^wg-\d+/.test(wg) ? wg.toUpperCase() : null;
@@ -27,7 +27,7 @@ export function extractWorkgroupName(workDir: string): string | null {
 
 export function extractAgentName(workDir: string): string | null {
   const parts = pathParts(workDir);
-  const idx = lastWorkspaceIndex(parts);
+  const idx = lastAcRootIndex(parts);
   if (idx < 0 || idx + 2 >= parts.length) return null;
   const seg = parts[idx + 2];
   if (!seg.startsWith('__agent_')) return null;
