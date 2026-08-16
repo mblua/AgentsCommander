@@ -4,7 +4,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::cli::workgroup::{resolve_cli_project, resolve_cli_workspace, write_refresh};
+use crate::cli::workgroup::{resolve_cli_project, resolve_cli_ac_root, write_refresh};
 use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, discover_loops_in_project,
     loop_dir, read_loop_config, read_loop_state, sanitize_loop_id, validate_loop_config,
@@ -159,12 +159,12 @@ fn list(args: LoopListArgs) -> Result<(), String> {
 
 fn create(args: LoopCreateArgs) -> Result<(), String> {
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
+    let ac_root = resolve_cli_ac_root(&project_path)?;
     let id = match args.id.as_deref() {
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&args.name)?,
     };
-    let dir = loop_dir(&workspace_dir, &id);
+    let dir = loop_dir(&ac_root, &id);
     if dir.exists() {
         return Err(format!("Loop '{}' already exists", id));
     }
@@ -193,7 +193,7 @@ fn create(args: LoopCreateArgs) -> Result<(), String> {
         },
     };
     validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = initial_state(&config)?;
     write_loop_state_atomic(&dir, &state)?;
     write_refresh(&project_path, &dir, &id, "loopCreated");
@@ -203,8 +203,8 @@ fn create(args: LoopCreateArgs) -> Result<(), String> {
 fn update(args: LoopUpdateArgs) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let dir = loop_dir(&workspace_dir, &args.loop_id);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let dir = loop_dir(&ac_root, &args.loop_id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", args.loop_id));
     }
@@ -238,7 +238,7 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
     )?;
 
     validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = if reset_schedule {
         initial_state(&config)?
     } else {
@@ -254,8 +254,8 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
 fn remove(args: LoopRemoveArgs) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let dir = loop_dir(&workspace_dir, &args.loop_id);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let dir = loop_dir(&ac_root, &args.loop_id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", args.loop_id));
     }
@@ -275,8 +275,8 @@ fn remove(args: LoopRemoveArgs) -> Result<(), String> {
 fn set_enabled(args: LoopToggleArgs, enabled: bool) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
-    let workspace_dir = resolve_cli_workspace(&project_path)?;
-    let dir = loop_dir(&workspace_dir, &args.loop_id);
+    let ac_root = resolve_cli_ac_root(&project_path)?;
+    let dir = loop_dir(&ac_root, &args.loop_id);
     if !dir.is_dir() {
         return Err(format!("Loop '{}' not found", args.loop_id));
     }
@@ -289,7 +289,7 @@ fn set_enabled(args: LoopToggleArgs, enabled: bool) -> Result<(), String> {
         },
     )?;
     validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&workspace_dir, &config)?;
+    let dir = write_loop_config(&ac_root, &config)?;
     let state = if reset_schedule {
         initial_state(&config)?
     } else {

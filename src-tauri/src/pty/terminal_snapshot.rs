@@ -2333,7 +2333,7 @@ fn augment_coordinator_project(
     requester: &VerifiedPtyInputIdentity,
 ) -> Result<(), TerminalSnapshotReasonCode> {
     let project = requester
-        .workspace_identity
+        .ac_root_identity
         .canonical_path
         .parent()
         .and_then(Path::to_str)

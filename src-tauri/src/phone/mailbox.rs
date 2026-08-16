@@ -107,7 +107,7 @@ impl InternalSystemTarget {
                     e
                 )
             })?;
-        let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&canonical)?
+        let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&canonical)?
             .ok_or_else(|| {
                 format!(
                     "Internal system target replica '{}' is not a canonical workgroup replica",
@@ -301,13 +301,13 @@ fn canonical_cwd_owned_by_replica(cwd: &str, replica_dir: &Path) -> Result<bool,
     let Some(lexical_workgroup) = lexical_replica.parent() else {
         return Ok(false);
     };
-    let Some(lexical_workspace) = lexical_workgroup.parent() else {
+    let Some(lexical_ac_root) = lexical_workgroup.parent() else {
         return Ok(false);
     };
     for (path, label) in [
         (lexical_replica, "replica"),
         (lexical_workgroup, "workgroup"),
-        (lexical_workspace, "Project AC Root"),
+        (lexical_ac_root, "Project AC Root"),
     ] {
         let metadata = std::fs::symlink_metadata(path).map_err(|error| {
             format!(
@@ -750,7 +750,7 @@ fn validate_root_sender_payload_with_root_dir(
 /// Uses `to_str()` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. The shared
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
-/// `config::workspace::wg_replica_layout_from_agent_dir` (single source with
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
 /// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
@@ -771,7 +771,7 @@ fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>,
     let Some(agent_dir) = local_dir.parent() else {
         return Ok(None);
     };
-    match crate::config::workspace::wg_replica_layout_from_agent_dir(agent_dir)? {
+    match crate::config::ac_root::wg_replica_layout_from_agent_dir(agent_dir)? {
         Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
         None => Ok(None),
     }
@@ -3114,7 +3114,7 @@ impl MailboxPoller {
         } else {
             let sender = crate::config::teams::verify_pty_input_coordinator_root(root).ok()?;
             sender
-                .workspace_identity
+                .ac_root_identity
                 .canonical_path
                 .parent()
                 .and_then(|path| {
@@ -3308,7 +3308,7 @@ impl MailboxPoller {
                 Err(_) => return false,
             };
             sender
-                .workspace_identity
+                .ac_root_identity
                 .canonical_path
                 .parent()
                 .and_then(|path| {
@@ -4098,7 +4098,7 @@ impl MailboxPoller {
         if let Ok(sender) = crate::config::teams::verify_pty_input_replica_cwd(Path::new(
             &authority.working_directory,
         )) {
-            if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+            if let Some(project_path) = sender.ac_root_identity.canonical_path.parent() {
                 let project = project_path
                     .to_str()
                     .map(crate::path_utils::normalize_windows_verbatim_path)?;
@@ -5333,7 +5333,7 @@ impl MailboxPoller {
             &session.working_directory,
         ))
         .ok()?;
-        if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+        if let Some(project_path) = sender.ac_root_identity.canonical_path.parent() {
             let project = project_path
                 .to_str()
                 .map(crate::path_utils::normalize_windows_verbatim_path)?;
@@ -10465,12 +10465,12 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let Some(workspace_dir) =
-                            crate::config::workspace::existing_workspace_dir(&dir)
+                        let Some(ac_root) =
+                            crate::config::ac_root::existing_ac_root(&dir)
                         else {
                             continue;
                         };
-                        let candidate = workspace_dir.join(wg_name).join(&replica_dir);
+                        let candidate = ac_root.join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —
@@ -11865,11 +11865,11 @@ mod tests {
     ) -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -12024,11 +12024,11 @@ mod tests {
     fn make_mailbox_fixture() -> MailboxFixture {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let sender_cwd = wg_dir.join("__agent_tech-lead");
         let target_cwd = wg_dir.join("__agent_dev-rust");
 
@@ -17416,9 +17416,9 @@ mod tests {
     fn make_self_switch_fixture() -> SelfSwitchFixture {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let origin = workspace.join("_agent_dev-rust");
-        let wg_dir = workspace.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let origin = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let replica = wg_dir.join("__agent_dev-rust");
 
         std::fs::create_dir_all(&origin).unwrap();
@@ -21540,11 +21540,11 @@ mod tests {
     /// peer. Returns the sender CWD and peer CWD.
     fn setup_purge_fixture(temp: &tempfile::TempDir, wg_suffix: &str) -> (PathBuf, PathBuf) {
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
+        let ac_root = project.join(".ac");
         let team_name = format!("_team_{}", wg_suffix);
-        let team_dir = workspace.join(&team_name);
-        let origin_tl = workspace.join("_agent_tech-lead");
-        let wg_dir = workspace.join(format!("wg-1-{}", wg_suffix));
+        let team_dir = ac_root.join(&team_name);
+        let origin_tl = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join(format!("wg-1-{}", wg_suffix));
         let sender_cwd = wg_dir.join("__agent_tech-lead");
         let peer_cwd = wg_dir.join("__agent_dev-rust");
         for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
@@ -21656,9 +21656,9 @@ mod tests {
         // Without this, the forged WG doesn't exist and the message is
         // rejected by WG resolution, not by the F-7 guard.
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let other_team_dir = workspace.join("_team_other-team");
-        let other_wg_dir = workspace.join("wg-1-other-team");
+        let ac_root = project.join(".ac");
+        let other_team_dir = ac_root.join("_team_other-team");
+        let other_wg_dir = ac_root.join("wg-1-other-team");
         let other_sender_cwd = other_wg_dir.join("__agent_tech-lead");
         let other_peer_cwd = other_wg_dir.join("__agent_dev-rust");
         for d in [&other_team_dir, &other_sender_cwd, &other_peer_cwd] {

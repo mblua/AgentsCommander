@@ -178,7 +178,7 @@ pub fn resolve_config_seed(
     // config; see ConfigSeedTier), so the matrix tiers mirror the workspace
     // naming (`default_profile_<l><dest>` / `default<dest>`) instead.
     let mut candidates: Vec<(ConfigSeedTier, PathBuf)> = Vec::new();
-    if let Some(ws) = context.workspace_root.as_ref() {
+    if let Some(ws) = context.ac_root.as_ref() {
         candidates.push((
             ConfigSeedTier::WorkspaceProfile,
             ws.join(format!("default_profile_{}{}", letter, dest_name)),
@@ -357,9 +357,9 @@ pub(crate) fn perform_config_seed_recorded(
     };
     let Some(project_root) = seed
         .context
-        .workspace_root
+        .ac_root
         .as_ref()
-        .and_then(|workspace| workspace.parent())
+        .and_then(|ac_root| ac_root.parent())
     else {
         return perform_config_seed(seed, unique_sfx);
     };
@@ -774,22 +774,22 @@ fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {
 }
 
 fn project_relative_dest(seed: &ResolvedConfigSeed) -> Result<PathBuf, String> {
-    let workspace_root = seed
+    let ac_root = seed
         .context
-        .workspace_root
+        .ac_root
         .as_ref()
         .ok_or_else(|| "launch root has no project workspace".to_string())?;
-    let inside_workspace = seed.dest.strip_prefix(workspace_root).map_err(|_| {
+    let inside_ac_root = seed.dest.strip_prefix(ac_root).map_err(|_| {
         format!(
             "destination {} is outside workspace {}",
             seed.dest.display(),
-            workspace_root.display()
+            ac_root.display()
         )
     })?;
-    // `workspace_root` is the `.ac` workspace in production. Focused unit tests
+    // `ac_root` is the `.ac` workspace in production. Focused unit tests
     // use a synthetic leaf, so add the stable project-relative `.ac` component
     // rather than depending on that leaf's fixture name.
-    let relative = PathBuf::from(".ac").join(inside_workspace);
+    let relative = PathBuf::from(".ac").join(inside_ac_root);
     if relative.is_absolute()
         || relative.components().next() != Some(Component::Normal(".ac".as_ref()))
     {
@@ -1273,13 +1273,13 @@ mod tests {
 
     fn ctx_with(
         replica: &Path,
-        workspace: Option<&Path>,
+        ac_root: Option<&Path>,
         matrix: Option<&Path>,
     ) -> PlaceholderContext {
         PlaceholderContext {
             replica_root: replica.to_path_buf(),
             root_kind: PlaceholderRootKind::AcReplicaOrRootAgent,
-            workspace_root: workspace.map(|p| p.to_path_buf()),
+            ac_root: ac_root.map(|p| p.to_path_buf()),
             matrix_root: matrix.map(|p| p.to_path_buf()),
         }
     }
@@ -1319,12 +1319,12 @@ mod tests {
 
     fn seed_swap_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("new.txt"), b"NEW");
+        write_file(&ac_root.join("default.claude").join("new.txt"), b"NEW");
         write_file(&replica.join(".claude").join("old.txt"), b"OLD");
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         (temp, resolved, replica)
     }
@@ -1333,10 +1333,10 @@ mod tests {
 
     #[test]
     fn resolve_orders_workspace_then_matrix_each_profile_then_base_lowercased() {
-        let workspace = abs(r"C:\ws", "/ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
-        let matrix = workspace.join("_agent_x");
-        let ctx = ctx_with(&replica, Some(&workspace), Some(&matrix));
+        let ac_root = abs(r"C:\ws", "/ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        let matrix = ac_root.join("_agent_x");
+        let ctx = ctx_with(&replica, Some(&ac_root), Some(&matrix));
 
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).expect("some");
         // All workspace tiers outrank all matrix tiers; profile beats base in each.
@@ -1344,10 +1344,10 @@ mod tests {
         assert_eq!(resolved.candidates[0].0, ConfigSeedTier::WorkspaceProfile);
         assert_eq!(
             resolved.candidates[0].1,
-            workspace.join("default_profile_c.claude")
+            ac_root.join("default_profile_c.claude")
         );
         assert_eq!(resolved.candidates[1].0, ConfigSeedTier::WorkspaceBase);
-        assert_eq!(resolved.candidates[1].1, workspace.join("default.claude"));
+        assert_eq!(resolved.candidates[1].1, ac_root.join("default.claude"));
         assert_eq!(resolved.candidates[2].0, ConfigSeedTier::MatrixProfile);
         assert_eq!(
             resolved.candidates[2].1,
@@ -1369,9 +1369,9 @@ mod tests {
 
     #[test]
     fn resolve_omits_matrix_when_absent() {
-        let workspace = abs(r"C:\ws", "/ws");
-        let replica = workspace.join("ac-root-agent");
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ac_root = abs(r"C:\ws", "/ws");
+        let replica = ac_root.join("ac-root-agent");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
 
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).expect("some");
         // Root-agent: matrix is None, so only the two workspace tiers remain.
@@ -1390,7 +1390,7 @@ mod tests {
         let ctx = PlaceholderContext {
             replica_root: abs(r"C:\cwd", "/cwd"),
             root_kind: PlaceholderRootKind::NormalLaunchCwd,
-            workspace_root: Some(abs(r"C:\ws", "/ws")),
+            ac_root: Some(abs(r"C:\ws", "/ws")),
             matrix_root: None,
         };
         assert!(resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).is_none());
@@ -1398,9 +1398,9 @@ mod tests {
 
     #[test]
     fn resolve_is_none_for_bad_dest_failsoft() {
-        let workspace = abs(r"C:\ws", "/ws");
-        let replica = workspace.join("wg-1").join("__agent_x");
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ac_root = abs(r"C:\ws", "/ws");
+        let replica = ac_root.join("wg-1").join("__agent_x");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         // A dest that bypassed save validation must fail soft (None), not abort.
         assert!(resolve_config_seed(&seed_cfg("../escape"), "A", Some(&ctx)).is_none());
         assert!(resolve_config_seed(&seed_cfg("a/b"), "A", Some(&ctx)).is_none());
@@ -1416,19 +1416,19 @@ mod tests {
     #[test]
     fn perform_seeds_from_highest_present_tier_and_clean_replaces_dest() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         // Base AND Profile templates both present; Profile must win.
-        write_file(&workspace.join("default.claude").join("f.txt"), b"BASE");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
         write_file(
-            &workspace.join("default_profile_c.claude").join("f.txt"),
+            &ac_root.join("default_profile_c.claude").join("f.txt"),
             b"PROFILE",
         );
         // Pre-existing dest content that must be cleanly replaced.
         write_file(&replica.join(".claude").join("stale.txt"), b"OLD");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
         let publication = assert_published(perform_config_seed(&resolved, "sfx1"));
         assert_eq!(publication.tier, ConfigSeedTier::WorkspaceProfile);
@@ -1451,19 +1451,19 @@ mod tests {
 
     // #1065 Stage F activation coverage: an exact config-seed publication records the
     // whole `config:<dest>` scope into the project seed manifest under the project
-    // gate. The project root is `workspace_root.parent()`, so the fixture uses a real
+    // gate. The project root is `ac_root.parent()`, so the fixture uses a real
     // `.ac` workspace. Removing the `record_config_seed_outcome` adapter call would
     // leave no manifest and fail this test (plan acceptance item 22).
     #[test]
     fn config_seed_exact_publish_records_the_scope_under_the_gate() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path();
-        let workspace = project.join(".ac");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = project.join(".ac");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"SEED");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"SEED");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         let publication =
@@ -1474,7 +1474,7 @@ mod tests {
             CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
         );
 
-        let manifest = std::fs::read_to_string(workspace.join("seed-manifest.toml"))
+        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
             .expect("an exact config-seed publication records a seed manifest under the gate");
         assert!(
             manifest.contains("scope = \"config:.ac/wg-1-team/__agent_x/.claude\""),
@@ -1503,15 +1503,15 @@ mod tests {
     fn bench_end_to_end_config_staging_1k_10k_100k() {
         for &n in &[1_000usize, 10_000, 100_000] {
             let temp = tempfile::tempdir().unwrap();
-            let workspace = temp.path().join("ws");
-            let replica = workspace.join("wg-1-team").join("__agent_x");
+            let ac_root = temp.path().join("ws");
+            let replica = ac_root.join("wg-1-team").join("__agent_x");
             std::fs::create_dir_all(&replica).unwrap();
-            let source = workspace.join("default.claude");
+            let source = ac_root.join("default.claude");
             std::fs::create_dir_all(&source).unwrap();
             for i in 0..n {
                 std::fs::write(source.join(format!("file-{i:07}.txt")), b"seed").unwrap();
             }
-            let ctx = ctx_with(&replica, Some(&workspace), None);
+            let ctx = ctx_with(&replica, Some(&ac_root), None);
             let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
 
             let started = std::time::Instant::now();
@@ -1533,12 +1533,12 @@ mod tests {
     #[test]
     fn perform_skips_and_preserves_dest_when_no_template_present() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         write_file(&replica.join(".claude").join("keep.txt"), b"KEEP");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         assert_skipped(perform_config_seed(&resolved, "s"));
         // Dest fully intact.
@@ -1551,16 +1551,16 @@ mod tests {
     #[test]
     fn perform_failed_copy_leaves_dest_intact() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         write_file(&replica.join(".claude").join("keep.txt"), b"OLD");
         // Fault injection: a FILE where the temp DIR would be created makes
         // copy_tree's create_dir_all fail, so the swap never touches dest.
         write_file(&replica.join(".claude.acseed-tmp-sfx"), b"blocker");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         assert_failed(perform_config_seed(&resolved, "sfx"));
         // Dest fully intact (old content kept).
@@ -1669,11 +1669,11 @@ mod tests {
     #[test]
     fn perform_refuses_to_recreate_a_stale_missing_replica() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         std::fs::remove_dir_all(&replica).unwrap();
 
@@ -1689,11 +1689,11 @@ mod tests {
     #[test]
     fn publication_carries_the_injected_commit_point_time() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let expected = DateTime::parse_from_rfc3339("2026-07-20T15:47:23.456Z")
             .unwrap()
@@ -1710,10 +1710,10 @@ mod tests {
     #[test]
     fn collector_switches_irreversibly_to_constant_memory_at_the_row_bound() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let mut collector = SeedFileCollector::new(&resolved, ConfigSeedTier::WorkspaceBase);
         for index in 0..=MAX_MANIFEST_ROWS {
@@ -1738,13 +1738,13 @@ mod tests {
     #[test]
     fn perform_skips_and_preserves_dest_when_dest_is_locked() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         write_file(&replica.join(".claude").join("keep.txt"), b"OLD");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
 
         // Hold an open handle to a file inside dest: Windows then refuses to
@@ -1767,10 +1767,10 @@ mod tests {
     #[test]
     fn perform_clears_stale_temp_and_trash_from_prior_run() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         // Stale dirs from a crashed prior run.
         write_file(
             &replica.join(".claude.acseed-tmp-sfx").join("junk.txt"),
@@ -1781,7 +1781,7 @@ mod tests {
             b"stale",
         );
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         assert_published(perform_config_seed(&resolved, "sfx"));
         assert_eq!(
@@ -1795,10 +1795,10 @@ mod tests {
     #[test]
     fn perform_reclaims_leaked_scratch_from_other_session_ids() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&workspace.join("default.claude").join("f.txt"), b"NEW");
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"NEW");
         // Scratch leaked by a prior run whose removal was locked — note the
         // DIFFERENT session id. A per-suffix cleanup would never reclaim these.
         write_file(
@@ -1810,7 +1810,7 @@ mod tests {
             b"stale",
         );
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         assert_published(perform_config_seed(&resolved, "NEWID"));
         assert!(!replica.join(".claude.acseed-old-OLDID").exists());
@@ -1872,14 +1872,14 @@ mod tests {
     #[test]
     fn catalog_default_fills_absent_dest_from_nonempty_master() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         // No workspace/matrix templates on disk: the 4 legacy tiers are absent.
         let master = temp.path().join("master");
         write_file(&master.join("settings.json"), b"{\"seeded\":true}");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
@@ -1895,15 +1895,15 @@ mod tests {
     fn catalog_default_absent_only_never_overwrites_existing_dest() {
         // The E1/G1 data-loss killer: a present dest is preserved, tier skips.
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         // Live replica config the seed must never touch.
         write_file(&replica.join(".claude").join("creds.json"), b"SECRET");
         let master = temp.path().join("master");
         write_file(&master.join("settings.json"), b"{\"seeded\":true}");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
@@ -1922,13 +1922,13 @@ mod tests {
         // Non-empty gate: an empty master reads as "not present" -> Skipped, and
         // (dest absent) nothing is created, so spawn behavior is byte-identical.
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         let master = temp.path().join("master");
         std::fs::create_dir_all(&master).unwrap(); // exists but EMPTY
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
@@ -1941,17 +1941,17 @@ mod tests {
         // A present workspace tier still wins (unchanged behavior); CatalogDefault
         // is only reached when all 4 legacy tiers are absent.
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         write_file(
-            &workspace.join("default.claude").join("f.txt"),
+            &ac_root.join("default.claude").join("f.txt"),
             b"WORKSPACE",
         );
         let master = temp.path().join("master");
         write_file(&master.join("f.txt"), b"CATALOG");
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         let resolved = with_catalog_default(resolved, &master);
 
@@ -2118,8 +2118,8 @@ mod tests {
         // Realistic settings.local.json: `claudeMdExcludes` uses %USER_HOME% (must
         // expand), while a PreToolUse hook command uses %TEMP% (must NOT).
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("ws");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
         let template = concat!(
             "{\n",
@@ -2128,11 +2128,11 @@ mod tests {
             "}\n"
         );
         write_file(
-            &workspace.join("default.claude").join("settings.local.json"),
+            &ac_root.join("default.claude").join("settings.local.json"),
             template.as_bytes(),
         );
 
-        let ctx = ctx_with(&replica, Some(&workspace), None);
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
         assert_published(perform_config_seed(&resolved, "sfx924"));
 

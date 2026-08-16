@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::settings::AppSettings;
-use super::workspace::{existing_workspace_dir, has_workspace_dir, workspace_dir_for_project};
+use super::ac_root::{existing_ac_root, has_ac_root, ac_root_for_project};
 
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns
@@ -57,13 +57,13 @@ pub enum ProjectError {
     #[error("path is not a directory: {0}")]
     NotADirectory(PathBuf),
     #[error("no AC project at {0} (.ac/ not found)")]
-    WorkspaceMissing(PathBuf),
+    AcRootMissing(PathBuf),
     #[error("failed to resolve absolute path for '{0}': {1}")]
     CwdFailure(String, std::io::Error),
     #[error("failed to create .ac directory at {0}: {1}")]
-    WorkspaceCreateFailed(PathBuf, std::io::Error),
+    AcRootCreateFailed(PathBuf, std::io::Error),
     #[error("failed to write Project AC Root .gitignore at {0}: {1}")]
-    WorkspaceGitignoreFailed(PathBuf, String),
+    AcRootGitignoreFailed(PathBuf, String),
     #[error("failed to create context templates in .ac directory at {0}: {1}")]
     ContextTemplatesCreateFailed(PathBuf, String),
     #[error("AC project setup at {0} is no longer stable: {1}; retry the operation")]
@@ -110,8 +110,8 @@ pub fn register_existing_project(
     if !abs.is_dir() {
         return Err(ProjectError::NotADirectory(abs));
     }
-    if existing_workspace_dir(&abs).is_none() {
-        return Err(ProjectError::WorkspaceMissing(abs));
+    if existing_ac_root(&abs).is_none() {
+        return Err(ProjectError::AcRootMissing(abs));
     }
     let abs_str = abs.to_string_lossy().into_owned();
     let registered = upsert_project_path(settings, &abs_str);
@@ -199,9 +199,9 @@ fn register_new_project_with_store(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<ProjectRegistration, ProjectError> {
     let prepared =
-        prepare_new_project_impl(raw_path, activation, |workspace_dir, on_publication| {
+        prepare_new_project_impl(raw_path, activation, |ac_root, on_publication| {
             crate::config::session_context::create_default_context_templates_with_publications(
-                workspace_dir,
+                ac_root,
                 on_publication,
             )
         })?;
@@ -261,7 +261,7 @@ pub(crate) struct PreparedNewProject {
 }
 
 impl PreparedNewProject {
-    pub(crate) fn workspace_dir(&self) -> &Path {
+    pub(crate) fn ac_root(&self) -> &Path {
         self.guard.ac_root()
     }
 
@@ -287,9 +287,9 @@ pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, 
     prepare_new_project_impl(
         raw_path,
         activation.as_ref(),
-        |workspace_dir, on_publication| {
+        |ac_root, on_publication| {
             crate::config::session_context::create_default_context_templates_with_publications(
-                workspace_dir,
+                ac_root,
                 on_publication,
             )
         },
@@ -334,30 +334,30 @@ where
     // idempotent on an already-existing dir, so this costs nothing extra
     // when PATH is already there.
     std::fs::create_dir_all(&abs)
-        .map_err(|e| ProjectError::WorkspaceCreateFailed(abs.clone(), e))?;
+        .map_err(|e| ProjectError::AcRootCreateFailed(abs.clone(), e))?;
 
-    let workspace_dir = workspace_dir_for_project(&abs);
+    let ac_root = ac_root_for_project(&abs);
     // The create syscall is the sole creation-intent authority. An earlier
     // existence observation cannot distinguish this caller from a contender.
-    let created = match std::fs::create_dir(&workspace_dir) {
+    let created = match std::fs::create_dir(&ac_root) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => {
-            return Err(ProjectError::WorkspaceCreateFailed(
-                workspace_dir.clone(),
+            return Err(ProjectError::AcRootCreateFailed(
+                ac_root.clone(),
                 e,
             ))
         }
     };
     let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&abs)
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
-    let pinned_workspace = crate::config::seed_manifest::PinnedDirectory::open(&workspace_dir)
+    let pinned_ac_root = crate::config::seed_manifest::PinnedDirectory::open(&ac_root)
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
-    after_create_before_gate(&workspace_dir, created);
+    after_create_before_gate(&ac_root, created);
     pinned_project
         .revalidate()
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
-    pinned_workspace
+    pinned_ac_root
         .revalidate()
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
 
@@ -366,16 +366,16 @@ where
     pinned_project
         .revalidate()
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
-    pinned_workspace
+    pinned_ac_root
         .revalidate_at(guard.ac_root())
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
     guard
         .revalidate_owner()
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
     if created {
-        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
-            return Err(ProjectError::WorkspaceGitignoreFailed(
-                workspace_dir.clone(),
+        if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root) {
+            return Err(ProjectError::AcRootGitignoreFailed(
+                ac_root.clone(),
                 e,
             ));
         }
@@ -383,10 +383,10 @@ where
         // Gitignore sweep (Round-1 G15): best-effort when `.ac` pre-existed
         // because a transient FS error on someone else's gitignore should not
         // fail registration of a valid project.
-        if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&workspace_dir) {
+        if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root) {
             log::warn!(
                 "[projects] gitignore sweep failed on pre-existing Project AC Root at {:?}: {} (best-effort, continuing)",
-                workspace_dir, e
+                ac_root, e
             );
         }
     }
@@ -408,9 +408,9 @@ where
                     );
                 }
             };
-        if let Err(e) = create_context_templates(&workspace_dir, &mut on_publication) {
+        if let Err(e) = create_context_templates(&ac_root, &mut on_publication) {
             return Err(ProjectError::ContextTemplatesCreateFailed(
-                workspace_dir.clone(),
+                ac_root.clone(),
                 e,
             ));
         }
@@ -619,7 +619,7 @@ pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<Ar
                     .unwrap_or(raw)
                     .to_string(),
                 exists: is_real_directory(path),
-                has_workspace: has_workspace_dir(path),
+                has_workspace: has_ac_root(path),
             }
         })
         .collect()
@@ -664,7 +664,7 @@ fn push_project_candidate(
     out: &mut Vec<ProjectResolution>,
     seen: &mut HashSet<String>,
 ) {
-    if !is_real_directory(path) || !has_workspace_dir(path) {
+    if !is_real_directory(path) || !has_ac_root(path) {
         return;
     }
     let Some(key) = canonical_key(path) else {
@@ -1021,7 +1021,7 @@ pub(crate) enum SideStatus {
     /// The canonical target exists but is not a directory.
     NotADirectory,
     /// The directory exists but is neither a direct project nor a collection root.
-    WorkspaceOrCollectionMissing,
+    AcRootOrCollectionMissing,
     /// The canonical path is not losslessly representable as UTF-8.
     NonUtf8,
     ValidDirectProject,
@@ -1137,7 +1137,7 @@ fn validate_fs_candidate(syntactic: &Path) -> SideOutcome {
         Ok(ProjectKind::CollectionRoot) => SideStatus::ValidCollectionRoot,
         Ok(ProjectKind::None) => {
             return SideOutcome {
-                status: SideStatus::WorkspaceOrCollectionMissing,
+                status: SideStatus::AcRootOrCollectionMissing,
                 syntactic_path: syntactic_str,
                 canonical_path: Some(canonical_str),
                 identity: None,
@@ -2005,11 +2005,11 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_path_without_workspace() {
+    fn open_rejects_path_without_ac_root() {
         let fix = FixtureRoot::new("proj-open-no-workspace");
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap());
-        assert!(matches!(r, Err(ProjectError::WorkspaceMissing(_))));
+        assert!(matches!(r, Err(ProjectError::AcRootMissing(_))));
         assert!(s.project_paths.is_empty());
     }
 
@@ -2026,12 +2026,12 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_non_ac_workspace() {
+    fn open_rejects_non_ac_root() {
         let fix = FixtureRoot::new("proj-open-invalid-workspace");
         std::fs::create_dir_all(fix.path().join(".workspace")).unwrap();
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap());
-        assert!(matches!(r, Err(ProjectError::WorkspaceMissing(_))));
+        assert!(matches!(r, Err(ProjectError::AcRootMissing(_))));
         assert!(s.project_paths.is_empty());
     }
 
@@ -2043,7 +2043,7 @@ mod tests {
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(r.registered);
         assert_eq!(
-            existing_workspace_dir(fix.path()),
+            existing_ac_root(fix.path()),
             Some(fix.path().join(".ac"))
         );
     }
@@ -2133,10 +2133,10 @@ mod tests {
     #[test]
     fn new_does_not_overwrite_existing_context_templates() {
         let fix = FixtureRoot::new("proj-new-template-existing");
-        let workspace_dir = fix.path().join(".ac");
-        std::fs::create_dir_all(&workspace_dir).unwrap();
-        let agent_template = workspace_dir.join("Context.AgentsCommander.md");
-        let coordinator_template = workspace_dir.join("Context.coordinator.md");
+        let ac_root = fix.path().join(".ac");
+        std::fs::create_dir_all(&ac_root).unwrap();
+        let agent_template = ac_root.join("Context.AgentsCommander.md");
+        let coordinator_template = ac_root.join("Context.coordinator.md");
         std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
         std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
 
@@ -2162,9 +2162,9 @@ mod tests {
         let first_result = prepare_new_project_impl(
             fix.path().to_str().unwrap(),
             None,
-            |workspace_dir, _on_publication| {
+            |ac_root, _on_publication| {
                 std::fs::write(
-                    workspace_dir
+                    ac_root
                         .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                     crate::config::session_context::get_default_agent_template(),
                 )
@@ -2211,8 +2211,8 @@ mod tests {
             let prepared = prepare_new_project_impl_with_hook(
                 &creator_path,
                 None,
-                |workspace_dir, _on_publication| {
-                    crate::config::session_context::create_default_context_templates(workspace_dir)
+                |ac_root, _on_publication| {
+                    crate::config::session_context::create_default_context_templates(ac_root)
                 },
                 move |_, created| {
                     assert!(created, "creator must own the create_dir win");
@@ -2274,7 +2274,7 @@ mod tests {
             match prepare_new_project_impl_with_hook(
                 &creator_path,
                 None,
-                |_workspace_dir, _on_publication| {
+                |_ac_root, _on_publication| {
                     Err("injected creator failure after gate".to_string())
                 },
                 move |_, created| {
@@ -2371,15 +2371,15 @@ mod tests {
         let result = prepare_new_project_impl_with_hook(
             fix.path().to_str().unwrap(),
             None,
-            |workspace_dir, _on_publication| {
-                crate::config::session_context::create_default_context_templates(workspace_dir)
+            |ac_root, _on_publication| {
+                crate::config::session_context::create_default_context_templates(ac_root)
             },
-            |workspace_dir, created| {
+            |ac_root, created| {
                 assert!(created);
-                let detached = workspace_dir.with_extension("ac-detached");
-                std::fs::rename(workspace_dir, &detached).expect("detach created root");
-                std::fs::create_dir(workspace_dir).expect("install replacement root");
-                std::fs::write(workspace_dir.join("foreign.txt"), b"FOREIGN")
+                let detached = ac_root.with_extension("ac-detached");
+                std::fs::rename(ac_root, &detached).expect("detach created root");
+                std::fs::create_dir(ac_root).expect("install replacement root");
+                std::fs::write(ac_root.join("foreign.txt"), b"FOREIGN")
                     .expect("write replacement marker");
             },
         );
@@ -2457,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn new_skips_creation_when_ac_already_exists_via_workspace_lookup() {
+    fn new_skips_creation_when_ac_already_exists_via_ac_root_lookup() {
         let fix = FixtureRoot::new("proj-new-existing-lookup");
         std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
         let mut s = AppSettings::default();
@@ -2726,17 +2726,17 @@ mod tests {
     }
 
     #[test]
-    fn archived_projects_reports_missing_folder_and_missing_workspace() {
+    fn archived_projects_reports_missing_folder_and_missing_ac_root() {
         let full = FixtureRoot::new("proj-archived-full");
         std::fs::create_dir_all(full.path().join(".ac")).expect("full .ac");
-        let no_workspace = FixtureRoot::new("proj-archived-no-workspace");
+        let no_ac_root = FixtureRoot::new("proj-archived-no-workspace");
         let deleted = FixtureRoot::new("proj-archived-deleted");
         let deleted_path = deleted.path().to_string_lossy().to_string();
         std::fs::remove_dir_all(deleted.path()).expect("delete fixture");
 
         let rows = archived_projects_from_paths(&[
             full.path().to_string_lossy().to_string(),
-            no_workspace.path().to_string_lossy().to_string(),
+            no_ac_root.path().to_string_lossy().to_string(),
             deleted_path,
         ]);
 
@@ -2966,7 +2966,7 @@ mod tests {
     fn project_registration_serializes_camel_case() {
         // Today's fields are already lowercase single-words, so no rename
         // happens. This test locks the invariant: a future field like
-        // `workspace_dir` must serialize to `workspaceDir`. If the
+        // `ac_root` must serialize to `acRoot`. If the
         // `#[serde(rename_all = "camelCase")]` attribute is ever dropped,
         // this test catches it before the FE silently breaks.
         let r = ProjectRegistration {
@@ -2988,7 +2988,7 @@ mod tests {
         );
         // No snake_case relics from any current field name.
         assert!(
-            !json.contains("workspace_dir"),
+            !json.contains("ac_root"),
             "snake_case field name leaked: {}",
             json
         );

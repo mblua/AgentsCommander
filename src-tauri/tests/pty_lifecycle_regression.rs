@@ -184,7 +184,7 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
     // #1077: a registered project path must resolve to a real AC project (a
     // directory containing a `.ac` Project Root) for the six-field decoder to
     // select it into the runtime projectPaths. Without this `.ac`, the CLI loader
-    // (`load_settings_for_cli`) validates repo_root as WorkspaceOrCollectionMissing,
+    // (`load_settings_for_cli`) validates repo_root as AcRootOrCollectionMissing,
     // drops it from projectPaths, and session-retention purges the persisted
     // session — failing the Phase D persistence assertion.
     std::fs::create_dir_all(repo_root.join(".ac")).expect("create project .ac root");
