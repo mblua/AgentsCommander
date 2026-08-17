@@ -21,13 +21,13 @@ A screenshot records whatever is on your monitors, including passwords, tokens, 
    AgentsCommander captures every monitor and opens one overlay window per monitor. Each overlay shows a frozen image of that monitor, not a live view, so the screen you are photographing cannot change under you.
 3. Drag a rectangle over the area you want. A magnifier follows the pointer while you hover and while you drag, so you can place the edges precisely.
 4. Release the pointer.
-   AgentsCommander crops the frozen image, writes the PNG, copies its path to the clipboard, and closes every overlay.
+   AgentsCommander crops the frozen image, writes the PNG, copies its path to the clipboard, and closes every overlay. A success toast reads `Screenshot saved. Path copied: <path>` and clears itself after 30 seconds.
 
 To abandon the capture, press `Escape` or close the overlay. Nothing is written.
 
 Two behaviors are deliberate and are not failures:
 
-- Releasing on a selection that is a few pixels wide or tall discards that selection and leaves the overlay open, so you can drag again.
+- Releasing on a selection thinner than 2 pixels in either direction discards that selection and leaves the overlay open, so you can drag again. Both the width and the height must reach 2 pixels, so a 1 by 500 pixel drag is rejected.
 - Pressing the hotkey while a capture is already in flight does nothing. The second press is ignored so you cannot photograph your own overlays or start two captures at once.
 
 ## Where the file goes
@@ -52,7 +52,14 @@ If a write fails after the file is created, AgentsCommander deletes the partial 
 
 ## Configure the hotkey
 
-The hotkey lives in `settings.json`:
+Change the shortcut from the Settings dialog. The dialog validates the field before it saves anything:
+
+| Message | Cause |
+|---|---|
+| `Screenshot hotkey is required` | The field is empty. |
+| `Screenshot hotkey must look like Ctrl+Q` | The value does not match the expected shape. |
+
+The same value lives in `settings.json`:
 
 ```json
 {
@@ -67,7 +74,7 @@ The value must be one modifier plus one key, joined by `+`:
 | Modifier | `Ctrl` or `Control` | Case-insensitive. No other modifier is supported. |
 | Key | One ASCII letter or digit | Normalized to upper case. |
 
-AgentsCommander validates the value when it reads settings and when you save them, and refuses an invalid value with an exact message:
+AgentsCommander validates the value again when it reads settings and when you save them, and refuses an invalid value with an exact message:
 
 | Message | Cause |
 |---|---|
@@ -76,13 +83,22 @@ AgentsCommander validates the value when it reads settings and when you save the
 | `unsupported modifier '<other>'; only Ctrl is supported` | The modifier is anything other than `Ctrl` or `Control`. |
 | `hotkey key '<key>' must be a single letter or digit` | The key is empty, longer than one character, or not alphanumeric. |
 
-See the [settings reference](../reference/settings.md#window--ui) for the field entry. If the shortcut does not become active after you save, restart AgentsCommander.
+See the [settings reference](../reference/settings.md#window--ui) for the field entry.
+
+### What happens when you save
+
+AgentsCommander registers the new shortcut immediately after the save. You do not restart the app. Saving the same value twice succeeds and changes nothing, and when you save a different value AgentsCommander registers the new shortcut first and releases the old one afterwards, so you are never left with no shortcut at all.
+
+The two ways a save can go wrong behave differently:
+
+- **The syntax is invalid.** The save is rejected before anything is written to disk, and your previous hotkey stays registered and keeps working. You rarely reach this path, because the Settings dialog refuses the value first.
+- **The syntax is valid but Windows refuses the combination**, usually because another application already owns it. The save succeeds and the new value is persisted; only the registration fails. AgentsCommander raises an error toast reading `Screenshot hotkey was saved but could not be registered: <error>`, and keeps the previously registered shortcut alive as a fallback. So the configured value is the new combination, the key that actually fires is still the old one, and the status for the configured value reports it as not registered. Pick another combination and save again.
 
 ## Check that the shortcut is active
 
 When the hotkey is registered, the titlebar shows a chip with a camera glyph and the shortcut, for example `Ctrl + Q`. Its tooltip and accessible name are `Screenshot capture shortcut: <hotkey>`.
 
-**An absent chip means the shortcut is not active.** The most common cause is another application already owning that combination at the OS level. Pick a different key in `screenshotCaptureHotkey` and restart.
+**An absent chip means the shortcut is not active.** The most common cause is another application already owning that combination at the OS level. At startup AgentsCommander checks the registration and raises an error toast reading `Screenshot hotkey <configured> is not active: <error>` when the configured shortcut failed to register, so a conflict detected at launch reaches you even if you never look at the titlebar. Pick a different combination in Settings and save; the new shortcut registers at once.
 
 Registration is also written to the app log:
 
@@ -93,7 +109,7 @@ Registration is also written to the app log:
 
 ## Availability right after startup
 
-The shortcut becomes live when the app's event loop starts pumping, which is shortly after the window appears, not at process start. This is by design: the OS registers a global hotkey on the main thread, and forcing that work to complete earlier would block the main thread, which is exactly what starves the WebView and prevents dialogs such as the update prompt from rendering.
+The shortcut is active as soon as the app finishes starting, without waiting for session restore. It is not active at process start: Windows registers a global hotkey on the main thread, so the registration completes only once the app's event loop is running. This is by design. Forcing that work to complete earlier would block the main thread, which is exactly what starves the WebView and prevents dialogs such as the update prompt from rendering.
 
 Presses inside that window are queued by the OS, not lost. They are serviced in a burst as soon as the event loop drains, so a press made while AgentsCommander is still restoring sessions still runs.
 
@@ -101,7 +117,7 @@ A press serviced before any session is selectable does not hang or crash. It fai
 
 ## Failures and recovery
 
-Every failure before the overlays open raises and focuses the AgentsCommander window and requests your attention, so the message cannot be missed behind other applications.
+AgentsCommander reports every failure as an error toast carrying the backend message verbatim. The toast has no timeout: it stays until you dismiss it, so a failure cannot scroll past unnoticed. A failure before the overlays open also raises and focuses the AgentsCommander window and requests your attention, so the message cannot be missed behind other applications.
 
 | Message | Cause | Recovery |
 |---|---|---|
