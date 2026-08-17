@@ -76,6 +76,8 @@ import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
 import { createUpdateToaster } from "./update-toast";
 import { wireScreenshotListeners } from "./listeners-screenshot";
+import { wireAgentUpdateListeners } from "./agent-update";
+import AgentUpdateOverlay from "./components/AgentUpdateOverlay";
 import "./styles/sidebar.css";
 import "../shared/styles/toast.css";
 
@@ -584,6 +586,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
     for (const unlisten of await wireScreenshotListeners()) addUnlistener(unlisten);
     if (disposed) return;
+    // #1327 startup coding-agent update splash, prompt, and failure toasts.
+    for (const unlisten of await wireAgentUpdateListeners()) addUnlistener(unlisten);
+    if (disposed) return;
     await register(
       onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
@@ -891,6 +896,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         )}
       </Show>
       <AutoUnarchiveModal />
+      <AgentUpdateOverlay />
       <ToastHost />
     </>
   );

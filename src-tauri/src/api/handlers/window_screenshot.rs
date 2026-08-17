@@ -23,7 +23,7 @@ use crate::{
         handlers::authenticate_window_screenshot_fresh,
         ApiState, WindowScreenshotAdmissionError, WindowScreenshotLease,
     },
-    screenshot::{capture_window_png, WindowScreenshotCaptureError},
+    screenshot::{capture_window_png, parse_window_id, WindowScreenshotCaptureError},
 };
 
 pub(crate) const WINDOW_SCREENSHOT_ROUTE: &str = "/api/v1/windows/{window_id}/screenshot";
@@ -113,11 +113,14 @@ async fn get_with_capture(
     let preflight_guard = authenticate_window_screenshot_fresh(&state, &headers, ip).await?;
     drop(preflight_guard);
 
-    let window_id = match extract_raw_window_id(&original_uri).and_then(parse_window_id) {
-        Ok(window_id) => window_id,
-        Err(error) => {
+    let window_id = match extract_raw_window_id(&original_uri)
+        .ok()
+        .and_then(parse_window_id)
+    {
+        Some(window_id) => window_id,
+        None => {
             record_final(WindowScreenshotAuditStatus::InvalidWindowId);
-            return Err(error);
+            return Err(invalid_window_id_error());
         }
     };
 
@@ -198,19 +201,6 @@ fn extract_raw_window_id(original_uri: &OriginalUri) -> Result<&str, ApiError> {
     raw_window_id.ok_or_else(invalid_window_id_error)
 }
 
-fn parse_window_id(raw_window_id: &str) -> Result<String, ApiError> {
-    let bytes = raw_window_id.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > 20
-        || !bytes.iter().all(u8::is_ascii_digit)
-        || (bytes.len() > 1 && bytes[0] == b'0')
-        || raw_window_id.parse::<u64>().is_err()
-    {
-        return Err(invalid_window_id_error());
-    }
-    Ok(raw_window_id.to_string())
-}
-
 fn invalid_window_id_error() -> ApiError {
     ApiError::WindowScreenshot(WindowScreenshotApiError::InvalidWindowId)
 }
@@ -242,13 +232,13 @@ mod tests {
             "%30",
             "abc",
         ] {
-            assert!(parse_window_id(raw_window_id).is_err(), "{raw_window_id}");
+            assert!(parse_window_id(raw_window_id).is_none(), "{raw_window_id}");
         }
-        assert!(matches!(parse_window_id("0"), Ok(value) if value == "0"));
-        assert!(matches!(
+        assert_eq!(parse_window_id("0"), Some("0".to_string()));
+        assert_eq!(
             parse_window_id("18446744073709551615"),
-            Ok(value) if value == "18446744073709551615"
-        ));
+            Some("18446744073709551615".to_string())
+        );
     }
 
     #[test]
@@ -259,6 +249,6 @@ mod tests {
         };
         let original_uri = OriginalUri(uri);
         assert!(matches!(extract_raw_window_id(&original_uri), Ok("%FF")));
-        assert!(parse_window_id("%FF").is_err());
+        assert!(parse_window_id("%FF").is_none());
     }
 }

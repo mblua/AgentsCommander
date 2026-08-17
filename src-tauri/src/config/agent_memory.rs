@@ -407,10 +407,10 @@ mod tests {
     #[test]
     fn resolve_rotatable_matrix_root_follows_a_replica_to_its_origin_matrix() {
         let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join(".ac");
-        let matrix = workspace.join("_agent_x");
+        let ac_root = tmp.path().join(".ac");
+        let matrix = ac_root.join("_agent_x");
         write_file(&matrix.join("memory").join("MEMORY.md"), "origin memory");
-        let replica = workspace.join("wg-1-team").join("__agent_x");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
         // `expected_wg_replica_identity` derives the matrix from the layout and
         // compares only the persisted string's agent name, so the value has to
         // name `_agent_x`.

@@ -1,6 +1,6 @@
 # AgentsCommander #1283 Step 8 proof-support module (Section 22.1.0.a-b).
 #
-# This module is the exact Local workspace-mutation lease, private held-capability
+# This module is the exact Local repository-mutation lease, private held-capability
 # registry, current-process-session descriptor binding, LocalProofFixtureStateAdapter,
 # protected fixture-Job identity record validation, and genuine coordinator-only
 # cleanup interface. It introduces no Rust or TypeScript import, no Rust module arc,
@@ -11,21 +11,21 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$WorkspaceLeaseAcquireTimeout = [TimeSpan]::FromSeconds(30)
+$RepositoryLeaseAcquireTimeout = [TimeSpan]::FromSeconds(30)
 $CanonicalPlanRelativePath = 'plans/1283-prevent-terminal-renderer-saturation.md'
-$script:WorkspaceLeaseCapabilityRegistry = [System.Runtime.CompilerServices.ConditionalWeakTable[object, object]]::new()
-$script:WorkspaceLeaseCapabilityIssuer = [object]::new()
-$script:WorkspaceLeaseKernelObjectNamespace = 'Local'
-$script:WorkspaceLeaseStateStoreScope = 'local-current-user-interactive-session'
-$script:WorkspaceLeaseMutexAclHostContract = 'Core-PowerShell-7.6.3/.NET-10.0.9/Windows/System.Threading.AccessControl'
+$script:RepositoryLeaseCapabilityRegistry = [System.Runtime.CompilerServices.ConditionalWeakTable[object, object]]::new()
+$script:RepositoryLeaseCapabilityIssuer = [object]::new()
+$script:RepositoryLeaseKernelObjectNamespace = 'Local'
+$script:RepositoryLeaseStateStoreScope = 'local-current-user-interactive-session'
+$script:RepositoryLeaseMutexAclHostContract = 'Core-PowerShell-7.6.3/.NET-10.0.9/Windows/System.Threading.AccessControl'
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -or -not [System.Environment]::UserInteractive) {
-    throw 'Workspace-mutation lease requires the current interactive Windows session'
+    throw 'Repository-mutation lease requires the current interactive Windows session'
 }
-$WorkspaceLeaseCurrentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-if ($null -eq $WorkspaceLeaseCurrentIdentity -or $null -eq $WorkspaceLeaseCurrentIdentity.User -or [string]::IsNullOrWhiteSpace($WorkspaceLeaseCurrentIdentity.User.Value)) {
-    throw 'Workspace-mutation lease cannot establish the current-user Local SID scope'
+$RepositoryLeaseCurrentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+if ($null -eq $RepositoryLeaseCurrentIdentity -or $null -eq $RepositoryLeaseCurrentIdentity.User -or [string]::IsNullOrWhiteSpace($RepositoryLeaseCurrentIdentity.User.Value)) {
+    throw 'Repository-mutation lease cannot establish the current-user Local SID scope'
 }
-function Get-WorkspaceLeaseCurrentInteractiveSessionId {
+function Get-RepositoryLeaseCurrentInteractiveSessionId {
     param([Parameter(Mandatory)] [string]$Stage)
 
     $CurrentProcess = $null
@@ -49,21 +49,21 @@ function Get-WorkspaceLeaseCurrentInteractiveSessionId {
     }
     return $SessionIdValue
 }
-function Get-WorkspaceLeaseCurrentLogonLuid {
+function Get-RepositoryLeaseCurrentLogonLuid {
     param([Parameter(Mandatory)] [System.Security.Principal.WindowsIdentity]$Identity)
 
-    if ($null -eq ('AgentsCommander.Review1283.WorkspaceLeaseSessionInterop' -as [type])) {
+    if ($null -eq ('AgentsCommander.Review1283.RepositoryLeaseSessionInterop' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 namespace AgentsCommander.Review1283 {
-  [StructLayout(LayoutKind.Sequential)] public struct WorkspaceLeaseLuid { public uint LowPart; public int HighPart; }
-  [StructLayout(LayoutKind.Sequential)] public struct WorkspaceLeaseTokenStatistics {
-    public WorkspaceLeaseLuid TokenId; public WorkspaceLeaseLuid AuthenticationId; public long ExpirationTime;
+  [StructLayout(LayoutKind.Sequential)] public struct RepositoryLeaseLuid { public uint LowPart; public int HighPart; }
+  [StructLayout(LayoutKind.Sequential)] public struct RepositoryLeaseTokenStatistics {
+    public RepositoryLeaseLuid TokenId; public RepositoryLeaseLuid AuthenticationId; public long ExpirationTime;
     public int TokenType; public int ImpersonationLevel; public uint DynamicCharged; public uint DynamicAvailable;
-    public uint GroupCount; public uint PrivilegeCount; public WorkspaceLeaseLuid ModifiedId;
+    public uint GroupCount; public uint PrivilegeCount; public RepositoryLeaseLuid ModifiedId;
   }
-  public static class WorkspaceLeaseSessionInterop {
+  public static class RepositoryLeaseSessionInterop {
     const int TokenStatistics = 10; const int ErrorInsufficientBuffer = 122;
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int informationClass, IntPtr information, int informationLength, out int returnLength);
     public static string GetAuthenticationLuid(IntPtr token) {
@@ -72,7 +72,7 @@ namespace AgentsCommander.Review1283 {
       IntPtr buffer = Marshal.AllocHGlobal(length);
       try {
         if (!GetTokenInformation(token, TokenStatistics, buffer, length, out length)) throw new InvalidOperationException("GetTokenInformation TokenStatistics read failed: " + Marshal.GetLastWin32Error());
-        var statistics = Marshal.PtrToStructure<WorkspaceLeaseTokenStatistics>(buffer);
+        var statistics = Marshal.PtrToStructure<RepositoryLeaseTokenStatistics>(buffer);
         return ((uint)statistics.AuthenticationId.HighPart).ToString("X8") + statistics.AuthenticationId.LowPart.ToString("X8");
       } finally { Marshal.FreeHGlobal(buffer); }
     }
@@ -80,36 +80,36 @@ namespace AgentsCommander.Review1283 {
 }
 '@ -ErrorAction Stop | Out-Null
     }
-    $Type = 'AgentsCommander.Review1283.WorkspaceLeaseSessionInterop' -as [type]
-    if ($null -eq $Type) { throw 'Workspace-mutation lease cannot load the local logon-session helper' }
+    $Type = 'AgentsCommander.Review1283.RepositoryLeaseSessionInterop' -as [type]
+    if ($null -eq $Type) { throw 'Repository-mutation lease cannot load the local logon-session helper' }
     $Luid = $Type::GetAuthenticationLuid($Identity.AccessToken.DangerousGetHandle())
-    if ($Luid -cnotmatch '^[0-9A-F]{16}$') { throw 'Workspace-mutation lease cannot establish the current logon-session LUID' }
+    if ($Luid -cnotmatch '^[0-9A-F]{16}$') { throw 'Repository-mutation lease cannot establish the current logon-session LUID' }
     return $Luid
 }
-$script:WorkspaceLeasePrincipalSid = $WorkspaceLeaseCurrentIdentity.User.Value
-$script:WorkspaceLeaseMachineName = [System.Environment]::MachineName.ToUpperInvariant()
-$script:WorkspaceLeaseInteractiveSessionId = Get-WorkspaceLeaseCurrentInteractiveSessionId -Stage 'workspace-lease-initial-current-process-session'
-$script:WorkspaceLeaseInteractiveLogonLuid = Get-WorkspaceLeaseCurrentLogonLuid -Identity $WorkspaceLeaseCurrentIdentity
-if ([string]::IsNullOrWhiteSpace($script:WorkspaceLeaseMachineName) -or $script:WorkspaceLeaseInteractiveSessionId -le 0) {
-    throw 'Workspace-mutation lease cannot establish the current interactive-session identity'
+$script:RepositoryLeasePrincipalSid = $RepositoryLeaseCurrentIdentity.User.Value
+$script:RepositoryLeaseMachineName = [System.Environment]::MachineName.ToUpperInvariant()
+$script:RepositoryLeaseInteractiveSessionId = Get-RepositoryLeaseCurrentInteractiveSessionId -Stage 'repository-lease-initial-current-process-session'
+$script:RepositoryLeaseInteractiveLogonLuid = Get-RepositoryLeaseCurrentLogonLuid -Identity $RepositoryLeaseCurrentIdentity
+if ([string]::IsNullOrWhiteSpace($script:RepositoryLeaseMachineName) -or $script:RepositoryLeaseInteractiveSessionId -le 0) {
+    throw 'Repository-mutation lease cannot establish the current interactive-session identity'
 }
-$script:WorkspaceLeasePrincipalSidHash = [System.Convert]::ToHexString(
+$script:RepositoryLeasePrincipalSidHash = [System.Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData(
-        ([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($script:WorkspaceLeasePrincipalSid)
+        ([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($script:RepositoryLeasePrincipalSid)
     )
 )
-$WorkspaceLeaseSessionBindingMaterial = 'local-v2' + [char]0 + $script:WorkspaceLeaseMachineName + [char]0 + $script:WorkspaceLeasePrincipalSid + [char]0 + $script:WorkspaceLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture) + [char]0 + $script:WorkspaceLeaseInteractiveLogonLuid
-$script:WorkspaceLeaseInteractiveSessionBindingSha256 = [System.Convert]::ToHexString(
+$RepositoryLeaseSessionBindingMaterial = 'local-v2' + [char]0 + $script:RepositoryLeaseMachineName + [char]0 + $script:RepositoryLeasePrincipalSid + [char]0 + $script:RepositoryLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture) + [char]0 + $script:RepositoryLeaseInteractiveLogonLuid
+$script:RepositoryLeaseInteractiveSessionBindingSha256 = [System.Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData(
-        ([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($WorkspaceLeaseSessionBindingMaterial)
+        ([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($RepositoryLeaseSessionBindingMaterial)
     )
 )
 
-function Assert-SupportedWorkspaceMutexAclRuntime {
+function Assert-SupportedRepositoryMutexAclRuntime {
     param([Parameter(Mandatory)] [string]$Stage)
 
     if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion -ne [version]'7.6.3' -or [System.Environment]::Version -ne [version]'10.0.9') {
-        throw "$Stage requires the tested $script:WorkspaceLeaseMutexAclHostContract host; no compatibility fallback is permitted"
+        throw "$Stage requires the tested $script:RepositoryLeaseMutexAclHostContract host; no compatibility fallback is permitted"
     }
     try { Add-Type -AssemblyName 'System.Threading.AccessControl' -ErrorAction Stop | Out-Null }
     catch { throw "$Stage cannot load System.Threading.AccessControl: $($_.Exception.Message)" }
@@ -149,7 +149,7 @@ function ConvertTo-CanonicalAbsolutePath {
     return $FullPath.TrimEnd($TrimCharacters).ToUpperInvariant()
 }
 
-function Get-CanonicalWorkspaceRoot {
+function Get-CanonicalRepositoryRoot {
     param([Parameter(Mandatory)] [string]$RepositoryRoot)
 
     $ResolvedRoot = (Resolve-Path -LiteralPath $RepositoryRoot -ErrorAction Stop).Path
@@ -162,23 +162,23 @@ function Get-CanonicalWorkspaceRoot {
 
 function Resolve-CanonicalPlanPath {
     param(
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$RepositoryRelativePlanPath
     )
 
     if ($RepositoryRelativePlanPath -cne $CanonicalPlanRelativePath) {
         throw "Unexpected plan-relative path: $RepositoryRelativePlanPath"
     }
-    $ReverifiedRoot = Get-CanonicalWorkspaceRoot -RepositoryRoot $CanonicalWorkspaceRoot
-    if ($ReverifiedRoot -cne $CanonicalWorkspaceRoot) {
-        throw 'Canonical workspace root changed while resolving the plan path'
+    $ReverifiedRoot = Get-CanonicalRepositoryRoot -RepositoryRoot $CanonicalRepositoryRoot
+    if ($ReverifiedRoot -cne $CanonicalRepositoryRoot) {
+        throw 'Canonical repository root changed while resolving the plan path'
     }
     $ExpectedPlanPath = ConvertTo-CanonicalAbsolutePath -Path (
-        Join-Path $CanonicalWorkspaceRoot $RepositoryRelativePlanPath
+        Join-Path $CanonicalRepositoryRoot $RepositoryRelativePlanPath
     )
-    $RootPrefix = $CanonicalWorkspaceRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    $RootPrefix = $CanonicalRepositoryRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
     if (-not $ExpectedPlanPath.StartsWith($RootPrefix, [System.StringComparison]::Ordinal)) {
-        throw 'Canonical plan path escapes the canonical workspace root'
+        throw 'Canonical plan path escapes the canonical repository root'
     }
     $ResolvedPlanPath = ConvertTo-CanonicalAbsolutePath -Path (
         (Resolve-Path -LiteralPath $ExpectedPlanPath -ErrorAction Stop).Path
@@ -198,14 +198,14 @@ function Resolve-PriorReadyIdentityBinding {
     if ($null -eq $PriorReadyIdentityRecord) {
         throw "$Stage requires the prior READY identity record"
     }
-    foreach ($Field in @('canonical_workspace_root', 'canonical_plan_path', 'ready_sha256')) {
+    foreach ($Field in @('canonical_repository_root', 'canonical_plan_path', 'ready_sha256')) {
         $Property = $PriorReadyIdentityRecord.PSObject.Properties[$Field]
         if ($null -eq $Property -or $Property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Property.Value)) {
             throw "$Stage prior READY identity record has no nonempty string $Field"
         }
     }
 
-    $RecordedRoot = [string]$PriorReadyIdentityRecord.canonical_workspace_root
+    $RecordedRoot = [string]$PriorReadyIdentityRecord.canonical_repository_root
     $RecordedPlanPath = [string]$PriorReadyIdentityRecord.canonical_plan_path
     $RecordedReadySha256 = [string]$PriorReadyIdentityRecord.ready_sha256
     if (-not [System.IO.Path]::IsPathFullyQualified($RecordedRoot)) {
@@ -224,41 +224,41 @@ function Resolve-PriorReadyIdentityBinding {
         throw "$Stage prior READY plan path is not canonical"
     }
 
-    $RevalidatedRoot = Get-CanonicalWorkspaceRoot -RepositoryRoot $RecordedRoot
+    $RevalidatedRoot = Get-CanonicalRepositoryRoot -RepositoryRoot $RecordedRoot
     if ($RevalidatedRoot -cne $RecordedRoot) {
         throw "$Stage prior READY root differs from its canonical Git worktree root"
     }
     $RevalidatedPlanPath = Resolve-CanonicalPlanPath `
-        -CanonicalWorkspaceRoot $RevalidatedRoot `
+        -CanonicalRepositoryRoot $RevalidatedRoot `
         -RepositoryRelativePlanPath $CanonicalPlanRelativePath
     if ($RevalidatedPlanPath -cne $RecordedPlanPath) {
         throw "$Stage prior READY plan path differs from the canonical plan path"
     }
 
     return [pscustomobject][ordered]@{
-        canonical_workspace_root = $RevalidatedRoot
+        canonical_repository_root = $RevalidatedRoot
         canonical_plan_path = $RevalidatedPlanPath
         ready_sha256 = $RecordedReadySha256
     }
 }
 
-function Get-WorkspaceLeaseName {
-    param([Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot)
+function Get-RepositoryLeaseName {
+    param([Parameter(Mandatory)] [string]$CanonicalRepositoryRoot)
 
-    if ($script:WorkspaceLeaseKernelObjectNamespace -cne 'Local' -or $script:WorkspaceLeaseStateStoreScope -cne 'local-current-user-interactive-session' -or $script:WorkspaceLeasePrincipalSid -cnotmatch '^S-\d-(?:\d+-)+\d+$' -or $script:WorkspaceLeaseInteractiveSessionId -le 0 -or $script:WorkspaceLeaseInteractiveLogonLuid -cnotmatch '^[0-9A-F]{16}$' -or $script:WorkspaceLeaseInteractiveSessionBindingSha256 -cnotmatch '^[0-9A-F]{64}$') {
-        throw 'Workspace lease has no trusted Local current-user interactive-session scope'
+    if ($script:RepositoryLeaseKernelObjectNamespace -cne 'Local' -or $script:RepositoryLeaseStateStoreScope -cne 'local-current-user-interactive-session' -or $script:RepositoryLeasePrincipalSid -cnotmatch '^S-\d-(?:\d+-)+\d+$' -or $script:RepositoryLeaseInteractiveSessionId -le 0 -or $script:RepositoryLeaseInteractiveLogonLuid -cnotmatch '^[0-9A-F]{16}$' -or $script:RepositoryLeaseInteractiveSessionBindingSha256 -cnotmatch '^[0-9A-F]{64}$') {
+        throw 'Repository lease has no trusted Local current-user interactive-session scope'
     }
     $Utf8WithoutBom = [System.Text.UTF8Encoding]::new($false, $true)
     $RootHash = [System.Convert]::ToHexString(
         [System.Security.Cryptography.SHA256]::HashData(
-            $Utf8WithoutBom.GetBytes($CanonicalWorkspaceRoot)
+            $Utf8WithoutBom.GetBytes($CanonicalRepositoryRoot)
         )
     )
-    return "Local\AgentsCommander-1283-workspace-$($RootHash.Substring(0, 40))-$($script:WorkspaceLeasePrincipalSidHash.Substring(0, 16))-$($script:WorkspaceLeaseInteractiveSessionId)-$($script:WorkspaceLeaseInteractiveSessionBindingSha256.Substring(0, 24))"
+    return "Local\AgentsCommander-1283-repository-$($RootHash.Substring(0, 40))-$($script:RepositoryLeasePrincipalSidHash.Substring(0, 16))-$($script:RepositoryLeaseInteractiveSessionId)-$($script:RepositoryLeaseInteractiveSessionBindingSha256.Substring(0, 24))"
 }
 
-function New-WorkspaceMutationMutexSecurity {
-    $Sid = [System.Security.Principal.SecurityIdentifier]::new($script:WorkspaceLeasePrincipalSid)
+function New-RepositoryMutationMutexSecurity {
+    $Sid = [System.Security.Principal.SecurityIdentifier]::new($script:RepositoryLeasePrincipalSid)
     $Security = [System.Security.AccessControl.MutexSecurity]::new()
     $Security.SetOwner($Sid)
     $Security.SetAccessRuleProtection($true, $false)
@@ -270,17 +270,17 @@ function New-WorkspaceMutationMutexSecurity {
     return $Security
 }
 
-function Assert-WorkspaceMutationMutexSecurity {
+function Assert-RepositoryMutationMutexSecurity {
     param(
         [Parameter(Mandatory)] [string]$ExpectedLeaseName,
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $ExpectedNamePattern = '^Local\\AgentsCommander-1283-workspace-[0-9A-F]{40}-' + $script:WorkspaceLeasePrincipalSidHash.Substring(0, 16) + '-' + [regex]::Escape($script:WorkspaceLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture)) + '-' + $script:WorkspaceLeaseInteractiveSessionBindingSha256.Substring(0, 24) + '$'
+    $ExpectedNamePattern = '^Local\\AgentsCommander-1283-repository-[0-9A-F]{40}-' + $script:RepositoryLeasePrincipalSidHash.Substring(0, 16) + '-' + [regex]::Escape($script:RepositoryLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture)) + '-' + $script:RepositoryLeaseInteractiveSessionBindingSha256.Substring(0, 24) + '$'
     if ($ExpectedLeaseName -cnotmatch $ExpectedNamePattern) {
         throw "$Stage mutex name is not in the required Local current-user interactive-session scope"
     }
-    Assert-SupportedWorkspaceMutexAclRuntime -Stage "$Stage-host-contract"
+    Assert-SupportedRepositoryMutexAclRuntime -Stage "$Stage-host-contract"
     $RequiredRights = [System.Security.AccessControl.MutexRights]::Modify -bor [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::ReadPermissions
     $Probe = $null
     try {
@@ -292,57 +292,57 @@ function Assert-WorkspaceMutationMutexSecurity {
         $Security = [System.Security.AccessControl.MutexSecurity]::new($ExpectedLeaseName, $Sections)
     }
     catch {
-        throw "$Stage cannot open and inspect the Local workspace-mutex ACL through MutexAcl: $($_.Exception.Message)"
+        throw "$Stage cannot open and inspect the Local repository-mutex ACL through MutexAcl: $($_.Exception.Message)"
     }
     finally {
         if ($null -ne $Probe) { $Probe.Dispose() }
     }
     $Owner = $Security.GetOwner([System.Security.Principal.SecurityIdentifier])
-    if ($null -eq $Owner -or $Owner.Value -cne $script:WorkspaceLeasePrincipalSid -or -not $Security.AreAccessRulesProtected) {
-        throw "$Stage Local workspace-mutex owner or DACL is not trusted"
+    if ($null -eq $Owner -or $Owner.Value -cne $script:RepositoryLeasePrincipalSid -or -not $Security.AreAccessRulesProtected) {
+        throw "$Stage Local repository-mutex owner or DACL is not trusted"
     }
     $ExpectedAllowCount = 0
     foreach ($Rule in @($Security.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
-        if ($Rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rule.IdentityReference.Value -cne $script:WorkspaceLeasePrincipalSid) {
-            throw "$Stage Local workspace-mutex ACL has an unexpected principal or rule"
+        if ($Rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $Rule.IdentityReference.Value -cne $script:RepositoryLeasePrincipalSid) {
+            throw "$Stage Local repository-mutex ACL has an unexpected principal or rule"
         }
         if (($Rule.MutexRights -band [System.Security.AccessControl.MutexRights]::FullControl) -ne [System.Security.AccessControl.MutexRights]::FullControl) {
-            throw "$Stage Local workspace-mutex ACL lacks current-user full control"
+            throw "$Stage Local repository-mutex ACL lacks current-user full control"
         }
         $ExpectedAllowCount++
     }
     if ($ExpectedAllowCount -ne 1) {
-        throw "$Stage Local workspace-mutex ACL is ambiguous"
+        throw "$Stage Local repository-mutex ACL is ambiguous"
     }
 }
 
-function Get-HeldWorkspaceMutationLeaseCapability {
+function Get-HeldRepositoryMutationLeaseCapability {
     param(
         [Parameter(Mandatory)] $Lease,
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $CurrentProcessSessionId = Get-WorkspaceLeaseCurrentInteractiveSessionId -Stage "$Stage-current-process-session"
-    if ($CurrentProcessSessionId -ne $script:WorkspaceLeaseInteractiveSessionId) {
+    $CurrentProcessSessionId = Get-RepositoryLeaseCurrentInteractiveSessionId -Stage "$Stage-current-process-session"
+    if ($CurrentProcessSessionId -ne $script:RepositoryLeaseInteractiveSessionId) {
         throw "$Stage current-process interactive session differs from the Local lease scope"
     }
     $Capability = $null
-    if ($null -eq $Lease -or -not $script:WorkspaceLeaseCapabilityRegistry.TryGetValue($Lease, [ref]$Capability)) {
+    if ($null -eq $Lease -or -not $script:RepositoryLeaseCapabilityRegistry.TryGetValue($Lease, [ref]$Capability)) {
         throw "$Stage lease has no registered in-memory capability"
     }
-    $ExpectedLeaseName = Get-WorkspaceLeaseName -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
-    if ($null -eq $Capability -or -not [object]::ReferenceEquals($Capability.issuer, $script:WorkspaceLeaseCapabilityIssuer) -or $Capability.state -cne 'held' -or $Capability.lease_id -cne $Lease.lease_id -or $Capability.lease_name -cne $ExpectedLeaseName -or $Lease.lease_name -cne $ExpectedLeaseName -or $Capability.workspace_root -cne $CanonicalWorkspaceRoot -or $Lease.workspace_root -cne $CanonicalWorkspaceRoot -or $Capability.kernel_namespace -cne $script:WorkspaceLeaseKernelObjectNamespace -or $Lease.kernel_namespace -cne $script:WorkspaceLeaseKernelObjectNamespace -or $Capability.principal_sid -cne $script:WorkspaceLeasePrincipalSid -or $Lease.principal_sid -cne $script:WorkspaceLeasePrincipalSid -or $Capability.machine_name -cne $script:WorkspaceLeaseMachineName -or $Lease.machine_name -cne $script:WorkspaceLeaseMachineName -or $Capability.interactive_session_id -ne $script:WorkspaceLeaseInteractiveSessionId -or $Lease.interactive_session_id -ne $script:WorkspaceLeaseInteractiveSessionId -or $Capability.interactive_logon_luid -cne $script:WorkspaceLeaseInteractiveLogonLuid -or $Lease.interactive_logon_luid -cne $script:WorkspaceLeaseInteractiveLogonLuid -or $Capability.interactive_session_binding_sha256 -cne $script:WorkspaceLeaseInteractiveSessionBindingSha256 -or $Lease.interactive_session_binding_sha256 -cne $script:WorkspaceLeaseInteractiveSessionBindingSha256 -or $Capability.state_store_scope -cne $script:WorkspaceLeaseStateStoreScope -or $Lease.state_store_scope -cne $script:WorkspaceLeaseStateStoreScope -or $Capability.mutex_creation_state -cne $Lease.mutex_creation_state -or $Lease.mutex_creation_state -cnotin @('created-and-reopened-verified', 'opened-existing-and-reopened-verified') -or $Capability.owner_thread_id -ne [System.Threading.Thread]::CurrentThread.ManagedThreadId -or $Lease.owner_thread_id -ne [System.Threading.Thread]::CurrentThread.ManagedThreadId) {
+    $ExpectedLeaseName = Get-RepositoryLeaseName -CanonicalRepositoryRoot $CanonicalRepositoryRoot
+    if ($null -eq $Capability -or -not [object]::ReferenceEquals($Capability.issuer, $script:RepositoryLeaseCapabilityIssuer) -or $Capability.state -cne 'held' -or $Capability.lease_id -cne $Lease.lease_id -or $Capability.lease_name -cne $ExpectedLeaseName -or $Lease.lease_name -cne $ExpectedLeaseName -or $Capability.repository_root -cne $CanonicalRepositoryRoot -or $Lease.repository_root -cne $CanonicalRepositoryRoot -or $Capability.kernel_namespace -cne $script:RepositoryLeaseKernelObjectNamespace -or $Lease.kernel_namespace -cne $script:RepositoryLeaseKernelObjectNamespace -or $Capability.principal_sid -cne $script:RepositoryLeasePrincipalSid -or $Lease.principal_sid -cne $script:RepositoryLeasePrincipalSid -or $Capability.machine_name -cne $script:RepositoryLeaseMachineName -or $Lease.machine_name -cne $script:RepositoryLeaseMachineName -or $Capability.interactive_session_id -ne $script:RepositoryLeaseInteractiveSessionId -or $Lease.interactive_session_id -ne $script:RepositoryLeaseInteractiveSessionId -or $Capability.interactive_logon_luid -cne $script:RepositoryLeaseInteractiveLogonLuid -or $Lease.interactive_logon_luid -cne $script:RepositoryLeaseInteractiveLogonLuid -or $Capability.interactive_session_binding_sha256 -cne $script:RepositoryLeaseInteractiveSessionBindingSha256 -or $Lease.interactive_session_binding_sha256 -cne $script:RepositoryLeaseInteractiveSessionBindingSha256 -or $Capability.state_store_scope -cne $script:RepositoryLeaseStateStoreScope -or $Lease.state_store_scope -cne $script:RepositoryLeaseStateStoreScope -or $Capability.mutex_creation_state -cne $Lease.mutex_creation_state -or $Lease.mutex_creation_state -cnotin @('created-and-reopened-verified', 'opened-existing-and-reopened-verified') -or $Capability.owner_thread_id -ne [System.Threading.Thread]::CurrentThread.ManagedThreadId -or $Lease.owner_thread_id -ne [System.Threading.Thread]::CurrentThread.ManagedThreadId) {
         throw "$Stage lease differs from its registered held capability"
     }
     if ($Capability.mutex.SafeWaitHandle.IsClosed -or $Capability.mutex.SafeWaitHandle.IsInvalid) {
         throw "$Stage held-capability mutex handle is unavailable"
     }
-    Assert-WorkspaceMutationMutexSecurity -ExpectedLeaseName $ExpectedLeaseName -Stage "$Stage-mutex-acl"
+    Assert-RepositoryMutationMutexSecurity -ExpectedLeaseName $ExpectedLeaseName -Stage "$Stage-mutex-acl"
     return $Capability
 }
 
-function Revoke-WorkspaceMutationLeaseCapability {
+function Revoke-RepositoryMutationLeaseCapability {
     param(
         [Parameter(Mandatory)] $Lease,
         [Parameter(Mandatory)] [string]$State,
@@ -350,28 +350,28 @@ function Revoke-WorkspaceMutationLeaseCapability {
     )
 
     $Capability = $null
-    if ($null -ne $Lease -and $script:WorkspaceLeaseCapabilityRegistry.TryGetValue($Lease, [ref]$Capability)) {
+    if ($null -ne $Lease -and $script:RepositoryLeaseCapabilityRegistry.TryGetValue($Lease, [ref]$Capability)) {
         $Capability.state = $State
-        if (-not $script:WorkspaceLeaseCapabilityRegistry.Remove($Lease)) {
-            throw "$Stage could not remove the workspace-lease capability"
+        if (-not $script:RepositoryLeaseCapabilityRegistry.Remove($Lease)) {
+            throw "$Stage could not remove the repository-lease capability"
         }
     }
 }
 
-function Get-WorkspaceLeaseRecord {
+function Get-RepositoryLeaseRecord {
     param(
         [Parameter(Mandatory)]$Lease,
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot
     )
 
-    if ($Lease.workspace_root -cne $CanonicalWorkspaceRoot) {
-        throw 'Workspace lease record root differs from the supplied canonical root'
+    if ($Lease.repository_root -cne $CanonicalRepositoryRoot) {
+        throw 'Repository lease record root differs from the supplied canonical root'
     }
 
     return [pscustomobject][ordered]@{
         lease_name = $Lease.lease_name
         lease_id = $Lease.lease_id
-        workspace_root = $Lease.workspace_root
+        repository_root = $Lease.repository_root
         kernel_namespace = $Lease.kernel_namespace
         principal_sid = $Lease.principal_sid
         machine_name = $Lease.machine_name
@@ -391,29 +391,29 @@ function Get-WorkspaceLeaseRecord {
     }
 }
 
-function Enter-WorkspaceMutationLease {
+function Enter-RepositoryMutationLease {
     param(
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$Purpose,
         [Parameter(Mandatory)] [TimeSpan]$AcquireTimeout
     )
 
     if ($AcquireTimeout -le [TimeSpan]::Zero) {
-        throw 'Workspace lease timeout must be positive'
+        throw 'Repository lease timeout must be positive'
     }
-    Assert-SupportedWorkspaceMutexAclRuntime -Stage 'workspace-lease-enter-host-contract'
-    $CurrentProcessSessionId = Get-WorkspaceLeaseCurrentInteractiveSessionId -Stage 'workspace-lease-enter-current-process-session'
-    if ($CurrentProcessSessionId -ne $script:WorkspaceLeaseInteractiveSessionId) {
-        throw 'Current-process interactive session differs from the Local workspace-lease scope'
+    Assert-SupportedRepositoryMutexAclRuntime -Stage 'repository-lease-enter-host-contract'
+    $CurrentProcessSessionId = Get-RepositoryLeaseCurrentInteractiveSessionId -Stage 'repository-lease-enter-current-process-session'
+    if ($CurrentProcessSessionId -ne $script:RepositoryLeaseInteractiveSessionId) {
+        throw 'Current-process interactive session differs from the Local repository-lease scope'
     }
-    $ReverifiedRoot = Get-CanonicalWorkspaceRoot -RepositoryRoot $CanonicalWorkspaceRoot
-    if ($ReverifiedRoot -cne $CanonicalWorkspaceRoot) {
-        throw 'Canonical workspace root changed before lease acquisition'
+    $ReverifiedRoot = Get-CanonicalRepositoryRoot -RepositoryRoot $CanonicalRepositoryRoot
+    if ($ReverifiedRoot -cne $CanonicalRepositoryRoot) {
+        throw 'Canonical repository root changed before lease acquisition'
     }
-    $LeaseName = Get-WorkspaceLeaseName -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
-    $ExpectedLeaseNamePattern = '^Local\\AgentsCommander-1283-workspace-[0-9A-F]{40}-' + $script:WorkspaceLeasePrincipalSidHash.Substring(0, 16) + '-' + [regex]::Escape($script:WorkspaceLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture)) + '-' + $script:WorkspaceLeaseInteractiveSessionBindingSha256.Substring(0, 24) + '$'
+    $LeaseName = Get-RepositoryLeaseName -CanonicalRepositoryRoot $CanonicalRepositoryRoot
+    $ExpectedLeaseNamePattern = '^Local\\AgentsCommander-1283-repository-[0-9A-F]{40}-' + $script:RepositoryLeasePrincipalSidHash.Substring(0, 16) + '-' + [regex]::Escape($script:RepositoryLeaseInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture)) + '-' + $script:RepositoryLeaseInteractiveSessionBindingSha256.Substring(0, 24) + '$'
     if ($LeaseName -cnotmatch $ExpectedLeaseNamePattern) {
-        throw 'Workspace lease name is not a Local current-user interactive-session mutex name'
+        throw 'Repository lease name is not a Local current-user interactive-session mutex name'
     }
     $Mutex = $null
     $CreatedMutex = $null
@@ -423,27 +423,27 @@ function Enter-WorkspaceMutationLease {
     $Lease = $null
     $CapabilityIssued = $false
     try {
-        $Security = New-WorkspaceMutationMutexSecurity
+        $Security = New-RepositoryMutationMutexSecurity
         try {
             $CreatedMutex = [System.Threading.MutexAcl]::Create($false, $LeaseName, [ref]$CreatedNew, $Security)
         }
         catch {
-            throw "Local workspace-mutex MutexAcl.Create failed: $($_.Exception.Message)"
+            throw "Local repository-mutex MutexAcl.Create failed: $($_.Exception.Message)"
         }
         try {
             $RequiredRights = [System.Security.AccessControl.MutexRights]::Modify -bor [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::ReadPermissions
             $OpenedMutex = [System.Threading.MutexAcl]::OpenExisting($LeaseName, $RequiredRights)
             if ($null -eq $OpenedMutex -or $OpenedMutex.SafeWaitHandle.IsClosed -or $OpenedMutex.SafeWaitHandle.IsInvalid) { throw 'MutexAcl.OpenExisting did not return a usable mutex handle' }
-            Assert-WorkspaceMutationMutexSecurity -ExpectedLeaseName $LeaseName -Stage 'workspace-lease-reopened-mutex'
+            Assert-RepositoryMutationMutexSecurity -ExpectedLeaseName $LeaseName -Stage 'repository-lease-reopened-mutex'
         }
         catch {
-            throw "Local workspace-mutex ACL or reopen verification failed: $($_.Exception.Message)"
+            throw "Local repository-mutex ACL or reopen verification failed: $($_.Exception.Message)"
         }
         finally {
             if ($null -ne $CreatedMutex) { $CreatedMutex.Dispose(); $CreatedMutex = $null }
         }
         if ($null -eq $OpenedMutex) {
-            throw 'Local workspace-mutex reopen produced no handle'
+            throw 'Local repository-mutex reopen produced no handle'
         }
         $Mutex = $OpenedMutex
         $OpenedMutex = $null
@@ -453,22 +453,22 @@ function Enter-WorkspaceMutationLease {
         }
         catch [System.Threading.AbandonedMutexException] {
             $Acquired = $true
-            throw "Workspace lease $LeaseName was abandoned; its write state is not trusted"
+            throw "Repository lease $LeaseName was abandoned; its write state is not trusted"
         }
         if (-not $Acquired) {
-            throw "Timed out acquiring workspace lease $LeaseName"
+            throw "Timed out acquiring repository lease $LeaseName"
         }
         $Lease = [pscustomobject]@{
             lease_name = $LeaseName
             lease_id = [guid]::NewGuid().ToString('N')
-            workspace_root = $CanonicalWorkspaceRoot
-            kernel_namespace = $script:WorkspaceLeaseKernelObjectNamespace
-            principal_sid = $script:WorkspaceLeasePrincipalSid
-            machine_name = $script:WorkspaceLeaseMachineName
-            interactive_session_id = $script:WorkspaceLeaseInteractiveSessionId
-            interactive_logon_luid = $script:WorkspaceLeaseInteractiveLogonLuid
-            interactive_session_binding_sha256 = $script:WorkspaceLeaseInteractiveSessionBindingSha256
-            state_store_scope = $script:WorkspaceLeaseStateStoreScope
+            repository_root = $CanonicalRepositoryRoot
+            kernel_namespace = $script:RepositoryLeaseKernelObjectNamespace
+            principal_sid = $script:RepositoryLeasePrincipalSid
+            machine_name = $script:RepositoryLeaseMachineName
+            interactive_session_id = $script:RepositoryLeaseInteractiveSessionId
+            interactive_logon_luid = $script:RepositoryLeaseInteractiveLogonLuid
+            interactive_session_binding_sha256 = $script:RepositoryLeaseInteractiveSessionBindingSha256
+            state_store_scope = $script:RepositoryLeaseStateStoreScope
             mutex_creation_state = $MutexCreationState
             purpose = $Purpose
             owner_thread_id = [System.Threading.Thread]::CurrentThread.ManagedThreadId
@@ -480,32 +480,32 @@ function Enter-WorkspaceMutationLease {
             release_error = $null
         }
         if ($Mutex.SafeWaitHandle.IsClosed -or $Mutex.SafeWaitHandle.IsInvalid) {
-            throw 'Workspace lease mutex became unavailable before capability issuance'
+            throw 'Repository lease mutex became unavailable before capability issuance'
         }
         $Capability = [pscustomobject]@{
-            issuer = $script:WorkspaceLeaseCapabilityIssuer
+            issuer = $script:RepositoryLeaseCapabilityIssuer
             lease_id = [string]$Lease.lease_id
             lease_name = [string]$Lease.lease_name
-            workspace_root = $CanonicalWorkspaceRoot
-            kernel_namespace = $script:WorkspaceLeaseKernelObjectNamespace
-            principal_sid = $script:WorkspaceLeasePrincipalSid
-            machine_name = $script:WorkspaceLeaseMachineName
-            interactive_session_id = $script:WorkspaceLeaseInteractiveSessionId
-            interactive_logon_luid = $script:WorkspaceLeaseInteractiveLogonLuid
-            interactive_session_binding_sha256 = $script:WorkspaceLeaseInteractiveSessionBindingSha256
-            state_store_scope = $script:WorkspaceLeaseStateStoreScope
+            repository_root = $CanonicalRepositoryRoot
+            kernel_namespace = $script:RepositoryLeaseKernelObjectNamespace
+            principal_sid = $script:RepositoryLeasePrincipalSid
+            machine_name = $script:RepositoryLeaseMachineName
+            interactive_session_id = $script:RepositoryLeaseInteractiveSessionId
+            interactive_logon_luid = $script:RepositoryLeaseInteractiveLogonLuid
+            interactive_session_binding_sha256 = $script:RepositoryLeaseInteractiveSessionBindingSha256
+            state_store_scope = $script:RepositoryLeaseStateStoreScope
             mutex_creation_state = $MutexCreationState
             owner_thread_id = [int]$Lease.owner_thread_id
             mutex = $Mutex
             state = 'held'
         }
-        $script:WorkspaceLeaseCapabilityRegistry.Add($Lease, $Capability)
+        $script:RepositoryLeaseCapabilityRegistry.Add($Lease, $Capability)
         $CapabilityIssued = $true
         return $Lease
     }
     catch {
         if ($CapabilityIssued) {
-            try { Revoke-WorkspaceMutationLeaseCapability -Lease $Lease -State 'enter-failed' -Stage 'workspace-lease-enter-failure' } catch { }
+            try { Revoke-RepositoryMutationLeaseCapability -Lease $Lease -State 'enter-failed' -Stage 'repository-lease-enter-failure' } catch { }
         }
         if ($Acquired) {
             try { $Mutex.ReleaseMutex() } catch { }
@@ -517,50 +517,50 @@ function Enter-WorkspaceMutationLease {
     }
 }
 
-function Assert-WorkspaceMutationLease {
+function Assert-RepositoryMutationLease {
     param(
         [Parameter(Mandatory)]$Lease,
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $Capability = Get-HeldWorkspaceMutationLeaseCapability -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-held-capability"
-    if ($Lease.release_state -cne 'held' -or [bool]$Lease.released -or [bool]$Lease.release_confirmed) { throw "$Stage uses a non-held workspace lease" }
-    $ActualRoot = Get-CanonicalWorkspaceRoot -RepositoryRoot $CanonicalWorkspaceRoot
-    if ($ActualRoot -cne $CanonicalWorkspaceRoot -or $ActualRoot -cne $Lease.workspace_root) {
-        throw "$Stage workspace root differs from the held lease root"
+    $Capability = Get-HeldRepositoryMutationLeaseCapability -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-held-capability"
+    if ($Lease.release_state -cne 'held' -or [bool]$Lease.released -or [bool]$Lease.release_confirmed) { throw "$Stage uses a non-held repository lease" }
+    $ActualRoot = Get-CanonicalRepositoryRoot -RepositoryRoot $CanonicalRepositoryRoot
+    if ($ActualRoot -cne $CanonicalRepositoryRoot -or $ActualRoot -cne $Lease.repository_root) {
+        throw "$Stage repository root differs from the held lease root"
     }
-    if ($Capability.workspace_root -cne $ActualRoot) { throw "$Stage registered held capability root differs after root validation" }
-    return Get-WorkspaceLeaseRecord -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+    if ($Capability.repository_root -cne $ActualRoot) { throw "$Stage registered held capability root differs after root validation" }
+    return Get-RepositoryLeaseRecord -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot
 }
 
-function Exit-WorkspaceMutationLease {
+function Exit-RepositoryMutationLease {
     param(
         [Parameter(Mandatory)]$Lease,
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $Capability = Get-HeldWorkspaceMutationLeaseCapability -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-held-capability"
-    if ($Lease.release_state -cne 'held' -or [bool]$Lease.released -or [bool]$Lease.release_confirmed) { throw "$Stage cannot release a non-held workspace lease" }
-    $ActualRoot = Get-CanonicalWorkspaceRoot -RepositoryRoot $CanonicalWorkspaceRoot
-    if ($ActualRoot -cne $CanonicalWorkspaceRoot -or $ActualRoot -cne $Lease.workspace_root) {
-        throw "$Stage workspace root differs from the held lease root during release"
+    $Capability = Get-HeldRepositoryMutationLeaseCapability -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-held-capability"
+    if ($Lease.release_state -cne 'held' -or [bool]$Lease.released -or [bool]$Lease.release_confirmed) { throw "$Stage cannot release a non-held repository lease" }
+    $ActualRoot = Get-CanonicalRepositoryRoot -RepositoryRoot $CanonicalRepositoryRoot
+    if ($ActualRoot -cne $CanonicalRepositoryRoot -or $ActualRoot -cne $Lease.repository_root) {
+        throw "$Stage repository root differs from the held lease root during release"
     }
     $ReleaseMutexSucceeded = $false
     try {
         $Capability.mutex.ReleaseMutex()
         $ReleaseMutexSucceeded = $true
         $Capability.mutex.Dispose()
-        Revoke-WorkspaceMutationLeaseCapability -Lease $Lease -State 'revoked' -Stage "$Stage-capability-revoke"
+        Revoke-RepositoryMutationLeaseCapability -Lease $Lease -State 'revoked' -Stage "$Stage-capability-revoke"
         $Lease.released = $true
         $Lease.release_state = 'released-confirmed'
         $Lease.release_confirmed = $true
         $Lease.released_utc = [DateTime]::UtcNow.ToString('O')
-        return Get-WorkspaceLeaseRecord -Lease $Lease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+        return Get-RepositoryLeaseRecord -Lease $Lease -CanonicalRepositoryRoot $CanonicalRepositoryRoot
     }
     catch {
-        try { Revoke-WorkspaceMutationLeaseCapability -Lease $Lease -State 'revoked-untrusted' -Stage "$Stage-capability-revoke-failure" } catch { }
+        try { Revoke-RepositoryMutationLeaseCapability -Lease $Lease -State 'revoked-untrusted' -Stage "$Stage-capability-revoke-failure" } catch { }
         $Lease.released = $ReleaseMutexSucceeded
         $Lease.release_state = if ($ReleaseMutexSucceeded) { 'release-dispose-failed-untrusted' } else { 'release-failed-untrusted' }
         $Lease.release_confirmed = $false
@@ -579,12 +579,12 @@ function Get-ByteSha256 {
 
 $NativeCbmEvidenceControlModuleSource = {
   param(
-    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$WorkspaceLeaseAssertDescriptor,
-    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$WorkspaceLeaseSessionIdDescriptor,
-    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$GenuineWorkspaceLeaseAssertDescriptor,
-    [Parameter(Mandatory)] [System.Management.Automation.ScriptBlock]$GenuineWorkspaceLeaseAssertScriptBlock,
-    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$GenuineWorkspaceLeaseSessionIdDescriptor,
-    [Parameter(Mandatory)] [System.Management.Automation.ScriptBlock]$GenuineWorkspaceLeaseSessionIdScriptBlock,
+    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$RepositoryLeaseAssertDescriptor,
+    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$RepositoryLeaseSessionIdDescriptor,
+    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$GenuineRepositoryLeaseAssertDescriptor,
+    [Parameter(Mandatory)] [System.Management.Automation.ScriptBlock]$GenuineRepositoryLeaseAssertScriptBlock,
+    [Parameter(Mandatory)] [System.Management.Automation.FunctionInfo]$GenuineRepositoryLeaseSessionIdDescriptor,
+    [Parameter(Mandatory)] [System.Management.Automation.ScriptBlock]$GenuineRepositoryLeaseSessionIdScriptBlock,
     [Parameter(Mandatory)] [string]$LoaderProvidedSkillMarkdownPath,
     [Parameter(Mandatory)] [string]$TrustedInstalledSkillsRootPath,
     [Parameter(Mandatory)] [string]$KernelObjectNamespace,
@@ -597,10 +597,10 @@ $NativeCbmEvidenceControlModuleSource = {
   )
   Set-StrictMode -Version Latest
   $ErrorActionPreference = 'Stop'
-  if ($WorkspaceLeaseAssertDescriptor.Name -cne 'Assert-WorkspaceMutationLease' -or $WorkspaceLeaseAssertDescriptor.CommandType -ne [System.Management.Automation.CommandTypes]::Function -or [object]::ReferenceEquals($WorkspaceLeaseAssertDescriptor, $GenuineWorkspaceLeaseAssertDescriptor) -eq $false -or [object]::ReferenceEquals($WorkspaceLeaseAssertDescriptor.ScriptBlock, $GenuineWorkspaceLeaseAssertScriptBlock) -eq $false) {
+  if ($RepositoryLeaseAssertDescriptor.Name -cne 'Assert-RepositoryMutationLease' -or $RepositoryLeaseAssertDescriptor.CommandType -ne [System.Management.Automation.CommandTypes]::Function -or [object]::ReferenceEquals($RepositoryLeaseAssertDescriptor, $GenuineRepositoryLeaseAssertDescriptor) -eq $false -or [object]::ReferenceEquals($RepositoryLeaseAssertDescriptor.ScriptBlock, $GenuineRepositoryLeaseAssertScriptBlock) -eq $false) {
     throw 'FAIL_OUTER_DESCRIPTOR_IDENTITY_REPLACED: outer lease assertion is not the genuine captured descriptor'
   }
-  if ($WorkspaceLeaseSessionIdDescriptor.Name -cne 'Get-WorkspaceLeaseCurrentInteractiveSessionId' -or $WorkspaceLeaseSessionIdDescriptor.CommandType -ne [System.Management.Automation.CommandTypes]::Function -or [object]::ReferenceEquals($WorkspaceLeaseSessionIdDescriptor, $GenuineWorkspaceLeaseSessionIdDescriptor) -eq $false -or [object]::ReferenceEquals($WorkspaceLeaseSessionIdDescriptor.ScriptBlock, $GenuineWorkspaceLeaseSessionIdScriptBlock) -eq $false) {
+  if ($RepositoryLeaseSessionIdDescriptor.Name -cne 'Get-RepositoryLeaseCurrentInteractiveSessionId' -or $RepositoryLeaseSessionIdDescriptor.CommandType -ne [System.Management.Automation.CommandTypes]::Function -or [object]::ReferenceEquals($RepositoryLeaseSessionIdDescriptor, $GenuineRepositoryLeaseSessionIdDescriptor) -eq $false -or [object]::ReferenceEquals($RepositoryLeaseSessionIdDescriptor.ScriptBlock, $GenuineRepositoryLeaseSessionIdScriptBlock) -eq $false) {
     throw 'FAIL_OUTER_DESCRIPTOR_IDENTITY_REPLACED: outer current-process session helper is not the genuine captured descriptor'
   }
   foreach ($BoundPath in @([pscustomobject]@{ value = $LoaderProvidedSkillMarkdownPath; label = 'loader SKILL.md' }, [pscustomobject]@{ value = $TrustedInstalledSkillsRootPath; label = 'installed-skills root' })) {
@@ -613,24 +613,24 @@ $NativeCbmEvidenceControlModuleSource = {
   }
   # The held Local lease bootstrap has already created this verified outer
   # helper before it can import the native control module.
-  if ($null -eq ('AgentsCommander.Review1283.WorkspaceLeaseSessionInterop' -as [type])) {
+  if ($null -eq ('AgentsCommander.Review1283.RepositoryLeaseSessionInterop' -as [type])) {
     throw 'NativeCbm control module requires the pre-bound current logon-session helper'
   }
   $CurrentMachineName = [System.Environment]::MachineName.ToUpperInvariant()
-  $CurrentSessionId = & $WorkspaceLeaseSessionIdDescriptor -Stage 'native-cbm-control-module-current-process-session'
+  $CurrentSessionId = & $RepositoryLeaseSessionIdDescriptor -Stage 'native-cbm-control-module-current-process-session'
   if ($CurrentSessionId -isnot [int] -or $CurrentSessionId -le 0) {
     throw 'NativeCbm control module received an invalid current-process interactive session ID'
   }
-  $CurrentLogonLuid = [AgentsCommander.Review1283.WorkspaceLeaseSessionInterop]::GetAuthenticationLuid(([System.Security.Principal.WindowsIdentity]::GetCurrent().AccessToken.DangerousGetHandle()))
+  $CurrentLogonLuid = [AgentsCommander.Review1283.RepositoryLeaseSessionInterop]::GetAuthenticationLuid(([System.Security.Principal.WindowsIdentity]::GetCurrent().AccessToken.DangerousGetHandle()))
   $SessionBindingMaterial = 'local-v2' + [char]0 + $CurrentMachineName + [char]0 + $PrincipalSid + [char]0 + $CurrentSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture) + [char]0 + $CurrentLogonLuid
   $ExpectedSessionBindingSha256 = [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($SessionBindingMaterial)))
   if ($KernelObjectNamespace -cne 'Local' -or $PrincipalSid -cnotmatch '^S-\d-(?:\d+-)+\d+$' -or [string]::IsNullOrWhiteSpace($MachineName) -or $MachineName -cne $CurrentMachineName -or $InteractiveSessionId -le 0 -or $InteractiveSessionId -ne $CurrentSessionId -or $InteractiveLogonLuid -cnotmatch '^[0-9A-F]{16}$' -or $InteractiveLogonLuid -cne $CurrentLogonLuid -or $InteractiveSessionBindingSha256 -cnotmatch '^[0-9A-F]{64}$' -or $InteractiveSessionBindingSha256 -cne $ExpectedSessionBindingSha256 -or $StateStoreScope -cne 'local-current-user-interactive-session') {
     throw 'NativeCbm control module requires the exact Local current-user interactive-session scope'
   }
-  $script:NativeCbmGenuineOuterAssertionDescriptor = $GenuineWorkspaceLeaseAssertDescriptor
-  $script:NativeCbmGenuineOuterAssertionScriptBlock = $GenuineWorkspaceLeaseAssertScriptBlock
-  $script:NativeCbmGenuineOuterSessionIdDescriptor = $GenuineWorkspaceLeaseSessionIdDescriptor
-  $script:NativeCbmGenuineOuterSessionIdScriptBlock = $GenuineWorkspaceLeaseSessionIdScriptBlock
+  $script:NativeCbmGenuineOuterAssertionDescriptor = $GenuineRepositoryLeaseAssertDescriptor
+  $script:NativeCbmGenuineOuterAssertionScriptBlock = $GenuineRepositoryLeaseAssertScriptBlock
+  $script:NativeCbmGenuineOuterSessionIdDescriptor = $GenuineRepositoryLeaseSessionIdDescriptor
+  $script:NativeCbmGenuineOuterSessionIdScriptBlock = $GenuineRepositoryLeaseSessionIdScriptBlock
   $script:NativeCbmOriginalLoaderSkillMarkdownPath = $LoaderProvidedSkillMarkdownPath
   $script:NativeCbmTrustedInstalledSkillsRootPath = $TrustedInstalledSkillsRootPath
   $script:NativeCbmKernelObjectNamespace = $KernelObjectNamespace
@@ -890,8 +890,8 @@ namespace AgentsCommander.Review1283 {
     ([System.IO.Path]::GetFullPath($Path)).TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)).ToUpperInvariant()
   }
   function Get-NativeCbmControlRootHash {
-    param([Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot)
-    [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($CanonicalWorkspaceRoot)))
+    param([Parameter(Mandatory)] [string]$CanonicalRepositoryRoot)
+    [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($CanonicalRepositoryRoot)))
   }
   function Get-NativeCbmControlBytesSha256 {
     param([Parameter(Mandatory)] [byte[]]$Bytes)
@@ -906,16 +906,16 @@ namespace AgentsCommander.Review1283 {
     finally { $Hasher.Dispose(); $Stream.Position = 0 }
   }
   function Assert-NativeCbmControlLease {
-    param([object]$WorkspaceLease, [string]$CanonicalWorkspaceRoot, [string]$Stage)
-    $LeaseRecord = & $script:NativeCbmGenuineOuterAssertionDescriptor -Lease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-outer-held-capability"
-    if ($null -eq $LeaseRecord -or $LeaseRecord.workspace_root -cne $CanonicalWorkspaceRoot -or $LeaseRecord.lease_id -cne $WorkspaceLease.lease_id -or $LeaseRecord.release_state -cne 'held' -or [bool]$LeaseRecord.released -or [bool]$LeaseRecord.release_confirmed -or $LeaseRecord.kernel_namespace -cne $script:NativeCbmKernelObjectNamespace -or $LeaseRecord.principal_sid -cne $script:NativeCbmPrincipalSid -or $LeaseRecord.machine_name -cne $script:NativeCbmMachineName -or $LeaseRecord.interactive_session_id -ne $script:NativeCbmInteractiveSessionId -or $LeaseRecord.interactive_logon_luid -cne $script:NativeCbmInteractiveLogonLuid -or $LeaseRecord.interactive_session_binding_sha256 -cne $script:NativeCbmInteractiveSessionBindingSha256 -or $LeaseRecord.state_store_scope -cne $script:NativeCbmStateStoreScope) {
+    param([object]$RepositoryLease, [string]$CanonicalRepositoryRoot, [string]$Stage)
+    $LeaseRecord = & $script:NativeCbmGenuineOuterAssertionDescriptor -Lease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-outer-held-capability"
+    if ($null -eq $LeaseRecord -or $LeaseRecord.repository_root -cne $CanonicalRepositoryRoot -or $LeaseRecord.lease_id -cne $RepositoryLease.lease_id -or $LeaseRecord.release_state -cne 'held' -or [bool]$LeaseRecord.released -or [bool]$LeaseRecord.release_confirmed -or $LeaseRecord.kernel_namespace -cne $script:NativeCbmKernelObjectNamespace -or $LeaseRecord.principal_sid -cne $script:NativeCbmPrincipalSid -or $LeaseRecord.machine_name -cne $script:NativeCbmMachineName -or $LeaseRecord.interactive_session_id -ne $script:NativeCbmInteractiveSessionId -or $LeaseRecord.interactive_logon_luid -cne $script:NativeCbmInteractiveLogonLuid -or $LeaseRecord.interactive_session_binding_sha256 -cne $script:NativeCbmInteractiveSessionBindingSha256 -or $LeaseRecord.state_store_scope -cne $script:NativeCbmStateStoreScope) {
       throw "$Stage outer held-lease capability record differs from the supplied lease"
     }
     return $LeaseRecord
   }
   function Get-NativeCbmControlStatePaths {
-    param([string]$CanonicalWorkspaceRoot)
-    $RootHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+    param([string]$CanonicalRepositoryRoot)
+    $RootHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot
     $SessionDirectory = "$($script:NativeCbmInteractiveSessionId)-$($script:NativeCbmInteractiveSessionBindingSha256.Substring(0, 24))"
     $Directory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) ("AgentsCommander/review-state/1283/native-cbm/local/" + $script:NativeCbmPrincipalSidHash + "/" + $SessionDirectory)
     [pscustomobject]@{ root_hash = $RootHash; kernel_namespace = $script:NativeCbmKernelObjectNamespace; principal_sid = $script:NativeCbmPrincipalSid; machine_name = $script:NativeCbmMachineName; interactive_session_id = $script:NativeCbmInteractiveSessionId; interactive_logon_luid = $script:NativeCbmInteractiveLogonLuid; interactive_session_binding_sha256 = $script:NativeCbmInteractiveSessionBindingSha256; state_store_scope = $script:NativeCbmStateStoreScope; directory = $Directory; head_path = Join-Path $Directory "$RootHash.json" }
@@ -950,11 +950,11 @@ namespace AgentsCommander.Review1283 {
     [string]$Record[$Field]
   }
   function Read-NativeCbmControlState {
-    param([string]$CanonicalWorkspaceRoot, [string]$CanonicalPlanPath, [object]$WorkspaceLease, [string]$Stage)
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-before-state-read-held-capability" | Out-Null
-    $Paths = & $script:NativeCbmPrivateControls['Get-NativeCbmControlStatePaths'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
-    if (-not (& $script:NativeCbmPrivateControls['Assert-NativeCbmLocalSessionStateStore'] -Paths $Paths -CreateIfMissing $false -Stage "$Stage-state-store-read")) { & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-empty-state-store-held-capability" | Out-Null; return $null }
-    if (-not [System.IO.File]::Exists($Paths.head_path)) { & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-empty-state-file-held-capability" | Out-Null; return $null }
+    param([string]$CanonicalRepositoryRoot, [string]$CanonicalPlanPath, [object]$RepositoryLease, [string]$Stage)
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-before-state-read-held-capability" | Out-Null
+    $Paths = & $script:NativeCbmPrivateControls['Get-NativeCbmControlStatePaths'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot
+    if (-not (& $script:NativeCbmPrivateControls['Assert-NativeCbmLocalSessionStateStore'] -Paths $Paths -CreateIfMissing $false -Stage "$Stage-state-store-read")) { & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-empty-state-store-held-capability" | Out-Null; return $null }
+    if (-not [System.IO.File]::Exists($Paths.head_path)) { & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-empty-state-file-held-capability" | Out-Null; return $null }
     $Bytes = [System.IO.File]::ReadAllBytes($Paths.head_path)
     try {
       if ($Bytes.Length -lt 1 -or $Bytes.Length -gt 1048576) { throw 'state byte length is outside the strict bound' }
@@ -968,22 +968,22 @@ namespace AgentsCommander.Review1283 {
       $RequiredKeys = @($ExpectedKeys | Sort-Object)
       if ($ActualKeys.Count -ne $RequiredKeys.Count -or $null -ne (Compare-Object -ReferenceObject $RequiredKeys -DifferenceObject $ActualKeys -CaseSensitive)) { throw "$Stage durable state has an unexpected field set" }
     }
-    foreach ($Field in @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'canonical_workspace_root', 'canonical_plan_path', 'root_hash', 'record_id', 'written_utc')) {
+    foreach ($Field in @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'canonical_repository_root', 'canonical_plan_path', 'root_hash', 'record_id', 'written_utc')) {
       if (-not $Record.Contains($Field)) { throw "$Stage durable state lacks $Field" }
     }
     if ((($Record['schema_version'] -isnot [int]) -and ($Record['schema_version'] -isnot [long])) -or [int]$Record['schema_version'] -ne $script:NativeCbmEvidenceControlSchemaVersion) { throw "$Stage durable state has an unsupported schema" }
     if ((& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'kernel_namespace' -Stage $Stage) -cne $Paths.kernel_namespace -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'principal_sid' -Stage $Stage) -cne $Paths.principal_sid -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'machine_name' -Stage $Stage) -cne $Paths.machine_name -or (($Record['interactive_session_id'] -isnot [int]) -and ($Record['interactive_session_id'] -isnot [long])) -or [int]$Record['interactive_session_id'] -ne $Paths.interactive_session_id -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'interactive_logon_luid' -Stage $Stage) -cne $Paths.interactive_logon_luid -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'interactive_session_binding_sha256' -Stage $Stage) -cne $Paths.interactive_session_binding_sha256 -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'state_store_scope' -Stage $Stage) -cne $Paths.state_store_scope) { throw "$Stage FOREIGN_INTERACTIVE_SESSION_HARD_STOP" }
-    if ((& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'canonical_workspace_root' -Stage $Stage) -cne $CanonicalWorkspaceRoot -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'canonical_plan_path' -Stage $Stage) -cne $CanonicalPlanPath -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'root_hash' -Stage $Stage) -cne $Paths.root_hash) { throw "$Stage durable state canonical identity is invalid" }
+    if ((& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'canonical_repository_root' -Stage $Stage) -cne $CanonicalRepositoryRoot -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'canonical_plan_path' -Stage $Stage) -cne $CanonicalPlanPath -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'root_hash' -Stage $Stage) -cne $Paths.root_hash) { throw "$Stage durable state canonical identity is invalid" }
     if ((& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'record_id' -Stage $Stage) -cnotmatch '^[0-9a-f]{32}$' -or (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'written_utc' -Stage $Stage) -cnotmatch '^\d{4}-\d{2}-\d{2}T') { throw "$Stage durable state record metadata is invalid" }
     $State = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'state' -Stage $Stage
     if ($State -ceq 'cleared') {
-      & $RequireExactKeys @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'canonical_workspace_root', 'canonical_plan_path', 'root_hash', 'draft_plan_sha256', 'clearance_evidence_epoch', 'clearance_session_id', 'record_id', 'written_utc')
+      & $RequireExactKeys @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'canonical_repository_root', 'canonical_plan_path', 'root_hash', 'draft_plan_sha256', 'clearance_evidence_epoch', 'clearance_session_id', 'record_id', 'written_utc')
       $PlanHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'draft_plan_sha256' -Stage $Stage
       $ClearanceEpoch = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'clearance_evidence_epoch' -Stage $Stage
       if ($PlanHash -cnotmatch '^[0-9A-F]{64}$' -or $ClearanceEpoch -cnotmatch '^[0-9a-f]{32}$' -or (($Record['clearance_session_id'] -isnot [int]) -and ($Record['clearance_session_id'] -isnot [long])) -or [int]$Record['clearance_session_id'] -ne $Paths.interactive_session_id) { throw "$Stage cleared durable state has invalid Local interactive-session authority fields" }
     }
     elseif ($State -ceq 'unconfirmed-tree-termination') {
-      & $RequireExactKeys @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'origin_session_id', 'containment_scope', 'canonical_workspace_root', 'canonical_plan_path', 'root_hash', 'draft_plan_sha256', 'evidence_epoch', 'stage', 'job_name', 'bootstrap_root_pid', 'bootstrap_root_creation_filetime', 'process_count_state', 'job_active_processes', 'termination_error', 'confirmation_error', 'executed_artifact', 'wrapper_identity', 'record_id', 'written_utc')
+      & $RequireExactKeys @('schema_version', 'state', 'kernel_namespace', 'principal_sid', 'machine_name', 'interactive_session_id', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope', 'origin_session_id', 'containment_scope', 'canonical_repository_root', 'canonical_plan_path', 'root_hash', 'draft_plan_sha256', 'evidence_epoch', 'stage', 'job_name', 'bootstrap_root_pid', 'bootstrap_root_creation_filetime', 'process_count_state', 'job_active_processes', 'termination_error', 'confirmation_error', 'executed_artifact', 'wrapper_identity', 'record_id', 'written_utc')
       $PlanHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'draft_plan_sha256' -Stage $Stage
       $Epoch = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'evidence_epoch' -Stage $Stage
       $Scope = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRequiredString'] -Record $Record -Field 'containment_scope' -Stage $Stage
@@ -1002,7 +1002,7 @@ namespace AgentsCommander.Review1283 {
       if ($Scope -cnotin @('assigned-job-tree', 'unassigned-suspended-bootstrap-root')) { throw "$Stage unconfirmed durable state has an illegal containment scope" }
     }
     else { throw "$Stage durable state has an illegal state value" }
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-state-read-held-capability" | Out-Null
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-state-read-held-capability" | Out-Null
     [pscustomobject]@{ paths = $Paths; record = $Record; record_sha256 = (& $script:NativeCbmPrivateControls['Get-NativeCbmControlBytesSha256'] -Bytes $Bytes) }
   }
   function Write-NativeCbmControlBytes {
@@ -1011,9 +1011,9 @@ namespace AgentsCommander.Review1283 {
     try { $Stream.Write($Bytes, 0, $Bytes.Length); $Stream.Flush($true) } finally { $Stream.Dispose() }
   }
   function Write-NativeCbmControlState {
-    param([System.Collections.IDictionary]$Record, [string]$CanonicalWorkspaceRoot, [object]$WorkspaceLease, [string]$Stage)
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-before-write-held-capability"
-    $Paths = & $script:NativeCbmPrivateControls['Get-NativeCbmControlStatePaths'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+    param([System.Collections.IDictionary]$Record, [string]$CanonicalRepositoryRoot, [object]$RepositoryLease, [string]$Stage)
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-before-write-held-capability"
+    $Paths = & $script:NativeCbmPrivateControls['Get-NativeCbmControlStatePaths'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot
     & $script:NativeCbmPrivateControls['Assert-NativeCbmLocalSessionStateStore'] -Paths $Paths -CreateIfMissing $true -Stage "$Stage-state-store-write" | Out-Null
     foreach ($Field in @('kernel_namespace', 'principal_sid', 'machine_name', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'state_store_scope')) { if (-not $Record.Contains($Field) -or $Record[$Field] -isnot [string]) { throw "$Stage durable state record lacks Local interactive-session scope field $Field" } }
     if (-not $Record.Contains('interactive_session_id') -or (($Record['interactive_session_id'] -isnot [int]) -and ($Record['interactive_session_id'] -isnot [long])) -or $Record['kernel_namespace'] -cne $Paths.kernel_namespace -or $Record['principal_sid'] -cne $Paths.principal_sid -or $Record['machine_name'] -cne $Paths.machine_name -or [int]$Record['interactive_session_id'] -ne $Paths.interactive_session_id -or $Record['interactive_logon_luid'] -cne $Paths.interactive_logon_luid -or $Record['interactive_session_binding_sha256'] -cne $Paths.interactive_session_binding_sha256 -or $Record['state_store_scope'] -cne $Paths.state_store_scope) { throw "$Stage FOREIGN_INTERACTIVE_SESSION_HARD_STOP" }
@@ -1024,7 +1024,7 @@ namespace AgentsCommander.Review1283 {
     $Temp = Join-Path $Paths.directory "$($Paths.root_hash).$($Record['record_id']).tmp"
     & $script:NativeCbmPrivateControls['Write-NativeCbmControlBytes'] -Path $Temp -Bytes $Bytes
     if ([System.IO.File]::Exists($Paths.head_path)) { [System.IO.File]::Replace($Temp, $Paths.head_path, (Join-Path $Paths.directory "$($Paths.root_hash).$($Record['record_id']).previous.json"), $true) } else { [System.IO.File]::Move($Temp, $Paths.head_path) }
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-write-held-capability" | Out-Null
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-write-held-capability" | Out-Null
     [pscustomobject]@{ state_path = $Paths.head_path; record = $Record; state_sha256 = (& $script:NativeCbmPrivateControls['Get-NativeCbmControlBytesSha256'] -Bytes $Bytes) }
   }
   function Get-NativeCbmControlActiveProcessCount {
@@ -1152,8 +1152,8 @@ namespace AgentsCommander.Review1283 {
     [pscustomobject]@{ tree_termination_confirmed = $false; job_active_processes = $Count; process_count_state = $State; termination_error = $TerminationError; confirmation_error = $ConfirmationError }
   }
   function New-NativeCbmBootstrapReadLease {
-    param([object]$WorkspaceLease, [string]$CanonicalWorkspaceRoot, [string]$Stage)
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-before-bootstrap"
+    param([object]$RepositoryLease, [string]$CanonicalRepositoryRoot, [string]$Stage)
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-before-bootstrap"
     $Directory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'AgentsCommander/review-state/1283/native-cbm/bootstrap'
     [System.IO.Directory]::CreateDirectory($Directory) | Out-Null
     $Path = Join-Path $Directory ("bootstrap-" + [guid]::NewGuid().ToString('N') + '.ps1')
@@ -1224,8 +1224,8 @@ namespace AgentsCommander.Review1283 {
     [pscustomobject]@{ path = $BootstrapReadLease.path; sha256 = $Hash; byte_length = $BootstrapReadLease.byte_length; identity = $Identity }
   }
   function New-NativeCbmVerifiedExecutionArtifact {
-    param([psobject]$WrapperReadLease, [string]$CanonicalWorkspaceRoot, [string]$EvidenceEpoch, [string]$Stage)
-    $RootHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot
+    param([psobject]$WrapperReadLease, [string]$CanonicalRepositoryRoot, [string]$EvidenceEpoch, [string]$Stage)
+    $RootHash = & $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot
     $Directory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "AgentsCommander/review-state/1283/native-cbm/executables/$RootHash/$EvidenceEpoch"
     [System.IO.Directory]::CreateDirectory($Directory) | Out-Null
     $Path = Join-Path $Directory ("capture-" + [guid]::NewGuid().ToString('N') + "." + $WrapperReadLease.sha256 + '.ps1')
@@ -1249,7 +1249,7 @@ namespace AgentsCommander.Review1283 {
     $Artifact.stream.Dispose(); [System.IO.File]::Delete([string]$Artifact.path)
   }
   function Start-NativeCbmBootstrapSuspended {
-    param([psobject]$BootstrapReadLease, [string]$CanonicalWorkspaceRoot, [string]$Stage)
+    param([psobject]$BootstrapReadLease, [string]$CanonicalRepositoryRoot, [string]$Stage)
     & $script:NativeCbmPrivateControls['Assert-NativeCbmBootstrapReadLease'] -BootstrapReadLease $BootstrapReadLease -Stage "$Stage-before-launch" | Out-Null
     $Input = [System.IO.Pipes.AnonymousPipeServerStream]::new([System.IO.Pipes.PipeDirection]::Out, [System.IO.HandleInheritability]::Inheritable)
     $Output = [System.IO.Pipes.AnonymousPipeServerStream]::new([System.IO.Pipes.PipeDirection]::In, [System.IO.HandleInheritability]::Inheritable)
@@ -1266,7 +1266,7 @@ namespace AgentsCommander.Review1283 {
       $Startup.hStdError = [IntPtr]([int64]$Error.GetClientHandleAsString())
       $Arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', [string]$BootstrapReadLease.path)
       $CommandLine = [AgentsCommander.Review1283.NativeCbmJobInterop]::BuildCommandLine($HostPath, $Arguments)
-      if (-not [AgentsCommander.Review1283.NativeCbmJobInterop]::CreateProcessW($HostPath, $CommandLine, [IntPtr]::Zero, [IntPtr]::Zero, $true, ([AgentsCommander.Review1283.NativeCbmJobInterop]::CREATE_SUSPENDED -bor [AgentsCommander.Review1283.NativeCbmJobInterop]::CREATE_NO_WINDOW), [IntPtr]::Zero, $CanonicalWorkspaceRoot, [ref]$Startup, [ref]$Process)) { throw "$Stage CreateProcessW failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+      if (-not [AgentsCommander.Review1283.NativeCbmJobInterop]::CreateProcessW($HostPath, $CommandLine, [IntPtr]::Zero, [IntPtr]::Zero, $true, ([AgentsCommander.Review1283.NativeCbmJobInterop]::CREATE_SUSPENDED -bor [AgentsCommander.Review1283.NativeCbmJobInterop]::CREATE_NO_WINDOW), [IntPtr]::Zero, $CanonicalRepositoryRoot, [ref]$Startup, [ref]$Process)) { throw "$Stage CreateProcessW failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
     } catch { $Input.Dispose(); $Output.Dispose(); $Error.Dispose(); throw }
     $PostCreateError = $null; $CreationFileTime = $null
     try {
@@ -1313,11 +1313,11 @@ namespace AgentsCommander.Review1283 {
     [pscustomobject]@{ payload_byte_length = $PayloadBytes.Length; payload_write_completed = $true }
   }
   function Persist-NativeCbmUnconfirmedTerminationAndRetain {
-    param([Exception]$CaptureFailure, [psobject]$Termination, [string]$ContainmentScope, [IntPtr]$JobHandle, [psobject]$Started, [psobject]$Artifact, [psobject]$BootstrapReadLease, [psobject]$WrapperReadLease, [string]$JobName, [string]$CanonicalWorkspaceRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$WorkspaceLease, [string]$Stage)
+    param([Exception]$CaptureFailure, [psobject]$Termination, [string]$ContainmentScope, [IntPtr]$JobHandle, [psobject]$Started, [psobject]$Artifact, [psobject]$BootstrapReadLease, [psobject]$WrapperReadLease, [string]$JobName, [string]$CanonicalRepositoryRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$RepositoryLease, [string]$Stage)
     $ExpectedJobPattern = '^Local\\AgentsCommander-1283-cbm-[0-9A-F]{64}-' + $script:NativeCbmPrincipalSidHash.Substring(0, 16) + '-' + [regex]::Escape($script:NativeCbmInteractiveSessionId.ToString([System.Globalization.CultureInfo]::InvariantCulture)) + '-' + $script:NativeCbmInteractiveSessionBindingSha256.Substring(0, 24) + '-[0-9a-f]{32}-[0-9a-f]{32}$'
     if ($JobName -cnotmatch $ExpectedJobPattern) { throw "$Stage cannot persist a foreign or non-Local capture Job" }
-    $Record = [ordered]@{ schema_version = $script:NativeCbmEvidenceControlSchemaVersion; state = 'unconfirmed-tree-termination'; kernel_namespace = $script:NativeCbmKernelObjectNamespace; principal_sid = $script:NativeCbmPrincipalSid; machine_name = $script:NativeCbmMachineName; interactive_session_id = $script:NativeCbmInteractiveSessionId; interactive_logon_luid = $script:NativeCbmInteractiveLogonLuid; interactive_session_binding_sha256 = $script:NativeCbmInteractiveSessionBindingSha256; state_store_scope = $script:NativeCbmStateStoreScope; origin_session_id = $script:NativeCbmInteractiveSessionId; containment_scope = $ContainmentScope; canonical_workspace_root = $CanonicalWorkspaceRoot; canonical_plan_path = $CanonicalPlanPath; root_hash = (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot); draft_plan_sha256 = $ExpectedPlanSha256; evidence_epoch = $EvidenceEpoch; stage = $Stage; job_name = $JobName; bootstrap_root_pid = if ($null -eq $Started) { $null } else { $Started.process_id }; bootstrap_root_creation_filetime = if ($null -eq $Started) { $null } else { $Started.creation_filetime }; process_count_state = if ($null -eq $Termination.PSObject.Properties['process_count_state']) { 'unknown' } else { $Termination.process_count_state }; job_active_processes = if ($null -eq $Termination.PSObject.Properties['job_active_processes']) { $null } else { $Termination.job_active_processes }; termination_error = $Termination.termination_error; confirmation_error = $Termination.confirmation_error; executed_artifact = $Artifact; wrapper_identity = $WrapperReadLease }
-    try { [void](& $script:NativeCbmPrivateControls['Write-NativeCbmControlState'] -Record $Record -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -WorkspaceLease $WorkspaceLease -Stage "$Stage-hard-stop-write") }
+    $Record = [ordered]@{ schema_version = $script:NativeCbmEvidenceControlSchemaVersion; state = 'unconfirmed-tree-termination'; kernel_namespace = $script:NativeCbmKernelObjectNamespace; principal_sid = $script:NativeCbmPrincipalSid; machine_name = $script:NativeCbmMachineName; interactive_session_id = $script:NativeCbmInteractiveSessionId; interactive_logon_luid = $script:NativeCbmInteractiveLogonLuid; interactive_session_binding_sha256 = $script:NativeCbmInteractiveSessionBindingSha256; state_store_scope = $script:NativeCbmStateStoreScope; origin_session_id = $script:NativeCbmInteractiveSessionId; containment_scope = $ContainmentScope; canonical_repository_root = $CanonicalRepositoryRoot; canonical_plan_path = $CanonicalPlanPath; root_hash = (& $script:NativeCbmPrivateControls['Get-NativeCbmControlRootHash'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot); draft_plan_sha256 = $ExpectedPlanSha256; evidence_epoch = $EvidenceEpoch; stage = $Stage; job_name = $JobName; bootstrap_root_pid = if ($null -eq $Started) { $null } else { $Started.process_id }; bootstrap_root_creation_filetime = if ($null -eq $Started) { $null } else { $Started.creation_filetime }; process_count_state = if ($null -eq $Termination.PSObject.Properties['process_count_state']) { 'unknown' } else { $Termination.process_count_state }; job_active_processes = if ($null -eq $Termination.PSObject.Properties['job_active_processes']) { $null } else { $Termination.job_active_processes }; termination_error = $Termination.termination_error; confirmation_error = $Termination.confirmation_error; executed_artifact = $Artifact; wrapper_identity = $WrapperReadLease }
+    try { [void](& $script:NativeCbmPrivateControls['Write-NativeCbmControlState'] -Record $Record -CanonicalRepositoryRoot $CanonicalRepositoryRoot -RepositoryLease $RepositoryLease -Stage "$Stage-hard-stop-write") }
     catch { $script:NativeCbmUnconfirmedJobs.Add([pscustomobject]@{ job_handle = $JobHandle; started = $Started; artifact = $Artifact; bootstrap = $BootstrapReadLease; wrapper = $WrapperReadLease; persistence_error = $_.Exception.Message }); throw [AggregateException]::new("$Stage durable hard-stop persistence failed", [Exception[]]@($CaptureFailure, $_.Exception)) }
     $script:NativeCbmUnconfirmedJobs.Add([pscustomobject]@{ job_handle = $JobHandle; started = $Started; artifact = $Artifact; bootstrap = $BootstrapReadLease; wrapper = $WrapperReadLease; persistence_error = $null })
   }
@@ -1353,10 +1353,10 @@ namespace AgentsCommander.Review1283 {
     finally { $Stream.Dispose() }
   }
   function Confirm-NativeCbmPersistentHardStopCleared {
-    param([string]$CanonicalWorkspaceRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$WorkspaceLease, [string]$Stage)
-    $P = $script:NativeCbmPrivateControls; & $P['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-lease"
+    param([string]$CanonicalRepositoryRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$RepositoryLease, [string]$Stage)
+    $P = $script:NativeCbmPrivateControls; & $P['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-lease"
     if ($ExpectedPlanSha256 -cnotmatch '^[0-9A-F]{64}$' -or $EvidenceEpoch -cnotmatch '^[0-9a-f]{32}$') { throw "$Stage clearance authority is malformed" }
-    $Prior = & $P['Read-NativeCbmControlState'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -CanonicalPlanPath $CanonicalPlanPath -WorkspaceLease $WorkspaceLease -Stage $Stage
+    $Prior = & $P['Read-NativeCbmControlState'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot -CanonicalPlanPath $CanonicalPlanPath -RepositoryLease $RepositoryLease -Stage $Stage
     if ($null -ne $Prior -and $Prior.record['state'] -ceq 'unconfirmed-tree-termination') {
       if ($Prior.record['containment_scope'] -ceq 'assigned-job-tree') {
         $PriorJobName = [string]$Prior.record['job_name']
@@ -1378,31 +1378,31 @@ namespace AgentsCommander.Review1283 {
       } else { throw "$Stage has unknown hard-stop containment scope" }
     }
     elseif ($null -ne $Prior -and $Prior.record['state'] -cne 'cleared') { throw "$Stage durable hard-stop state is not clearable" }
-    $Record = [ordered]@{ schema_version = $script:NativeCbmEvidenceControlSchemaVersion; state = 'cleared'; kernel_namespace = $script:NativeCbmKernelObjectNamespace; principal_sid = $script:NativeCbmPrincipalSid; machine_name = $script:NativeCbmMachineName; interactive_session_id = $script:NativeCbmInteractiveSessionId; interactive_logon_luid = $script:NativeCbmInteractiveLogonLuid; interactive_session_binding_sha256 = $script:NativeCbmInteractiveSessionBindingSha256; state_store_scope = $script:NativeCbmStateStoreScope; canonical_workspace_root = $CanonicalWorkspaceRoot; canonical_plan_path = $CanonicalPlanPath; root_hash = (& $P['Get-NativeCbmControlRootHash'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot); draft_plan_sha256 = $ExpectedPlanSha256; clearance_evidence_epoch = $EvidenceEpoch; clearance_session_id = $script:NativeCbmInteractiveSessionId }
-    $Clearance = & $P['Write-NativeCbmControlState'] -Record $Record -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -WorkspaceLease $WorkspaceLease -Stage "$Stage-clearance-write"
-    & $P['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-clearance-write" | Out-Null
+    $Record = [ordered]@{ schema_version = $script:NativeCbmEvidenceControlSchemaVersion; state = 'cleared'; kernel_namespace = $script:NativeCbmKernelObjectNamespace; principal_sid = $script:NativeCbmPrincipalSid; machine_name = $script:NativeCbmMachineName; interactive_session_id = $script:NativeCbmInteractiveSessionId; interactive_logon_luid = $script:NativeCbmInteractiveLogonLuid; interactive_session_binding_sha256 = $script:NativeCbmInteractiveSessionBindingSha256; state_store_scope = $script:NativeCbmStateStoreScope; canonical_repository_root = $CanonicalRepositoryRoot; canonical_plan_path = $CanonicalPlanPath; root_hash = (& $P['Get-NativeCbmControlRootHash'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot); draft_plan_sha256 = $ExpectedPlanSha256; clearance_evidence_epoch = $EvidenceEpoch; clearance_session_id = $script:NativeCbmInteractiveSessionId }
+    $Clearance = & $P['Write-NativeCbmControlState'] -Record $Record -CanonicalRepositoryRoot $CanonicalRepositoryRoot -RepositoryLease $RepositoryLease -Stage "$Stage-clearance-write"
+    & $P['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-clearance-write" | Out-Null
     [pscustomobject]@{ clearance = $Clearance; prior_state = if ($null -eq $Prior) { 'none' } else { $Prior.record['state'] }; clearance_state = 'cleared' }
   }
   function Assert-NativeCbmEvidenceMayProceed {
-    param([string]$CanonicalWorkspaceRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$WorkspaceLease, [string]$Stage)
-    $P = $script:NativeCbmPrivateControls; & $P['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-lease"
-    $State = & $P['Read-NativeCbmControlState'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -CanonicalPlanPath $CanonicalPlanPath -WorkspaceLease $WorkspaceLease -Stage $Stage
+    param([string]$CanonicalRepositoryRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [string]$EvidenceEpoch, [object]$RepositoryLease, [string]$Stage)
+    $P = $script:NativeCbmPrivateControls; & $P['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-lease"
+    $State = & $P['Read-NativeCbmControlState'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot -CanonicalPlanPath $CanonicalPlanPath -RepositoryLease $RepositoryLease -Stage $Stage
     if ($null -eq $State -or $State.record['state'] -cne 'cleared' -or $State.record['draft_plan_sha256'] -cne $ExpectedPlanSha256 -or $State.record['clearance_evidence_epoch'] -cne $EvidenceEpoch) { throw "$Stage has no matching native hard-stop clearance" }
   }
   function Invoke-ContainedNativeCbmCapture {
-    param([string]$Stage, [ValidateSet('gate', 'text', 'name')] [string]$Operation, [string[]]$OperationArguments, [string]$CanonicalWorkspaceRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [object]$WrapperBindingCapability, [string]$EvidenceEpoch, [object]$WorkspaceLease, [TimeSpan]$Timeout, [int]$MaximumStandardInputBytes, [int]$MaximumStandardOutputBytes, [int]$MaximumStandardErrorBytes, [int]$TerminationWaitMilliseconds)
+    param([string]$Stage, [ValidateSet('gate', 'text', 'name')] [string]$Operation, [string[]]$OperationArguments, [string]$CanonicalRepositoryRoot, [string]$CanonicalPlanPath, [string]$ExpectedPlanSha256, [object]$WrapperBindingCapability, [string]$EvidenceEpoch, [object]$RepositoryLease, [TimeSpan]$Timeout, [int]$MaximumStandardInputBytes, [int]$MaximumStandardOutputBytes, [int]$MaximumStandardErrorBytes, [int]$TerminationWaitMilliseconds)
     if ($Timeout -le [TimeSpan]::Zero -or $MaximumStandardInputBytes -lt 1 -or $MaximumStandardOutputBytes -lt 1 -or $MaximumStandardErrorBytes -lt 1 -or $TerminationWaitMilliseconds -le 0) { throw "$Stage invalid native capture limits" }
     $P = $script:NativeCbmPrivateControls; $Public = $script:NativeCbmPublicControls
-    & $Public['Assert-NativeCbmEvidenceMayProceed'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -CanonicalPlanPath $CanonicalPlanPath -ExpectedPlanSha256 $ExpectedPlanSha256 -EvidenceEpoch $EvidenceEpoch -WorkspaceLease $WorkspaceLease -Stage "$Stage-before-capture"
+    & $Public['Assert-NativeCbmEvidenceMayProceed'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot -CanonicalPlanPath $CanonicalPlanPath -ExpectedPlanSha256 $ExpectedPlanSha256 -EvidenceEpoch $EvidenceEpoch -RepositoryLease $RepositoryLease -Stage "$Stage-before-capture"
     $Deadline = [DateTime]::UtcNow.Add($Timeout); $Cancellation = [System.Threading.CancellationTokenSource]::new(); $Job = [IntPtr]::Zero; $Started = $null; $Artifact = $null; $Bootstrap = $null; $Wrapper = $null; $AssignmentVerified = $false; $TreeConfirmed = $true
-    $RootHash = & $P['Get-NativeCbmControlRootHash'] -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot; $JobName = "Local\AgentsCommander-1283-cbm-$RootHash-$($script:NativeCbmPrincipalSidHash.Substring(0, 16))-$($script:NativeCbmInteractiveSessionId)-$($script:NativeCbmInteractiveSessionBindingSha256.Substring(0, 24))-$EvidenceEpoch-$([guid]::NewGuid().ToString('N'))"
+    $RootHash = & $P['Get-NativeCbmControlRootHash'] -CanonicalRepositoryRoot $CanonicalRepositoryRoot; $JobName = "Local\AgentsCommander-1283-cbm-$RootHash-$($script:NativeCbmPrincipalSidHash.Substring(0, 16))-$($script:NativeCbmInteractiveSessionId)-$($script:NativeCbmInteractiveSessionBindingSha256.Substring(0, 24))-$EvidenceEpoch-$([guid]::NewGuid().ToString('N'))"
     try {
       $Wrapper = & $P['Open-VerifiedCodebaseMemoryWrapperReadLease'] -WrapperBindingCapability $WrapperBindingCapability -Stage "$Stage-wrapper-open"
       if ([DateTime]::UtcNow -ge $Deadline) { throw "$Stage deadline expired before artifact creation" }
-      $Artifact = & $P['New-NativeCbmVerifiedExecutionArtifact'] -WrapperReadLease $Wrapper -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -EvidenceEpoch $EvidenceEpoch -Stage "$Stage-artifact-create"
-      $Bootstrap = & $P['New-NativeCbmBootstrapReadLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-bootstrap-create"
+      $Artifact = & $P['New-NativeCbmVerifiedExecutionArtifact'] -WrapperReadLease $Wrapper -CanonicalRepositoryRoot $CanonicalRepositoryRoot -EvidenceEpoch $EvidenceEpoch -Stage "$Stage-artifact-create"
+      $Bootstrap = & $P['New-NativeCbmBootstrapReadLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-bootstrap-create"
       $Job = & $P['New-NativeCbmControlJob'] -JobName $JobName -Stage "$Stage-job-create"
-      $Started = & $P['Start-NativeCbmBootstrapSuspended'] -BootstrapReadLease $Bootstrap -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-suspended-start"; $TreeConfirmed = $false
+      $Started = & $P['Start-NativeCbmBootstrapSuspended'] -BootstrapReadLease $Bootstrap -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-suspended-start"; $TreeConfirmed = $false
       if ($null -ne $Started.post_create_error) { throw "$Stage suspended bootstrap post-create failure: $($Started.post_create_error)" }
       if (-not [AgentsCommander.Review1283.NativeCbmJobInterop]::AssignProcessToJobObject($Job, $Started.process_handle)) { throw "$Stage AssignProcessToJobObject failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
       [bool]$InJob = $false; if (-not [AgentsCommander.Review1283.NativeCbmJobInterop]::IsProcessInJob($Started.process_handle, $Job, [ref]$InJob) -or -not $InJob) { throw "$Stage Job assignment verification failed" }
@@ -1430,7 +1430,7 @@ namespace AgentsCommander.Review1283 {
         try { $Termination = & $P['Stop-NativeCbmControlJobAndConfirm'] -JobHandle $Job -TerminationWaitMilliseconds $TerminationWaitMilliseconds -Stage "$Stage-job-stop" } catch { $Termination = [pscustomobject]@{ tree_termination_confirmed = $false; termination_error = $_.Exception.Message; confirmation_error = $_.Exception.Message; process_count_state = 'unknown'; job_active_processes = $null } }
         $TreeConfirmed = ($Termination.tree_termination_confirmed -eq $true); $Scope = 'assigned-job-tree'
       } else { $Termination = [pscustomobject]@{ tree_termination_confirmed = $true; process_count_state = 'known-zero'; job_active_processes = 0; termination_error = $null; confirmation_error = $null }; $Scope = 'no-root-started' }
-      if (-not $TreeConfirmed) { & $P['Persist-NativeCbmUnconfirmedTerminationAndRetain'] -CaptureFailure $Failure -Termination $Termination -ContainmentScope $Scope -JobHandle $Job -Started $Started -Artifact $Artifact -BootstrapReadLease $Bootstrap -WrapperReadLease $Wrapper -JobName $JobName -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -CanonicalPlanPath $CanonicalPlanPath -ExpectedPlanSha256 $ExpectedPlanSha256 -EvidenceEpoch $EvidenceEpoch -WorkspaceLease $WorkspaceLease -Stage $Stage }
+      if (-not $TreeConfirmed) { & $P['Persist-NativeCbmUnconfirmedTerminationAndRetain'] -CaptureFailure $Failure -Termination $Termination -ContainmentScope $Scope -JobHandle $Job -Started $Started -Artifact $Artifact -BootstrapReadLease $Bootstrap -WrapperReadLease $Wrapper -JobName $JobName -CanonicalRepositoryRoot $CanonicalRepositoryRoot -CanonicalPlanPath $CanonicalPlanPath -ExpectedPlanSha256 $ExpectedPlanSha256 -EvidenceEpoch $EvidenceEpoch -RepositoryLease $RepositoryLease -Stage $Stage }
       throw $Failure
     } finally {
       $Cancellation.Dispose()
@@ -1444,8 +1444,8 @@ namespace AgentsCommander.Review1283 {
     }
   }
   function Assert-NativeCbmEvidenceControlModule {
-    param([psobject]$ControlModule, [object]$WorkspaceLease, [string]$CanonicalWorkspaceRoot, [object]$WrapperBindingCapability, [string]$Stage)
-    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-lease"
+    param([psobject]$ControlModule, [object]$RepositoryLease, [string]$CanonicalRepositoryRoot, [object]$WrapperBindingCapability, [string]$Stage)
+    & $script:NativeCbmPrivateControls['Assert-NativeCbmControlLease'] -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-lease"
     if ($ControlModule.module_name -cne $script:NativeCbmControlModuleName -or $ControlModule.module_guid -cne $script:NativeCbmControlModuleGuid -or $null -eq $ControlModule.public_commands) { throw "$Stage module identity or descriptors differ" }
     foreach ($Name in $script:NativeCbmPublicControlNames) {
       $Descriptor = $ControlModule.public_commands[$Name]
@@ -1485,7 +1485,7 @@ function Assert-NativeCbmEvidenceControlSourceContract {
   $Expected = @($NativeCbmPublicControlNames + $NativeCbmPrivateControlNames | Sort-Object)
   $Defined = @($Ast.FindAll({ param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name } | Sort-Object)
   if ($Defined.Count -ne $Expected.Count -or $null -ne (Compare-Object -ReferenceObject $Expected -DifferenceObject $Defined)) { throw "$Stage active NativeCbm source function manifest differs" }
-  foreach ($Legacy in @('ProcessStartInfo', 'Process.Start(', 'CancellationToken.None', 'GetAwaiter().GetResult()', "Payload['wrapper_path']", '$Started.stdin.Write(', 'WaitOne([TimeSpan]::Zero)', '$WorkspaceLease.mutex', 'IsPathRooted', 'CreateJobObject([IntPtr]::Zero, $JobName)', '-ExpectedBinding $WrapperBinding', '$script:NativeCbmPrivateControls[''Write-NativeCbmControlBytes''] -Path $Path -Bytes $Bytes')) { if ($Text.Contains($Legacy)) { throw "$Stage active NativeCbm source contains unsafe legacy token $Legacy" } }
+  foreach ($Legacy in @('ProcessStartInfo', 'Process.Start(', 'CancellationToken.None', 'GetAwaiter().GetResult()', "Payload['wrapper_path']", '$Started.stdin.Write(', 'WaitOne([TimeSpan]::Zero)', '$RepositoryLease.mutex', 'IsPathRooted', 'CreateJobObject([IntPtr]::Zero, $JobName)', '-ExpectedBinding $WrapperBinding', '$script:NativeCbmPrivateControls[''Write-NativeCbmControlBytes''] -Path $Path -Bytes $Bytes')) { if ($Text.Contains($Legacy)) { throw "$Stage active NativeCbm source contains unsafe legacy token $Legacy" } }
   $BarePrivate = @($Ast.FindAll({ param($Node) $Node -is [System.Management.Automation.Language.CommandAst] -and $NativeCbmPrivateControlNames -contains $Node.GetCommandName() }, $true))
   if ($BarePrivate.Count -ne 0) { throw "$Stage active NativeCbm source has bare private-control invocation" }
   $Resolver = @($Ast.FindAll({ param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'Resolve-InstalledCodebaseMemoryWrapperBinding' }, $true))
@@ -1507,22 +1507,22 @@ function Assert-NativeCbmEvidenceControlSourceContract {
   $ForeignGuardOffset = $LocalClearerText.IndexOf('FOREIGN_INTERACTIVE_SESSION_HARD_STOP'); $JobOpenOffset = $LocalClearerText.IndexOf('OpenJobObject'); $ClearanceWriteOffset = $LocalClearerText.IndexOf('Write-NativeCbmControlState')
   if ($ForeignGuardOffset -lt 0 -or ($JobOpenOffset -ge 0 -and $ForeignGuardOffset -gt $JobOpenOffset) -or ($ClearanceWriteOffset -ge 0 -and $ForeignGuardOffset -gt $ClearanceWriteOffset)) { throw "$Stage local-scope guard does not precede Job control and clearance" }
   $NativeLeaseAssertion = @($Ast.FindAll({ param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'Assert-NativeCbmControlLease' }, $true))
-  if ($NativeLeaseAssertion.Count -ne 1 -or -not $NativeLeaseAssertion[0].Extent.Text.Contains('$script:NativeCbmGenuineOuterAssertionDescriptor') -or -not $Text.Contains('GenuineWorkspaceLeaseAssertDescriptor') -or -not $Text.Contains('GenuineWorkspaceLeaseAssertScriptBlock') -or -not $Text.Contains('GenuineWorkspaceLeaseSessionIdDescriptor') -or -not $Text.Contains('GenuineWorkspaceLeaseSessionIdScriptBlock') -or -not $Text.Contains('ReferenceEquals') -or -not $Text.Contains('FAIL_OUTER_DESCRIPTOR_IDENTITY_REPLACED')) { throw "$Stage active NativeCbm source lacks immutable genuine outer-descriptor identity proof" }
+  if ($NativeLeaseAssertion.Count -ne 1 -or -not $NativeLeaseAssertion[0].Extent.Text.Contains('$script:NativeCbmGenuineOuterAssertionDescriptor') -or -not $Text.Contains('GenuineRepositoryLeaseAssertDescriptor') -or -not $Text.Contains('GenuineRepositoryLeaseAssertScriptBlock') -or -not $Text.Contains('GenuineRepositoryLeaseSessionIdDescriptor') -or -not $Text.Contains('GenuineRepositoryLeaseSessionIdScriptBlock') -or -not $Text.Contains('ReferenceEquals') -or -not $Text.Contains('FAIL_OUTER_DESCRIPTOR_IDENTITY_REPLACED')) { throw "$Stage active NativeCbm source lacks immutable genuine outer-descriptor identity proof" }
   foreach ($Forbidden in @('Glo' + 'bal\\AgentsCommander-1283-cbm-', 'global' + '-current-user', 'UNAVAILABLE_' + 'MULTI_SESSION_HOST', 'Remote' + ' Desktop')) { if ($Text.Contains($Forbidden)) { throw "$Stage active NativeCbm source contains superseded nonlocal-scope token $Forbidden" } }
-  foreach ($Required in @('CreateProcessW', 'ResumeThread', 'TerminateProcess', 'WaitForSingleObject', 'GetExitCodeProcess', 'GetFileInformationByHandle', 'GetFileIdentity', 'OpenProcess', 'GetProcessTimes', 'WriteBoundedAsync', 'Start-NativeCbmBootstrapSuspended', 'Assert-NativeCbmBootstrapReadLease', 'Wait-NativeCbmCaptureCompletion', 'Write-NativeCbmCapturePayload', 'New-NativeCbmVerifiedExecutionArtifact', 'Remove-NativeCbmVerifiedExecutionArtifact', 'Persist-NativeCbmUnconfirmedTerminationAndRetain', 'MaximumStandardInputBytes', 'SKILL.md', 'IsPathFullyQualified', 'drive-relative', 'root-relative', 'FILE_FLAG_OPEN_REPARSE_POINT', 'GetFinalPathNameByHandleW', 'NativeCbmWrapperCapabilityRegistry', 'WrapperBindingCapability', 'TrustedInstalledSkillsRootPath', 'WorkspaceLeaseSessionInterop', 'WorkspaceLeaseSessionIdDescriptor', 'Get-WorkspaceLeaseCurrentInteractiveSessionId', 'Local\\AgentsCommander-1283-cbm-', 'CreateJobObjectWithSddl', 'SetLastError(0)', 'local-current-user-interactive-session', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'FOREIGN_INTERACTIVE_SESSION_HARD_STOP', 'ERROR_ACCESS_DENIED', 'wrapper_file_identity', 'NativeCbmGenuineOuterAssertionDescriptor', 'NativeCbmGenuineOuterSessionIdDescriptor', 'outer-held-capability', 'unconfirmed-tree-termination', 'NativeCbmPublicControls')) { if (-not $Text.Contains($Required)) { throw "$Stage active NativeCbm source lacks $Required" } }
+  foreach ($Required in @('CreateProcessW', 'ResumeThread', 'TerminateProcess', 'WaitForSingleObject', 'GetExitCodeProcess', 'GetFileInformationByHandle', 'GetFileIdentity', 'OpenProcess', 'GetProcessTimes', 'WriteBoundedAsync', 'Start-NativeCbmBootstrapSuspended', 'Assert-NativeCbmBootstrapReadLease', 'Wait-NativeCbmCaptureCompletion', 'Write-NativeCbmCapturePayload', 'New-NativeCbmVerifiedExecutionArtifact', 'Remove-NativeCbmVerifiedExecutionArtifact', 'Persist-NativeCbmUnconfirmedTerminationAndRetain', 'MaximumStandardInputBytes', 'SKILL.md', 'IsPathFullyQualified', 'drive-relative', 'root-relative', 'FILE_FLAG_OPEN_REPARSE_POINT', 'GetFinalPathNameByHandleW', 'NativeCbmWrapperCapabilityRegistry', 'WrapperBindingCapability', 'TrustedInstalledSkillsRootPath', 'RepositoryLeaseSessionInterop', 'RepositoryLeaseSessionIdDescriptor', 'Get-RepositoryLeaseCurrentInteractiveSessionId', 'Local\\AgentsCommander-1283-cbm-', 'CreateJobObjectWithSddl', 'SetLastError(0)', 'local-current-user-interactive-session', 'interactive_logon_luid', 'interactive_session_binding_sha256', 'FOREIGN_INTERACTIVE_SESSION_HARD_STOP', 'ERROR_ACCESS_DENIED', 'wrapper_file_identity', 'NativeCbmGenuineOuterAssertionDescriptor', 'NativeCbmGenuineOuterSessionIdDescriptor', 'outer-held-capability', 'unconfirmed-tree-termination', 'NativeCbmPublicControls')) { if (-not $Text.Contains($Required)) { throw "$Stage active NativeCbm source lacks $Required" } }
   [pscustomobject]@{ source_sha256 = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(([System.Text.UTF8Encoding]::new($false, $true)).GetBytes($Text))); defined_functions = $Defined; private_manifest_count = $NativeCbmPrivateControlNames.Count; wrapper_capability_route = 'exact-object-registry-original-loader-only'; physical_reparse_chain = 'root-through-skill-scripts-wrapper'; kernel_scope = 'Local-current-user-interactive-session'; parser_errors = 0; bare_private_calls = 0 }
 }
 function Import-NativeCbmEvidenceControlModule {
-  param([object]$WorkspaceLease, [string]$CanonicalWorkspaceRoot, [string]$LoaderProvidedSkillMarkdownPath, [string]$TrustedInstalledSkillsRootPath, [string]$Stage)
-  $LeaseRecord = & $NativeCbmGenuineOuterAssertionDescriptor -Lease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-before-import"
-  if ($LeaseRecord.kernel_namespace -cne 'Local' -or $LeaseRecord.principal_sid -cnotmatch '^S-\d-(?:\d+-)+\d+$' -or $LeaseRecord.machine_name -cne $script:WorkspaceLeaseMachineName -or $LeaseRecord.interactive_session_id -ne $script:WorkspaceLeaseInteractiveSessionId -or $LeaseRecord.interactive_logon_luid -cne $script:WorkspaceLeaseInteractiveLogonLuid -or $LeaseRecord.interactive_session_binding_sha256 -cne $script:WorkspaceLeaseInteractiveSessionBindingSha256 -or $LeaseRecord.state_store_scope -cne 'local-current-user-interactive-session') { throw "$Stage held workspace lease does not provide the Local current-user interactive-session scope" }
+  param([object]$RepositoryLease, [string]$CanonicalRepositoryRoot, [string]$LoaderProvidedSkillMarkdownPath, [string]$TrustedInstalledSkillsRootPath, [string]$Stage)
+  $LeaseRecord = & $NativeCbmGenuineOuterAssertionDescriptor -Lease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-before-import"
+  if ($LeaseRecord.kernel_namespace -cne 'Local' -or $LeaseRecord.principal_sid -cnotmatch '^S-\d-(?:\d+-)+\d+$' -or $LeaseRecord.machine_name -cne $script:RepositoryLeaseMachineName -or $LeaseRecord.interactive_session_id -ne $script:RepositoryLeaseInteractiveSessionId -or $LeaseRecord.interactive_logon_luid -cne $script:RepositoryLeaseInteractiveLogonLuid -or $LeaseRecord.interactive_session_binding_sha256 -cne $script:RepositoryLeaseInteractiveSessionBindingSha256 -or $LeaseRecord.state_store_scope -cne 'local-current-user-interactive-session') { throw "$Stage held repository lease does not provide the Local current-user interactive-session scope" }
   $CurrentProcessSessionId = & $NativeCbmGenuineOuterSessionIdDescriptor -Stage "$Stage-current-process-session"
-  if ($CurrentProcessSessionId -isnot [int] -or $CurrentProcessSessionId -le 0 -or $CurrentProcessSessionId -ne $LeaseRecord.interactive_session_id) { throw "$Stage held workspace lease does not match the current-process interactive session" }
+  if ($CurrentProcessSessionId -isnot [int] -or $CurrentProcessSessionId -le 0 -or $CurrentProcessSessionId -ne $LeaseRecord.interactive_session_id) { throw "$Stage held repository lease does not match the current-process interactive session" }
   foreach ($Name in $NativeCbmPublicControlNames) {
     if (@(Microsoft.PowerShell.Core\Get-Command -Name $Name -All -ErrorAction SilentlyContinue).Count -ne 0) { throw "$Stage rejects pre-import ambient command collision for $Name" }
   }
   $SourceContract = & $NativeCbmEvidenceControlSourceContractDescriptor -Source $NativeCbmEvidenceControlModuleSource -Stage "$Stage-source-contract"
-  $Module = Microsoft.PowerShell.Core\New-Module -Name ("AgentsCommander1283.NativeCbmEvidence.$($WorkspaceLease.lease_id)") -ScriptBlock $NativeCbmEvidenceControlModuleSource -ArgumentList @($NativeCbmGenuineOuterAssertionDescriptor, $NativeCbmGenuineOuterSessionIdDescriptor, $NativeCbmGenuineOuterAssertionDescriptor, $NativeCbmGenuineOuterAssertionScriptBlock, $NativeCbmGenuineOuterSessionIdDescriptor, $NativeCbmGenuineOuterSessionIdScriptBlock, $LoaderProvidedSkillMarkdownPath, $TrustedInstalledSkillsRootPath, $LeaseRecord.kernel_namespace, $LeaseRecord.principal_sid, $LeaseRecord.machine_name, $LeaseRecord.interactive_session_id, $LeaseRecord.interactive_logon_luid, $LeaseRecord.interactive_session_binding_sha256, $LeaseRecord.state_store_scope)
+  $Module = Microsoft.PowerShell.Core\New-Module -Name ("AgentsCommander1283.NativeCbmEvidence.$($RepositoryLease.lease_id)") -ScriptBlock $NativeCbmEvidenceControlModuleSource -ArgumentList @($NativeCbmGenuineOuterAssertionDescriptor, $NativeCbmGenuineOuterSessionIdDescriptor, $NativeCbmGenuineOuterAssertionDescriptor, $NativeCbmGenuineOuterAssertionScriptBlock, $NativeCbmGenuineOuterSessionIdDescriptor, $NativeCbmGenuineOuterSessionIdScriptBlock, $LoaderProvidedSkillMarkdownPath, $TrustedInstalledSkillsRootPath, $LeaseRecord.kernel_namespace, $LeaseRecord.principal_sid, $LeaseRecord.machine_name, $LeaseRecord.interactive_session_id, $LeaseRecord.interactive_logon_luid, $LeaseRecord.interactive_session_binding_sha256, $LeaseRecord.state_store_scope)
   Microsoft.PowerShell.Core\Import-Module -ModuleInfo $Module -Global -ErrorAction Stop
   $Descriptors = [ordered]@{}
   foreach ($Name in $NativeCbmPublicControlNames) {
@@ -1533,7 +1533,7 @@ function Import-NativeCbmEvidenceControlModule {
   $PrivateDescriptors = @(& $Module { $script:NativeCbmPrivateControls.GetEnumerator() | ForEach-Object { [pscustomobject]@{ name = $_.Key; module_name = $_.Value.Module.Name; module_guid = $_.Value.Module.Guid.ToString('D') } } })
   if ($PrivateDescriptors.Count -ne $NativeCbmPrivateControlNames.Count) { throw "$Stage private descriptor count differs" }
   $ControlModule = [pscustomobject]@{ module_name = $Module.Name; module_guid = $Module.Guid.ToString('D'); public_commands = $Descriptors; private_commands = $PrivateDescriptors; source_contract = $SourceContract }
-  & $Descriptors['Assert-NativeCbmEvidenceControlModule'] -ControlModule $ControlModule -WorkspaceLease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-after-import" | Out-Null
+  & $Descriptors['Assert-NativeCbmEvidenceControlModule'] -ControlModule $ControlModule -RepositoryLease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-after-import" | Out-Null
   $ControlModule
 }
 # This private construction scope runs in the lexical scope that defines the
@@ -1543,12 +1543,12 @@ function Import-NativeCbmEvidenceControlModule {
 # names from mutable ambient session state after this point.
 $NativeCbmGenuineOuterDescriptorSet = & {
   $Captured = [ordered]@{}
-  foreach ($Name in @('Assert-WorkspaceMutationLease', 'Get-WorkspaceLeaseCurrentInteractiveSessionId', 'Assert-NativeCbmEvidenceControlSourceContract', 'Import-NativeCbmEvidenceControlModule')) {
+  foreach ($Name in @('Assert-RepositoryMutationLease', 'Get-RepositoryLeaseCurrentInteractiveSessionId', 'Assert-NativeCbmEvidenceControlSourceContract', 'Import-NativeCbmEvidenceControlModule')) {
     $Descriptor = $ExecutionContext.SessionState.InvokeCommand.GetCommand($Name, [System.Management.Automation.CommandTypes]::Function)
     if ($null -eq $Descriptor -or $Descriptor.Name -cne $Name -or $Descriptor.CommandType -ne [System.Management.Automation.CommandTypes]::Function -or $null -eq $Descriptor.ScriptBlock) { throw "native control construction scope cannot capture genuine outer descriptor $Name" }
     $Captured[$Name] = [pscustomobject][ordered]@{ descriptor = $Descriptor; script_block = $Descriptor.ScriptBlock }
   }
-  [pscustomobject][ordered]@{ assertion = $Captured['Assert-WorkspaceMutationLease']; session_id = $Captured['Get-WorkspaceLeaseCurrentInteractiveSessionId']; source_contract = $Captured['Assert-NativeCbmEvidenceControlSourceContract']; importer = $Captured['Import-NativeCbmEvidenceControlModule'] }
+  [pscustomobject][ordered]@{ assertion = $Captured['Assert-RepositoryMutationLease']; session_id = $Captured['Get-RepositoryLeaseCurrentInteractiveSessionId']; source_contract = $Captured['Assert-NativeCbmEvidenceControlSourceContract']; importer = $Captured['Import-NativeCbmEvidenceControlModule'] }
 }
 $NativeCbmGenuineOuterAssertionDescriptor = $NativeCbmGenuineOuterDescriptorSet.assertion.descriptor
 $NativeCbmGenuineOuterAssertionScriptBlock = $NativeCbmGenuineOuterDescriptorSet.assertion.script_block
@@ -1598,17 +1598,17 @@ function Assert-FixtureScopeMatchesLease {
         [Parameter(Mandatory)] $LeaseRecord
     )
 
-    if ($LeaseRecord.kernel_namespace -cne $script:WorkspaceLeaseKernelObjectNamespace -or
-        $LeaseRecord.principal_sid -cne $script:WorkspaceLeasePrincipalSid -or
-        $LeaseRecord.machine_name -cne $script:WorkspaceLeaseMachineName -or
-        $LeaseRecord.interactive_session_id -ne $script:WorkspaceLeaseInteractiveSessionId -or
-        $LeaseRecord.interactive_logon_luid -cne $script:WorkspaceLeaseInteractiveLogonLuid -or
-        $LeaseRecord.interactive_session_binding_sha256 -cne $script:WorkspaceLeaseInteractiveSessionBindingSha256 -or
-        $LeaseRecord.state_store_scope -cne $script:WorkspaceLeaseStateStoreScope) {
+    if ($LeaseRecord.kernel_namespace -cne $script:RepositoryLeaseKernelObjectNamespace -or
+        $LeaseRecord.principal_sid -cne $script:RepositoryLeasePrincipalSid -or
+        $LeaseRecord.machine_name -cne $script:RepositoryLeaseMachineName -or
+        $LeaseRecord.interactive_session_id -ne $script:RepositoryLeaseInteractiveSessionId -or
+        $LeaseRecord.interactive_logon_luid -cne $script:RepositoryLeaseInteractiveLogonLuid -or
+        $LeaseRecord.interactive_session_binding_sha256 -cne $script:RepositoryLeaseInteractiveSessionBindingSha256 -or
+        $LeaseRecord.state_store_scope -cne $script:RepositoryLeaseStateStoreScope) {
         throw "$Stage FOREIGN_INTERACTIVE_SESSION_HARD_STOP: fixture scope differs from the held Local lease scope"
     }
-    $CurrentProcessSessionId = Get-WorkspaceLeaseCurrentInteractiveSessionId -Stage "$Stage-current-process-session"
-    if ($CurrentProcessSessionId -ne $script:WorkspaceLeaseInteractiveSessionId) {
+    $CurrentProcessSessionId = Get-RepositoryLeaseCurrentInteractiveSessionId -Stage "$Stage-current-process-session"
+    if ($CurrentProcessSessionId -ne $script:RepositoryLeaseInteractiveSessionId) {
         throw "$Stage FOREIGN_INTERACTIVE_SESSION_HARD_STOP: current-process session differs from the fixture scope"
     }
 }
@@ -1620,11 +1620,11 @@ function Get-LocalProofFixtureStatePath {
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $BindingPrefix = $script:WorkspaceLeaseInteractiveSessionBindingSha256.Substring(0, 24)
-    $SessionSegment = "$($script:WorkspaceLeaseInteractiveSessionId)-$BindingPrefix"
-    $FixtureStateDir = Join-Path $ProofRunRoot (Join-Path 'fixture-state' (Join-Path $script:WorkspaceLeasePrincipalSidHash $SessionSegment))
+    $BindingPrefix = $script:RepositoryLeaseInteractiveSessionBindingSha256.Substring(0, 24)
+    $SessionSegment = "$($script:RepositoryLeaseInteractiveSessionId)-$BindingPrefix"
+    $FixtureStateDir = Join-Path $ProofRunRoot (Join-Path 'fixture-state' (Join-Path $script:RepositoryLeasePrincipalSidHash $SessionSegment))
     $FixtureStatePath = Join-Path $FixtureStateDir "$RootHash.json"
-    $ExpectedRelative = "fixture-state\$($script:WorkspaceLeasePrincipalSidHash)\$SessionSegment\$RootHash.json"
+    $ExpectedRelative = "fixture-state\$($script:RepositoryLeasePrincipalSidHash)\$SessionSegment\$RootHash.json"
     $ActualRelative = [System.IO.Path]::GetRelativePath($ProofRunRoot, $FixtureStatePath)
     if ($ActualRelative -cne $ExpectedRelative) {
         throw "$Stage fixture-state path is not the exact canonical fixture-state location"
@@ -1635,13 +1635,13 @@ function Get-LocalProofFixtureStatePath {
 function New-LocalProofFixtureStateAdapter {
     param(
         [Parameter(Mandatory)] [string]$ProofRunRoot,
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$ContractSha256,
-        [Parameter(Mandatory)] $WorkspaceLease,
+        [Parameter(Mandatory)] $RepositoryLease,
         [Parameter(Mandatory)] [string]$Stage
     )
 
-    $LeaseRecord = Assert-WorkspaceMutationLease -Lease $WorkspaceLease -CanonicalWorkspaceRoot $CanonicalWorkspaceRoot -Stage "$Stage-fixture-adapter-lease"
+    $LeaseRecord = Assert-RepositoryMutationLease -Lease $RepositoryLease -CanonicalRepositoryRoot $CanonicalRepositoryRoot -Stage "$Stage-fixture-adapter-lease"
     Assert-FixtureScopeMatchesLease -Stage "$Stage-fixture-adapter-scope" -LeaseRecord $LeaseRecord
     if ($ContractSha256 -cnotmatch '^[0-9A-F]{64}$') {
         throw "$Stage fixture adapter received a malformed contract SHA-256"
@@ -1711,13 +1711,13 @@ function Write-LocalProofFixtureHardStop {
         state = 'unconfirmed-tree-termination'
         contract_sha256 = $ContractSha256
         root_hash = $Adapter.root_hash
-        kernel_namespace = $script:WorkspaceLeaseKernelObjectNamespace
-        principal_sid = $script:WorkspaceLeasePrincipalSid
-        machine_name = $script:WorkspaceLeaseMachineName
-        interactive_session_id = $script:WorkspaceLeaseInteractiveSessionId
-        interactive_logon_luid = $script:WorkspaceLeaseInteractiveLogonLuid
-        interactive_session_binding_sha256 = $script:WorkspaceLeaseInteractiveSessionBindingSha256
-        state_store_scope = $script:WorkspaceLeaseStateStoreScope
+        kernel_namespace = $script:RepositoryLeaseKernelObjectNamespace
+        principal_sid = $script:RepositoryLeasePrincipalSid
+        machine_name = $script:RepositoryLeaseMachineName
+        interactive_session_id = $script:RepositoryLeaseInteractiveSessionId
+        interactive_logon_luid = $script:RepositoryLeaseInteractiveLogonLuid
+        interactive_session_binding_sha256 = $script:RepositoryLeaseInteractiveSessionBindingSha256
+        state_store_scope = $script:RepositoryLeaseStateStoreScope
         job_name = $JobName
         child_pid = $ChildPid
         written_utc = [DateTime]::UtcNow.ToString('O')
@@ -1758,14 +1758,14 @@ function Confirm-LocalProofFixtureHardStopCleared {
         state = 'cleared'
         job_name = $JobName
         contract_sha256 = $ContractSha256
-        kernel_namespace = $script:WorkspaceLeaseKernelObjectNamespace
-        principal_sid = $script:WorkspaceLeasePrincipalSid
-        machine_name = $script:WorkspaceLeaseMachineName
-        interactive_session_id = $script:WorkspaceLeaseInteractiveSessionId
-        interactive_logon_luid = $script:WorkspaceLeaseInteractiveLogonLuid
-        interactive_session_binding_sha256 = $script:WorkspaceLeaseInteractiveSessionBindingSha256
-        state_store_scope = $script:WorkspaceLeaseStateStoreScope
-        clearance_session_id = $script:WorkspaceLeaseInteractiveSessionId
+        kernel_namespace = $script:RepositoryLeaseKernelObjectNamespace
+        principal_sid = $script:RepositoryLeasePrincipalSid
+        machine_name = $script:RepositoryLeaseMachineName
+        interactive_session_id = $script:RepositoryLeaseInteractiveSessionId
+        interactive_logon_luid = $script:RepositoryLeaseInteractiveLogonLuid
+        interactive_session_binding_sha256 = $script:RepositoryLeaseInteractiveSessionBindingSha256
+        state_store_scope = $script:RepositoryLeaseStateStoreScope
+        clearance_session_id = $script:RepositoryLeaseInteractiveSessionId
         cleared_utc = [DateTime]::UtcNow.ToString('O')
     }
 }
@@ -2140,11 +2140,11 @@ function Invoke-LocalProofCoordinatorCleanup {
 # scope and is never exported.
 # ---------------------------------------------------------------------------
 Export-ModuleMember -Function @(
-    'Get-WorkspaceLeaseCurrentInteractiveSessionId',
-    'Enter-WorkspaceMutationLease',
-    'Assert-WorkspaceMutationLease',
-    'Get-WorkspaceLeaseRecord',
-    'Exit-WorkspaceMutationLease',
+    'Get-RepositoryLeaseCurrentInteractiveSessionId',
+    'Enter-RepositoryMutationLease',
+    'Assert-RepositoryMutationLease',
+    'Get-RepositoryLeaseRecord',
+    'Exit-RepositoryMutationLease',
     'New-LocalProofFixtureStateAdapter',
     'Write-LocalProofFixtureHardStop',
     'Confirm-LocalProofFixtureHardStopCleared',

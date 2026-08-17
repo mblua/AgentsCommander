@@ -22,6 +22,9 @@ import type {
   SettingsSnapshot,
   LogLevel,
   UpdateInfo,
+  AgentUpdateResult,
+  AgentUpdateStatus,
+  AgentUpdatePrompt,
   CodingAgentEnv,
   CodingAgentDefinition,
   ReseedResult,
@@ -390,6 +393,13 @@ export const SettingsAPI = {
     transport.invoke<UpdateInfo | null>("get_update_status"),
 };
 
+export const AgentUpdateAPI = {
+  getStatus: () =>
+    transport.invoke<AgentUpdateStatus | null>("get_agent_update_status"),
+  answer: (command: string, enabled: boolean) =>
+    transport.invoke<boolean>("agent_update_answer", { command, enabled }),
+};
+
 export const ReposAPI = {
   search: (query: string) =>
     transport.invoke<RepoMatch[]>("search_repos", { query }),
@@ -411,9 +421,17 @@ export function onPtyOutput(
  * control call through these wrappers; components never invoke Tauri directly.
  */
 export const TerminalOutputAPI = {
-  activate: (sessionId: string): Promise<TerminalOutputActivationResult> =>
+  // #1355 - `includeHistory` asks the backend to replay its retained output ring
+  // instead of the current viewport. Only a fresh xterm instance may request it:
+  // replaying the ring over a terminal that already has content duplicates
+  // history cumulatively (plan 12.1). Callers pass `!entry.hasRenderedOutput`.
+  activate: (
+    sessionId: string,
+    includeHistory: boolean
+  ): Promise<TerminalOutputActivationResult> =>
     transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
       sessionId,
+      includeHistory,
     }),
 
   ready: (
@@ -1178,6 +1196,33 @@ export function onNpmUpdateAvailable(
 ): Promise<UnlistenFn> {
   return transport.listen<UpdateInfo>("npm_update_available", (info) =>
     callback(info)
+  );
+}
+
+export function onAgentUpdatesStarted(callback: () => void): Promise<UnlistenFn> {
+  // Rust emits a unit payload (serializes to null).
+  return transport.listen<null>("agent_updates_started", () => callback());
+}
+
+export function onAgentUpdatePrompt(
+  callback: (prompt: AgentUpdatePrompt) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdatePrompt>("agent_update_prompt", (prompt) =>
+    callback(prompt)
+  );
+}
+
+/** The backend timed the prompt out (no answer within 60s): clear the modal. */
+export function onAgentUpdatePromptClosed(callback: () => void): Promise<UnlistenFn> {
+  return transport.listen<null>("agent_update_prompt_closed", () => callback());
+}
+
+export function onAgentUpdatesFinished(
+  callback: (payload: { results: AgentUpdateResult[] }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ results: AgentUpdateResult[] }>(
+    "agent_updates_finished",
+    (payload) => callback(payload)
   );
 }
 

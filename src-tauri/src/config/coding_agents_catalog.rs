@@ -114,8 +114,8 @@ pub struct CodingAgentDefinition {
     pub update_commands: Vec<String>,
     /// #1318 - stable catalog default for auto-update. Newly registered agents
     /// default to false ("No"). The per-user choice lives in
-    /// `AppSettings.agent_auto_update` + `agent_update_dont_ask_again`, keyed by
-    /// agent id. Inert until the follow-up feature reads it.
+    /// `AppSettings.agent_auto_update_by_command`, keyed by command. Inert: the
+    /// runtime reads only the settings map.
     #[serde(default)]
     pub auto_update: bool,
 }
@@ -756,7 +756,7 @@ pub(crate) fn ensure_seeded_for_project_with_token(
         );
         return;
     }
-    let ac_dir = project_root.join(crate::config::workspace::CANONICAL_WORKSPACE_DIR);
+    let ac_dir = project_root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
 
     // Steady-state pre-check: everything already seeded -> nothing to publish;
     // no lock file, no canonicalize, no bounded manifest read, no write.

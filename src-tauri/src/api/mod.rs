@@ -42,13 +42,25 @@ pub struct ApiServerStart {
     pub readiness: oneshot::Receiver<Result<SocketAddr, String>>,
 }
 
+// The native window-screenshot capture path exists only on Windows
+// (`handlers::window_screenshot` and `screenshot::windows` are both gated on
+// it), so the limiter that bounds it is scoped the same way. The `test`
+// disjunct keeps `window_screenshot_limiter_tests` below and the route-level
+// queue tests in `pty/terminal_snapshot/acceptance_tests.rs`, neither of which
+// is platform-gated.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) const WINDOW_SCREENSHOT_MAX_ACTIVE: usize = 1;
+#[cfg(any(target_os = "windows", test))]
 pub(crate) const WINDOW_SCREENSHOT_MAX_QUEUED: usize = 2;
+#[cfg(any(target_os = "windows", test))]
 pub(crate) const WINDOW_SCREENSHOT_MAX_ADMITTED: usize =
     WINDOW_SCREENSHOT_MAX_ACTIVE + WINDOW_SCREENSHOT_MAX_QUEUED;
+#[cfg(target_os = "windows")]
 pub(crate) const WINDOW_SCREENSHOT_ADVISORY_SOURCE_PIXELS: u64 = 16_777_216;
+#[cfg(target_os = "windows")]
 pub(crate) const WINDOW_SCREENSHOT_MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum WindowScreenshotAdmissionError {
     CaptureBusy,
@@ -73,6 +85,7 @@ pub(crate) enum WindowScreenshotAdmissionError {
 /// ends, so detached workers cannot exceed the one-active, three-admitted
 /// bound. Covered by `window_screenshot_limiter_queue_is_bounded_and_waiter_drop_releases_admission`
 /// and the route-level queue tests in `pty/terminal_snapshot/acceptance_tests.rs`.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) struct WindowScreenshotLimiter {
     admission: std::sync::Arc<tokio::sync::Semaphore>,
     active: std::sync::Arc<tokio::sync::Semaphore>,
@@ -83,11 +96,13 @@ pub(crate) struct WindowScreenshotLimiter {
 /// worker's native capture and PNG encoding finish. Holding both for the full
 /// worker lifetime keeps the limiter bounds intact even when the requesting
 /// HTTP client disconnects and the route future is dropped.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) struct WindowScreenshotLease {
     _admission: tokio::sync::OwnedSemaphorePermit,
     _active: tokio::sync::OwnedSemaphorePermit,
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl WindowScreenshotLimiter {
     pub(crate) fn new() -> Self {
         Self {
@@ -118,6 +133,7 @@ impl WindowScreenshotLimiter {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl WindowScreenshotLease {
     pub(crate) fn new(
         admission: tokio::sync::OwnedSemaphorePermit,
@@ -190,6 +206,7 @@ mod window_screenshot_limiter_tests {
 #[derive(Clone)]
 pub struct ApiState {
     #[allow(private_interfaces)]
+    #[cfg(any(target_os = "windows", test))]
     pub window_screenshot_limiter: std::sync::Arc<WindowScreenshotLimiter>,
     /// Read-through client-token registry (mtime-gated).
     pub store: Arc<auth::ApiClientStore>,
@@ -301,6 +318,7 @@ pub fn start_server(
     };
 
     let state = ApiState {
+        #[cfg(any(target_os = "windows", test))]
         window_screenshot_limiter: Arc::new(WindowScreenshotLimiter::new()),
         store: store.clone(),
         message_store: message_store.clone(),

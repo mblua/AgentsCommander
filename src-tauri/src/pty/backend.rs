@@ -215,6 +215,17 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
 
+    /// #1388 - does this session's screen currently show a cell a human would see?
+    ///
+    /// **Defaulted**, following `screen_rows_since` below: `true` reads as "no claim,
+    /// do not gate", so the ~20 in-tree `PtyBackend` fakes and any out-of-tree
+    /// implementor keep compiling AND keep today's wake timing. Only a backend that
+    /// owns a `SessionIoFanout` can answer; both production backends do, and both
+    /// override this.
+    fn has_rendered_visible_content(&self, _id: Uuid) -> bool {
+        true
+    }
+
     /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
     /// production fanouts remain source-compatible and report unavailable.
     #[allow(private_interfaces)]
@@ -272,7 +283,11 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     /// Terminal-output controls are deliberately defaulted so all existing test-only backends
     /// remain source-compatible. Only the two production adapters forward to their fanouts.
-    fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
+    fn activate_terminal_output(
+        &self,
+        id: Uuid,
+        _include_history: bool,
+    ) -> TerminalOutputActivationResult {
         TerminalOutputActivationResult::recovery(
             id,
             crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,

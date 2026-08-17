@@ -201,6 +201,12 @@ pub struct SettingsSnapshot {
     #[serde(flatten)]
     pub settings: AppSettings,
     pub project_path_resolution: ProjectPathResolution,
+    /// #1347 - absolute path of the instance `settings.json` this snapshot was
+    /// built for, so the UI can name the file that holds the plaintext secrets.
+    /// `None` only when `config_dir()` itself is unresolvable (no `current_exe()`
+    /// and no home dir); there is no `skip_serializing_if`, so the key is always
+    /// present on the wire and is `null` in that degraded mode.
+    pub settings_file_path: Option<String>,
 }
 
 fn issue_source(source: ProjectSource) -> IssueSource {
@@ -265,7 +271,7 @@ fn side_status_label(status: SideStatus) -> &'static str {
         SideStatus::Inaccessible => "permission denied",
         SideStatus::ProbeIoError => "filesystem error",
         SideStatus::NotADirectory => "not a directory",
-        SideStatus::WorkspaceOrCollectionMissing => "no .ac project or collection",
+        SideStatus::AcRootOrCollectionMissing => "no .ac project or collection",
         SideStatus::NonUtf8 => "path is not valid UTF-8",
         SideStatus::ValidDirectProject => "valid project",
         SideStatus::ValidCollectionRoot => "valid collection root",
@@ -384,9 +390,11 @@ pub(crate) fn build_project_path_resolution(
     }
 }
 
-/// Pure snapshot builder: clone `settings`, clear the root token, and attach the
-/// resolution report. Shared by the Tauri and WebSocket transports so both
-/// clients receive the identical report and `rootToken` is absent from each.
+/// Snapshot builder: clone `settings`, clear the root token, attach the
+/// resolution report, and record the instance settings-file path (#1347).
+/// Shared by the Tauri and WebSocket transports so both clients receive the
+/// identical report and `rootToken` is absent from each. The only non-argument
+/// input is the process-wide, cached instance location behind `config_dir()`.
 pub(crate) fn settings_snapshot_from(
     settings: &AppSettings,
     reconciliation_error: Option<ProjectPathReconciliationError>,
@@ -399,6 +407,12 @@ pub(crate) fn settings_snapshot_from(
     SettingsSnapshot {
         settings: cleaned,
         project_path_resolution: resolution,
+        // #1347: derived from the process instance location, deliberately NOT
+        // from `settings_snapshot_helper`'s injectable `settings_path`, which is
+        // a test-only reconciliation write target and not a client-facing
+        // location. Same expression already used at the reconciliation site.
+        settings_file_path: crate::config::config_dir()
+            .map(|d| d.join("settings.json").to_string_lossy().into_owned()),
     }
 }
 
@@ -1397,10 +1411,10 @@ fn enumerate_profile_assignment_targets(
             collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
         }
         ProfileAssignmentScope::Kind => {
-            for workspace in
-                crate::config::coding_agent_profiles::configured_workspace_dirs(settings)
+            for ac_root in
+                crate::config::coding_agent_profiles::configured_ac_roots(settings)
             {
-                collect_kind_replica_dirs(&workspace, &mut candidate_dirs)?;
+                collect_kind_replica_dirs(&ac_root, &mut candidate_dirs)?;
             }
         }
     }
@@ -1527,9 +1541,9 @@ fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut Vec<PathBuf>) -> R
     Ok(())
 }
 
-fn collect_kind_replica_dirs(workspace: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(workspace)
-        .map_err(|e| format!("Failed to read workspace '{}': {}", workspace.display(), e))?;
+fn collect_kind_replica_dirs(ac_root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(ac_root)
+        .map_err(|e| format!("Failed to read workspace '{}': {}", ac_root.display(), e))?;
     for entry in entries.flatten() {
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -1576,7 +1590,7 @@ fn build_profile_assignment_target(
         .unwrap_or("")
         .to_string();
     let origin_project = identity
-        .workspace_dir
+        .ac_root
         .parent()
         .and_then(|project| project.file_name())
         .and_then(|name| name.to_str())
@@ -2219,6 +2233,44 @@ pub async fn get_update_status(
     Ok(cache.get().cloned())
 }
 
+/// #1327 - snapshot of the startup coding-agent update run (in progress flag +
+/// the currently registered-but-unanswered prompt + per-command results). The
+/// sidebar queries it on mount to cover events that fired before its listeners
+/// registered (mirrors `get_update_status`).
+#[tauri::command]
+pub async fn get_agent_update_status(
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+) -> Result<crate::agent_update::AgentUpdateStatus, String> {
+    Ok(gate.snapshot())
+}
+
+/// #1327 - the user answered the startup prompt for one command. Persists the
+/// answer FIRST (so it is never asked again even if resolution fails), then
+/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
+/// accepted the answer THIS boot (update will run now); Ok(false) when the
+/// prompt had already closed OR the receiver was dropped by the prompt timeout
+/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
+/// nothing this boot; the overlay shows the conditional info toast). Unknown
+/// commands are rejected.
+#[tauri::command]
+pub async fn agent_update_answer(
+    settings: State<'_, SettingsState>,
+    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
+    command: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !gate.was_prompted(&command) {
+        return Err(format!("agent_update_answer: '{command}' was not prompted this boot"));
+    }
+    persist_narrow_settings_update(settings.inner(), |candidate| {
+        candidate
+            .agent_auto_update_by_command
+            .insert(command.clone(), enabled);
+    })
+    .await?;
+    Ok(gate.resolve_answer(&command, enabled))
+}
+
 /// Fetch the Home screen Markdown source from the public docs URL.
 /// Returns the raw Markdown body as a String.
 /// Errors are returned as user-facing strings; the frontend renders them in
@@ -2477,6 +2529,23 @@ mod tests {
             assert_ne!(id_a, issue_id(&settings_snapshot_from(&settings_c, None)));
         }
 
+        #[test]
+        fn snapshot_carries_the_instance_settings_file_path() {
+            // #1347: the UI names the file that holds the plaintext secrets. Assert
+            // agreement with config_dir() rather than a literal path, so the test is
+            // independent of where the test binary happens to live.
+            let snap = settings_snapshot_from(&AppSettings::default(), None);
+            match (crate::config::config_dir(), snap.settings_file_path) {
+                (Some(dir), Some(path)) => {
+                    assert_eq!(path, dir.join("settings.json").to_string_lossy())
+                }
+                (None, None) => {}
+                (dir, path) => {
+                    panic!("settings_file_path disagrees with config_dir: {dir:?} vs {path:?}")
+                }
+            }
+        }
+
         fn issue_id(snap: &super::super::SettingsSnapshot) -> String {
             match &snap.project_path_resolution.issues[0] {
                 ProjectPathIssue::Conflict { id, .. }
@@ -2519,7 +2588,7 @@ mod tests {
         let live_by_cwd = BTreeMap::new();
         let identity = crate::config::replica_identity::WgReplicaIdentity {
             agent_name: "dev".to_string(),
-            workspace_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac"),
+            ac_root: PathBuf::from(r"\\?\UNC\server\share\repo\.ac"),
             matrix_dir: PathBuf::from(r"\\?\UNC\server\share\repo\.ac\_agent_dev"),
             identity: "../../_agent_dev".to_string(),
         };
@@ -2621,8 +2690,7 @@ mod tests {
             )
             .expect("open API message store"),
         );
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(ApiServerHandle::default())
             .manage(crate::api::message_store::MessageStoreState::ready(
                 message_store,
@@ -2764,9 +2832,9 @@ mod tests {
     fn mint_api_client_fixture() -> MintApiClientFixture {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let matrix = workspace.join("_agent_alice");
-        let replica = workspace.join("wg-1-devs").join("__agent_alice");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_alice");
+        let replica = ac_root.join("wg-1-devs").join("__agent_alice");
         std::fs::create_dir_all(&matrix).expect("create matrix");
         std::fs::create_dir_all(&replica).expect("create replica");
         std::fs::write(

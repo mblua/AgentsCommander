@@ -78,7 +78,7 @@ pub async fn deliver_loop_prompt(
         }
     }
 
-    let loop_storage_dir = loop_dir(&target.workspace_dir, &config.loop_def.id);
+    let loop_storage_dir = loop_dir(&target.ac_root, &config.loop_def.id);
     let policy = config.policy.busy_coordinator.clone();
     let prompt = config.prompt.body.clone();
 
@@ -576,8 +576,7 @@ mod tests {
     }
 
     fn make_inject_test_app(session_mgr: Arc<tokio::sync::RwLock<SessionManager>>) -> tauri::App {
-        let app = tauri::Builder::default()
-            .any_thread()
+        let app = crate::test_support::test_builder()
             .manage(Arc::clone(&session_mgr))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build inject test app");

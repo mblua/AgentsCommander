@@ -175,8 +175,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     npmUpdateNotificationsEnabled: true,
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
-    agentAutoUpdate: {},
-    agentUpdateDontAskAgain: {},
+    agentAutoUpdateByCommand: {},
     containerCredentialsFromHost: true,
     logLevel: null,
     activityLogEnabled: false,
@@ -207,6 +206,7 @@ export function settingsSnapshot(
   return {
     ...baseSettings(settingsOverrides),
     projectPathResolution: projectPathResolution(resolutionOverrides),
+    settingsFilePath: null,
   };
 }
 

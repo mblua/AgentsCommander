@@ -136,6 +136,14 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.replayStatus.hidden = !message;
   };
 
+  // #1355 INVARIANT - every write of content to xterm goes through here, so
+  // `entry.terminal.write` has exactly one call site in the whole frontend
+  // (the line below). That is what makes `hasRenderedOutput` a sound
+  // discriminator for the `includeHistory` argument of activate(): an entry
+  // with content can never have the flag `false`. Adding a direct
+  // `terminal.write` anywhere else (a banner, a reconnect notice, an error
+  // message) silently reintroduces cumulative history duplication on replay
+  // (plan 6.1 / 12.1). Write through this function instead.
   const writeTerminalBytes = (
     entry: SessionTerminalEntry,
     data: Uint8Array,
@@ -697,6 +705,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       return; // C selected / destroyed / unmounted: discard, never reissue
     }
     // The entry may have been disposed (displaced-B, recovery after eviction).
+    // #1355 - this reassignment MUST precede the activate() call below:
+    // reconcileStaleSuccess parks a destroyed entry in control.entry (:887-891),
+    // and only refreshing it here keeps includeHistory off a stale flag.
     const entry = registry.activate(sessionId, createSessionTerminal);
     control.entry = entry;
     control.attempt += 1;
@@ -709,7 +720,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     registry.setVisible(sessionId);
     scheduleViewportSync(sessionId);
     const attempt = control.attempt;
-    void TerminalOutputAPI.activate(sessionId)
+    void TerminalOutputAPI.activate(sessionId, !entry.hasRenderedOutput)
       .then((result) => settleActivationResult(sessionId, attempt, result))
       .catch((error) => settleActivationError(sessionId, attempt, error));
   };
@@ -1048,6 +1059,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     visibleSessionId = sessionId;
     selectionEpoch += 1;
+    // #1355 - as in startActivationAttempt, this must precede the activate()
+    // call below so includeHistory reads a freshly resolved entry.
     const entry = registry.activate(sessionId, createSessionTerminal);
     entry.container.hidden = false;
     registry.setVisible(sessionId);
@@ -1080,7 +1093,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     control.attempt += 1;
     const attempt = control.attempt;
-    void TerminalOutputAPI.activate(sessionId)
+    void TerminalOutputAPI.activate(sessionId, !entry.hasRenderedOutput)
       .then((result) => settleActivationResult(sessionId, attempt, result))
       .catch((error) => settleActivationError(sessionId, attempt, error));
   };

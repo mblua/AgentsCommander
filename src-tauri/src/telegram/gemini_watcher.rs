@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::gemini_resolver::lookup_chats_dir_for_cwd;
 use crate::network::OutboundNetwork;
-use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
     read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
 };
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 /// Buffer thresholds tuned for Gemini's whole-turn-at-once cadence.
 const FLUSH_DELAY_MS: u64 = 250;

@@ -911,6 +911,64 @@ Files ≤10 MB with extensions `jpg/jpeg/png/webp` use `sendPhoto`. Everything e
 
 ---
 
+## `window-list`
+
+List live native windows as `id<TAB>title` lines so you can discover the canonical decimal `window_id` that `window-screenshot` requires. Windows only; the subcommand does not exist on other targets.
+
+```bash
+agentscommander window-list
+```
+
+The command takes no flags. Success exits 0 and prints one `id<TAB>title` line per enumerated live window on stdout, in xcap enumeration order (unsorted). A window whose id cannot be read is skipped; a window whose title cannot be read prints an empty title. Titles are printed verbatim, with no sanitization; a title containing a tab or newline breaks the line contract for downstream parsers.
+
+Enumeration failure exits 1 with one stderr line:
+
+```text
+window_list_error code=window_list_unavailable detail=<error>
+```
+
+**No token required**: this is a local in-process enumeration of the invoking user's own desktop; there is no HTTP request, daemon, token, or audit. See [Window capture](../features/window-capture.md) for the capture flow, the API endpoint, and the shared window-id rule.
+
+---
+
+## `window-screenshot`
+
+Capture exactly one live native window to a PNG file by its canonical decimal `window_id` as printed by `window-list`. Windows only; the subcommand does not exist on other targets.
+
+```bash
+agentscommander window-screenshot \
+  --window-id 983044 \
+  --output "C:\path\shot.png"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--window-id` | Yes | Canonical decimal window id as printed by `window-list`. |
+| `--output` | Yes | Destination PNG file path. Overwritten if it exists; parent directories are not created. |
+
+The capture runs fully in-process against the live Windows desktop, reusing the same bounded capture worker as the API route: no HTTP request, no daemon, no token. Success exits 0, writes no stdout, and leaves the output file containing exactly the raw PNG bytes.
+
+Every failure exits 1, writes no normal stdout, and writes exactly one stderr line:
+
+```text
+window_screenshot_error code=<code> detail=<detail>
+```
+
+| Code | Condition |
+|---|---|
+| `invalid_window_id` | `--window-id` is empty, non-decimal, signed, whitespace-padded, leading-zero, over 20 digits, or over `u64::MAX`. |
+| `window_not_found` | The canonical id matches no live window in the current enumeration snapshot. |
+| `capture_busy` | Capture capacity is full (local one-shot limiter; kept for completeness). |
+| `capture_too_large` | The window exceeds the advisory pixel limit or the encoded PNG exceeds the hard 16 MiB bound. |
+| `capture_unavailable` | Enumeration, minimized/inaccessible window, capture, encode, or runtime failure. |
+| `output_write_failed` | The output file could not be written (missing parent, permission, disk full). |
+
+A minimized window yields `capture_unavailable`; that is documented behavior, not a bug. Capture-side failures leave an existing output file untouched; a failed write may leave a partial file and can destroy prior content of an existing `--output`. Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior.
+
+**No token required**: the verb is a local in-process capture with the invoking process's own privileges; it reads no `--root`, token, registry, or config state and records no API audit. See [Window capture](../features/window-capture.md) for the API endpoint contract, limits, and audit model.
+
+---
+
 ## Backwards compatibility
 
 The CLI surface follows AC's project version (`agentscommander --version`). Flags may be added; existing flags will not silently change meaning. Output formats (`list-peers`, `list-sessions`, `create-agent`) are JSON — fields can be added but existing fields stay stable within a major version.
@@ -923,4 +981,5 @@ If you discover a regression, file an issue with the exact command, the output, 
 - [Log filtering](log-filtering.md)
 - [Inter-agent messaging](../agents/inter-agent-messaging.md)
 - [Terminal snapshots](../features/terminal-snapshots.md)
+- [Window capture](../features/window-capture.md)
 - [Teams and workgroups](../agents/teams-and-workgroups.md)

@@ -37,8 +37,16 @@ mod tests {
         let managed = WsBroadcaster::new();
         let explicit = WsBroadcaster::new();
         let mut receiver = explicit.subscribe();
-        let app = tauri::Builder::default()
-            .any_thread()
+        // Deliberately NOT `crate::test_support::test_builder()`. This file is
+        // the #1265 emitter home, and `the_emitter_home_names_nothing_but_the_
+        // websocket_fan_out` pins the exact set of crate modules it may name.
+        // Tauri declares `Builder::any_thread` only for Windows and Linux, so
+        // the predicate is written out here rather than imported.
+        #[cfg(any(windows, target_os = "linux"))]
+        let builder = tauri::Builder::default().any_thread();
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let builder = tauri::Builder::default();
+        let app = builder
             .manage(managed)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build test app");

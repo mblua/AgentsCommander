@@ -1242,6 +1242,61 @@ html.light-theme .root-agent-avatar {
   backdrop-filter: blur(2px);
 }
 
+/* #1327 startup coding-agent update overlay (splash + SI/NO prompt). Above
+   .modal-overlay so the update question is never buried under other modals. */
+.agent-update-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  backdrop-filter: blur(2px);
+}
+
+.agent-update-card {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  padding: var(--spacing-lg);
+  min-width: 320px;
+  max-width: 92%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.agent-update-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--sidebar-border);
+  border-top-color: var(--accent-color, #0a84ff);
+  border-radius: 50%;
+  animation: agent-update-spin 0.9s linear infinite;
+}
+
+@keyframes agent-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-update-text {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  color: var(--sidebar-text);
+  text-align: center;
+}
+
+.agent-update-prompt-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: center;
+}
+
 .modal-container {
   background: var(--sidebar-surface);
   border: 1px solid var(--sidebar-border);
@@ -6116,9 +6171,14 @@ html.light-theme .ac-discovery-badge.running-peer {
   padding-left: calc(var(--spacing-md) + 20px);
 }
 
-[data-sidebar-style="noir-minimal"] .coord-quick-access {
+/* #1351 — box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
+   the same 12px left inset and the same 1px separator, so the Coordinators header
+   lines up with its sibling section headers instead of sitting 6px to their left.
+   margin-right drops to 0 so the separator spans the same width as theirs. */
+[data-sidebar-style="noir-minimal"] .coord-quick-access-group {
   display: block;
-  margin: 4px 6px 2px;
+  margin: 4px 0 2px 12px;
+  border-top: 1px solid var(--sidebar-border);
   padding: 4px 0;
 }
 
@@ -6716,7 +6776,7 @@ html.light-theme[data-sidebar-style="arctic-ops"] .replica-item.active {
   box-shadow: 0 0 6px rgba(100, 180, 255, 0.5);
 }
 
-[data-sidebar-style="arctic-ops"] .coord-quick-access {
+[data-sidebar-style="arctic-ops"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
   padding: 4px 0;
@@ -6725,7 +6785,7 @@ html.light-theme[data-sidebar-style="arctic-ops"] .replica-item.active {
   border-radius: 6px;
 }
 
-html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access {
+html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access-group {
   background: rgba(100, 160, 220, 0.08);
   border-color: rgba(100, 160, 220, 0.2);
 }
@@ -7214,11 +7274,15 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
 
 /* =============================================================================
    COORDINATOR QUICK-ACCESS SECTION
-   Hidden by default. Styles that want coordinator-first layout enable it
-   via display override. Shows coordinators pulled out of workgroup nesting.
+   #1351 — the section is a real collapsible section: .coord-quick-access-group
+   wraps the ac-wg-header and the .coord-quick-access row list. The visibility
+   gate lives on the GROUP, never on the inner strip: if it slid back onto the
+   strip, the header would stay visible in every style that hides the strip and
+   each of them would grow an orphan header. Hidden by default; the five styles
+   that want coordinator-first layout override display on the group.
    ============================================================================= */
 
-.coord-quick-access {
+.coord-quick-access-group {
   display: none;
 }
 
@@ -7282,7 +7346,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
 
 /* ---- Deep Space: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="deep-space"] .coord-quick-access {
+[data-sidebar-style="deep-space"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
   padding: 4px 0;
@@ -7296,17 +7360,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replic
   overflow: hidden;
 }
 
-[data-sidebar-style="deep-space"] .coord-quick-access::before {
-  content: "COORDINATORS";
-  display: block;
-  padding: 3px 12px 5px;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: rgba(255, 180, 40, 0.5);
-}
-
-html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access {
+html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access-group {
   background: linear-gradient(
     135deg,
     rgba(255, 180, 40, 0.06) 0%,
@@ -7315,59 +7369,37 @@ html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access {
   border-color: rgba(200, 140, 20, 0.15);
 }
 
-html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access::before {
-  color: rgba(160, 100, 10, 0.5);
-}
-
 /* ---- Obsidian Mesh: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
+[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
   display: block;
   margin: 2px 0;
-  padding: 2px 0;
+  padding: 2px 0 2px 6px;
   border-left: 3px solid rgba(255, 100, 40, 0.3);
   background: rgba(255, 80, 40, 0.03);
 }
 
-[data-sidebar-style="obsidian-mesh"] .coord-quick-access::before {
-  content: "COORD";
-  display: block;
-  padding: 2px 10px 3px;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.2em;
-  color: rgba(255, 100, 40, 0.45);
-}
-
-html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
+html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
   border-left-color: rgba(200, 80, 20, 0.25);
   background: rgba(200, 100, 20, 0.04);
 }
 
 /* ---- Neon Circuit: coordinator quick-access enabled ---- */
 
-[data-sidebar-style="neon-circuit"] .coord-quick-access {
+/* #1351 — 6px margin + 1px border + 7px padding = the 14px left inset of
+   [data-sidebar-style="neon-circuit"] .ac-wg-group (4 + 2 + 8), so the header
+   lines up with its siblings. The frame keeps its own 6px right margin. */
+[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   display: block;
   margin: 4px 6px 2px;
-  padding: 4px 0;
+  padding: 4px 0 4px 7px;
   border: 1px solid rgba(255, 0, 180, 0.1);
   border-radius: 4px;
   position: relative;
   overflow: hidden;
 }
 
-[data-sidebar-style="neon-circuit"] .coord-quick-access::before {
-  content: "COORD";
-  display: block;
-  padding: 2px 10px 4px;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  color: rgba(255, 0, 180, 0.45);
-  font-family: var(--font-mono);
-}
-
-[data-sidebar-style="neon-circuit"] .coord-quick-access::after {
+[data-sidebar-style="neon-circuit"] .coord-quick-access-group::after {
   content: "";
   position: absolute;
   top: 0;
@@ -7382,7 +7414,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
   );
 }
 
-html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
+html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   border-color: rgba(200, 0, 140, 0.12);
 }
 

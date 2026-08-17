@@ -496,7 +496,7 @@ export interface CodingAgentDefinition {
    * NOT argv tokens. Empty = no update command. Inert until the follow-up
    * update-check feature reads it. */
   updateCommands: string[];
-  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdate / agentUpdateDontAskAgain. Inert until the follow-up feature reads it. */
+  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert until the follow-up feature reads it. */
   autoUpdate: boolean;
 }
 
@@ -746,10 +746,13 @@ export interface AppSettings {
   npmUpdateNotificationsEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
-  /** #1318 - per-user auto-update choice per registered coding agent, keyed by agent id. Absent entry = use the catalog default. Inert until the follow-up feature reads it. */
-  agentAutoUpdate: Record<string, boolean>;
-  /** #1318 - per-agent "don't ask again" flags for the follow-up auto-update dialog, keyed by agent id. Absent = ask. */
-  agentUpdateDontAskAgain: Record<string, boolean>;
+  /** #1327 - per-command auto-update policy, keyed by the catalog COMMAND
+   * string (not the agent id: several profiles can share one command; the
+   * software is the update unit). Absent = never asked (the startup dialog
+   * asks once, default No); true = run this command's updateCommands at
+   * startup; false = never ask again. Replaces the two inert #1318
+   * agent-id-keyed maps. */
+  agentAutoUpdateByCommand: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
@@ -868,12 +871,36 @@ export interface ProjectPathResolution {
  *  the structured resolution report. */
 export interface SettingsSnapshot extends AppSettings {
   projectPathResolution: ProjectPathResolution;
+  /** #1347 - absolute path of the instance settings.json this snapshot came
+   *  from, or null when the backend could not resolve its config dir. Read-only
+   *  metadata: it is never edited, never part of a save payload. */
+  settingsFilePath: string | null;
 }
 
 export interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;
   upgradeCommand: string;
+}
+
+export interface AgentUpdateResult {
+  command: string;
+  label: string;
+  ok: boolean;
+  error?: string | null;
+}
+
+export interface AgentUpdatePrompt {
+  command: string;
+  label: string;
+}
+
+export interface AgentUpdateStatus {
+  inProgress: boolean;
+  /** The currently displayed prompt (sequential phase: at most one);
+   * restored from the snapshot by a late-mounting sidebar. */
+  prompt: AgentUpdatePrompt | null;
+  results: AgentUpdateResult[];
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";

@@ -1748,6 +1748,7 @@ const ProjectPanel: Component = () => {
 
         const hasTeams = () => proj.teams.length > 0;
         const projectAutomationId = () => automationIdPart(proj.path);
+        const coordinatorsCollapsedKey = projectPanelCollapseKey(proj.path, "coordinators");
         const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
         const workgroupsCollapsedKey = projectPanelCollapseKey(proj.path, "workgroups");
         const loopsCollapsedKey = projectPanelCollapseKey(proj.path, "loops");
@@ -2531,19 +2532,35 @@ const ProjectPanel: Component = () => {
 
             <Show when={!isProjectPanelCollapsed(proj.path)}>
               <div class="project-content">
-                {/* Coordinator Quick-Access — shown by styles that enable it via CSS */}
+                {/* Coordinators — own collapsible section; shown by styles that enable it via CSS */}
                 {(() => {
                   return (
                     <Show when={filteredCoordinatorItems().length > 0}>
-                      <div class="coord-quick-access">
-                        <For each={filteredCoordinatorItems()}>
-                          {(item) => {
-                            const runningPeers = createMemo(() =>
-                              runningCoordinatorPeers(item.wg, item.replica)
-                            );
-                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle, "quick");
-                          }}
-                        </For>
+                      <div class="coord-quick-access-group">
+                        <div
+                          class="ac-wg-header ac-wg-header--collapsible"
+                          onClick={() => togglePanelCollapsed(coordinatorsCollapsedKey)}
+                        >
+                          <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(coordinatorsCollapsedKey) }}>
+                            &#x25BE;
+                          </span>
+                          <div class="ac-wg-header-text">
+                            <span class="ac-wg-name">Coordinators</span>
+                          </div>
+                          <span class="ac-team-count">{filteredCoordinatorItems().length}</span>
+                        </div>
+                        <Show when={!isPanelCollapsed(coordinatorsCollapsedKey)}>
+                          <div class="coord-quick-access">
+                            <For each={filteredCoordinatorItems()}>
+                              {(item) => {
+                                const runningPeers = createMemo(() =>
+                                  runningCoordinatorPeers(item.wg, item.replica)
+                                );
+                                return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers, item.wg.taskTitle, "quick");
+                              }}
+                            </For>
+                          </div>
+                        </Show>
                       </div>
                     </Show>
                   );

@@ -565,6 +565,12 @@ fn selected_terminal_output_route(
 pub(crate) fn activate_terminal_output(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     session_id: String,
+    // Optional on purpose, which is how a Tauri command argument gets a default: an
+    // attribute on the parameter is not in scope here. Without the default, a missing or
+    // misspelled argument makes Tauri reject the command, and the frontend fails closed with
+    // no retry, so the terminal panel stays blank until the user reselects the session by
+    // hand. `false` is the safe direction: it is exactly today's behaviour.
+    include_history: Option<bool>,
 ) -> Result<TerminalOutputActivationResult, String> {
     let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
     let route = {
@@ -575,7 +581,7 @@ pub(crate) fn activate_terminal_output(
             .terminal_output_route(session_id)
             .map_err(|error| error.to_string())?
     };
-    Ok(route.activate_terminal_output())
+    Ok(route.activate_terminal_output(include_history.unwrap_or(false)))
 }
 
 #[tauri::command]
@@ -2030,8 +2036,12 @@ mod terminal_output_control_ipc_tests {
         fn kill_all_jobs(&self) -> (usize, usize) {
             (0, 0)
         }
-        fn activate_terminal_output(&self, id: Uuid) -> TerminalOutputActivationResult {
-            self.fanout.activate_terminal_output(id)
+        fn activate_terminal_output(
+            &self,
+            id: Uuid,
+            include_history: bool,
+        ) -> TerminalOutputActivationResult {
+            self.fanout.activate_terminal_output(id, include_history)
         }
         fn ready_terminal_output(
             &self,
@@ -2230,7 +2240,7 @@ mod terminal_output_control_ipc_tests {
         let activated = invoke(
             &fixture.webview,
             "activate_terminal_output",
-            serde_json::json!({ "sessionId": id }),
+            serde_json::json!({ "sessionId": id, "includeHistory": false }),
         )
         .expect("activate succeeds");
         assert_eq!(activated["kind"], "activated");
