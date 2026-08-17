@@ -9,12 +9,15 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Coding Agent Profiles](coding-agent-profiles.md) | Define several launch variants of one coding agent and switch a single session between them. |
 | [Container coding agents](container-coding-agents.md) | Run a coding agent under AC's Container runtime, what it does with your host credentials, and what does not work yet. |
 | [Session auto-close](session-auto-close.md) | Close idle teams on a timeout, read the idle badge, and change or turn the timeout off. |
+| [Coding agent auto-update](agent-auto-update.md) | Answer the startup update prompt once per coding-agent command and have AC remember it. |
 | [Voice-to-text](voice-to-text.md) | Dictate prompts to a coding agent instead of typing them. |
 
 ## Automation
 
 | Page | What it covers |
 |---|---|
+| [Non-stop mode](non-stop-mode.md) | Watch a group of workgroups and get a Telegram message or a sound when one stops working. |
+| [Spec Board](spec-board.md) | Edit a Mermaid file in its own window with a live preview, snapshots, and an agent handoff. |
 
 ## Monitoring
 
