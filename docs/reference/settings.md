@@ -252,7 +252,7 @@ Both are manual-only (no UI) and are read from the in-memory settings, so an edi
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
 | `coordSortByActivity` | bool | `false` | Sort the coordinator quick-access list by most-recent activity. |
-| `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. |
+| `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows-only. See [Screenshot capture](../features/screenshot-capture.md). |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected workgroup visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
