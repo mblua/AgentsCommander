@@ -1,3 +1,5 @@
+#![deny(clippy::undocumented_unsafe_blocks)]
+
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -260,6 +262,11 @@ fn finish_reset_operation<T>(
 mod reset_mutex_win32 {
     use std::ffi::c_void;
 
+    // SAFETY: each signature below is the kernel32 declaration of the symbol named
+    // in its `link_name`, with `HANDLE` spelled `*mut c_void` and `LPCWSTR` spelled
+    // `*const u16`. The `system` ABI is the convention kernel32 exports, so calls
+    // through these items are ABI-correct; every call site proves its own argument
+    // validity.
     #[link(name = "kernel32")]
     unsafe extern "system" {
         #[link_name = "CreateMutexW"]
@@ -285,9 +292,18 @@ fn platform_reset_mutex_wait_adapter() -> ResetMutexWaitAdapter {
         create_mutex: Arc::new(|| {
             let mut name: Vec<u16> = RESET_PROCESS_MUTEX_NAME.encode_utf16().collect();
             name.push(0);
+            // SAFETY: `name` is a NUL-terminated UTF-16 buffer (the `push(0)` above)
+            // that lives until after the call returns, and a null attributes pointer
+            // selects the default security descriptor. `initial_owner = 0` means the
+            // call never takes ownership, so ownership can only come from the wait
+            // below. A non-null return is a handle owned by this process, and
+            // `ResetProcessGuard` is the only thing that closes it.
             let handle =
                 unsafe { reset_mutex_win32::create_mutex_w(std::ptr::null(), 0, name.as_ptr()) };
             if handle.is_null() {
+                // SAFETY: `GetLastError` takes no arguments and only reads the calling
+                // thread's last-error value, set by the failed call above. Nothing runs
+                // between the two calls that could overwrite it.
                 let last_error = unsafe { reset_mutex_win32::get_last_error() };
                 Err(ResetCommandError::new(
                     "reset_process_lock_create_failed",
@@ -298,6 +314,11 @@ fn platform_reset_mutex_wait_adapter() -> ResetMutexWaitAdapter {
                 Ok(handle as usize)
             }
         }),
+        // SAFETY: `acquire_reset_process_guard_with` is the only caller, and it passes
+        // back the handle this adapter's `create_mutex` just returned, still open for
+        // the whole wait because the guard that owns it has not been dropped yet.
+        // `WaitForSingleObject` only reads the handle, and `timeout_ms` is finite, so
+        // the call cannot block forever.
         wait_for_single_object: Arc::new(|handle, timeout_ms| unsafe {
             reset_mutex_win32::wait_for_single_object(handle as *mut std::ffi::c_void, timeout_ms)
         }),
@@ -308,7 +329,17 @@ fn platform_reset_mutex_wait_adapter() -> ResetMutexWaitAdapter {
 fn platform_reset_mutex_cleanup_adapter() -> ResetMutexCleanupAdapter {
     ResetMutexCleanupAdapter {
         release_mutex: Arc::new(|handle| {
+            // SAFETY: `handle` is the still-open handle held by `ResetProcessGuard`,
+            // which calls this only while `owned && handle_open` and clears `owned`
+            // on success, so `ReleaseMutex` runs at most once per acquisition. The
+            // guard is built, completed and dropped inside a single synchronous
+            // function body on both entry paths, and this module contains no `async`,
+            // no `tokio` and no `spawn`, so it cannot reach another thread: the
+            // release therefore runs on the same thread that took ownership in the
+            // wait, which is what `ReleaseMutex` requires.
             if unsafe { reset_mutex_win32::release_mutex(handle as *mut std::ffi::c_void) } == 0 {
+                // SAFETY: `GetLastError` takes no arguments and only reads the calling
+                // thread's last-error value, set by the failed release above.
                 let last_error = unsafe { reset_mutex_win32::get_last_error() };
                 Err(ResetCommandError::new(
                     "reset_process_lock_release_failed",
@@ -320,7 +351,13 @@ fn platform_reset_mutex_cleanup_adapter() -> ResetMutexCleanupAdapter {
             }
         }),
         close_handle: Arc::new(|handle| {
+            // SAFETY: `handle` is the handle returned by `create_mutex_w`, and
+            // `ResetProcessGuard` calls this only while `handle_open` and clears the
+            // flag on success, so the handle is closed at most once and never used
+            // again afterwards.
             if unsafe { reset_mutex_win32::close_handle(handle as *mut std::ffi::c_void) } == 0 {
+                // SAFETY: `GetLastError` takes no arguments and only reads the calling
+                // thread's last-error value, set by the failed close above.
                 let last_error = unsafe { reset_mutex_win32::get_last_error() };
                 Err(ResetCommandError::new(
                     "reset_process_lock_close_failed",
