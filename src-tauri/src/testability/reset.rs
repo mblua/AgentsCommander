@@ -9,6 +9,9 @@ use super::window_placement::TESTABLE_EXE_NAME;
 
 const TESTABLE_CONFIG_DIR: &str = ".agentscommander_testeable";
 const TESTABLE_PROJECT_DIR: &str = "agentscommander_testeable";
+// Only `platform_reset_mutex_wait_adapter` reads this, and that function is
+// Windows-only, so off Windows the constant is dead code and `-D warnings` fails.
+#[cfg(target_os = "windows")]
 const RESET_PROCESS_MUTEX_NAME: &str = "Local\\AgentsCommander.TestReset.ProcessLock.v1";
 const RESET_PROCESS_MUTEX_TIMEOUT_MS: u32 = 5_000;
 const RESET_MUTEX_HARNESS_CONFIG_ENV: &str = "AGENTSCOMMANDER_TEST_RESET_MUTEX_HARNESS_CONFIG_V1";
