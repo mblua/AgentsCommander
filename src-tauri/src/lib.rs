@@ -1793,18 +1793,6 @@ pub(crate) fn spawn_restore_startup(
                 shutdown.clone(),
             );
             ui_automation_state.start(app.app_handle().clone(), shutdown.clone());
-
-            let screenshot_hotkey = app
-                .state::<SettingsState>()
-                .read()
-                .await
-                .screenshot_capture_hotkey
-                .clone();
-            if let Err(error) =
-                crate::screenshot::register_configured_hotkey(app.app_handle(), &screenshot_hotkey)
-            {
-                log::warn!("[screenshot] global hotkey registration failed: {}", error);
-            }
         });
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
@@ -2113,6 +2101,36 @@ pub fn run(
 
             // Make AppHandle available to idle detector callbacks
             let _ = app_handle_lock.set(app.handle().clone());
+
+            // #1398 - registered here, at the top of setup, and NOT in the
+            // post-restore tail where a308271c parked it by adjacency: the
+            // registration depends only on the global-shortcut plugin plus the
+            // `SettingsState` and `ScreenshotHotkeyState` managed above, so
+            // waiting for the restore left the hotkey dead for the whole
+            // restore window, which grows with the number of sessions. Its own
+            // short task keeps the async settings read off the main thread; a
+            // `block_on` here would reintroduce the #1341 WebView2 starvation.
+            {
+                let app_for_hotkey = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let configured = app_for_hotkey
+                        .state::<SettingsState>()
+                        .read()
+                        .await
+                        .screenshot_capture_hotkey
+                        .clone();
+                    match crate::screenshot::register_configured_hotkey(&app_for_hotkey, &configured)
+                    {
+                        Ok(()) => log::info!(
+                            "[screenshot] global hotkey registered '{}'",
+                            configured
+                        ),
+                        Err(error) => {
+                            log::warn!("[screenshot] global hotkey registration failed: {}", error)
+                        }
+                    }
+                });
+            }
 
             // #264 — spawn the background task that emits `error_log_event`
             // pings to the UI when ERROR entries are captured. The task runs

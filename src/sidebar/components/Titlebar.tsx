@@ -34,6 +34,14 @@ const formatScreenshotHotkeyForDisplay = (canonicalHotkey: string): string | nul
   return displayTokens.join(" + ");
 };
 
+// #1398 - the backend now registers the hotkey at the top of setup, so the
+// first read almost always lands after registration. This bounded re-read is
+// the hardening that keeps a slow boot from hiding the chip for the rest of
+// the session; the ceiling exists so a permanently undecided runtime cannot
+// poll forever.
+const HOTKEY_STATUS_RETRY_DELAY_MS = 250;
+const HOTKEY_STATUS_MAX_RETRIES = 20;
+
 const ScreenshotHotkeyStatusChip: Component = () => {
   const [canonicalHotkey, setCanonicalHotkey] = createSignal<string | null>(null);
   const displayHotkey = createMemo(() => {
@@ -43,25 +51,44 @@ const ScreenshotHotkeyStatusChip: Component = () => {
 
   onMount(() => {
     let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
     onCleanup(() => {
       disposed = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
     });
 
-    void ScreenshotAPI.getHotkeyStatus()
-      .then((status) => {
-        if (
-          disposed ||
-          status.registered !== true ||
-          status.error !== null ||
-          typeof status.configured !== "string" ||
-          formatScreenshotHotkeyForDisplay(status.configured) === null
-        ) {
-          return;
-        }
+    const attempt = (remaining: number) => {
+      void ScreenshotAPI.getHotkeyStatus()
+        .catch(() => null)
+        .then((status) => {
+          if (disposed) return;
+          if (status !== null && status.registered === true) {
+            // Registration is decided; the status never changes again this
+            // session. The guard below is the current one-shot predicate,
+            // unchanged except that `registered` is already known true here.
+            if (
+              status.error === null &&
+              typeof status.configured === "string" &&
+              formatScreenshotHotkeyForDisplay(status.configured) !== null
+            ) {
+              setCanonicalHotkey(status.configured);
+            }
+            return;
+          }
+          // `registered: false` with `error: null` is the pre-registration
+          // default, the only genuinely transient state. A non-null error is a
+          // decided refusal and must never be retried.
+          if ((status === null || status.error === null) && remaining > 0) {
+            retryTimer = setTimeout(
+              () => attempt(remaining - 1),
+              HOTKEY_STATUS_RETRY_DELAY_MS,
+            );
+          }
+        });
+    };
 
-        setCanonicalHotkey(status.configured);
-      })
-      .catch(() => {});
+    attempt(HOTKEY_STATUS_MAX_RETRIES);
   });
 
   return (
