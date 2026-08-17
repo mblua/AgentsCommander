@@ -77,6 +77,7 @@ pub struct NonStopWatchdogState {
     alarms: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// (G3) Serializes beeps so two simultaneous project fires do not overlap
     /// into a garbled tone.
+    #[cfg(any(target_os = "windows", test))]
     beep_serialize: Arc<Mutex<()>>,
 }
 

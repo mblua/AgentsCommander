@@ -160,8 +160,12 @@ pub(crate) struct PtyTerminalOutputRoute {
 }
 
 impl PtyTerminalOutputRoute {
-    pub(crate) fn activate_terminal_output(&self) -> TerminalOutputActivationResult {
-        self.backend.activate_terminal_output(self.session_id)
+    pub(crate) fn activate_terminal_output(
+        &self,
+        include_history: bool,
+    ) -> TerminalOutputActivationResult {
+        self.backend
+            .activate_terminal_output(self.session_id, include_history)
     }
 
     pub(crate) fn ready_terminal_output(
@@ -649,6 +653,24 @@ impl PtyManager {
     pub fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot> {
         let kind = self.kind_for_session(id).ok()?;
         self.backend_for_kind(kind).get_screen_snapshot(id)
+    }
+
+    /// #1388 - forwards to the routed backend. An unrouted id yields `true` ("no
+    /// claim"), matching the trait default.
+    ///
+    /// **This deliberately inverts its two nearest siblings**, which answer
+    /// conservatively for an unrouted id: `has_session` returns `false` (`:589-594`)
+    /// and `context_session_liveness` returns `SessionOver` (`:596-601`). Here
+    /// "cannot tell" must not gate, which is the rule `backend.rs:231-235` already
+    /// states for `Unavailable`. A permissive answer on a vanished route leads to an
+    /// injection that fails loudly with `AppError::SessionNotFound`; `false` would
+    /// silently hold a live session to the 90s cap on a routing transient. Fail loud
+    /// beats stall silent.
+    pub fn has_rendered_visible_content(&self, id: Uuid) -> bool {
+        let Ok(kind) = self.kind_for_session(id) else {
+            return true;
+        };
+        self.backend_for_kind(kind).has_rendered_visible_content(id)
     }
 
     pub fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
@@ -1492,6 +1514,19 @@ mod tests {
             manager.screen_rows_since(Uuid::new_v4(), None),
             crate::pty::watchers::ScreenRowsSince::Gone
         ));
+    }
+
+    /// #1388, T4 - the trait default reads as "no claim, do not gate".
+    ///
+    /// Exercised on an existing fake that does not override it, which is the one path
+    /// production never takes: both production backends override. Its only content is the
+    /// literal `true` in `backend.rs`, so this is a guard against a future flip to `false`,
+    /// which would strand every non-answering implementor at the wake settle's cap.
+    #[test]
+    fn pty_backend_default_reports_rendered() {
+        let backend = RecordingBackend::default();
+
+        assert!(backend.has_rendered_visible_content(Uuid::new_v4()));
     }
 
     /// #1171, 9.1.8 - a backend that never heard of the seam keeps working through the trait

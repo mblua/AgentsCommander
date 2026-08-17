@@ -490,11 +490,11 @@ fn should_keep_clock_key(
         return true;
     };
     // Workspace dir missing/unreadable -> cannot confirm absence -> keep.
-    let Some(workspace) = crate::config::workspace::existing_workspace_dir(&resolved.path) else {
+    let Some(ac_root) = crate::config::ac_root::existing_ac_root(&resolved.path) else {
         return true;
     };
     // Keep iff the workgroup dir still exists; prune only on CONFIRMED absence.
-    workspace.join(wg).is_dir()
+    ac_root.join(wg).is_dir()
 }
 
 /// Path-explicit load for unit tests, symmetric with `save_map_to`.
@@ -986,7 +986,7 @@ mod tests {
     fn should_keep_clock_key_keeps_when_project_unenumerable() {
         // (#621 E1) A project whose `.ac` does not exist yields ZERO candidates
         // (enumerate requires `.ac`), so the key is kept by the 0-match branch, NOT
-        // by the `existing_workspace_dir` guard (which is only a TOCTOU belt).
+        // by the `existing_ac_root` guard (which is only a TOCTOU belt).
         let tmp = tempfile::tempdir().expect("temp dir");
         let proj = tmp.path().join("NoAc");
         std::fs::create_dir_all(&proj).unwrap(); // project exists, but no .ac/

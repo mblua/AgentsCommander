@@ -13,10 +13,8 @@ use crate::config::settings::TelegramNetworkPollErrorLogging;
 use crate::network::{NetworkBackoff, OutboundNetwork};
 use crate::pty::manager::PtyManager;
 use crate::telegram::api;
+use crate::telegram::output::{flush_buffer, BridgeLogger, DiagLogger, TelegramErrKind};
 use crate::telegram::types::BridgeInfo;
-
-use super::claude_watcher::output::TelegramErrKind;
-pub(super) use super::claude_watcher::output::{flush_buffer, BridgeLogger, DiagLogger};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollNetworkLogAction {

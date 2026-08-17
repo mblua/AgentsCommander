@@ -201,6 +201,24 @@ const cloneSettings = (value: AppSettings | null): AppSettings | null => {
   return JSON.parse(JSON.stringify(value)) as AppSettings;
 };
 
+/** #1347 - the notice shown under every settings input whose value is persisted
+ *  unencrypted in the instance settings.json. `path` is the backend-resolved
+ *  absolute file path (SettingsSnapshot.settingsFilePath); a null path degrades
+ *  to the same warning without the location, because the storage fact holds
+ *  whether or not config_dir() resolved. `overflow-wrap` is inline so a long
+ *  path with no spaces wraps inside the modal instead of overflowing; the shared
+ *  .settings-hint rules stay untouched. */
+const PlaintextSecretHint: Component<{ path: string | null; testId: string }> = (props) => (
+  <div
+    class="settings-hint settings-hint-error"
+    style={{ "overflow-wrap": "break-word" }}
+    data-ac-testid={props.testId}
+  >
+    Stored unencrypted in {props.path ?? "this instance's settings.json file"}.
+    Anyone who can read that file can read this value.
+  </div>
+);
+
 /** #1171 - how long the pattern and reach previews wait before asking the backend. */
 const WATCHER_PREVIEW_DEBOUNCE_MS = 300;
 
@@ -683,6 +701,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     createSignal<ApiClientMintResponse | null>(null);
   const [apiClientSecretCopied, setApiClientSecretCopied] = createSignal(false);
   const [saveError, setSaveError] = createSignal("");
+  // #1347 - snapshot-only metadata, kept out of `settings.data` on purpose: it
+  // is not a setting, must never enter the draft, the dirty check, or the save
+  // payload, and the draft store is typed AppSettings and cannot carry it.
+  const [settingsFilePath, setSettingsFilePath] = createSignal<string | null>(null);
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
@@ -1007,6 +1029,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     ]);
     setWebServerRunning(wsRunning);
     setApiServerRunning(apiRunning);
+    // `?? null` tolerates a mixed-version backend that predates #1347.
+    setSettingsFilePath(loaded.settingsFilePath ?? null);
     if (!draftDirty()) {
       const nextSettings = cloneSettings(loaded);
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
@@ -1200,6 +1224,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       kind: current?.kind ?? "containerTransport",
       image,
     });
+  };
+
+  const setAgentAutoUpdate = (index: number, enabled: boolean) => {
+    if (!settings.data) return;
+    const command = settings.data.agents[index]?.command;
+    if (!command) return; // never write an empty-string key
+    setDraftDirty(true);
+    setSettings("data", "agentAutoUpdateByCommand", (map) => ({
+      ...(map ?? {}),
+      [command]: enabled,
+    }));
   };
 
   const updateAgentEnv = (
@@ -2019,11 +2054,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           prompts, AC also writes that agent's first-run state inside the container: onboarding
           is marked complete, and the container's
           /workspace folder is marked as trusted. That means AC answers the "do you trust this
-          folder?" safety prompt on your behalf, for the workspace you chose to open. Your host
-          config is never modified. Turn this off to supply credentials yourself (for example a
-          CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is copied and nothing is marked. Host
-          and containers share one login, so a token refresh in one place can require re-login in
-          another.
+          folder?" safety prompt on your behalf, for that agent's replica folder, which AC
+          mounts into the container. Your host config is never modified. Turn this off to supply
+          credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
+          copied and nothing is marked. Host and containers share one login, so a token refresh
+          in one place can require re-login in another.
         </div>
       </div>
 
@@ -2612,6 +2647,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       }
     };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
+    const autoUpdateEnabled = () =>
+      settings.data?.agentAutoUpdateByCommand[agent.command] ?? false;
     const containerImageMissing = () => !agent.backend?.image?.trim();
     const containerBindWarning = () => isContainerLoopbackBind(settings.data?.apiServerBind);
     return (
@@ -2719,6 +2756,29 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 data-ac-role="textbox"
               />
             </label>
+            <label class="settings-field">
+              <span class="settings-label">Auto-update</span>
+              <select
+                class="settings-input"
+                value={autoUpdateEnabled() ? "yes" : "no"}
+                onChange={(e) => setAgentAutoUpdate(i(), e.currentTarget.value === "yes")}
+                disabled={!agent.command.trim()}
+                title={agent.command.trim() ? undefined : "Set the Coding Agent command first"}
+                data-ac-testid={`settings.agentRow.${i()}.autoUpdate`}
+                data-ac-role="combobox"
+                data-ac-state={autoUpdateEnabled() ? "yes" : "no"}
+              >
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <div
+              class="settings-label-hint"
+              data-ac-testid={`settings.agentRow.${i()}.autoUpdate.note`}
+              data-ac-role="status"
+            >
+              Applies to every Coding Agent using this command.
+            </div>
             <label class="settings-field">
               <span class="settings-label">Runtime</span>
               <select
@@ -3669,6 +3729,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               placeholder="AIza..."
             />
           </label>
+          <PlaintextSecretHint
+            path={settingsFilePath()}
+            testId="settings.integrations.geminiApiKey.plaintextWarning"
+          />
           <label class="settings-field">
             <span class="settings-label">Gemini Model</span>
             <select
@@ -3759,6 +3823,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 placeholder="123456:ABC-DEF..."
               />
             </label>
+            <PlaintextSecretHint
+              path={settingsFilePath()}
+              testId={`settings.integrations.telegramBots.${i()}.plaintextWarning`}
+            />
             <Show when={bot.chatId}>
               <div class="settings-field">
                 <span class="settings-label">Chat ID</span>

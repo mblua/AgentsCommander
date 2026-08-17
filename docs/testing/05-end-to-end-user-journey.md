@@ -20,7 +20,7 @@ Summary:
 
 - Harness reset/window gate passed.
 - Onboarding passed only after preset reselection and later exposed `onboardingDismissed = false`.
-- Project creation loaded directly from an empty selected folder; no create-confirm modal appeared in the clean no-workspace path.
+- Project creation loaded directly from an empty selected folder; no create-confirm modal appeared in the clean no-Project-AC-Root path.
 - Two project agents were created through the GUI after one focus-contaminated attempt.
 - Team creation was blocked before valid team/member completion.
 - Workgroup creation and final full-state restart persistence were not reached.

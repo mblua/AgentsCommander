@@ -1,6 +1,6 @@
 # Teams and workgroups
 
-For developers ready to compose multiple agents around a shared goal. Teams define who works together; workgroups are the active workspace where they do the work.
+For developers ready to compose multiple agents around a shared goal. Teams define who works together; workgroups are where they do the work.
 
 ## Team
 
@@ -49,7 +49,7 @@ The same agent matrix can belong to multiple teams. Each team that includes the 
 
 ## Workgroup
 
-A **workgroup** is a team's active workspace for one specific task. AC spins up a new workgroup directory whenever the team is activated:
+A **workgroup** is a team's activation for one specific task. AC spins up a new workgroup directory whenever the team is activated:
 
 ```
 my-project/

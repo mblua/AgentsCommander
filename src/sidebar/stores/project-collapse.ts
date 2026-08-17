@@ -5,6 +5,7 @@ export const PROJECT_PANEL_COLLAPSE_KEY_SEP = "\u0000";
 
 export type ProjectPanelCollapseSection =
   | "project"
+  | "coordinators"
   | "selected-workgroup"
   | "workgroups"
   | "workgroup"

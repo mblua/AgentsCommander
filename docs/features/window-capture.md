@@ -2,7 +2,7 @@
 
 Window capture lets you capture exactly one live native window as a PNG file on Windows, either from the CLI (local, in-process, no authorization boundary) or through the authenticated control-plane API. It is Windows-only: the CLI verbs and the HTTP route are compiled only on Windows and are deliberately absent on other targets.
 
-Use this feature when you need the current pixels of a live native desktop window. It is not a terminal snapshot (that reads the backend terminal viewport without touching OS pixels), not a monitor-wide screenshot, and not the in-app overlay/hotkey flow.
+Use this feature when you need the current pixels of a live native desktop window. It is not a terminal snapshot (that reads the backend terminal viewport without touching OS pixels), not a monitor-wide screenshot, and not the in-app overlay/hotkey flow (see [Screenshot capture](screenshot-capture.md)).
 
 ## Before you start
 

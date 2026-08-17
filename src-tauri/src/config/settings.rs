@@ -3486,10 +3486,10 @@ fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
         return Ok(true);
     }
     let error = std::io::Error::last_os_error();
-    if matches!(
-        error.raw_os_error(),
-        Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)
-    ) {
+    // Compared rather than matched: `EWOULDBLOCK` and `EAGAIN` are the same
+    // value on Linux and macOS, which makes the second pattern unreachable.
+    let raw = error.raw_os_error();
+    if raw == Some(libc::EWOULDBLOCK) || raw == Some(libc::EAGAIN) {
         Ok(false)
     } else {
         Err(source)

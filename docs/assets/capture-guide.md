@@ -60,7 +60,7 @@ be planned.
 
 ### Test data
 
-You need a workspace that produces the visuals these captures require.
+You need a project that produces the visuals these captures require.
 Reproducible setup:
 
 ```

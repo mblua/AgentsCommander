@@ -18,7 +18,7 @@ use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
 };
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_ac_root;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionRepo, SessionStatus};
@@ -108,7 +108,7 @@ pub(crate) struct WorkgroupDiskCreateArgs {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReplicaDiskCreateArgs {
-    pub workspace_dir: PathBuf,
+    pub ac_root: PathBuf,
     pub wg_dir: PathBuf,
     pub agent_path: String,
     pub team_repos: Vec<RepoAssignment>,
@@ -425,7 +425,7 @@ pub(crate) fn create_agent_matrix_on_disk(
 ) -> Result<CreatedAgentMatrixOnDisk, String> {
     let safe_name = sanitize_name(args.name)?;
     let project = Path::new(args.project_path);
-    let base = selected_workspace_dir(project)?;
+    let base = selected_ac_root(project)?;
 
     let agent_dir = base.join(format!("_agent_{}", safe_name));
     if agent_dir.exists() {
@@ -498,7 +498,7 @@ pub(crate) fn create_agent_matrix_on_disk(
 }
 
 pub(crate) struct CreateAgentMatrixFromRoleArgs<'a> {
-    pub workspace_dir: &'a Path,
+    pub ac_root: &'a Path,
     pub safe_name: &'a str,
     pub role_bytes: &'a [u8],
 }
@@ -514,7 +514,7 @@ pub(crate) fn create_agent_matrix_from_role(
     }
     validate_existing_name(args.safe_name, "Agent")?;
     let agent_dir = args
-        .workspace_dir
+        .ac_root
         .join(format!("_agent_{}", args.safe_name));
     if agent_dir.exists() {
         return Err(format!("Agent '{}' already exists", args.safe_name));
@@ -537,7 +537,7 @@ pub(crate) fn create_agent_matrix_from_role(
     )?;
 
     let project_path = args
-        .workspace_dir
+        .ac_root
         .parent()
         .ok_or_else(|| "Project AC Root has no project parent".to_string())?;
     Ok(CreatedAgentMatrixOnDisk {
@@ -566,8 +566,8 @@ fn write_local_config_value(config_path: &Path, value: serde_json::Value) -> Res
     Ok(())
 }
 
-fn selected_workspace_dir(project: &Path) -> Result<PathBuf, String> {
-    existing_workspace_dir(project)
+fn selected_ac_root(project: &Path) -> Result<PathBuf, String> {
+    existing_ac_root(project)
         .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }
 
@@ -591,21 +591,21 @@ impl TeamConfigLockTiming {
 #[derive(Debug)]
 pub(crate) struct TeamConfigMutationGuard {
     _file: File,
-    canonical_workspace: PathBuf,
+    canonical_ac_root: PathBuf,
     lock_path: PathBuf,
 }
 
 impl TeamConfigMutationGuard {
-    pub(crate) fn acquire(workspace_dir: &Path) -> Result<Self, String> {
-        Self::acquire_with_timing(workspace_dir, TeamConfigLockTiming::PRODUCTION)
+    pub(crate) fn acquire(ac_root: &Path) -> Result<Self, String> {
+        Self::acquire_with_timing(ac_root, TeamConfigLockTiming::PRODUCTION)
     }
 
     fn acquire_with_timing(
-        workspace_dir: &Path,
+        ac_root: &Path,
         timing: TeamConfigLockTiming,
     ) -> Result<Self, String> {
-        let requested_lock_path = workspace_dir.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
-        let canonical_workspace = std::fs::canonicalize(workspace_dir)
+        let requested_lock_path = ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+        let canonical_ac_root = std::fs::canonicalize(ac_root)
             .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
             .map_err(|e| {
                 format!(
@@ -614,16 +614,16 @@ impl TeamConfigMutationGuard {
                     e
                 )
             })?;
-        if !canonical_workspace.is_dir() {
+        if !canonical_ac_root.is_dir() {
             return Err(format!(
                 "Failed to open team config lock '{}': workspace is not a directory",
                 requested_lock_path.display()
             ));
         }
-        let lock_path = canonical_workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+        let lock_path = canonical_ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
 
         let open_existing = || -> Result<File, String> {
-            validate_team_config_lock_sentinel(&lock_path, &canonical_workspace)?;
+            validate_team_config_lock_sentinel(&lock_path, &canonical_ac_root)?;
             OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -668,7 +668,7 @@ impl TeamConfigMutationGuard {
                 ));
             }
         };
-        validate_team_config_lock_sentinel(&lock_path, &canonical_workspace)?;
+        validate_team_config_lock_sentinel(&lock_path, &canonical_ac_root)?;
         if !file
             .metadata()
             .map_err(|e| {
@@ -718,13 +718,13 @@ impl TeamConfigMutationGuard {
 
         Ok(Self {
             _file: file,
-            canonical_workspace,
+            canonical_ac_root,
             lock_path,
         })
     }
 
-    fn require_workspace(&self, workspace_dir: &Path) -> Result<(), String> {
-        let canonical = std::fs::canonicalize(workspace_dir)
+    fn require_ac_root(&self, ac_root: &Path) -> Result<(), String> {
+        let canonical = std::fs::canonicalize(ac_root)
             .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
             .map_err(|e| {
                 format!(
@@ -733,11 +733,11 @@ impl TeamConfigMutationGuard {
                     e
                 )
             })?;
-        if canonical != self.canonical_workspace {
+        if canonical != self.canonical_ac_root {
             return Err(format!(
                 "Team config lock '{}' belongs to workspace '{}', not '{}'",
                 self.lock_path.display(),
-                self.canonical_workspace.display(),
+                self.canonical_ac_root.display(),
                 canonical.display()
             ));
         }
@@ -747,7 +747,7 @@ impl TeamConfigMutationGuard {
 
 fn validate_team_config_lock_sentinel(
     lock_path: &Path,
-    canonical_workspace: &Path,
+    canonical_ac_root: &Path,
 ) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(lock_path).map_err(|e| {
         format!(
@@ -777,27 +777,27 @@ fn validate_team_config_lock_sentinel(
             lock_path.display()
         )
     })?;
-    if canonical_parent != canonical_workspace {
+    if canonical_parent != canonical_ac_root {
         return Err(format!(
             "Team config lock '{}' escapes canonical workspace '{}'",
             lock_path.display(),
-            canonical_workspace.display()
+            canonical_ac_root.display()
         ));
     }
     Ok(())
 }
 
 async fn acquire_team_config_mutation_guard_async(
-    workspace_dir: &Path,
+    ac_root: &Path,
 ) -> Result<TeamConfigMutationGuard, String> {
-    let workspace = workspace_dir.to_path_buf();
-    let workspace_label = workspace.display().to_string();
-    tokio::task::spawn_blocking(move || TeamConfigMutationGuard::acquire(&workspace))
+    let ac_root = ac_root.to_path_buf();
+    let ac_root_label = ac_root.display().to_string();
+    tokio::task::spawn_blocking(move || TeamConfigMutationGuard::acquire(&ac_root))
         .await
         .map_err(|e| {
             format!(
                 "Failed to acquire team config lock for workspace '{}': blocking task failed: {}",
-                workspace_label, e
+                ac_root_label, e
             )
         })?
 }
@@ -839,10 +839,10 @@ impl TeamConfigReadError {
 }
 
 pub(crate) fn read_team_config_classified(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
 ) -> Result<TeamConfigResult, TeamConfigReadError> {
-    let config_path = workspace_dir
+    let config_path = ac_root
         .join(format!("_team_{}", team_name))
         .join("config.json");
     validate_existing_name(team_name, "Team").map_err(|cause| TeamConfigReadError::Invalid {
@@ -867,7 +867,7 @@ pub(crate) fn read_team_config_classified(
             path: config_path.clone(),
             source,
         })?;
-    normalize_team_config_for_project(workspace_dir, &config).map_err(|cause| {
+    normalize_team_config_for_project(ac_root, &config).map_err(|cause| {
         TeamConfigReadError::Invalid {
             path: config_path,
             cause,
@@ -876,29 +876,29 @@ pub(crate) fn read_team_config_classified(
 }
 
 pub(crate) fn read_team_config(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
 ) -> Result<TeamConfigResult, String> {
-    read_team_config_classified(workspace_dir, team_name).map_err(|e| e.to_string())
+    read_team_config_classified(ac_root, team_name).map_err(|e| e.to_string())
 }
 
 fn normalized_team_config_bytes(
-    workspace_dir: &Path,
+    ac_root: &Path,
     config: &TeamConfigResult,
 ) -> Result<Vec<u8>, String> {
-    let normalized = normalize_team_config_for_project(workspace_dir, config)?;
+    let normalized = normalize_team_config_for_project(ac_root, config)?;
     serde_json::to_vec_pretty(&normalized)
         .map_err(|e| format!("Failed to serialize config.json: {}", e))
 }
 
 pub(crate) fn write_team_config_guarded(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
     config: &TeamConfigResult,
     guard: &TeamConfigMutationGuard,
 ) -> Result<PathBuf, String> {
     write_team_config_guarded_with_publisher(
-        workspace_dir,
+        ac_root,
         team_name,
         config,
         guard,
@@ -907,22 +907,22 @@ pub(crate) fn write_team_config_guarded(
 }
 
 fn write_existing_team_config_guarded(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
     config: &TeamConfigResult,
     guard: &TeamConfigMutationGuard,
 ) -> Result<PathBuf, String> {
-    guard.require_workspace(workspace_dir)?;
+    guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
-    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    let team_dir = ac_root.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
         return Err(format!("Team '{}' not found", team_name));
     }
-    write_team_config_guarded(workspace_dir, team_name, config, guard)
+    write_team_config_guarded(ac_root, team_name, config, guard)
 }
 
 fn write_team_config_guarded_with_publisher<P>(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
     config: &TeamConfigResult,
     guard: &TeamConfigMutationGuard,
@@ -931,10 +931,10 @@ fn write_team_config_guarded_with_publisher<P>(
 where
     P: FnOnce(&Path, &[u8]) -> Result<(), String>,
 {
-    guard.require_workspace(workspace_dir)?;
+    guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
-    let config_bytes = normalized_team_config_bytes(workspace_dir, config)?;
-    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    let config_bytes = normalized_team_config_bytes(ac_root, config)?;
+    let team_dir = ac_root.join(format!("_team_{}", team_name));
     std::fs::create_dir_all(&team_dir)
         .map_err(|e| format!("Failed to create team directory: {}", e))?;
     std::fs::create_dir_all(team_dir.join("memory"))
@@ -950,24 +950,24 @@ where
 }
 
 pub(crate) fn create_new_team_config_on_disk(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
     config: &TeamConfigResult,
 ) -> Result<PathBuf, String> {
-    let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
-    create_new_team_config_on_disk_guarded(workspace_dir, team_name, config, &guard)
+    let guard = TeamConfigMutationGuard::acquire(ac_root)?;
+    create_new_team_config_on_disk_guarded(ac_root, team_name, config, &guard)
 }
 
 pub(crate) fn create_new_team_config_on_disk_guarded(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_name: &str,
     config: &TeamConfigResult,
     guard: &TeamConfigMutationGuard,
 ) -> Result<PathBuf, String> {
-    guard.require_workspace(workspace_dir)?;
+    guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
-    let config_bytes = normalized_team_config_bytes(workspace_dir, config)?;
-    let team_dir = workspace_dir.join(format!("_team_{}", team_name));
+    let config_bytes = normalized_team_config_bytes(ac_root, config)?;
+    let team_dir = ac_root.join(format!("_team_{}", team_name));
     std::fs::create_dir(&team_dir).map_err(|e| match e.kind() {
         std::io::ErrorKind::AlreadyExists => format!("Team '{}' already exists", team_name),
         _ => format!("Failed to create team directory: {}", e),
@@ -1021,14 +1021,14 @@ fn resolve_context_alert_argument(
 }
 
 pub(crate) fn normalize_team_config_for_project(
-    workspace_dir: &Path,
+    ac_root: &Path,
     config: &TeamConfigResult,
 ) -> Result<TeamConfigResult, String> {
-    let agents = normalize_team_agent_refs(workspace_dir, &config.agents)?;
+    let agents = normalize_team_agent_refs(ac_root, &config.agents)?;
     let coordinator = if config.coordinator.trim().is_empty() {
         String::new()
     } else {
-        resolve_agent_ref(workspace_dir, &config.coordinator)?
+        resolve_agent_ref(ac_root, &config.coordinator)?
     };
     if !coordinator.is_empty() && !agents.contains(&coordinator) {
         return Err("Coordinator must be one of the selected agents".to_string());
@@ -1037,7 +1037,7 @@ pub(crate) fn normalize_team_config_for_project(
     for repo in &config.repos {
         repos.push(RepoAssignment {
             url: repo.url.clone(),
-            agents: normalize_team_agent_refs(workspace_dir, &repo.agents)?,
+            agents: normalize_team_agent_refs(ac_root, &repo.agents)?,
         });
     }
     let context_alert_percentages =
@@ -1050,10 +1050,10 @@ pub(crate) fn normalize_team_config_for_project(
     })
 }
 
-fn normalize_team_agent_refs(workspace_dir: &Path, refs: &[String]) -> Result<Vec<String>, String> {
+fn normalize_team_agent_refs(ac_root: &Path, refs: &[String]) -> Result<Vec<String>, String> {
     let mut normalized = Vec::new();
     for agent in refs {
-        let resolved = resolve_agent_ref(workspace_dir, agent)?;
+        let resolved = resolve_agent_ref(ac_root, agent)?;
         if !normalized.contains(&resolved) {
             normalized.push(resolved);
         }
@@ -1061,9 +1061,9 @@ fn normalize_team_agent_refs(workspace_dir: &Path, refs: &[String]) -> Result<Ve
     Ok(normalized)
 }
 
-pub(crate) fn list_workgroup_dirs(workspace_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
+    if let Ok(entries) = std::fs::read_dir(ac_root) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -1102,7 +1102,7 @@ pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<Str
     Ok(team.to_string())
 }
 
-pub(crate) fn resolve_agent_ref(workspace_dir: &Path, raw_agent: &str) -> Result<String, String> {
+pub(crate) fn resolve_agent_ref(ac_root: &Path, raw_agent: &str) -> Result<String, String> {
     let trimmed = raw_agent.trim();
     if trimmed.is_empty() {
         return Err("Agent reference cannot be empty".to_string());
@@ -1125,7 +1125,7 @@ pub(crate) fn resolve_agent_ref(workspace_dir: &Path, raw_agent: &str) -> Result
     let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
     validate_existing_name(bare, "Agent")?;
     let canonical_ref = format!("_agent_{}", bare);
-    let matrix_dir = workspace_dir.join(&canonical_ref);
+    let matrix_dir = ac_root.join(&canonical_ref);
     if !matrix_dir.is_dir() {
         return Err(format!("Agent '{}' not found", bare));
     }
@@ -1149,9 +1149,9 @@ pub(crate) async fn create_workgroup_on_disk(
     let safe_team = sanitize_name(&args.team_name)?;
     let task_title = args.task_title.trim().to_string();
     validate_task_title(&task_title)?;
-    let base = selected_workspace_dir(&args.project_path)?;
+    let base = selected_ac_root(&args.project_path)?;
 
-    if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
+    if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
         log::warn!(
             "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
@@ -1196,7 +1196,7 @@ pub(crate) async fn create_workgroup_on_disk(
 
     for agent_path in &team_config.agents {
         create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            workspace_dir: base.clone(),
+            ac_root: base.clone(),
             wg_dir: wg_dir.clone(),
             agent_path: agent_path.clone(),
             team_repos: team_config.repos.clone(),
@@ -1219,7 +1219,7 @@ pub(crate) async fn create_workgroup_on_disk(
 pub(crate) fn create_or_update_replica_on_disk(
     args: ReplicaDiskCreateArgs,
 ) -> Result<PathBuf, String> {
-    let agent_ref = resolve_agent_ref(&args.workspace_dir, &args.agent_path)?;
+    let agent_ref = resolve_agent_ref(&args.ac_root, &args.agent_path)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
     validate_existing_name(&agent_name, "Agent")?;
     let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
@@ -1588,7 +1588,7 @@ pub(crate) async fn delete_agent_matrix_inner<H>(
 where
     H: FnOnce(&Path) + Send + 'static,
 {
-    let base = selected_workspace_dir(Path::new(project_path))?;
+    let base = selected_ac_root(Path::new(project_path))?;
 
     // Preflight under a short preliminary team guard, dropped before any wait.
     let plan = {
@@ -1895,7 +1895,7 @@ fn persist_agent_delete_metadata_blocking(
     team_guard: &TeamConfigMutationGuard,
     save_settings_fn: impl Fn(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<(), String> {
-    team_guard.require_workspace(&metadata.workspace_dir)?;
+    team_guard.require_ac_root(&metadata.ac_root)?;
     metadata.settings_changed.store(false, Ordering::SeqCst);
 
     // Exact-byte precheck under the reacquired #1056 guard: require the exact
@@ -1915,7 +1915,7 @@ fn persist_agent_delete_metadata_blocking(
     let mut journal: Vec<usize> = Vec::new();
     for (index, mutation) in metadata.team_mutations.iter().enumerate() {
         if let Err(e) = write_team_config_json_atomic(
-            &metadata.workspace_dir,
+            &metadata.ac_root,
             team_guard,
             &mutation.config_path,
             &mutation.after_json,
@@ -1990,14 +1990,14 @@ fn restore_journaled_team_configs(
     team_guard: &TeamConfigMutationGuard,
     journal: &[usize],
 ) -> Result<(), String> {
-    team_guard.require_workspace(&metadata.workspace_dir)?;
+    team_guard.require_ac_root(&metadata.ac_root)?;
     let mut errors = Vec::new();
     for &index in journal.iter().rev() {
         let mutation = &metadata.team_mutations[index];
         match read_team_config_bytes(&mutation.config_path) {
             Ok(current) if current == mutation.after_json => {
                 if let Err(e) = write_team_config_json_atomic(
-                    &metadata.workspace_dir,
+                    &metadata.ac_root,
                     team_guard,
                     &mutation.config_path,
                     &mutation.before_json,
@@ -2047,7 +2047,7 @@ struct AgentTeamMutation {
 
 #[derive(Debug, Clone)]
 struct PreparedAgentDeleteMetadata {
-    workspace_dir: PathBuf,
+    ac_root: PathBuf,
     team_mutations: Vec<AgentTeamMutation>,
     agent_name: String,
     settings_changed: Arc<AtomicBool>,
@@ -2055,7 +2055,7 @@ struct PreparedAgentDeleteMetadata {
 
 #[derive(Debug, Clone)]
 struct AgentDeletePlan {
-    workspace_dir: PathBuf,
+    ac_root: PathBuf,
     agent_name: String,
     agent_ref: String,
     origin_dir: PathBuf,
@@ -2104,7 +2104,7 @@ fn collect_agent_delete_plan_guarded(
     agent_path: &Path,
     guard: &TeamConfigMutationGuard,
 ) -> Result<AgentDeletePlan, String> {
-    guard.require_workspace(base)?;
+    guard.require_ac_root(base)?;
     let (agent_name, agent_ref, origin_dir) = resolve_agent_delete_identity(base, agent_path)?;
     let team_mutations = collect_agent_team_mutations_raw(base, &agent_name, &agent_ref)?;
 
@@ -2163,7 +2163,7 @@ fn collect_agent_delete_plan_guarded(
     }
 
     Ok(AgentDeletePlan {
-        workspace_dir: base.to_path_buf(),
+        ac_root: base.to_path_buf(),
         agent_name,
         agent_ref,
         origin_dir,
@@ -2476,7 +2476,7 @@ async fn prepare_agent_delete_metadata(
             .contains_key(&plan.agent_name);
 
     Ok(PreparedAgentDeleteMetadata {
-        workspace_dir: plan.workspace_dir.clone(),
+        ac_root: plan.ac_root.clone(),
         team_mutations: plan.team_mutations.clone(),
         agent_name: plan.agent_name.clone(),
         settings_changed: Arc::new(AtomicBool::new(settings_changed)),
@@ -2502,7 +2502,7 @@ where
         settings,
         team_guard,
         |config_path, json| {
-            write_team_config_json_atomic(&metadata.workspace_dir, team_guard, config_path, json)
+            write_team_config_json_atomic(&metadata.ac_root, team_guard, config_path, json)
         },
         save_settings_fn,
     )
@@ -2521,7 +2521,7 @@ where
     T: FnMut(&Path, &[u8]) -> Result<(), String>,
     S: Fn(&AppSettings) -> Result<AppSettings, String>,
 {
-    team_guard.require_workspace(&metadata.workspace_dir)?;
+    team_guard.require_ac_root(&metadata.ac_root)?;
     metadata.settings_changed.store(false, Ordering::SeqCst);
 
     for mutation in &metadata.team_mutations {
@@ -2622,11 +2622,11 @@ fn restore_team_config_snapshots(
     metadata: &PreparedAgentDeleteMetadata,
     team_guard: &TeamConfigMutationGuard,
 ) -> Result<(), String> {
-    team_guard.require_workspace(&metadata.workspace_dir)?;
+    team_guard.require_ac_root(&metadata.ac_root)?;
     let mut errors = Vec::new();
     for mutation in &metadata.team_mutations {
         if let Err(e) = write_team_config_json_atomic(
-            &metadata.workspace_dir,
+            &metadata.ac_root,
             team_guard,
             &mutation.config_path,
             &mutation.before_json,
@@ -2653,12 +2653,12 @@ fn format_restore_suffix(restore: Result<(), String>) -> String {
 }
 
 fn write_team_config_json_atomic(
-    workspace_dir: &Path,
+    ac_root: &Path,
     team_guard: &TeamConfigMutationGuard,
     config_path: &Path,
     json: &[u8],
 ) -> Result<(), String> {
-    team_guard.require_workspace(workspace_dir)?;
+    team_guard.require_ac_root(ac_root)?;
     crate::config::local_config_io::write_file_atomic(config_path, json)
 }
 
@@ -2707,7 +2707,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
 
     for project_path in &project_paths {
         let base = Path::new(project_path);
-        let Some(workspace_dir) = existing_workspace_dir(base) else {
+        let Some(ac_root) = existing_ac_root(base) else {
             continue;
         };
 
@@ -2717,7 +2717,7 @@ pub async fn list_all_agents(project_paths: Vec<String>) -> Result<Vec<AgentInfo
             .unwrap_or("unknown")
             .to_string();
 
-        let entries = match std::fs::read_dir(&workspace_dir) {
+        let entries = match std::fs::read_dir(&ac_root) {
             Ok(e) => e,
             Err(_) => continue,
         };
@@ -2781,7 +2781,7 @@ pub async fn create_team(
     context_alert_percentages: Option<Vec<u8>>,
 ) -> Result<CreatedEntityResult, String> {
     let safe_name = sanitize_name(&name)?;
-    let base = selected_workspace_dir(Path::new(&project_path))?;
+    let base = selected_ac_root(Path::new(&project_path))?;
     let context_alert_percentages = resolve_context_alert_argument(
         ContextAlertWriteMode::Create,
         context_alert_percentages,
@@ -2831,10 +2831,10 @@ pub async fn create_workgroup(
     if task_title.chars().count() > 256 {
         return Err("Task title is too long (max 256 characters)".to_string());
     }
-    let base = selected_workspace_dir(Path::new(&project_path))?;
+    let base = selected_ac_root(Path::new(&project_path))?;
 
     // Ensure gitignore protects workgroup clones from parent repo operations
-    if let Err(e) = crate::commands::ac_discovery::ensure_workspace_gitignore(&base) {
+    if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
         log::warn!(
             "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
             e
@@ -3020,7 +3020,7 @@ where
     H: FnOnce(&Path) + Send + 'static,
 {
     validate_existing_name(team_name, "Team")?;
-    let base = selected_workspace_dir(Path::new(project_path))?;
+    let base = selected_ac_root(Path::new(project_path))?;
     let team_dir = base.join(format!("_team_{}", team_name));
     if !team_dir.exists() {
         return Err(format!("Team '{}' not found", team_name));
@@ -3054,7 +3054,7 @@ where
             let mut project_gate = acquire_lifecycle_project_gate(&project_root)?;
             after_project_before_team(&base_owned);
             let team_guard = TeamConfigMutationGuard::acquire(&base_owned)?;
-            team_guard.require_workspace(&base_owned)?;
+            team_guard.require_ac_root(&base_owned)?;
 
             // Revalidate the team directory under both guards before the commit.
             match std::fs::symlink_metadata(&team_dir_owned) {
@@ -3190,7 +3190,7 @@ pub async fn delete_workgroup(
 ) -> Result<(), String> {
     validate_existing_name(&workgroup_name, "Workgroup")?;
 
-    let base = selected_workspace_dir(Path::new(&project_path))?;
+    let base = selected_ac_root(Path::new(&project_path))?;
 
     let wg_dir = base.join(&workgroup_name);
     validate_delete_root_not_link_or_reparse(&wg_dir)?;
@@ -3277,7 +3277,7 @@ pub async fn delete_workgroup(
 // via `gated_workgroup_delete_with` and interprets the outcome with
 // `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
 // is retained for tests only.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) async fn delete_workgroup_dir_backend(
     wg_dir: &Path,
     workgroup_name: &str,
@@ -3355,7 +3355,7 @@ pub async fn update_team(
     context_alert_percentages: Option<Vec<u8>>,
 ) -> Result<(), String> {
     validate_existing_name(&team_name, "Team")?;
-    let base = selected_workspace_dir(Path::new(&project_path))?;
+    let base = selected_ac_root(Path::new(&project_path))?;
     let supplied_context_alert_percentages = context_alert_percentages
         .map(|values| normalize_context_alert_percentages(&values))
         .transpose()?;
@@ -3689,7 +3689,7 @@ pub async fn get_team_config(
     team_name: String,
 ) -> Result<TeamConfigResult, String> {
     validate_existing_name(&team_name, "Team")?;
-    let base = selected_workspace_dir(Path::new(&project_path))?;
+    let base = selected_ac_root(Path::new(&project_path))?;
     read_team_config(&base, &team_name)
 }
 
@@ -4285,7 +4285,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// up in `taken` but is never tested by `find` and so cannot displace
 /// slot 1.
 ///
-/// Read-error degradation: if `std::fs::read_dir(workspace_dir)` fails
+/// Read-error degradation: if `std::fs::read_dir(ac_root)` fails
 /// (permission denied, transient I/O, broken junction, path-too-long
 /// on Windows), the function returns `1` as a graceful fallback. The
 /// post-allocate `wg_dir.exists()` guard in `create_workgroup` will
@@ -4293,10 +4293,10 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// `wg-1-{team}` is in fact present; otherwise the slot-1 creation
 /// succeeds with stale state. Surfacing the read error is tracked
 /// separately and is out of scope for #177.
-pub(crate) fn determine_next_wg_number(workspace_dir: &Path) -> u32 {
+pub(crate) fn determine_next_wg_number(ac_root: &Path) -> u32 {
     let mut taken: HashSet<u32> = HashSet::new();
 
-    if let Ok(entries) = std::fs::read_dir(workspace_dir) {
+    if let Ok(entries) = std::fs::read_dir(ac_root) {
         for entry in entries.flatten() {
             if !entry.path().is_dir() {
                 continue;
@@ -4430,12 +4430,12 @@ mod tests {
     // Test-only synchronous wrapper: acquires the mutation guard around
     // write_team_config_guarded.
     pub(crate) fn write_team_config(
-        workspace_dir: &Path,
+        ac_root: &Path,
         team_name: &str,
         config: &TeamConfigResult,
     ) -> Result<PathBuf, String> {
-        let guard = TeamConfigMutationGuard::acquire(workspace_dir)?;
-        write_team_config_guarded(workspace_dir, team_name, config, &guard)
+        let guard = TeamConfigMutationGuard::acquire(ac_root)?;
+        write_team_config_guarded(ac_root, team_name, config, &guard)
     }
 
     /// #1245: the writer and `config::teams::team_members` enforced mutually
@@ -4447,13 +4447,13 @@ mod tests {
     #[test]
     fn team_config_written_by_the_app_passes_the_privileged_validator() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join("proj-a").join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = tmp.path().join("proj-a").join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         std::fs::create_dir_all(&team_dir).expect("team directory");
         for agent in ["tech-lead", "dev-rust"] {
             // `resolve_agent_ref` requires the matrix directory to exist already.
-            std::fs::create_dir_all(workspace_dir.join(format!("_agent_{agent}")))
+            std::fs::create_dir_all(ac_root.join(format!("_agent_{agent}")))
                 .expect("matrix directory");
             let replica = wg_dir.join(format!("__agent_{agent}"));
             std::fs::create_dir_all(&replica).expect("replica directory");
@@ -4470,7 +4470,7 @@ mod tests {
             repos: vec![],
             context_alert_percentages: vec![],
         };
-        let bytes = normalized_team_config_bytes(&workspace_dir, &config)
+        let bytes = normalized_team_config_bytes(&ac_root, &config)
             .expect("the writer requires the coordinator inside `agents`");
         std::fs::write(team_dir.join("config.json"), &bytes).expect("team config");
 
@@ -4488,7 +4488,7 @@ mod tests {
             ..config
         };
         assert_eq!(
-            normalized_team_config_bytes(&workspace_dir, &without_coordinator).unwrap_err(),
+            normalized_team_config_bytes(&ac_root, &without_coordinator).unwrap_err(),
             "Coordinator must be one of the selected agents"
         );
     }
@@ -4557,8 +4557,8 @@ mod tests {
     fn create_agent_matrix_on_disk_creates_full_layout_without_template() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("create .ac");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
@@ -4572,7 +4572,7 @@ mod tests {
         })
         .expect("create matrix");
 
-        let agent_dir = workspace.join("_agent_architect");
+        let agent_dir = ac_root.join("_agent_architect");
         assert_eq!(created.agent_dir, agent_dir);
         assert_eq!(created.safe_name, "architect");
         assert_eq!(created.display_name, "ProjectAlpha/architect");
@@ -4588,11 +4588,11 @@ mod tests {
     }
 
     #[test]
-    fn create_agent_matrix_on_disk_rejects_non_ac_workspace() {
+    fn create_agent_matrix_on_disk_rejects_non_ac_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let invalid_workspace = project.join(".workspace");
-        std::fs::create_dir_all(&invalid_workspace).expect("create invalid workspace");
+        let invalid_ac_root = project.join(".workspace");
+        std::fs::create_dir_all(&invalid_ac_root).expect("create invalid workspace");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
@@ -4607,15 +4607,15 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains(".ac directory not found"));
-        assert!(!invalid_workspace.join("_agent_architect").exists());
+        assert!(!invalid_ac_root.join("_agent_architect").exists());
     }
 
     #[test]
-    fn create_agent_matrix_on_disk_uses_ac_workspace() {
+    fn create_agent_matrix_on_disk_uses_ac_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("create .ac");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
 
@@ -4629,16 +4629,16 @@ mod tests {
         })
         .expect("create matrix");
 
-        assert_eq!(created.agent_dir, workspace.join("_agent_architect"));
+        assert_eq!(created.agent_dir, ac_root.join("_agent_architect"));
     }
 
     #[test]
     fn create_agent_matrix_on_disk_resolves_template_before_mutation() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace_dir = project.join(".ac");
+        let ac_root = project.join(".ac");
         let config_dir = tmp.path().join("config");
-        std::fs::create_dir_all(&workspace_dir).expect("create .ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
         std::fs::create_dir_all(&config_dir).expect("create config");
         let settings = AppSettings::default();
         let project_s = project.to_string_lossy().to_string();
@@ -4655,7 +4655,7 @@ mod tests {
 
         assert!(err.contains("missing"));
         assert!(
-            !workspace_dir.join("_agent_architect").exists(),
+            !ac_root.join("_agent_architect").exists(),
             "invalid template must not create the target matrix directory"
         );
     }
@@ -4664,8 +4664,8 @@ mod tests {
     fn create_agent_matrix_on_disk_existing_root_fails_without_overwrite() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace_dir = project.join(".ac");
-        let agent_dir = workspace_dir.join("_agent_architect");
+        let ac_root = project.join(".ac");
+        let agent_dir = ac_root.join("_agent_architect");
         std::fs::create_dir_all(&agent_dir).expect("create existing matrix root");
         std::fs::write(agent_dir.join("Role.md"), "keep role").expect("write existing role");
         std::fs::write(agent_dir.join("config.json"), "keep config")
@@ -4698,10 +4698,10 @@ mod tests {
     fn create_agent_matrix_on_disk_applies_local_template_and_skills() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace_dir = project.join(".ac");
+        let ac_root = project.join(".ac");
         let config_dir = tmp.path().join("config");
         let template_dir = config_dir.join("agent-templates").join("my-template");
-        std::fs::create_dir_all(&workspace_dir).expect("create .ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
         std::fs::create_dir_all(template_dir.join("skills").join("example"))
             .expect("create template skill dir");
         std::fs::write(
@@ -4765,9 +4765,9 @@ mod tests {
     #[test]
     fn team_config_normalization_stores_portable_agent_refs() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join(".ac");
-        let architect = workspace_dir.join("_agent_architect");
-        let dev_rust = workspace_dir.join("_agent_dev-rust");
+        let ac_root = tmp.path().join(".ac");
+        let architect = ac_root.join("_agent_architect");
+        let dev_rust = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&architect).expect("architect matrix");
         std::fs::create_dir_all(&dev_rust).expect("dev-rust matrix");
 
@@ -4786,7 +4786,7 @@ mod tests {
         };
 
         let normalized =
-            normalize_team_config_for_project(&workspace_dir, &config).expect("normalize config");
+            normalize_team_config_for_project(&ac_root, &config).expect("normalize config");
         assert_eq!(
             normalized.agents,
             vec![
@@ -4804,9 +4804,9 @@ mod tests {
         );
         assert_eq!(normalized.context_alert_percentages, vec![50, 75, 90]);
 
-        write_team_config(&workspace_dir, "dev-team", &config).expect("write config");
+        write_team_config(&ac_root, "dev-team", &config).expect("write config");
         let written =
-            std::fs::read_to_string(workspace_dir.join("_team_dev-team").join("config.json"))
+            std::fs::read_to_string(ac_root.join("_team_dev-team").join("config.json"))
                 .expect("read config");
         assert!(
             !written.contains(&tmp.path().to_string_lossy().to_string()),
@@ -4818,11 +4818,11 @@ mod tests {
     #[test]
     fn team_config_normalization_rejects_filesystem_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join(".ac");
-        std::fs::create_dir_all(workspace_dir.join("_agent_architect")).expect("architect matrix");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir_all(ac_root.join("_agent_architect")).expect("architect matrix");
 
         let absolute_config = TeamConfigResult {
-            agents: vec![workspace_dir
+            agents: vec![ac_root
                 .join("_agent_architect")
                 .to_string_lossy()
                 .to_string()],
@@ -4830,7 +4830,7 @@ mod tests {
             repos: Vec::new(),
             context_alert_percentages: Vec::new(),
         };
-        let err = normalize_team_config_for_project(&workspace_dir, &absolute_config)
+        let err = normalize_team_config_for_project(&ac_root, &absolute_config)
             .expect_err("absolute path refs must be rejected");
         assert!(
             err.contains("filesystem paths"),
@@ -4844,7 +4844,7 @@ mod tests {
             repos: Vec::new(),
             context_alert_percentages: Vec::new(),
         };
-        let err = normalize_team_config_for_project(&workspace_dir, &windows_config)
+        let err = normalize_team_config_for_project(&ac_root, &windows_config)
             .expect_err("windows path refs must be rejected");
         assert!(
             err.contains("filesystem paths"),
@@ -4856,14 +4856,14 @@ mod tests {
     #[test]
     fn replica_creation_rejects_filesystem_agent_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join(".ac");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
-        let matrix_dir = workspace_dir.join("_agent_architect");
+        let ac_root = tmp.path().join(".ac");
+        let wg_dir = ac_root.join("wg-1-dev-team");
+        let matrix_dir = ac_root.join("_agent_architect");
         std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
         std::fs::create_dir_all(&wg_dir).expect("workgroup");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            workspace_dir: workspace_dir.clone(),
+            ac_root: ac_root.clone(),
             wg_dir: wg_dir.clone(),
             agent_path: matrix_dir.to_string_lossy().to_string(),
             team_repos: Vec::new(),
@@ -4925,9 +4925,9 @@ mod tests {
     #[test]
     fn replica_identity_resolves_to_origin_matrix_role_md() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace_dir = tmp.path().join(".ac");
-        let matrix_dir = workspace_dir.join("_agent_alpha");
-        let replica_dir = workspace_dir.join("wg-1-team").join("__agent_alpha");
+        let ac_root = tmp.path().join(".ac");
+        let matrix_dir = ac_root.join("_agent_alpha");
+        let replica_dir = ac_root.join("wg-1-team").join("__agent_alpha");
         std::fs::create_dir_all(&matrix_dir).expect("create matrix_dir");
         std::fs::create_dir_all(&replica_dir).expect("create replica_dir");
 
@@ -4959,9 +4959,9 @@ mod tests {
     fn create_replica_rejects_filesystem_agent_ref() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("AgentsCommander_ac");
-        let workspace = project.join(".ac");
-        let matrix_dir = workspace.join("_agent_tech-lead");
-        let wg_dir = workspace.join("wg-2-dev-team");
+        let ac_root = project.join(".ac");
+        let matrix_dir = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join("wg-2-dev-team");
         std::fs::create_dir_all(&matrix_dir).expect("create matrix");
         std::fs::create_dir_all(&wg_dir).expect("create wg");
         std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
@@ -4974,7 +4974,7 @@ mod tests {
             .replace('\\', "/");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            workspace_dir: workspace,
+            ac_root,
             wg_dir: wg_dir.clone(),
             agent_path: stale_agent_ref,
             team_repos: Vec::new(),
@@ -4996,15 +4996,15 @@ mod tests {
     fn create_replica_writes_expected_local_identity_for_portable_ref() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("AgentsCommander_ac");
-        let workspace = project.join(".ac");
-        let matrix_dir = workspace.join("_agent_tech-lead");
-        let wg_dir = workspace.join("wg-2-dev-team");
+        let ac_root = project.join(".ac");
+        let matrix_dir = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join("wg-2-dev-team");
         std::fs::create_dir_all(&matrix_dir).expect("create matrix");
         std::fs::create_dir_all(&wg_dir).expect("create wg");
         std::fs::write(matrix_dir.join("Role.md"), "# Tech Lead\n").expect("write role");
 
         let replica_dir = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
-            workspace_dir: workspace,
+            ac_root,
             wg_dir,
             agent_path: "_agent_tech-lead".to_string(),
             team_repos: Vec::new(),
@@ -5233,7 +5233,7 @@ mod tests {
         assert!(err.contains("Active"));
     }
 
-    fn create_test_workspace() -> tempfile::TempDir {
+    fn create_test_ac_root() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path().join("Project").join(".ac")).expect("create .ac");
         tmp
@@ -5417,7 +5417,7 @@ mod tests {
 
     #[test]
     fn classified_team_config_reader_reports_stable_error_classes() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
 
         let missing = read_team_config_classified(&base, "missing").expect_err("missing");
@@ -5465,7 +5465,7 @@ mod tests {
 
     #[test]
     fn team_config_writer_round_trips_legacy_and_canonical_alerts() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let legacy_dir = base.join("_team_legacy");
         std::fs::create_dir_all(&legacy_dir).expect("legacy team");
@@ -5495,7 +5495,7 @@ mod tests {
 
     #[test]
     fn invalid_new_team_alerts_have_no_team_directory_side_effects() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let team_dir = base.join("_team_invalid-create");
 
@@ -5520,7 +5520,7 @@ mod tests {
 
     #[test]
     fn existing_team_publish_failure_keeps_prior_bytes_and_artifacts() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let team_dir =
             create_new_team_config_on_disk(&base, "publish-failure", &empty_team_config(vec![50]))
@@ -5568,7 +5568,7 @@ mod tests {
 
     #[test]
     fn explicit_alert_value_repairs_product_invalid_existing_config() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let team_dir = base.join("_team_repair");
         std::fs::create_dir_all(&team_dir).expect("team");
@@ -5598,7 +5598,7 @@ mod tests {
 
     #[test]
     fn team_config_guard_serializes_threads_and_releases_on_drop() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let first = TeamConfigMutationGuard::acquire(&base).expect("first guard");
         let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -5633,7 +5633,7 @@ mod tests {
     }
 
     #[test]
-    fn team_config_guard_rejects_wrong_workspace_and_bad_sentinel() {
+    fn team_config_guard_rejects_wrong_ac_root_and_bad_sentinel() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root_a = tmp.path().join("a");
         let root_b = tmp.path().join("b");
@@ -5661,7 +5661,7 @@ mod tests {
 
     #[test]
     fn held_team_config_lock_times_out_without_writing_and_is_reacquirable() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let team_dir =
             create_new_team_config_on_disk(&base, "timeout", &empty_team_config(vec![50]))
@@ -5694,7 +5694,7 @@ mod tests {
 
     #[test]
     fn delete_and_update_linearize_without_recreating_deleted_team() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         create_new_team_config_on_disk(&base, "race", &empty_team_config(vec![50]))
             .expect("create team");
@@ -5756,7 +5756,7 @@ mod tests {
                 .expect("legacy update write");
         }
 
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         create_test_agent(&base, "alpha", "Alpha");
         create_test_agent(&base, "beta", "Beta");
@@ -5793,10 +5793,10 @@ mod tests {
     #[test]
     fn team_config_guard_rejects_reparse_sentinel_escape() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
+        let ac_root = tmp.path().join("workspace");
         let outside = tmp.path().join("outside");
-        let sentinel = workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let sentinel = ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
+        std::fs::create_dir_all(&ac_root).expect("workspace");
         std::fs::create_dir_all(&outside).expect("outside");
         let output = std::process::Command::new("cmd")
             .args([
@@ -5817,7 +5817,7 @@ mod tests {
             return;
         }
 
-        let err = TeamConfigMutationGuard::acquire(&workspace).expect_err("reparse escape");
+        let err = TeamConfigMutationGuard::acquire(&ac_root).expect_err("reparse escape");
         assert!(err.contains("regular non-link file"));
     }
 
@@ -5827,14 +5827,14 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
+        let ac_root = tmp.path().join("workspace");
         let outside = tmp.path().join("outside.lock");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&ac_root).expect("workspace");
         std::fs::write(&outside, b"").expect("outside lock");
-        symlink(&outside, workspace.join(TEAM_CONFIG_MUTATION_LOCK_NAME))
+        symlink(&outside, ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME))
             .expect("symlink sentinel");
 
-        let err = TeamConfigMutationGuard::acquire(&workspace).expect_err("symlink escape");
+        let err = TeamConfigMutationGuard::acquire(&ac_root).expect_err("symlink escape");
         assert!(err.contains("regular non-link file"));
         assert_eq!(std::fs::read(&outside).expect("outside bytes"), b"");
     }
@@ -5958,7 +5958,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_delete_metadata_precondition_mismatch_aborts_without_writes() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let (config_path, before) = write_team_value(
             &base,
@@ -5972,7 +5972,7 @@ mod tests {
         let mut after = before.clone();
         after.extend_from_slice(b"\n");
         let metadata = PreparedAgentDeleteMetadata {
-            workspace_dir: base.clone(),
+            ac_root: base.clone(),
             team_mutations: vec![AgentTeamMutation {
                 team_name: "dev-team".to_string(),
                 config_path: config_path.clone(),
@@ -6012,7 +6012,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_create_under_agent_target_blocks_delete_and_rolls_back() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
@@ -6137,7 +6137,7 @@ mod tests {
 
     #[test]
     fn delete_agent_plan_uses_path_slug_not_role_display_name() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Displayed Rust Agent");
 
@@ -6150,7 +6150,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_unreferenced_origin_only_prunes_settings() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let mut settings = AppSettings::default();
@@ -6200,7 +6200,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_cascade_removes_team_repo_refs_and_replicas() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         create_test_agent(&base, "architect", "Architect");
@@ -6251,7 +6251,7 @@ mod tests {
 
     #[test]
     fn raw_agent_delete_preserves_unknown_keys_and_sorts_populated_alerts() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_path, _) = write_team_value(
@@ -6307,7 +6307,7 @@ mod tests {
         ];
 
         for (index, invalid) in invalid_values.into_iter().enumerate() {
-            let tmp = create_test_workspace();
+            let tmp = create_test_ac_root();
             let base = test_base(&tmp);
             let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
             let (config_path, before) = write_team_value(
@@ -6332,7 +6332,7 @@ mod tests {
 
     #[test]
     fn raw_agent_delete_leaves_unrelated_invalid_alert_config_untouched() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_path, before) = write_team_value(
@@ -6354,7 +6354,7 @@ mod tests {
 
     #[test]
     fn delete_agent_coordinator_blocks_and_touches_nothing() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_path, before) = write_team_value(
@@ -6377,7 +6377,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn delete_agent_case_mismatched_coordinator_blocks_on_windows() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "DevRust", "Dev Rust");
         write_team_value(
@@ -6398,7 +6398,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn delete_agent_case_mismatched_refs_are_pruned_on_windows() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "DevRust", "Dev Rust");
         let config_path = write_team_value(
@@ -6432,7 +6432,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_unrelated_stale_team_ref_does_not_block() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-docs", "Dev Docs");
         write_team_value(
@@ -6456,7 +6456,7 @@ mod tests {
 
     #[test]
     fn delete_agent_relevant_invalid_team_config_blocks_and_touches_nothing() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-docs", "Dev Docs");
         let team_dir = base.join("_team_dev-team");
@@ -6475,7 +6475,7 @@ mod tests {
 
     #[test]
     fn delete_agent_invalid_team_config_uses_token_match_not_substring() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev", "Dev");
         let team_dir = base.join("_team_dev-team");
@@ -6490,7 +6490,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_live_origin_session_blocks() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let manager = test_manager();
@@ -6508,7 +6508,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_live_replica_session_blocks() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
@@ -6529,7 +6529,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_post_stage_live_session_recheck_rolls_back() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let real_base = test_base(&tmp);
         let agent_dir = create_test_agent(&real_base, "dev-rust", "Dev Rust");
         let marker = real_base.join("marker");
@@ -6588,7 +6588,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_orphan_replica_removed() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let replica = base.join("wg-1-dev-team").join("__agent_dev-rust");
@@ -6612,7 +6612,7 @@ mod tests {
         std::fs::create_dir_all(&first).expect("first");
         std::fs::create_dir_all(&second).expect("second");
         let plan = AgentDeletePlan {
-            workspace_dir: tmp.path().to_path_buf(),
+            ac_root: tmp.path().to_path_buf(),
             agent_name: "dev-rust".to_string(),
             agent_ref: "_agent_dev-rust".to_string(),
             origin_dir: first.clone(),
@@ -6662,7 +6662,7 @@ mod tests {
         std::fs::create_dir_all(&first).expect("first");
         std::fs::create_dir_all(&second).expect("second");
         let plan = AgentDeletePlan {
-            workspace_dir: tmp.path().to_path_buf(),
+            ac_root: tmp.path().to_path_buf(),
             agent_name: "dev-rust".to_string(),
             agent_ref: "_agent_dev-rust".to_string(),
             origin_dir: first.clone(),
@@ -6710,7 +6710,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_metadata_team_write_failure_restores_configs_and_rolls_back_dirs() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_a, before_a) = write_team_value(
@@ -6773,7 +6773,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_agent_metadata_settings_save_failure_restores_configs_and_rolls_back_dirs() {
-        let tmp = create_test_workspace();
+        let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_path, before_config) = write_team_value(
@@ -7437,12 +7437,12 @@ mod tests {
     fn create_agent_matrix_from_role_writes_role_bytes_exactly() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("workspace");
         let role_bytes = b"\xEF\xBB\xBF# Variant\r\n\r\nKeep bytes.\r\n";
 
         let created = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
-            workspace_dir: &workspace,
+            ac_root: &ac_root,
             safe_name: "tech-lead-control",
             role_bytes,
         })
@@ -7466,12 +7466,12 @@ mod tests {
     fn create_agent_matrix_from_role_rejects_existing_target() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(workspace.join("_agent_tech-lead-control"))
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("_agent_tech-lead-control"))
             .expect("existing target");
 
         let err = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
-            workspace_dir: &workspace,
+            ac_root: &ac_root,
             safe_name: "tech-lead-control",
             role_bytes: b"# Role\n",
         })
@@ -7484,18 +7484,18 @@ mod tests {
     fn create_agent_matrix_from_role_requires_slug_identity() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
-        let workspace = project.join(".ac");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("workspace");
 
         let err = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
-            workspace_dir: &workspace,
+            ac_root: &ac_root,
             safe_name: "Tech Lead",
             role_bytes: b"# Role\n",
         })
         .unwrap_err();
 
         assert!(err.contains("lowercase slug"), "unexpected error: {}", err);
-        assert!(!workspace.join("_agent_Tech Lead").exists());
+        assert!(!ac_root.join("_agent_Tech Lead").exists());
     }
 
     // ── #621 workgroup-delete clock + cache cleanup (integration) ─────────────

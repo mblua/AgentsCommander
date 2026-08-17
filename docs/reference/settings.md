@@ -252,7 +252,7 @@ Both are manual-only (no UI) and are read from the in-memory settings, so an edi
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
 | `coordSortByActivity` | bool | `false` | Sort the coordinator quick-access list by most-recent activity. |
-| `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. |
+| `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows-only. See [Screenshot capture](../features/screenshot-capture.md). |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected workgroup visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
@@ -315,6 +315,73 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | `webServerEnabled` | bool | `false` | Enable the embedded HTTP / WebSocket server. |
 | `webServerPort` | u16 | platform-default per binary suffix | Listening port. |
 | `webServerBind` | string | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` only if you understand the implications. |
+
+#### Web Remote Access on a trusted LAN
+
+Web Remote Access is the embedded HTTP/WebSocket listener controlled by the
+`webServer*` settings. It is not the Control-plane API for Docker or
+distributed agents. The API's IP/ADDRESS display and `apiServerEnabled`,
+`apiServerBind`, and `apiServerPort` do not configure the web listener.
+
+The safe defaults remain `webServerEnabled: false` and
+`webServerBind: "127.0.0.1"`. External access is an explicit opt-in, and it
+exposes live terminal content to every party that can reach and authenticate to
+the listener.
+
+To configure Web Remote Access for a trusted LAN:
+
+1. Close AC. Use the [File location](#file-location) section above to find the
+   per-instance `settings.json` next to the binary. Do not edit a global or
+   shared `.ac/` file.
+2. Change only the existing `webServerBind` and `webServerPort` keys. Do not
+   replace the whole JSON document. Substitute the host's real private LAN
+   IPv4 address and the listening port you chose:
+
+   ```json
+   {
+     "webServerBind": "192.168.1.42",
+     "webServerPort": 9877
+   }
+   ```
+
+   A concrete private LAN address is preferred because it limits the listener
+   to the intended network adapter. `0.0.0.0` listens on every available
+   interface and is not the recommended LAN configuration. If an experienced
+   operator deliberately uses it, make the firewall scope even more
+   restrictive. `9877` is only an example: named binary instances can have
+   different profile-aware defaults.
+3. Restart AC so the manual values take effect. Then use the existing Web
+   Remote Access enable/start control to turn on the web listener. This does
+   not add a bind or port UI, and the adjacent Control-plane API controls do
+   not configure Web Remote Access.
+
+If the host firewall blocks the trusted LAN client, create an inbound rule for
+the selected TCP `webServerPort` only. Limit it to the Private profile, the
+selected local LAN address and port, and the intended client IP address or
+subnet as the remote scope. Do not use an Any-profile, Any-remote-address,
+public-network, or internet-facing rule. A firewall rule permits network
+reachability; it does not authenticate a user.
+
+The per-instance `web-token.txt` file is the Web Remote Access credential. It
+is separate from the CLI `master-token.txt` file and from Control-plane API
+client tokens. Treat it, and any URL or browser state that carries it, as a
+password: use it only with a trusted client, never commit it, paste it into
+tickets, chat, logs, or screenshots, and never use it as a firewall substitute.
+Use the existing local Web Remote Access flow to obtain and authenticate with
+the token. Do not invent a URL parameter or token-rotation procedure.
+
+After starting Web Remote Access, verify on the host that a listener exists on
+the chosen `<LAN-IP>:<webServerPort>`. From a second trusted device on the
+allowed LAN, browse to that host and port, complete the normal web-token
+authentication, and confirm that the expected terminal session is visible. If
+the remote connection fails while the local listener is correct, re-check the
+selected private address, port, network profile, firewall remote scope, and
+that both devices are on the same trusted LAN.
+
+Terminal content can contain passwords, tokens, source code, prompts, and
+personal data. Web Remote Access performs no automatic redaction. Leave the
+listener off when you do not need it, and remove or disable the narrowly scoped
+firewall allowance when finished.
 
 ### Control-plane API server (opt-in)
 

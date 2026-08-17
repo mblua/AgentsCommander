@@ -342,7 +342,8 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
         // no new group); on timeout the whole tree dies with one group kill.
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
+            // `tokio::process::Command` exposes this as an inherent method on
+            // Unix, mirroring `creation_flags` above (no trait import needed).
             command.process_group(0);
         }
 
@@ -430,7 +431,15 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
                         // arrived" is not an option; a second bounded join
                         // recovers the FULL tail once the tree is dead.
                         if let Some(job) = job.take() {
+                            // Windows: dropping the handle closes the job, and
+                            // KILL_ON_JOB_CLOSE reaps the lingering tree member.
+                            // Off Windows `JobObject::for_child` always returns
+                            // `None` (`pty::job::stub_impl`), so this arm is
+                            // unreachable and the stub has no `Drop` to call.
+                            #[cfg(windows)]
                             drop(job);
+                            #[cfg(not(windows))]
+                            let _ = job;
                         }
                         #[cfg(unix)]
                         // SAFETY: `-pid` is the process group created by
@@ -617,6 +626,22 @@ pub async fn run_startup_updates(app: AppHandle, gate: Arc<AgentUpdateGate>) {
     let _ = app.emit("agent_updates_started", ());
     guard.emit_finished = true;
 
+    // #1341 - the prompt phase was log-silent, which hid the startup freeze
+    // (the prompt expired unseen at PROMPT_TIMEOUT while the setup thread was
+    // blocked inside the restore block_on). Info-level visibility from here.
+    if !plan.prompts.is_empty() {
+        log::info!(
+            "[agent-update] prompt phase started: {} command(s) await SI/NO ({}s each, default No): [{}]",
+            plan.prompts.len(),
+            PROMPT_TIMEOUT.as_secs(),
+            plan.prompts
+                .iter()
+                .map(|p| p.command.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     // 3. Prompt phase: SEQUENTIAL, catalog order, one modal at a time.
     let mut updates: Vec<UpdateTarget> = plan.updates;
     for pending in &plan.prompts {
@@ -627,6 +652,12 @@ pub async fn run_startup_updates(app: AppHandle, gate: Arc<AgentUpdateGate>) {
                 command: pending.command.clone(),
                 label: pending.label.clone(),
             },
+        );
+        log::info!(
+            "[agent-update] prompting for '{}' ({}) - awaiting SI/NO ({}s, default No)",
+            pending.command,
+            pending.label,
+            PROMPT_TIMEOUT.as_secs()
         );
         match tokio::time::timeout(PROMPT_TIMEOUT, rx).await {
             Ok(Ok(true)) => updates.push(pending.clone()), // answer command already persisted true
@@ -1073,5 +1104,38 @@ mod tests {
             }
             assert!(marker.exists(), "Unix survivor must write the marker");
         }
+    }
+
+    #[tokio::test]
+    async fn pending_prompt_release_requires_only_concurrent_runtime_work() {
+        // #1341: pins the cooperative gate-release invariant the spawned
+        // restore task relies on (the answerer task is the `agent_update_answer`
+        // command; the waiter is the restore wake; both must progress on the
+        // same runtime without the main thread doing anything). It does NOT
+        // reproduce the #1341 freeze itself (the gate was cooperative pre-fix;
+        // the bug was the lib.rs setup `block_on`, unreachable from a unit
+        // test) - the freeze regression net is AC2 + AC8 + AC9 + AC11. If the
+        // gate wait were ever made thread-blocking, this test would hang on the
+        // single-threaded tokio test runtime and the timeout would fail.
+        let gate = Arc::new(AgentUpdateGate::new());
+        gate.mark_started();
+        let _rx = gate.register_prompt("claude", "Claude");
+        let waiter = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            async move { gate.wait_until_done().await }
+        });
+        let answerer = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            async move {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                assert!(gate.resolve_answer("claude", false), "prompt must still be pending");
+                gate.mark_finished(vec![]);
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("gate waiter must be released by concurrent runtime work")
+            .expect("waiter ok");
+        answerer.await.expect("answerer ok");
     }
 }

@@ -205,8 +205,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
         s
     }));
     let git_app = Box::leak(Box::new(
-        tauri::Builder::default()
-            .any_thread()
+        agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("git handle app"),
     ));
@@ -229,8 +228,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     let selection_coordinator =
         SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
 
-    let app = tauri::Builder::default()
-        .any_thread()
+    let app = agentscommander_lib::test_support::test_builder()
         .manage(MasterToken::new("wake-consume-master".into()))
         .manage(AppOutbox::new(
             repo_root.join(".app-outbox").to_string_lossy().to_string(),
@@ -435,14 +433,17 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
         .is_some_and(|a| a < STARTUP_THRESHOLD)
     {
         // Starting: route to the sustained-idle settle, mirroring prod's #611 path
-        // (cold-spawn params: 90s cap, 2s hold). FIDELITY CAVEAT (grinch F2): this
-        // wait_for_settle proxy is STRICTER than prod's idle-only settle_until_ready
-        // (it also requires rendered content), so it injects LATER and is LESS likely
-        // to drop. It can therefore HIDE a drop the earlier-injecting shipped gate
-        // would take; it does NOT prove the shipped Starting gate drop-free. The
-        // Starting gate's real validation is #611's production track record - it is
-        // the same idle-only sustained settle already shipped for cold-spawn - not
-        // this harness arm.
+        // (cold-spawn params: 90s cap, 2s hold). FIDELITY CAVEAT (grinch F2, revised
+        // for #1388): the proxy now matches prod's DEFINITION - settle_until_ready
+        // gates on idle AND rendered, which is what this arm already did. The residual
+        // gap is narrower and different: this proxy's rendered check is
+        // `nonblank_lines(strip_ansi(snapshot)) > 0` (see wait_for_settle / screen_text),
+        // whereas prod uses `screen_shows_visible_content` over the live vt100 screen,
+        // which also counts an inverse or coloured-background cell whose glyph is a
+        // space. The two therefore differ on a screen whose only visible content is
+        // coloured or inverse whitespace: prod calls that rendered, this proxy does
+        // not. The proxy still injects NO EARLIER than prod, so it still cannot prove
+        // the shipped Starting gate drop-free.
         let deadline = Instant::now() + Duration::from_secs(90);
         wait_for_settle(ctx, id, Duration::from_millis(2000), deadline).await;
         return;

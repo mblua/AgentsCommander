@@ -4,7 +4,7 @@ These checks are fallback evidence for filesystem behavior that may be blocked b
 
 ## Scope And Safety
 
-Run every manual check inside a fresh temp root that you create only for that check. Do not run these commands inside a real project, user profile, repository checkout, or shared workspace.
+Run every manual check inside a fresh temp root that you create only for that check. Do not run these commands inside a real project, user profile, repository checkout, or shared working directory.
 
 Recommended temp root pattern:
 

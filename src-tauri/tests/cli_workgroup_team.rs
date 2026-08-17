@@ -161,10 +161,10 @@ fn assert_outside_sentinel_survives(sentinel: &Path) {
 
 fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let project = tmp.join("ProjectAlpha");
-    let workspace_dir = project.join(".ac");
-    std::fs::create_dir_all(&workspace_dir).expect("create .ac");
+    let ac_root = project.join(".ac");
+    std::fs::create_dir_all(&ac_root).expect("create .ac");
     for agent in agents {
-        let dir = workspace_dir.join(format!("_agent_{}", agent));
+        let dir = ac_root.join(format!("_agent_{}", agent));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
         std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
     }
@@ -210,6 +210,7 @@ fn run_fail(bin: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+#[cfg(target_os = "windows")]
 fn run_fail_output(bin: &Path, args: &[&str]) -> (String, String) {
     let out = Command::new(bin).args(args).output().expect("spawn");
     assert!(

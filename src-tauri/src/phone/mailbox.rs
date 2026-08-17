@@ -107,7 +107,7 @@ impl InternalSystemTarget {
                     e
                 )
             })?;
-        let layout = crate::config::workspace::wg_replica_layout_from_agent_dir(&canonical)?
+        let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&canonical)?
             .ok_or_else(|| {
                 format!(
                     "Internal system target replica '{}' is not a canonical workgroup replica",
@@ -301,13 +301,13 @@ fn canonical_cwd_owned_by_replica(cwd: &str, replica_dir: &Path) -> Result<bool,
     let Some(lexical_workgroup) = lexical_replica.parent() else {
         return Ok(false);
     };
-    let Some(lexical_workspace) = lexical_workgroup.parent() else {
+    let Some(lexical_ac_root) = lexical_workgroup.parent() else {
         return Ok(false);
     };
     for (path, label) in [
         (lexical_replica, "replica"),
         (lexical_workgroup, "workgroup"),
-        (lexical_workspace, "Project AC Root"),
+        (lexical_ac_root, "Project AC Root"),
     ] {
         let metadata = std::fs::symlink_metadata(path).map_err(|error| {
             format!(
@@ -750,7 +750,7 @@ fn validate_root_sender_payload_with_root_dir(
 /// Uses `to_str()` (NOT `to_string_lossy()`) for parity with
 /// `list_peers::detect_wg_replica`. The shared
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
-/// `config::workspace::wg_replica_layout_from_agent_dir` (single source with
+/// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
 /// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
@@ -771,7 +771,7 @@ fn derive_project_from_outbox_path(outbox_file: &Path) -> Result<Option<String>,
     let Some(agent_dir) = local_dir.parent() else {
         return Ok(None);
     };
-    match crate::config::workspace::wg_replica_layout_from_agent_dir(agent_dir)? {
+    match crate::config::ac_root::wg_replica_layout_from_agent_dir(agent_dir)? {
         Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
         None => Ok(None),
     }
@@ -1323,8 +1323,11 @@ pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) ->
 /// `idle_since` (the instant the session was first seen continuously idle, or
 /// `None` if it is currently busy / has not yet been observed idle) and returns
 /// the next `idle_since` plus whether idle has now held for `settle`:
-/// - busy (`waiting_for_input == false`) resets the clock to `None`: a late
-///   startup render restarts the settle window.
+/// - not ready (`waiting_for_input == false`) resets the clock to `None`: a late
+///   startup render restarts the settle window. #1388: the cold-spawn caller now
+///   passes the composed `wake_settle_ready`, so `false` also means "idle with a
+///   blank screen", and the reset makes the settle window measure idle-AND-rendered
+///   held continuously.
 /// - idle starts (or keeps) the clock; once `now - idle_since >= settle` the
 ///   caller may inject.
 pub(crate) fn next_sustained_idle_state(
@@ -1458,21 +1461,38 @@ pub(crate) enum LiveWakeRoute {
     Established,
 }
 
+/// #1388 - the readiness input for the cold-spawn wake settle.
+///
+/// Idle ALONE is satisfied by a child that has painted nothing: `IdleDetector`
+/// seeds activity at spawn (`idle_detector.rs:128-145`) and the watcher flips a
+/// silent session idle after `idle_threshold`, so a stalled start satisfies an
+/// idle-only gate FASTER than a healthy one. Requiring a rendered cell as well
+/// closes that. Both conditions are re-evaluated every tick and fed to
+/// `next_sustained_idle_state`, which resets the clock when this returns false,
+/// so the settle window measures idle-AND-rendered held continuously - not two
+/// conditions that were each true at some point.
+pub(crate) fn wake_settle_ready(
+    waiting_for_input: bool,
+    has_rendered_visible_content: bool,
+) -> bool {
+    waiting_for_input && has_rendered_visible_content
+}
+
 /// (#1001 PR2 / B) Pure per-tick decision for the COLD-SPAWN settle loop, so the
 /// sustained-idle + inject-anyway-cap policy is unit-testable without timers. The
-/// cold-spawn path gates on `SessionManager.waiting_for_input` (a freshly spawned
+/// cold-spawn path gates on the composed `wake_settle_ready` (#1388: idle AND
+/// rendered, not `SessionManager.waiting_for_input` alone - a freshly spawned
 /// session has no meaningful `activity_age` during startup churn); the live path
 /// uses `live_settle_action` on real-time `activity_age` instead (grinch P1).
 pub(crate) fn settle_tick(
-    waiting_for_input: bool,
+    ready: bool,
     idle_since: Option<std::time::Instant>,
     now: std::time::Instant,
     settle: std::time::Duration,
     elapsed: std::time::Duration,
     max_wait: std::time::Duration,
 ) -> (Option<std::time::Instant>, SettleAction) {
-    let (next_idle_since, settled) =
-        next_sustained_idle_state(waiting_for_input, idle_since, now, settle);
+    let (next_idle_since, settled) = next_sustained_idle_state(ready, idle_since, now, settle);
     if settled {
         return (next_idle_since, SettleAction::InjectNow);
     }
@@ -3114,7 +3134,7 @@ impl MailboxPoller {
         } else {
             let sender = crate::config::teams::verify_pty_input_coordinator_root(root).ok()?;
             sender
-                .workspace_identity
+                .ac_root_identity
                 .canonical_path
                 .parent()
                 .and_then(|path| {
@@ -3308,7 +3328,7 @@ impl MailboxPoller {
                 Err(_) => return false,
             };
             sender
-                .workspace_identity
+                .ac_root_identity
                 .canonical_path
                 .parent()
                 .and_then(|path| {
@@ -4098,7 +4118,7 @@ impl MailboxPoller {
         if let Ok(sender) = crate::config::teams::verify_pty_input_replica_cwd(Path::new(
             &authority.working_directory,
         )) {
-            if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+            if let Some(project_path) = sender.ac_root_identity.canonical_path.parent() {
                 let project = project_path
                     .to_str()
                     .map(crate::path_utils::normalize_windows_verbatim_path)?;
@@ -5333,7 +5353,7 @@ impl MailboxPoller {
             &session.working_directory,
         ))
         .ok()?;
-        if let Some(project_path) = sender.workspace_identity.canonical_path.parent() {
+        if let Some(project_path) = sender.ac_root_identity.canonical_path.parent() {
             let project = project_path
                 .to_str()
                 .map(crate::path_utils::normalize_windows_verbatim_path)?;
@@ -7603,7 +7623,10 @@ impl MailboxPoller {
     /// (bias-to-deliver). `initial_idle_since` seeds the settle: the live path
     /// credits real idle age so a ready session is not delayed; cold-spawn passes
     /// None. Never drops a delivery: on `max_wait` it injects anyway. Errs only if
-    /// the session was destroyed mid-settle. It reads and decides BEFORE sleeping,
+    /// the session was destroyed mid-settle, or (#1388/E8) has already exited. It
+    /// gates on `wake_settle_ready` (idle AND rendered), not on idle alone, so a
+    /// child that paints nothing no longer settles faster than a healthy one.
+    /// It reads and decides BEFORE sleeping,
     /// so a seeded already-ready session injects with zero added latency; the
     /// cold-spawn sustained-idle requirement is unchanged.
     async fn settle_until_ready<R: tauri::Runtime>(
@@ -7620,12 +7643,36 @@ impl MailboxPoller {
         let mut idle_since = initial_idle_since;
 
         loop {
+            // #1388: first condition, read in its own scope so the std Mutex guard is
+            // dropped before the await below - the guard is not Send, so this is enforced
+            // by the compiler rather than by convention. `try_state` (not `state`) mirrors
+            // the IdleDetector read in `settle_live_before_inject` (:7719): a missing
+            // manager is "no claim", not "not rendered", and must not gate.
+            let rendered = match app.try_state::<Arc<Mutex<PtyManager>>>() {
+                Some(pty_mgr) => match pty_mgr.lock() {
+                    Ok(pty) => pty.has_rendered_visible_content(session_id),
+                    Err(_) => true,
+                },
+                None => true,
+            };
+
             // Read the flag under a short-lived lock; never hold it across the
             // pure decision or the sleep below.
             let waiting = {
                 let mgr = session_mgr.read().await;
                 let sessions = mgr.list_sessions().await;
                 match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    // #1388/E8: a child that already exited can never satisfy the render
+                    // condition, so without this it would hold the single global delivery
+                    // lane for the full 90s and delay shutdown with it. Treated like the
+                    // vanished case below: stop settling and let the caller's existing
+                    // error path run.
+                    Some(s) if matches!(s.status, SessionStatus::Exited(_)) => {
+                        return Err(format!(
+                            "Session {} exited before message injection",
+                            session_id
+                        ));
+                    }
                     Some(s) => s.waiting_for_input,
                     None => {
                         return Err(format!(
@@ -7635,10 +7682,11 @@ impl MailboxPoller {
                     }
                 }
             };
+            let ready = wake_settle_ready(waiting, rendered);
 
             let was_settling = idle_since.is_some();
             let (next_idle_since, action) = settle_tick(
-                waiting,
+                ready,
                 idle_since,
                 std::time::Instant::now(),
                 settle,
@@ -7651,17 +7699,21 @@ impl MailboxPoller {
                 SettleAction::InjectNow => {
                     if start.elapsed() >= max_wait {
                         log::warn!(
-                            "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway",
-                            session_id
+                            "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway (waiting_for_input={}, rendered={})",
+                            session_id,
+                            waiting,
+                            rendered
                         );
                     }
                     return Ok(());
                 }
                 SettleAction::Wait => {
-                    if was_settling && !waiting {
+                    if was_settling && !ready {
                         log::info!(
-                            "[mailbox] wake: session {} went busy during settle; re-waiting",
-                            session_id
+                            "[mailbox] wake: session {} left the settle window during settle (waiting_for_input={}, rendered={}); re-waiting",
+                            session_id,
+                            waiting,
+                            rendered
                         );
                     }
                     tokio::time::sleep(poll).await;
@@ -10465,12 +10517,12 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let Some(workspace_dir) =
-                            crate::config::workspace::existing_workspace_dir(&dir)
+                        let Some(ac_root) =
+                            crate::config::ac_root::existing_ac_root(&dir)
                         else {
                             continue;
                         };
-                        let candidate = workspace_dir.join(wg_name).join(&replica_dir);
+                        let candidate = ac_root.join(wg_name).join(&replica_dir);
                         if candidate.is_dir() {
                             record_match(&candidate.to_string_lossy(), &mut matches);
                             // Within a single `rp`, first hit is the unique hit —
@@ -11865,11 +11917,11 @@ mod tests {
     ) -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -12024,11 +12076,11 @@ mod tests {
     fn make_mailbox_fixture() -> MailboxFixture {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let sender_cwd = wg_dir.join("__agent_tech-lead");
         let target_cwd = wg_dir.join("__agent_dev-rust");
 
@@ -15360,6 +15412,43 @@ mod tests {
         );
     }
 
+    /// #1388, T1 - the composed readiness input requires BOTH conditions.
+    ///
+    /// The suite's only genuinely new assertion. It does not verify the wiring: the
+    /// composition happens here, in the test, and `settle_tick` is a free function that
+    /// cannot observe what `settle_until_ready` passes it. Criteria C1 and C2 carry that.
+    #[test]
+    fn wake_settle_ready_requires_both() {
+        assert!(wake_settle_ready(true, true));
+        assert!(!wake_settle_ready(true, false), "idle but nothing painted");
+        assert!(!wake_settle_ready(false, true), "painted but still busy");
+        assert!(!wake_settle_ready(false, false));
+    }
+
+    /// #1388, T3 - a `settle_tick` regression test for one uncovered input combination
+    /// (`ready == false` with `elapsed >= max_wait`), NOT evidence this change works.
+    ///
+    /// The existing pair covers `true`/over-cap and `false`/zero-elapsed. Decision 4.1 is
+    /// a decision NOT to change `settle_tick`, already pinned by
+    /// `settle_tick_caps_and_injects_anyway`, which must stay green unmodified.
+    #[test]
+    fn settle_tick_caps_when_not_ready() {
+        let now = std::time::Instant::now();
+        let (_, action) = settle_tick(
+            false,
+            Some(now),
+            now,
+            Duration::from_millis(2000),
+            Duration::from_secs(91),
+            Duration::from_secs(90),
+        );
+        assert_eq!(
+            action,
+            SettleAction::InjectNow,
+            "cap must never drop a delivery, not even for a never-rendered session"
+        );
+    }
+
     // live_settle_action gates the LIVE path on real-time activity_age (grinch P1),
     // never the lagged waiting_for_input. idle_threshold 2500ms, settle 3500ms.
     const LSA_IDLE_THRESHOLD: Duration = Duration::from_millis(2500);
@@ -17416,9 +17505,9 @@ mod tests {
     fn make_self_switch_fixture() -> SelfSwitchFixture {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let origin = workspace.join("_agent_dev-rust");
-        let wg_dir = workspace.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let origin = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let replica = wg_dir.join("__agent_dev-rust");
 
         std::fs::create_dir_all(&origin).unwrap();
@@ -21540,11 +21629,11 @@ mod tests {
     /// peer. Returns the sender CWD and peer CWD.
     fn setup_purge_fixture(temp: &tempfile::TempDir, wg_suffix: &str) -> (PathBuf, PathBuf) {
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
+        let ac_root = project.join(".ac");
         let team_name = format!("_team_{}", wg_suffix);
-        let team_dir = workspace.join(&team_name);
-        let origin_tl = workspace.join("_agent_tech-lead");
-        let wg_dir = workspace.join(format!("wg-1-{}", wg_suffix));
+        let team_dir = ac_root.join(&team_name);
+        let origin_tl = ac_root.join("_agent_tech-lead");
+        let wg_dir = ac_root.join(format!("wg-1-{}", wg_suffix));
         let sender_cwd = wg_dir.join("__agent_tech-lead");
         let peer_cwd = wg_dir.join("__agent_dev-rust");
         for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
@@ -21656,9 +21745,9 @@ mod tests {
         // Without this, the forged WG doesn't exist and the message is
         // rejected by WG resolution, not by the F-7 guard.
         let project = temp.path().join("proj-a");
-        let workspace = project.join(".ac");
-        let other_team_dir = workspace.join("_team_other-team");
-        let other_wg_dir = workspace.join("wg-1-other-team");
+        let ac_root = project.join(".ac");
+        let other_team_dir = ac_root.join("_team_other-team");
+        let other_wg_dir = ac_root.join("wg-1-other-team");
         let other_sender_cwd = other_wg_dir.join("__agent_tech-lead");
         let other_peer_cwd = other_wg_dir.join("__agent_dev-rust");
         for d in [&other_team_dir, &other_sender_cwd, &other_peer_cwd] {

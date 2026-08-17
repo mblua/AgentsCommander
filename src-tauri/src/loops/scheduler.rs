@@ -15,7 +15,7 @@ use crate::config::loops::{
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
-use crate::config::workspace::existing_workspace_dir;
+use crate::config::ac_root::existing_ac_root;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
 use crate::loops::events::emit_loop_change;
 use crate::shutdown::ShutdownSignal;
@@ -66,13 +66,13 @@ impl LoopScheduler {
         loop_id: String,
     ) -> Result<LoopConfigDetails, String> {
         let _guard = self.scan_lock.lock().await;
-        let workspace_dir = existing_workspace_dir(&project_dir).ok_or_else(|| {
+        let ac_root = existing_ac_root(&project_dir).ok_or_else(|| {
             format!(
                 "Project AC Root not found in {} (.ac)",
                 project_dir.display()
             )
         })?;
-        let dir = loop_dir(&workspace_dir, &loop_id);
+        let dir = loop_dir(&ac_root, &loop_id);
         if !dir.is_dir() {
             return Err(format!("Loop '{}' not found", loop_id));
         }
@@ -135,10 +135,10 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        let Some(workspace_dir) = existing_workspace_dir(project_dir) else {
+        let Some(ac_root) = existing_ac_root(project_dir) else {
             return Ok(());
         };
-        let loop_dirs = loop_dirs(&workspace_dir)?;
+        let loop_dirs = loop_dirs(&ac_root)?;
         for dir in loop_dirs {
             if let Err(e) = self
                 .scan_loop(app, project_dir, &dir, startup, pending_only)
@@ -440,8 +440,8 @@ impl Default for LoopScheduler {
     }
 }
 
-fn loop_dirs(workspace_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = std::fs::read_dir(workspace_dir)
+fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(ac_root)
         .map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
     let mut dirs = Vec::new();
     for entry in entries.flatten() {

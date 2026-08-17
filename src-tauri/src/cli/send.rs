@@ -229,7 +229,7 @@ fn wait_for_response(
 /// or `project_dir` is not valid UTF-8, matching `list_peers::detect_wg_replica`
 /// which also uses `to_str()` rather than `to_string_lossy()`).
 ///
-/// Thin wrapper over `config::workspace::wg_replica_layout_from_agent_dir`, the
+/// Thin wrapper over `config::ac_root::wg_replica_layout_from_agent_dir`, the
 /// single source of the WG-replica walk-up shared with
 /// `list_peers::detect_wg_replica` and
 /// `phone::mailbox::derive_project_from_outbox_path`, so `send` resolves WG-peer
@@ -239,20 +239,20 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     let Some(canon) = std::fs::canonicalize(root).ok() else {
         return Ok(None);
     };
-    match crate::config::workspace::wg_replica_layout_from_agent_dir(&canon)? {
+    match crate::config::ac_root::wg_replica_layout_from_agent_dir(&canon)? {
         Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
         None => Ok(None),
     }
 }
 
 fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
-    let workspace_dir = wg_root.parent().ok_or_else(|| {
+    let ac_root = wg_root.parent().ok_or_else(|| {
         format!(
             "workgroup root '{}' has no parent Project AC Root directory",
             wg_root.display()
         )
     })?;
-    crate::config::workspace::ensure_authoritative_workspace_dir(workspace_dir)
+    crate::config::ac_root::ensure_authoritative_ac_root(ac_root)
 }
 
 /// v4 UUID string length. Request ids are `Uuid::new_v4().to_string()`, so the
@@ -1162,11 +1162,11 @@ mod tests {
     fn make_verified_coordinator_fixture() -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-a");
-        let workspace_dir = project.join(".ac");
-        let team_dir = workspace_dir.join("_team_dev-team");
-        let origin_tech_lead = workspace_dir.join("_agent_tech-lead");
-        let origin_dev_rust = workspace_dir.join("_agent_dev-rust");
-        let wg_dir = workspace_dir.join("wg-1-dev-team");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let origin_tech_lead = ac_root.join("_agent_tech-lead");
+        let origin_dev_rust = ac_root.join("_agent_dev-rust");
+        let wg_dir = ac_root.join("wg-1-dev-team");
         let tech_lead_replica = wg_dir.join("__agent_tech-lead");
         let dev_rust_replica = wg_dir.join("__agent_dev-rust");
 
@@ -1447,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_root_project_dir_accepts_ac_workspace() {
+    fn derive_root_project_dir_accepts_ac_root() {
         let temp = tempfile::TempDir::new().unwrap();
         let project = temp.path().join("proj-x");
         let root = project.join(".ac").join("wg-1-devs").join("__agent_alice");

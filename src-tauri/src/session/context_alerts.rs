@@ -32,7 +32,7 @@ struct MemberIdentityFingerprint {
     agent_id: String,
     working_directory: String,
     project_dir: PathBuf,
-    workspace_dir: PathBuf,
+    ac_root: PathBuf,
     workgroup_dir: PathBuf,
     replica_dir: PathBuf,
     matrix_dir: PathBuf,
@@ -1404,7 +1404,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             "sampled lexical replica has no workgroup parent".to_string(),
         );
     };
-    let Some(lexical_workspace) = lexical_workgroup.parent() else {
+    let Some(lexical_ac_root) = lexical_workgroup.parent() else {
         return MemberPolicyResolution::PermanentIneligible(
             "sampled lexical workgroup has no Project AC Root parent".to_string(),
         );
@@ -1412,7 +1412,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
     for (path, label) in [
         (lexical_replica, "replica"),
         (lexical_workgroup, "workgroup"),
-        (lexical_workspace, "Project AC Root"),
+        (lexical_ac_root, "Project AC Root"),
     ] {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
@@ -1481,7 +1481,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             "sampled CWD escapes its member replica".to_string(),
         );
     }
-    let layout = match crate::config::workspace::wg_replica_layout_from_agent_dir(&replica_dir) {
+    let layout = match crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_dir) {
         Ok(Some(layout)) => layout,
         Ok(None) => {
             return MemberPolicyResolution::PermanentIneligible(
@@ -1494,7 +1494,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
         Ok(path) => path,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
-    let workspace_dir = match canonical_real_directory(&layout.workspace_dir, "Project AC Root") {
+    let ac_root = match canonical_real_directory(&layout.ac_root, "Project AC Root") {
         Ok(path) => path,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
@@ -1507,8 +1507,8 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             Ok(result) => result,
             Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
         };
-    let identity_workspace =
-        match canonical_real_directory(&identity.workspace_dir, "Identity workspace") {
+    let identity_ac_root =
+        match canonical_real_directory(&identity.ac_root, "Identity workspace") {
             Ok(path) => path,
             Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
         };
@@ -1516,7 +1516,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
         Ok(path) => path,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
-    if identity.agent_name != layout.agent_name || identity_workspace != workspace_dir {
+    if identity.agent_name != layout.agent_name || identity_ac_root != ac_root {
         return MemberPolicyResolution::PermanentIneligible(
             "sampled replica identity does not match its canonical layout".to_string(),
         );
@@ -1544,7 +1544,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
         agent_id,
         working_directory: session.working_directory.clone(),
         project_dir,
-        workspace_dir: workspace_dir.clone(),
+        ac_root: ac_root.clone(),
         workgroup_dir,
         replica_dir,
         matrix_dir,
@@ -1554,7 +1554,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
         member: layout.agent_name,
     };
 
-    match read_team_config_classified(&workspace_dir, &team) {
+    match read_team_config_classified(&ac_root, &team) {
         Ok(config) => {
             let member_ref = format!("_agent_{}", fingerprint.member);
             if !config.agents.contains(&member_ref) {
@@ -1602,7 +1602,7 @@ fn prepare_internal_route_blocking(
     observed: u8,
     thresholds: &[u8],
 ) -> Result<(InternalSystemTarget, InternalSystemNotice), String> {
-    let config = read_team_config_classified(&fingerprint.workspace_dir, &fingerprint.team)
+    let config = read_team_config_classified(&fingerprint.ac_root, &fingerprint.team)
         .map_err(|error| error.to_string())?;
     let coordinator =
         crate::config::replica_identity::agent_bare_name_from_ref(&config.coordinator)?;
@@ -1619,7 +1619,7 @@ fn prepare_internal_route_blocking(
         return Err("Coordinator replica escapes the sampled workgroup".to_string());
     }
     let resolved = crate::config::teams::resolve_wg_coordinator_replica(
-        &fingerprint.workspace_dir,
+        &fingerprint.ac_root,
         &fingerprint.workgroup_dir,
     )
     .ok_or_else(|| "Current coordinator replica is unavailable".to_string())?;
@@ -1673,15 +1673,15 @@ fn validate_attempt_guard<R: tauri::Runtime>(
     }
     let replica = canonical_real_directory(&fingerprint.replica_dir, "Member replica")?;
     let workgroup = canonical_real_directory(&fingerprint.workgroup_dir, "Workgroup")?;
-    let workspace = canonical_real_directory(&fingerprint.workspace_dir, "Project AC Root")?;
+    let ac_root = canonical_real_directory(&fingerprint.ac_root, "Project AC Root")?;
     let project = canonical_real_directory(&fingerprint.project_dir, "Project")?;
     if replica != fingerprint.replica_dir
         || workgroup != fingerprint.workgroup_dir
-        || workspace != fingerprint.workspace_dir
+        || ac_root != fingerprint.ac_root
         || project != fingerprint.project_dir
         || replica.parent() != Some(workgroup.as_path())
-        || workgroup.parent() != Some(workspace.as_path())
-        || workspace.parent() != Some(project.as_path())
+        || workgroup.parent() != Some(ac_root.as_path())
+        || ac_root.parent() != Some(project.as_path())
         || replica.file_name().and_then(|name| name.to_str())
             != Some(format!("__agent_{}", fingerprint.member).as_str())
         || parse_team_from_workgroup_name(&fingerprint.workgroup)? != fingerprint.team
@@ -1690,16 +1690,16 @@ fn validate_attempt_guard<R: tauri::Runtime>(
     }
     let (_, identity) =
         crate::config::replica_identity::read_wg_replica_config_read_only(&replica)?;
-    let identity_workspace =
-        canonical_real_directory(&identity.workspace_dir, "Identity workspace")?;
+    let identity_ac_root =
+        canonical_real_directory(&identity.ac_root, "Identity workspace")?;
     let identity_matrix = canonical_real_directory(&identity.matrix_dir, "Agent Matrix")?;
     if identity.agent_name != fingerprint.member
-        || identity_workspace != fingerprint.workspace_dir
+        || identity_ac_root != fingerprint.ac_root
         || identity_matrix != fingerprint.matrix_dir
     {
         return Err("Sampled member identity changed".to_string());
     }
-    let config = read_team_config_classified(&workspace, &fingerprint.team)
+    let config = read_team_config_classified(&ac_root, &fingerprint.team)
         .map_err(|error| error.to_string())?;
     if !config
         .agents
@@ -2140,7 +2140,7 @@ mod tests {
         _temp: tempfile::TempDir,
         session: Session,
         team_config: PathBuf,
-        workspace: PathBuf,
+        ac_root: PathBuf,
         workgroup: PathBuf,
         replica: PathBuf,
         member_matrix: PathBuf,
@@ -2152,15 +2152,15 @@ mod tests {
 
     async fn identity_fixture_named(project: &str, workgroup_name: &str) -> IdentityFixture {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join(project).join(".ac");
-        let workgroup = workspace.join(workgroup_name);
+        let ac_root = temp.path().join(project).join(".ac");
+        let workgroup = ac_root.join(workgroup_name);
         let replica = workgroup.join("__agent_member");
         let coordinator_replica = workgroup.join("__agent_coordinator");
         let nested = replica.join("repo-one").join("src");
-        let member_matrix = workspace.join("_agent_member");
-        let coordinator_matrix = workspace.join("_agent_coordinator");
+        let member_matrix = ac_root.join("_agent_member");
+        let coordinator_matrix = ac_root.join("_agent_coordinator");
         let team = parse_team_from_workgroup_name(workgroup_name).unwrap();
-        let team_dir = workspace.join(format!("_team_{}", team));
+        let team_dir = ac_root.join(format!("_team_{}", team));
         for path in [
             &nested,
             &coordinator_replica,
@@ -2204,7 +2204,7 @@ mod tests {
             _temp: temp,
             session,
             team_config,
-            workspace,
+            ac_root,
             workgroup,
             replica,
             member_matrix,
@@ -2217,7 +2217,7 @@ mod tests {
             agent_id: "claude".to_string(),
             working_directory: "cwd".to_string(),
             project_dir: PathBuf::from("project"),
-            workspace_dir: PathBuf::from("workspace"),
+            ac_root: PathBuf::from("workspace"),
             workgroup_dir: PathBuf::from("workgroup"),
             replica_dir: PathBuf::from("replica"),
             matrix_dir: PathBuf::from("matrix"),
@@ -2995,7 +2995,7 @@ mod tests {
 
         let ad_hoc = identity_fixture().await;
         let mut ad_hoc_session = ad_hoc.session.clone();
-        ad_hoc_session.working_directory = ad_hoc.workspace.to_string_lossy().to_string();
+        ad_hoc_session.working_directory = ad_hoc.ac_root.to_string_lossy().to_string();
         assert!(matches!(
             resolve_member_policy_blocking(&ad_hoc_session),
             MemberPolicyResolution::PermanentIneligible(_)

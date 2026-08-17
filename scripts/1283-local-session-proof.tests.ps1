@@ -84,7 +84,7 @@ function Assert-1283TestSingleSessionReader {
     if ($Psm1 -match '\[System\.Environment\]::SessionId|Environment\.GetEnvironmentVariable\([^)]*Session') {
         throw "$Stage source-contract: PSM1 contains a System.Environment session-ID reader"
     }
-    $SessionHelperUses = ([regex]::Matches($Psm1, 'Get-WorkspaceLeaseCurrentInteractiveSessionId')).Count
+    $SessionHelperUses = ([regex]::Matches($Psm1, 'Get-RepositoryLeaseCurrentInteractiveSessionId')).Count
     if ($SessionHelperUses -lt 3) {
         throw "$Stage source-contract: PSM1 does not use the session helper at the lease/Job/state boundaries"
     }
@@ -229,23 +229,23 @@ function Invoke-1283NativeCbmDescriptorIdentityInjectionTest {
     # Job action, gate, or query.
     $Psm1Path = Join-Path (Get-1283TestScriptsDir) '1283-local-session-proof.psm1'
     $Module = Import-Module -Name $Psm1Path -PassThru -ErrorAction Stop
-    $GenuineAssert = $Module.ExportedFunctions['Assert-WorkspaceMutationLease']
-    $GenuineSession = $Module.ExportedFunctions['Get-WorkspaceLeaseCurrentInteractiveSessionId']
+    $GenuineAssert = $Module.ExportedFunctions['Assert-RepositoryMutationLease']
+    $GenuineSession = $Module.ExportedFunctions['Get-RepositoryLeaseCurrentInteractiveSessionId']
     if ($null -eq $GenuineAssert -or $null -eq $GenuineSession) {
         throw "$Stage genuine outer descriptors are not exported"
     }
 
     # Replacement shadows: same name, valid Function command type, different ScriptBlock.
-    function Assert-WorkspaceMutationLease {
+    function Assert-RepositoryMutationLease {
         param()
         throw 'replacement shadow must never run'
     }
-    function Get-WorkspaceLeaseCurrentInteractiveSessionId {
+    function Get-RepositoryLeaseCurrentInteractiveSessionId {
         param()
         throw 'replacement shadow must never run'
     }
-    $ReplacementAssert = Get-Command 'Assert-WorkspaceMutationLease' -CommandType Function
-    $ReplacementSession = Get-Command 'Get-WorkspaceLeaseCurrentInteractiveSessionId' -CommandType Function
+    $ReplacementAssert = Get-Command 'Assert-RepositoryMutationLease' -CommandType Function
+    $ReplacementSession = Get-Command 'Get-RepositoryLeaseCurrentInteractiveSessionId' -CommandType Function
     $IdentityChecks = @(
         [pscustomobject]@{ Name = 'assert'; Descriptor = $ReplacementAssert; Genuine = $GenuineAssert },
         [pscustomobject]@{ Name = 'session'; Descriptor = $ReplacementSession; Genuine = $GenuineSession }
@@ -270,14 +270,14 @@ function Invoke-1283NativeCbmDescriptorIdentityInjectionTest {
 
 function Invoke-1283LocalSessionProofTests {
     param(
-        [Parameter(Mandatory)] [string]$CanonicalWorkspaceRoot,
+        [Parameter(Mandatory)] [string]$CanonicalRepositoryRoot,
         [Parameter(Mandatory)] [string]$DraftPlanSha256,
         [Parameter(Mandatory)] [string]$ProofScratchOwner
     )
 
-    $Root = Get-1283TestCanonicalPath -Path $CanonicalWorkspaceRoot
+    $Root = Get-1283TestCanonicalPath -Path $CanonicalRepositoryRoot
     if (-not [System.IO.Directory]::Exists($Root)) {
-        throw "tests: canonical workspace root is absent: $Root"
+        throw "tests: canonical repository root is absent: $Root"
     }
     if ($DraftPlanSha256 -cnotmatch '^[0-9A-F]{64}$') {
         throw 'tests: DRAFT plan SHA-256 must be uppercase hexadecimal'
@@ -285,11 +285,11 @@ function Invoke-1283LocalSessionProofTests {
 
     $Outcomes = [ordered]@{}
     $Outcomes['source_contract_psm1'] = Assert-1283TestSourceFile -FileName '1283-local-session-proof.psm1' -RequiredSymbols @(
-        'Get-WorkspaceLeaseCurrentInteractiveSessionId',
-        'Enter-WorkspaceMutationLease',
-        'Assert-WorkspaceMutationLease',
-        'Get-WorkspaceLeaseRecord',
-        'Exit-WorkspaceMutationLease',
+        'Get-RepositoryLeaseCurrentInteractiveSessionId',
+        'Enter-RepositoryMutationLease',
+        'Assert-RepositoryMutationLease',
+        'Get-RepositoryLeaseRecord',
+        'Exit-RepositoryMutationLease',
         'New-LocalProofFixtureStateAdapter',
         'Write-LocalProofFixtureHardStop',
         'Confirm-LocalProofFixtureHardStopCleared',
@@ -333,7 +333,7 @@ function Invoke-1283LocalSessionProofTests {
 
     # Prepare creates the exact run-root layout through the implemented harness.
     & (Join-Path (Get-1283TestScriptsDir) '1283-local-session-proof-harness.ps1') -Role 'Prepare' `
-        -CanonicalWorkspaceRoot $Root `
+        -CanonicalRepositoryRoot $Root `
         -DraftPlanSha256 $DraftPlanSha256 `
         -ProofRunRoot $ProofRunRoot `
         -ProofScratchOwner $ProofScratchOwner `

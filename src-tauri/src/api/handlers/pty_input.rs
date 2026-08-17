@@ -164,7 +164,7 @@ async fn post_inner(
             .await
             .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsafePath))?
             .unwrap_or(in_memory_project_paths);
-    if let Some(project_path) = authority.sender.workspace_identity.canonical_path.parent() {
+    if let Some(project_path) = authority.sender.ac_root_identity.canonical_path.parent() {
         let project = project_path
             .to_str()
             .map(crate::path_utils::normalize_windows_verbatim_path)
