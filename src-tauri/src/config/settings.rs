@@ -4604,6 +4604,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(windows)]
     fn expected_rendered_diagnostic_path(path: &std::path::Path) -> String {
         let path = path.to_string_lossy();
         let mut rendered = String::with_capacity(path.len() + 2);
