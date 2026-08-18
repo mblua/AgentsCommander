@@ -1,4 +1,9 @@
-import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
+import type {
+  ListenOptions,
+  Transport,
+  TransportConnectionState,
+  UnlistenFn,
+} from "./transport";
 import type { PtyOutputEvent } from "./types";
 
 interface PendingRequest {
@@ -268,7 +273,10 @@ export class WsTransport implements Transport {
 
   async listen<T>(
     event: string,
-    callback: (payload: T) => void
+    callback: (payload: T) => void,
+    // Window labels are a Tauri concept: this transport has one client per
+    // socket and no fan-out to scope, so the option is accepted and ignored.
+    _options?: ListenOptions
   ): Promise<UnlistenFn> {
     let callbacks = this.listeners.get(event);
     if (!callbacks) {

@@ -122,6 +122,18 @@ vi.mock("../../shared/platform", () => ({
   isBrowser: false,
 }));
 
+// `vi.hoisted`, because `vi.mock` factories are lifted above every module-level
+// const and would otherwise read this in its temporal dead zone — the factory
+// then throws, the dynamic import rejects, and `onPtyOutput` falls back to the
+// unscoped registration this suite exists to forbid.
+const tauriWindow = vi.hoisted(() => ({ label: "terminal-window-1" }));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: tauriWindow.label }),
+}));
+
+const WINDOW_LABEL = tauriWindow.label;
+
 const SNAP = [83, 78, 65, 80]; // "SNAP"
 const GONE = [71, 79, 78, 69]; // "GONE" — produced while detached
 const LIVE = [76, 73, 86, 69]; // "LIVE"
@@ -266,6 +278,35 @@ describe("TerminalView attachment (#1363)", () => {
       // Criterion L: a rejected attach left the backend map unchanged, so this
       // window owes no detach for A.
       expect(detachedSessionIds(fake)).toEqual([]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // Criterion P's frontend half, and the reason it is a SEPARATE assertion from
+  // anything about bytes: the backend emits with `emit_to(label, ...)`, but
+  // Tauri short-circuits that label filter for a listener registered as
+  // `EventTarget::Any` (`tauri-2.10.3/src/event/listener.rs:306-311`), and
+  // `Any` is the JS `listen()` default (`@tauri-apps/api/event.js:69-73`). A
+  // regression to the default is INVISIBLE downstream — no wrong byte is ever
+  // written, because the visibility filter at the single writer drops the
+  // foreign session — so the only thing that can catch it is the registration
+  // itself. What it costs is the bridge multiplier of plan 7.4: every attached
+  // window deserializing every other attached window's flush.
+  it("registers the pty_output listener scoped to this window's label", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(fake.listensFor("pty_output")).toHaveLength(1));
+
+      const [registration] = fake.listensFor("pty_output");
+      expect(registration.options?.target).toBe(WINDOW_LABEL);
+      // Spelled out separately: `undefined` here is the `Any` default, which is
+      // exactly the regression this test exists to fail on.
+      expect(registration.options?.target).not.toBeUndefined();
     } finally {
       rendered.cleanup();
     }

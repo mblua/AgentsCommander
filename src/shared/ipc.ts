@@ -3,7 +3,12 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
 } from "./terminal-viewport";
-import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
+import type {
+  ListenOptions,
+  Transport,
+  TransportConnectionState,
+  UnlistenFn,
+} from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
@@ -118,8 +123,15 @@ export function __setTransportForTests(next: Transport): () => void {
 const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
   invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
     currentTransport().invoke<T>(cmd, args),
-  listen: <T>(event: string, callback: (payload: T) => void) =>
-    currentTransport().listen<T>(event, callback),
+  // `options` MUST be forwarded. A shim that declares fewer parameters than
+  // `Transport.listen` still satisfies the type — TypeScript allows a narrower
+  // implementation — so dropping it here is a silent, unchecked loss of the
+  // event target, which is exactly what defeats the backend's `emit_to`.
+  listen: <T>(
+    event: string,
+    callback: (payload: T) => void,
+    options?: ListenOptions
+  ) => currentTransport().listen<T>(event, callback, options),
   emit: <T>(event: string, payload: T) =>
     currentTransport().emit<T>(event, payload),
 };
@@ -405,10 +417,54 @@ export const ReposAPI = {
     transport.invoke<string | null>("git_remote_url", { path }),
 };
 
-export function onPtyOutput(
+/**
+ * #1363 - resolved once per webview, then cached (including the failure, so a
+ * broken lookup cannot warn once per `TerminalView` mount).
+ */
+let ptyOutputTarget: { label: string | undefined } | null = null;
+
+async function resolvePtyOutputTarget(): Promise<string | undefined> {
+  if (ptyOutputTarget !== null) {
+    return ptyOutputTarget.label;
+  }
+  if (!isTauri) {
+    ptyOutputTarget = { label: undefined }; // browser mode has no window labels
+    return undefined;
+  }
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    ptyOutputTarget = { label: getCurrentWebviewWindow().label };
+  } catch (error) {
+    // Fail OPEN, never closed: an unscoped listener costs the bridge multiplier
+    // this scoping exists to remove, but a rejected registration would leave
+    // the window with no output listener at all, which is a black terminal.
+    console.warn("[ipc] pty_output listener target unavailable:", error);
+    ptyOutputTarget = { label: undefined };
+  }
+  return ptyOutputTarget.label;
+}
+
+/**
+ * #1363 - this listener MUST register with this window's label as its target.
+ *
+ * The backend emits with `emit_to(label, ...)` once per attached window, but
+ * Tauri short-circuits that label filter for any listener registered as
+ * `EventTarget::Any` (`tauri-2.10.3/src/event/listener.rs:306-311`), and `Any`
+ * is exactly what the JS `listen()` default sends
+ * (`@tauri-apps/api/event.js:69-73`). Registering unscoped therefore delivers
+ * every attached window's flush to every window that mounts a `TerminalView`,
+ * and each pays the deserialization before dropping it — the bridge multiplier
+ * of plan 7.4, which `emit_to` exists to remove, silently unfixed. No wrong
+ * byte is ever written (the visibility filter at the single writer sees to
+ * that); the cost is what regresses. Pinned by
+ * `TerminalView.attachment.test.tsx`.
+ */
+export async function onPtyOutput(
   callback: (data: PtyOutputEvent) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<PtyOutputEvent>("pty_output", callback);
+  return transport.listen<PtyOutputEvent>("pty_output", callback, {
+    target: await resolvePtyOutputTarget(),
+  });
 }
 
 /**
