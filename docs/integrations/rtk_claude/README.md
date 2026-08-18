@@ -40,7 +40,7 @@ Two files come out of that decision, both in the agent's **origin Agent Matrix**
 | `<workspace>/.ac/_agent_<name>/rtk-matrix-history.db` | The RTK history database, tables `commands` and `parse_failures`, written by `rtk` itself. See [RTK usage and per-agent statistics](../rtk.md). |
 | `<workspace>/.ac/_agent_<name>/rtk_ignored_tools.md` | One line per command the hook handed back untouched, written by the hook. |
 
-The pair exists so you can tell "RTK covered this command" from "RTK never saw it". Neither file alone answers that.
+The pair exists so you can tell "RTK covered this command" from "RTK never saw it". Neither file alone answers that, and a command missing from both is not proof it never ran: see [what it covers](#what-it-covers-the-bash-tool-and-nothing-else).
 
 ## This is not the hook `rtk init` installs
 
@@ -63,7 +63,12 @@ The registration has a single matcher, `Bash`. Every other tool the model calls 
 
 Take that seriously before you read either file as a record of the agent's work. An agent that splits its shell work between the `Bash` tool and the `PowerShell` tool leaves half of it out of both files, with nothing marking the gap.
 
-Inside the `Bash` tool the coverage is complete: every non-empty command reaches one of the two files. The exceptions are the hook's two early exits, an unparseable JSON payload and a command that is empty after leading whitespace is stripped. Both leave no trace anywhere.
+Inside the `Bash` tool the coverage is close to complete but not total. Three kinds of command reach neither file:
+
+- an unparseable JSON payload, and a command that is empty after leading whitespace is stripped, the hook's two early exits;
+- a command the hook rewrites whose RTK invocation then records nothing. `cat /noexiste` becomes `rtk read /noexiste`, which leaves no line in the ignored log because it was rewritten, and no row in either table. It does not even create the database file.
+
+The third kind is the one to remember, because it is indistinguishable from a command that was never issued.
 
 ## The routing rule
 
@@ -81,26 +86,59 @@ Two details worth knowing:
 
 ### The rule the informal description gets wrong
 
-Being a compound command sends nothing to the ignored log. `rtk rewrite` splits on `;` and `&&` and handles `|` without help, and the hook rewrites all three. What pushes a command into the ignored log is a **redirection**, a subshell, a heredoc, command substitution, or a first word the shell owns.
+Being a compound command is not what decides. Neither is any particular piece of shell syntax. **The first question is whether `rtk rewrite` produced any output**, and only when it produced none does anything else get looked at.
+
+When `rtk rewrite` recognises something, the command is rewritten whatever its shape. Pipes, `;`, `&&` and redirections do not send it to the ignored log:
+
+```bash
+rtk rewrite "grep '(foo)' f.txt"
+```
+
+```text
+rtk grep '(foo)' f.txt
+```
+
+When `rtk rewrite` comes back empty, the character test decides, and **that test is textual, not syntactic**. Any of `\n ; | & < > ( ) { }` or a backtick counts wherever it appears, including inside quotes, where the shell treats it as an ordinary character and does nothing with it. So an everyday invocation that redirects nothing, spawns no subshell and substitutes nothing still lands in the ignored log:
+
+```bash
+rtk rewrite "python -c \"print(1)\""
+```
+
+prints nothing, and the parenthesis inside the quoted argument then sends the command to the log. `node -e "console.log(1)"` goes the same way, and so does `nosuchbinary-xyz "a;b"` on its quoted semicolon.
+
+The two halves of the rule are easiest to see as pairs that differ by one thing:
+
+| Pair | `rtk rewrite` | Result |
+|---|---|---|
+| `grep '(foo)' f.txt` | `rtk grep '(foo)' f.txt` | rewritten, the quoted `(` never gets looked at |
+| `python -c "print(1)"` | empty | **ignored log**, on the same quoted `(` |
+| `nosuchbinary-xyz` | empty | prefixed to `rtk nosuchbinary-xyz` |
+| `nosuchbinary-xyz \| sort` | empty | **ignored log**, and the pipe is the only difference |
+
+The second pair is a compound command that does reach the ignored log, which is the case the informal rule denies outright. The first pair carries a parenthesis to both outcomes, which is why no list of shell constructs can describe this correctly.
+
+So when you find a command in `rtk_ignored_tools.md`, do not go looking for a redirection. Look for any of those characters anywhere in the line, quoted or not, or an `=` in the first word, or a first word the shell owns.
 
 Measured against the installed RTK, driving the hook the way Claude Code does:
 
-| Command | Result |
-|---|---|
-| `ls -la` | rewritten to `rtk ls -la` |
-| `cat file.txt` | rewritten to `rtk read file.txt` |
-| `ls \| sort` | rewritten to `rtk ls \| sort` |
-| `ls; cat x` | rewritten to `rtk ls; rtk read x` |
-| `git status && ls` | rewritten to `rtk git status && rtk ls` |
-| `FOO=bar ls` | rewritten to `FOO=bar rtk ls` |
-| `node --version` | prefixed to `rtk node --version` by the fallback |
-| `nosuchbinary-xyz` | prefixed to `rtk nosuchbinary-xyz` by the fallback |
-| `echo hola` | **ignored log**, `echo` is a builtin |
-| `cd /tmp && export X=1` | **ignored log**, builtins |
-| `ls > /tmp/x` | **ignored log**, redirection |
-| `ls \| sort > /tmp/now.txt` | **ignored log**, redirection, not the pipe |
-| `(ls)` | **ignored log**, subshell |
-| `echo "total=$(wc -l < f)"` | **ignored log**, command substitution |
+The second column is the first stage, and it is what decides the third. Where it is empty, the deciding characters are named.
+
+| Command | `rtk rewrite` prints | Result |
+|---|---|---|
+| `ls -la` | `rtk ls -la` | rewritten |
+| `cat file.txt` | `rtk read file.txt` | rewritten |
+| `ls \| sort` | `rtk ls \| sort` | rewritten, the pipe is never consulted |
+| `ls; cat x` | `rtk ls; rtk read x` | rewritten |
+| `git status && ls` | `rtk git status && rtk ls` | rewritten |
+| `FOO=bar ls` | `FOO=bar rtk ls` | rewritten |
+| `node --version` | nothing | prefixed to `rtk node --version`, nothing in the character class |
+| `nosuchbinary-xyz` | nothing | prefixed to `rtk nosuchbinary-xyz` |
+| `echo hola` | nothing | **ignored log**, `echo` is a builtin |
+| `cd /tmp && export X=1` | nothing | **ignored log**, on `&` and on a builtin head |
+| `ls > /tmp/x` | nothing | **ignored log**, on `>` |
+| `ls \| sort > /tmp/now.txt` | nothing | **ignored log**, on `\|` and `>` |
+| `(ls)` | nothing | **ignored log**, on `(` and `)` |
+| `echo "total=$(wc -l < f)"` | nothing | **ignored log**, on several, and a builtin head |
 
 Reproduce any row from inside a replica:
 
@@ -187,7 +225,7 @@ Writing the log line is wrapped in an empty `catch`. A missing Matrix directory,
 
 ### The hook never blocks a tool
 
-Every path out of the hook is either a silent `exit(0)` or `permissionDecision: "allow"`. There is no `deny` and no blocking exit code, so a broken hook cannot stop an agent from working.
+Every path out of the hook is either a silent `exit(0)` or `permissionDecision: "allow"`. There is no `deny` and no blocking exit code, so a hook that runs cannot stop an agent from working, however badly it misjudges a command. What Claude Code does when the hook does not run at all, with `node` missing or the file removed, is not something these two files answer.
 
 ## See also
 
