@@ -11,6 +11,8 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Session auto-close](session-auto-close.md) | Close idle teams on a timeout, read the idle badge, and change or turn the timeout off. |
 | [Coding agent auto-update](agent-auto-update.md) | Answer the startup update prompt once per coding-agent command and have AC remember it. |
 | [Sidebar guide](sidebar-guide.md) | Read every rail entry, row, badge and indicator in the sidebar, and find the page behind each one. |
+| [App windows](app-windows.md) | Name every window AC opens, what each is for, and how it appears. |
+| [Notifications and dialogs](notifications-and-dialogs.md) | Match any toast, banner or modal on screen to what raised it and what each button does. |
 | [Voice-to-text](voice-to-text.md) | Dictate prompts to a coding agent instead of typing them. |
 
 ## Automation
