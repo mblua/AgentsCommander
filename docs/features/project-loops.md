@@ -85,7 +85,7 @@ The first four and the last carry the backend's own message when it has one, so 
 
 ## Busy sessions and respawn
 
-**Busy.** A coordinator is busy when it is working rather than waiting for input. The busy policy decides what a Loop does about it:
+**Busy.** AC checks whether the target coordinator is busy at the moment the Loop comes due, and the busy policy decides what to do about it:
 
 - **Wait until idle** holds the delivery and marks the Loop pending. AC retries it on later scans and delivers when the coordinator goes idle. This is the default.
 - **Force inject** delivers anyway, interrupting whatever the coordinator is doing. This is the `Force inject even if coordinator is busy` checkbox.
