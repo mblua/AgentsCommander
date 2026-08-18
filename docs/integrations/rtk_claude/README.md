@@ -98,7 +98,9 @@ rtk rewrite "grep '(foo)' f.txt"
 rtk grep '(foo)' f.txt
 ```
 
-When `rtk rewrite` comes back empty, the character test decides, and **that test is textual, not syntactic**. Any of `\n ; | & < > ( ) { }` or a backtick counts wherever it appears, including inside quotes, where the shell treats it as an ordinary character and does nothing with it. So an everyday invocation that redirects nothing, spawns no subshell and substitutes nothing still lands in the ignored log:
+When `rtk rewrite` comes back empty, the character test decides, and **that test is textual, not syntactic**. Any of `\n ; | & < > ( ) { }` or a backtick counts wherever it appears, quoted or not. Quoting changes what the shell will do with the character, never whether the hook counts it, and the two are worth keeping apart: inside double quotes most of these are inert, but a backtick and `$(` still run a command. So a logged line means the hook handed the command back untouched, not that the shell did nothing interesting with it.
+
+An everyday invocation that redirects nothing, spawns no subshell and substitutes nothing still lands in the ignored log:
 
 ```bash
 rtk rewrite "python -c \"print(1)\""
@@ -131,6 +133,7 @@ The second column is the first stage, and it is what decides the third. Where it
 | `ls; cat x` | `rtk ls; rtk read x` | rewritten |
 | `git status && ls` | `rtk git status && rtk ls` | rewritten |
 | `FOO=bar ls` | `FOO=bar rtk ls` | rewritten |
+| `grep foo f.txt 2>/dev/null` | `rtk grep foo f.txt 2>/dev/null` | rewritten, and the `>` is never reached |
 | `node --version` | nothing | prefixed to `rtk node --version`, nothing in the character class |
 | `nosuchbinary-xyz` | nothing | prefixed to `rtk nosuchbinary-xyz` |
 | `echo hola` | nothing | **ignored log**, `echo` is a builtin |
