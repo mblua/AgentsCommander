@@ -19,12 +19,14 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Non-stop mode](non-stop-mode.md) | Watch a group of workgroups and get a Telegram message or a sound when one stops working. |
 | [Project Loops](project-loops.md) | Send a scheduled prompt to a workgroup coordinator on a cron expression, waking or respawning the session. |
 | [Spec Board](spec-board.md) | Edit a Mermaid file in its own window with a live preview, snapshots, and an agent handoff. |
+| [Watchers](watchers.md) | Match a pattern against every agent terminal at once and read the hits in the activity window. |
 
 ## Monitoring
 
 | Page | What it covers |
 |---|---|
 | [Resource monitor](resource-monitor.md) | Watch what each agent group is using and set the thresholds at which AC warns you or kills it. |
+| [Context tracking](context-tracking.md) | Read how much of an agent context window is used and alert a coordinator when a member crosses a threshold. |
 | [Terminal snapshots](terminal-snapshots.md) | Read one live backend terminal viewport as versioned JSON or a PNG without changing the session. |
 | [Window capture](window-capture.md) | Capture one live native window as a PNG from the CLI or the control-plane API. Windows only. |
 | [Screenshot capture](screenshot-capture.md) | Press a global hotkey, drag a rectangle, and save a PNG inside the replica that owns your session. Windows only. |
