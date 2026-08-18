@@ -1,0 +1,22 @@
+{
+  "includeCoAuthoredBy": false,
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [],
+  "mcpServers": {},
+  "claudeMdExcludes": [
+    "C:/Users/maria/.claude/CLAUDE.md"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/ac_rtk_claude.js"
+          }
+        ]
+      }
+    ]
+  }
+}
