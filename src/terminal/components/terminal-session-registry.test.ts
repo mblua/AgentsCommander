@@ -174,7 +174,10 @@ function createFactory(h: Harness) {
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
       snapshotSettleTimer: null,
-      healthTimer: null,
+      snapshotReplayPending: false,
+      pendingSnapshotEvents: [],
+      pendingSnapshotBytes: 0,
+      lastAppliedSequence: null,
     };
   };
 }
@@ -268,12 +271,10 @@ describe("terminal-session-registry", () => {
       const factory = createFactory(h);
       h.registry.activate(S1, factory);
       const entry = h.entry(S1);
-      entry.healthTimer = setTimeout(() => {}, 5_000);
       entry.snapshotSettleTimer = setTimeout(() => {}, 500);
       entry.resizeRetryTimer = setTimeout(() => {}, 120);
 
       h.registry.remove(S1);
-      expect(entry.healthTimer).toBeNull();
       expect(entry.snapshotSettleTimer).toBeNull();
       expect(entry.resizeRetryTimer).toBeNull();
 

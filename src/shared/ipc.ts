@@ -15,9 +15,6 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
-  TerminalOutputActivationResult,
-  TerminalOutputControlState,
-  TerminalRendererMetrics,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
@@ -415,70 +412,37 @@ export function onPtyOutput(
 }
 
 /**
- * #1283 - typed wrappers for the five terminal-output control commands. All
- * generation/sequence arguments are canonical unsigned base-10 strings; the
- * backend validates them before any state mutation. TerminalView routes every
- * control call through these wrappers; components never invoke Tauri directly.
+ * #1363 - the two terminal-output attachment wrappers.
+ *
+ * Named `attachOutput` / `detachOutput` rather than `attach` / `detach`
+ * because `WindowAPI.attach` / `detach` in this same file is a different
+ * concept (moving a session into its own window).
+ *
+ * The window label is NOT an argument: Tauri takes it from the calling
+ * webview, so a frontend can only ever attach the window it runs in and the
+ * label can be neither forged nor misattributed.
  */
 export const TerminalOutputAPI = {
-  // #1355 - `includeHistory` asks the backend to replay its retained output ring
-  // instead of the current viewport. Only a fresh xterm instance may request it:
-  // replaying the ring over a terminal that already has content duplicates
-  // history cumulatively (plan 12.1). Callers pass `!entry.hasRenderedOutput`.
-  activate: (
-    sessionId: string,
-    includeHistory: boolean
-  ): Promise<TerminalOutputActivationResult> =>
-    transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
+  /** Attaches this window to the session's output and returns the seed
+   *  snapshot, or `null` when there is nothing to seed from (an unavailable
+   *  parser or a failed snapshot read still attaches, and the client then
+   *  writes live with no reconcile). Rejects only when there is nothing to
+   *  attach to: `sessionUnavailable` or `outputTargetUnavailable`.
+   *
+   *  `includeHistory` is always `true`: every seed is applied after a
+   *  `terminal.reset()`, so replaying the 64 KiB ring cannot duplicate
+   *  history, and dropping the seed on re-attach would instead hide
+   *  everything the session produced while detached (plan 3.4.2). */
+  attachOutput: (sessionId: string): Promise<PtyScreenSnapshot | null> =>
+    transport.invoke<PtyScreenSnapshot | null>("activate_terminal_output", {
       sessionId,
-      includeHistory,
+      includeHistory: true,
     }),
 
-  ready: (
-    sessionId: string,
-    generation: string,
-    snapshotSequence: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("ready_terminal_output", {
-      sessionId,
-      generation,
-      snapshotSequence,
-    }),
-
-  deactivate: (
-    sessionId: string,
-    generation: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("deactivate_terminal_output", {
-      sessionId,
-      generation,
-    }),
-
-  acknowledgeDelivery: (
-    sessionId: string,
-    generation: string,
-    firstSequence: string,
-    sequence: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("ack_terminal_output_delivery", {
-      sessionId,
-      generation,
-      firstSequence,
-      sequence,
-    }),
-
-  /** Sends only the documented valid metrics shape; the backend wire wrapper
-   *  rejects any malformed value with `invalid terminal renderer metrics`. */
-  reportMetrics: (
-    sessionId: string,
-    generation: string,
-    metrics: TerminalRendererMetrics
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("report_terminal_renderer_metrics", {
-      sessionId,
-      generation,
-      metrics,
-    }),
+  /** Releases this window's attachment. Never rejects for a session that is
+   *  already gone: window close races session destroy. */
+  detachOutput: (sessionId: string): Promise<void> =>
+    transport.invoke<void>("detach_terminal_output", { sessionId }),
 };
 
 export function onSessionCreated(

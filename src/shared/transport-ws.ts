@@ -208,12 +208,11 @@ export class WsTransport implements Transport {
 
     const callbacks = this.listeners.get("pty_output");
     if (callbacks) {
-      // #1283: the browser/websocket fallback predates the tagged delivery
-      // union and emits the legacy raw binary stream (no kind/generation/
-      // firstSequence). The Tauri window is the only #1283 production path;
-      // this legacy shape is cast at the boundary and consumed only by the
-      // browser-mode fallback writer in TerminalView.
-      const payload = { sessionId, data: dataArray } as unknown as PtyOutputEvent;
+      // #1363: the payload is the same flat shape the Tauri window receives,
+      // minus `sequence` (this transport carries no parser sequence). An
+      // unsequenced event is written live with no reconcile, so both
+      // transports traverse the one writer in TerminalView.
+      const payload: PtyOutputEvent = { sessionId, data: dataArray };
       for (const cb of callbacks) {
         try {
           cb(payload);

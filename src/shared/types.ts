@@ -317,121 +317,22 @@ export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
  */
 export type UnrecognizedWatcherEntry = JsonValue;
 
-// ── #1283 terminal output activation/admission contract ──────────────────────
-//
-// All generation and sequence values on this wire are canonical unsigned
-// base-10 strings (the backend serializes u64 counters as decimal strings).
-// The frontend validates each value exactly once at the admission boundary and
-// compares with BigInt, never with JavaScript `number`.
+// ── terminal output wire payload ──────────────────────────────────────
 
-/** #1283: the activation snapshot carried by an `activated` result. The legacy
- *  `PtyScreenSnapshot` (number sequence, nullable dimensions) is the separate
- *  `getScreenSnapshot` surface; activation replay renders ONLY this payload and
- *  must never fetch the legacy snapshot. */
-export interface TerminalOutputActivationSnapshot {
-  data: number[];
-  rows: number;
-  cols: number;
-  sequence: string;
-}
-
-export interface TerminalOutputActivation {
+/**
+ * #1363 - the flat `pty_output` payload, restored from the broadcast push
+ * architecture (`4de8e11`). `sequence` is a NUMBER, not a canonical decimal
+ * string: the reconcile is `event.sequence <= snapshot.sequence`, and a string
+ * comparison there is lexicographic, so `"9" <= "10"` would be false and the
+ * watermark would silently break past sequence 9.
+ *
+ * The field is absent when the backend's parser is unavailable; such a chunk
+ * is written live with no reconcile (PR #961: live PTY bytes are never gated).
+ */
+export interface PtyOutputEvent {
   sessionId: string;
-  generation: string;
-  snapshot: TerminalOutputActivationSnapshot;
-}
-
-export type TerminalOutputActivationRecoveryCode =
-  | "parserUnavailable"
-  | "snapshotTooLarge"
-  | "snapshotMalformed"
-  | "counterExhausted"
-  | "outputTargetUnavailable";
-
-export type TerminalOutputActivationResult =
-  | { kind: "activated"; activation: TerminalOutputActivation }
-  | {
-      kind: "recoveryError";
-      sessionId: string;
-      code: TerminalOutputActivationRecoveryCode;
-    };
-
-/** #1283: the `pty_output` listener payload. The preserved public name is now
- *  the tagged delivery union; `sequence` stays the inclusive final output
- *  sequence and `firstSequence` makes a sequence hole detectable. */
-export type TerminalOutputDelivery =
-  | {
-      kind: "data";
-      sessionId: string;
-      generation: string;
-      firstSequence: string;
-      sequence: string;
-      data: number[];
-    }
-  | {
-      kind: "resyncRequired";
-      sessionId: string;
-      generation: string;
-      sequence: string;
-    };
-
-/** @deprecated legacy browser/websocket fallback only: the Tauri path emits the
- *  #1283 tagged `TerminalOutputDelivery` union under this same event name. */
-export type PtyOutputEvent = TerminalOutputDelivery;
-
-export type TerminalOutputControlState =
-  | { kind: "active"; sessionId: string; generation: string }
-  | {
-      kind: "awaitingFrontendReady";
-      sessionId: string;
-      generation: string;
-      snapshotSequence: string;
-    }
-  | {
-      kind: "resyncRequired";
-      sessionId: string;
-      generation: string;
-      sequence: string;
-    }
-  | {
-      kind: "recoveryError";
-      sessionId: string;
-      generation: string;
-      code: "counterExhausted";
-    }
-  | { kind: "inactive"; sessionId: string; generation: string }
-  | { kind: "stale" };
-
-/** #1283: the valid `reportTerminalRendererMetrics` payload. The backend wire
- *  wrapper is permissive and validates the complete object; this frontend shape
- *  is the only documented valid object. All values are non-negative integers;
- *  gauge/millisecond fields carry the narrower bounds declared per field. */
-export interface TerminalRendererMetrics {
-  retainedTerminalCount: number;
-  visibleTerminalCount: number;
-  webglContextCount: number;
-  webglContextLossCount: number;
-  lruEvictionCount: number;
-  outputEventsReceived: number;
-  inactiveOrStaleEventsRejected: number;
-  bytesAccepted: number;
-  bytesWritten: number;
-  replayPendingBytes: number;
-  livePendingBytes: number;
-  writeInFlightBytes: number;
-  combinedAdmissionHighWaterBytes: number;
-  pendingHighWaterBytes: number;
-  resyncCount: number;
-  activationReadyAcknowledgements: number;
-  activationReadyRejections: number;
-  activationReadyTimeouts: number;
-  generationHealthPollsScheduled: number;
-  generationHealthPollsStarted: number;
-  generationHealthPollsCancelled: number;
-  replayPendingLivenessRecoveries: number;
-  snapshotReplayDurationMs: number;
-  retiredWriteCallbacksIgnoredAfterDisposal: number;
-  maxAnimationFrameLagMs: number;
+  data: number[];
+  sequence?: number;
 }
 
 export interface PtyViewport {
