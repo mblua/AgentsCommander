@@ -10,6 +10,7 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Container coding agents](container-coding-agents.md) | Run a coding agent under AC's Container runtime, what it does with your host credentials, and what does not work yet. |
 | [Session auto-close](session-auto-close.md) | Close idle teams on a timeout, read the idle badge, and change or turn the timeout off. |
 | [Coding agent auto-update](agent-auto-update.md) | Answer the startup update prompt once per coding-agent command and have AC remember it. |
+| [Sidebar guide](sidebar-guide.md) | Read every rail entry, row, badge and indicator in the sidebar, and find the page behind each one. |
 | [Voice-to-text](voice-to-text.md) | Dictate prompts to a coding agent instead of typing them. |
 
 ## Automation
@@ -47,3 +48,4 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 | [Config seed](config-seed.md) | Copy a template config folder into every replica at spawn, with AC path tokens already substituted. |
 | [Seed manifest](seed-manifest.md) | Read the Git-diffable inventory of the project-scoped files AC published into your project's `.ac` folder. |
 | [Portable instances](portable-instances.md) | Run isolated AgentsCommander instances side by side from separate copies of the binary. |
+| [Project archiving](project-archiving.md) | Hide a project from the sidebar without touching its files, and get it back. |
