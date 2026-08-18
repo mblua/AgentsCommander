@@ -88,6 +88,8 @@ The wrapped command's own exit code does not change any of this. A command that 
 
 ### The hook covers the filtered set, and nothing else
 
+This section is about RTK's own hook, the one `rtk init` installs. AgentsCommander seeds a **different** `PreToolUse` hook into every workgroup replica, and that one also writes a log of the commands it declined to rewrite. If you run agents in replicas, read [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) before you conclude which hook produced what.
+
 `rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. This is the excerpt a patched Claude Code `settings.json` holds under `hooks.PreToolUse`, once per shell tool, not a complete settings file:
 
 ```json
@@ -314,6 +316,7 @@ For those roots use `%AC_WORKSPACE_ROOT%\rtk-history.db` instead, which gives on
 ## See also
 
 - [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders) - the three path placeholders, where each one resolves, and the fail-closed rules
+- [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) - the hook AC seeds into every replica, and the two files it produces
 - [Coding agents](coding-agents.md) - the coding-agent catalog and the ENVIRONMENT rows this page uses
 - [Settings reference - coding agents](../reference/settings.md#coding-agents) - the `agents[].envs` shape behind the ENVIRONMENT panel
 - [RTK upstream repository](https://github.com/rtk-ai/rtk)
