@@ -2,14 +2,14 @@
 
 For operators who want to know what a Claude Code agent actually ran, not what it reported. AgentsCommander seeds two `PreToolUse` hooks into every workgroup replica, one for the `Bash` tool and one for the `PowerShell` tool; after this page you can read the two files they produce and say which shell command landed in which one, from which shell, and why.
 
-The hooks and their registration are copied into this directory so you can review them without opening a replica:
+The hooks, the module they share and their registration are copied into this directory so you can review them without opening a replica:
 
 - [`hooks/ac_rtk_claude_Bash.js`](hooks/ac_rtk_claude_Bash.js), 83 lines
 - [`hooks/ac_rtk_claude_PowerShell.js`](hooks/ac_rtk_claude_PowerShell.js), 123 lines
 - [`hooks/ac_rtk_shared.js`](hooks/ac_rtk_shared.js), 129 lines, the half that does not depend on a shell, required by both hooks
 - [`settings.local.json`](settings.local.json)
 
-Both are faithful copies of `<workspace>/.ac/default.claude/`, the seed AC installs from. Do not edit them here: this directory is a mirror, not the source.
+All four are faithful copies of `<workspace>/.ac/default.claude/`, the seed AC installs from. Do not edit them here: this directory is a mirror, not the source.
 
 ## What the hooks are and where they land
 
@@ -169,7 +169,7 @@ The PowerShell hook asks the safety question **first**, then asks RTK. That is t
 
 **Why the order is inverted.** `rtk rewrite` decides on the head of each `;` / `&&` segment and does not know which shell will run the result, so it turns `ls` into `rtk ls`. Under bash every head it rewrites is a real binary emitting text, so the substitution is close to behaviour-preserving. Under PowerShell `ls`, `ps` and `diff` are aliases for `Get-ChildItem`, `Get-Process` and `Compare-Object`, so the rewrite replaces an **object** stream with a **text** stream: `ps | Where-Object { $_.CPU -gt 1 }` then matches nothing and returns empty at exit 0. `rtk ls` does not even run on Windows outside Git Bash, where it fails with `rtk: Failed to run ls: Failed to spawn process: program not found` at exit 1. Asking the safety question after the rewrite, the way the Bash hook does, would not catch a single one of those, because the rewrite path is where they land. So under PowerShell anything that does not clear the gate goes to the ignored log: a missed rewrite costs one statistic, a wrong rewrite silently breaks the agent's command.
 
-**What the gate asks.** The hook spawns `pwsh` once per command and asks the PowerShell parser and `Get-Command`, so there is no character class and no keyword list in the hook to drift out of step with the shell. The command clears the gate when it is a single statement, that statement is a single pipeline, the pipeline's first element is a plain command invocation with no call operator, its command name is a bare name containing no `=`, and that name either resolves to `CommandType = Application` or does not resolve at all. The command travels to the probe in the `AC_RTK_CMD` environment variable rather than on the command line, so there is no quoting boundary to get wrong.
+**What the gate asks.** The hook spawns `pwsh` once per command it has not already routed, and asks the PowerShell parser and `Get-Command`, so there is no character class and no keyword list in the hook to drift out of step with the shell. The command clears the gate when it is a single statement, that statement is a single pipeline, the pipeline's first element is a plain command invocation with no call operator, its command name is a bare name containing no `=`, and that name either resolves to `CommandType = Application` or does not resolve at all. The command travels to the probe in the `AC_RTK_CMD` environment variable rather than on the command line, so there is no quoting boundary to get wrong.
 
 The probe loads your PowerShell profile on purpose, because it has to answer for the command table the real session will use. A profile that defines `function git { ... }` correctly flips `git status` from routed to logged. A profile that runs `Remove-Alias -Name ls -Force`, which is an ordinary thing to do on a machine with `eza` or `lsd` installed, moves the verdict the other way and lets `ls` route.
 
@@ -322,7 +322,7 @@ The `PowerShell` hook fails the same way and is equally loud: the routed command
 
 ### The PowerShell probe fails closed
 
-The `PowerShell` hook spawns `pwsh` once per command. If `pwsh` is absent, fails, hangs past its five-second `timeout`, or prints no `AC_RTK_VERDICT:` line, the hook treats the answer as "not safe", hands the command back untouched and logs it. That is the safe direction: the cost is one statistic, and the alternative is routing a command whose shape was never checked.
+The `PowerShell` hook spawns `pwsh` once per command it has not already routed. If `pwsh` is absent, fails, hangs past its five-second `timeout`, or prints no `AC_RTK_VERDICT:` line, the hook treats the answer as "not safe", hands the command back untouched and logs it. That is the safe direction: the cost is one statistic, and the alternative is routing a command whose shape was never checked.
 
 The degenerate case reads alarming and is not. With `pwsh` missing entirely, **every** `PowerShell` command goes to `rtk_ignored_tools.md` and `commands` gains no rows at all. That is still better than the situation before these hooks, where those calls produced nothing anywhere, and a file full of `PowerShell:` lines with an empty database makes the failure obvious on first read instead of invisible.
 
