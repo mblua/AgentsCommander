@@ -324,9 +324,9 @@ The `PowerShell` hook fails the same way and is equally loud: the routed command
 
 The `PowerShell` hook spawns `pwsh` once per command it has not already routed. If `pwsh` is absent, fails, hangs past its five-second `timeout`, or prints no `AC_RTK_VERDICT:` line, the hook treats the answer as "not safe", hands the command back untouched and logs it. That is the safe direction: the cost is one statistic, and the alternative is routing a command whose shape was never checked.
 
-The degenerate case reads alarming and is not. With `pwsh` missing entirely, **every** `PowerShell` command goes to `rtk_ignored_tools.md` and `commands` gains no rows at all. That is still better than the situation before these hooks, where those calls produced nothing anywhere, and a file full of `PowerShell:` lines with an empty database makes the failure obvious on first read instead of invisible.
+The degenerate case reads alarming and is not. With `pwsh` missing entirely, **every** `PowerShell` command the hook has not already routed goes to `rtk_ignored_tools.md`, and `commands` gains rows only from the commands the model wrote as `rtk ...` itself, which take the early return before the probe. That is still better than the situation before these hooks, where those calls produced nothing anywhere, and a file full of `PowerShell:` lines beside a near-empty database makes the failure obvious on first read instead of invisible.
 
-One assumption the hook cannot check: it probes `pwsh`, and it has no way to confirm that the harness's `PowerShell` tool is that same PowerShell. Where the tool runs Windows PowerShell 5.1, `pwsh` is either absent, and everything fails closed as above, or present and answering for a different command table than the one that will run.
+One assumption the hook cannot check: it probes `pwsh`, and it has no way to confirm that the harness's `PowerShell` tool is that same PowerShell. Where the tool runs Windows PowerShell 5.1, `pwsh` is either absent, and everything the hook probes fails closed as above, or present and answering for a different command table than the one that will run.
 
 ### The `rtk` notice is not filtered under PowerShell
 
