@@ -1378,30 +1378,9 @@ impl LocalProcessBackend {
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
-        Self::with_coordinator(
-            output_senders,
-            idle_detector,
-            git_watcher,
-            ws_broadcaster,
-            crate::pty::output::TerminalOutputCoordinator::new(),
-        )
-    }
-
-    pub(crate) fn with_coordinator(
-        output_senders: OutputSenderMap,
-        idle_detector: Arc<IdleDetector>,
-        git_watcher: Arc<GitWatcher>,
-        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
-    ) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            fanout: SessionIoFanout::with_coordinator(
-                output_senders,
-                idle_detector,
-                ws_broadcaster,
-                coordinator,
-            ),
+            fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
             #[cfg(test)]
             pre_pty_attempts: Arc::new(AtomicUsize::new(0)),
@@ -2194,48 +2173,22 @@ impl PtyBackend for LocalProcessBackend {
     fn activate_terminal_output(
         &self,
         id: Uuid,
+        label: &str,
         include_history: bool,
-    ) -> crate::pty::output::TerminalOutputActivationResult {
-        self.fanout.activate_terminal_output(id, include_history)
-    }
-
-    fn ready_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
+    ) -> Result<
+        Option<crate::pty::output::PtyScreenSnapshot>,
+        crate::pty::output::TerminalOutputAttachError,
+    > {
         self.fanout
-            .ready_terminal_output(id, generation, snapshot_sequence)
+            .activate_terminal_output(id, label, include_history)
     }
 
-    fn deactivate_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout.deactivate_terminal_output(id, generation)
+    fn detach_terminal_output(&self, id: Uuid, label: &str) {
+        self.fanout.detach_terminal_output(id, label);
     }
 
-    fn ack_terminal_output_delivery(
-        &self,
-        id: Uuid,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
-    }
-
-    fn report_terminal_renderer_metrics(
-        &self,
-        id: Uuid,
-        generation: u64,
-        metrics: crate::pty::output::TerminalRendererMetrics,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .report_terminal_renderer_metrics(id, generation, metrics)
+    fn release_window_attachments(&self, label: &str) {
+        self.fanout.release_window_attachments(label);
     }
 
     fn shutdown_terminal_output(&self) {

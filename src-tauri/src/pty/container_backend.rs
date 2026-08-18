@@ -1468,32 +1468,9 @@ impl ContainerTransportBackend {
         lifecycle_sender: Option<ContainerLifecycleSender>,
         tuning: ContainerTransportTuning,
     ) -> Self {
-        Self::with_tuning_and_coordinator(
-            output_senders,
-            idle_detector,
-            ws_broadcaster,
-            lifecycle_sender,
-            tuning,
-            crate::pty::output::TerminalOutputCoordinator::new(),
-        )
-    }
-
-    pub(crate) fn with_tuning_and_coordinator(
-        output_senders: OutputSenderMap,
-        idle_detector: Arc<IdleDetector>,
-        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        lifecycle_sender: Option<ContainerLifecycleSender>,
-        tuning: ContainerTransportTuning,
-        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
-    ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            fanout: SessionIoFanout::with_coordinator(
-                output_senders,
-                idle_detector,
-                ws_broadcaster,
-                coordinator,
-            ),
+            fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             lifecycle_sender,
             route_remover: Arc::new(Mutex::new(None)),
             tuning,
@@ -1517,33 +1494,12 @@ impl ContainerTransportBackend {
         runtime: Arc<dyn ContainerRuntime>,
         token_manager: Option<ContainerApiTokenManager>,
     ) -> Self {
-        Self::with_runtime_and_coordinator(
-            output_senders,
-            idle_detector,
-            ws_broadcaster,
-            lifecycle_sender,
-            runtime,
-            token_manager,
-            crate::pty::output::TerminalOutputCoordinator::new(),
-        )
-    }
-
-    pub(crate) fn with_runtime_and_coordinator(
-        output_senders: OutputSenderMap,
-        idle_detector: Arc<IdleDetector>,
-        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        lifecycle_sender: Option<ContainerLifecycleSender>,
-        runtime: Arc<dyn ContainerRuntime>,
-        token_manager: Option<ContainerApiTokenManager>,
-        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
-    ) -> Self {
-        let mut backend = Self::with_tuning_and_coordinator(
+        let mut backend = Self::with_tuning(
             output_senders,
             idle_detector,
             ws_broadcaster,
             lifecycle_sender,
             ContainerTransportTuning::default(),
-            coordinator,
         );
         backend.runtime = Some(runtime);
         backend.token_manager = token_manager;
@@ -3277,48 +3233,22 @@ impl PtyBackend for ContainerTransportBackend {
     fn activate_terminal_output(
         &self,
         id: Uuid,
+        label: &str,
         include_history: bool,
-    ) -> crate::pty::output::TerminalOutputActivationResult {
-        self.fanout.activate_terminal_output(id, include_history)
-    }
-
-    fn ready_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
+    ) -> Result<
+        Option<crate::pty::output::PtyScreenSnapshot>,
+        crate::pty::output::TerminalOutputAttachError,
+    > {
         self.fanout
-            .ready_terminal_output(id, generation, snapshot_sequence)
+            .activate_terminal_output(id, label, include_history)
     }
 
-    fn deactivate_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout.deactivate_terminal_output(id, generation)
+    fn detach_terminal_output(&self, id: Uuid, label: &str) {
+        self.fanout.detach_terminal_output(id, label);
     }
 
-    fn ack_terminal_output_delivery(
-        &self,
-        id: Uuid,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
-    }
-
-    fn report_terminal_renderer_metrics(
-        &self,
-        id: Uuid,
-        generation: u64,
-        metrics: crate::pty::output::TerminalRendererMetrics,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .report_terminal_renderer_metrics(id, generation, metrics)
+    fn release_window_attachments(&self, label: &str) {
+        self.fanout.release_window_attachments(label);
     }
 
     fn shutdown_terminal_output(&self) {
@@ -3612,7 +3542,6 @@ mod tests {
     use crate::pty::container_paths::CLAUDE_CONFIG_DIR_KEY;
     use crate::pty::container_runtime::{ContainerCleanupReport, RETAINED_OWNER_REPORT_CAPACITY};
     use crate::pty::manager::PtyManager;
-    use crate::pty::output::{TerminalOutputActivationResult, TerminalOutputControlState};
     use crate::session::manager::SessionManager;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -5609,31 +5538,17 @@ mod tests {
             .expect("spawn");
         let ticket = backend.last_issued_ticket_for_test(id).unwrap();
         let _rx = attach(&backend, id, root, &ticket);
-        let activation = match backend.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected activation, got {other:?}"),
-        };
-        let activation = serde_json::to_value(activation).expect("serialize activation");
-        let generation = activation["generation"]
-            .as_str()
-            .expect("generation")
-            .parse()
-            .expect("numeric generation");
-        let snapshot_sequence = activation["snapshot"]["sequence"]
-            .as_str()
-            .expect("snapshot sequence")
-            .parse()
-            .expect("numeric snapshot sequence");
-        assert!(matches!(
-            backend.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::Active { .. }
-        ));
+        backend
+            .activate_terminal_output(id, "main", true)
+            .expect("attach");
 
         backend
             .handle_bridge_output(id, b"hello".to_vec())
             .expect("output");
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The flush is driven by hand: the 16 ms timer is the only spawned thing on this path
+        // and no assertion here depends on it.
+        backend.fanout.flush_terminal_output_for_test(id);
         let got = captured.lock().unwrap().clone();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, id.to_string());

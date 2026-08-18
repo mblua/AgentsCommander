@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex};
+// The only consumer is the coalescing timer, which test builds hold.
+#[cfg(not(test))]
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -36,7 +37,7 @@ pub struct SessionIoFanout {
     response_watchers: ResponseWatcherMap,
     ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     screen_parsers: Arc<Mutex<HashMap<Uuid, ScreenReplayState>>>,
-    coordinator: Arc<TerminalOutputCoordinator>,
+    attachments: Arc<TerminalOutputAttachments>,
     fanout_identity: Arc<()>,
     #[cfg(test)]
     trace: FanoutTraceRecorder,
@@ -204,10 +205,17 @@ fn convert_color(color: vt100::Color) -> TerminalColor {
     }
 }
 
+/// The UI coalescing window. Its only consumer is the one-shot timer armed per session, which
+/// test builds hold so no assertion depends on a wall clock; the flush itself is driven
+/// synchronously there.
+#[cfg(not(test))]
 const UI_BATCH_INTERVAL_MS: u64 = 16;
-const UI_PENDING_LIMIT_BYTES: usize = 131_072;
-const UI_DELIVERY_ACK_TIMEOUT_MS: u64 = 5_000;
-const UI_ACTIVATION_READY_TIMEOUT_MS: u64 = 5_000;
+
+/// Ingest-thread flush threshold for the per-session coalescing accumulator. Reaching it
+/// inside one 16 ms window flushes on the reader thread, and that is the only backpressure
+/// left on this path: a slow emit there blocks that session's reader, never the parser mutex
+/// the whole backend shares.
+const UI_BATCH_LIMIT_BYTES: usize = 65_536;
 /// Raw output bytes retained per session so a freshly created terminal can be rehydrated
 /// with history instead of a single viewport. Sized to keep the frontend replay peak close
 /// to its current value rather than to double the admission ceiling.
@@ -255,249 +263,44 @@ enum PtyOutputEmitError {
     Emit,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "kind")]
-enum TerminalOutputDelivery {
-    #[serde(rename = "data")]
-    Data {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-        #[serde(rename = "firstSequence")]
-        first_sequence: String,
-        #[serde(rename = "sequence")]
-        sequence: String,
-        #[serde(rename = "data")]
-        data: Vec<u8>,
-    },
-    #[serde(rename = "resyncRequired")]
-    ResyncRequired {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-        #[serde(rename = "sequence")]
-        sequence: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-struct TerminalOutputActivationSnapshot {
-    #[serde(rename = "data")]
-    data: Vec<u8>,
-    #[serde(rename = "rows")]
-    rows: u16,
-    #[serde(rename = "cols")]
-    cols: u16,
-    #[serde(rename = "sequence")]
-    sequence: String,
-}
-
+/// The `pty_output` wire payload.
+///
+/// `sequence` is a number, not a canonical decimal string: the client reconciles a live event
+/// against its seed with `sequence <= snapshot.sequence`, and on strings that comparison is
+/// lexicographic, so `"9" <= "10"` is false and the terminal corrupts silently past sequence
+/// 9. u64 precision is not a concern below 2^53 output events.
+///
+/// The field is absent when the parser is unavailable, and the client then writes those bytes
+/// live with no reconcile: live PTY bytes are never gated (PR #961). Emitting nothing for a
+/// faulted parser is what made the terminal permanently black in #955.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TerminalOutputActivation {
-    #[serde(rename = "sessionId")]
+struct PtyOutputPayload {
     session_id: String,
-    #[serde(rename = "generation")]
-    generation: String,
-    #[serde(rename = "snapshot")]
-    snapshot: TerminalOutputActivationSnapshot,
+    data: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub(crate) enum TerminalOutputActivationRecoveryCode {
-    #[serde(rename = "parserUnavailable")]
-    ParserUnavailable,
-    #[serde(rename = "snapshotTooLarge")]
-    SnapshotTooLarge,
-    #[serde(rename = "snapshotMalformed")]
-    SnapshotMalformed,
-    #[serde(rename = "counterExhausted")]
-    CounterExhausted,
-    #[serde(rename = "outputTargetUnavailable")]
+/// The only two conditions that fail an attach: there is nothing to attach to.
+///
+/// Every other condition attaches successfully without a snapshot, and that is not a
+/// convenience. Under this design the attach IS the emission gate, and `parser_availability`
+/// never returns to `Available` once it flips, so refusing to attach an unavailable parser or
+/// a failed snapshot read would leave that terminal black for the life of the session with no
+/// recovery lane left to repair it. That is #955 verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalOutputAttachError {
+    SessionUnavailable,
     OutputTargetUnavailable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "kind")]
-pub(crate) enum TerminalOutputActivationResult {
-    #[serde(rename = "activated")]
-    Activated {
-        #[serde(rename = "activation")]
-        activation: TerminalOutputActivation,
-    },
-    #[serde(rename = "recoveryError")]
-    RecoveryError {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "code")]
-        code: TerminalOutputActivationRecoveryCode,
-    },
-}
-
-impl TerminalOutputActivationResult {
-    pub(crate) fn recovery(session_id: Uuid, code: TerminalOutputActivationRecoveryCode) -> Self {
-        Self::RecoveryError {
-            session_id: session_id.to_string(),
-            code,
+impl TerminalOutputAttachError {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::SessionUnavailable => "sessionUnavailable",
+            Self::OutputTargetUnavailable => "outputTargetUnavailable",
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "kind")]
-pub(crate) enum TerminalOutputControlState {
-    #[serde(rename = "active")]
-    Active {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-    },
-    #[serde(rename = "awaitingFrontendReady")]
-    AwaitingFrontendReady {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-        #[serde(rename = "snapshotSequence")]
-        snapshot_sequence: String,
-    },
-    #[serde(rename = "resyncRequired")]
-    ResyncRequired {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-        #[serde(rename = "sequence")]
-        sequence: String,
-    },
-    #[serde(rename = "recoveryError")]
-    RecoveryError {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-        #[serde(rename = "code")]
-        code: &'static str,
-    },
-    #[serde(rename = "inactive")]
-    Inactive {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        generation: String,
-    },
-    #[serde(rename = "stale")]
-    Stale,
-}
-
-impl TerminalOutputControlState {
-    pub(crate) fn stale() -> Self {
-        Self::Stale
-    }
-}
-
-/// A permissive Tauri boundary. Validation is intentionally delayed until the command has a
-/// fully materialized JSON value, before it parses a session id or touches PtyManager.
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(transparent)]
-pub(crate) struct TerminalRendererMetricsWire(serde_json::Value);
-
-/// Opaque, validated metrics. Its fields intentionally remain private to this module.
-#[derive(Clone, Debug)]
-pub(crate) struct TerminalRendererMetrics {
-    values: [u32; 25],
-}
-
-impl TerminalRendererMetrics {
-    fn values(&self) -> &[u32; 25] {
-        &self.values
-    }
-}
-
-impl TryFrom<TerminalRendererMetricsWire> for TerminalRendererMetrics {
-    type Error = ();
-
-    fn try_from(wire: TerminalRendererMetricsWire) -> Result<Self, Self::Error> {
-        const KEYS: [&str; 25] = [
-            "retainedTerminalCount",
-            "visibleTerminalCount",
-            "webglContextCount",
-            "webglContextLossCount",
-            "lruEvictionCount",
-            "outputEventsReceived",
-            "inactiveOrStaleEventsRejected",
-            "bytesAccepted",
-            "bytesWritten",
-            "replayPendingBytes",
-            "livePendingBytes",
-            "writeInFlightBytes",
-            "combinedAdmissionHighWaterBytes",
-            "pendingHighWaterBytes",
-            "resyncCount",
-            "activationReadyAcknowledgements",
-            "activationReadyRejections",
-            "activationReadyTimeouts",
-            "generationHealthPollsScheduled",
-            "generationHealthPollsStarted",
-            "generationHealthPollsCancelled",
-            "replayPendingLivenessRecoveries",
-            "snapshotReplayDurationMs",
-            "retiredWriteCallbacksIgnoredAfterDisposal",
-            "maxAnimationFrameLagMs",
-        ];
-
-        let object = wire.0.as_object().ok_or(())?;
-        if object.len() != KEYS.len()
-            || object.keys().map(String::as_str).collect::<HashSet<_>>()
-                != KEYS.iter().copied().collect::<HashSet<_>>()
-        {
-            return Err(());
-        }
-
-        let mut values = [0_u32; 25];
-        for (index, key) in KEYS.iter().enumerate() {
-            let value = object
-                .get(*key)
-                .and_then(serde_json::Value::as_u64)
-                .ok_or(())?;
-            values[index] = u32::try_from(value).map_err(|_| ())?;
-        }
-
-        let bounded = |index: usize, maximum: u32| values[index] <= maximum;
-        if !bounded(0, 4)
-            || !bounded(1, 1)
-            || !bounded(2, 4)
-            || !bounded(9, UI_PENDING_LIMIT_BYTES as u32)
-            || !bounded(10, UI_PENDING_LIMIT_BYTES as u32)
-            || !bounded(11, UI_PENDING_LIMIT_BYTES as u32)
-            || !bounded(12, UI_PENDING_LIMIT_BYTES as u32)
-            || !bounded(13, UI_PENDING_LIMIT_BYTES as u32)
-            || !bounded(22, 60_000)
-            || !bounded(24, 60_000)
-        {
-            return Err(());
-        }
-        if values[1] > values[0]
-            || values[2] > values[0]
-            || (values[9] > 0 && (values[10] != 0 || values[11] != 0))
-        {
-            return Err(());
-        }
-        let live_and_in_flight = values[10].checked_add(values[11]).ok_or(())?;
-        if live_and_in_flight > UI_PENDING_LIMIT_BYTES as u32
-            || values[12] < values[9]
-            || values[12] < live_and_in_flight
-            || values[13] < values[9]
-            || values[13] < values[10]
-            || values[13] > values[12]
-        {
-            return Err(());
-        }
-
-        Ok(Self { values })
     }
 }
 
@@ -525,10 +328,13 @@ impl RegisteredPtyOutputTarget {
     }
 }
 
+/// One emit per attached window label, fallible as a whole.
+type PtyOutputEmitFn =
+    dyn Fn(&[WindowLabel], PtyOutputPayload) -> Result<(), PtyOutputEmitError> + Send + Sync;
+
 #[derive(Clone)]
 pub(crate) struct PtyOutputTarget {
-    emit_pty_output:
-        Arc<dyn Fn(TerminalOutputDelivery) -> Result<(), PtyOutputEmitError> + Send + Sync>,
+    emit_pty_output: Arc<PtyOutputEmitFn>,
 }
 
 #[cfg(test)]
@@ -538,12 +344,27 @@ pub(crate) type PtyOutputTestEvent = (String, Vec<u8>, Option<u64>);
 pub(crate) type PtyOutputTestSink = Arc<Mutex<Vec<PtyOutputTestEvent>>>;
 
 impl PtyOutputTarget {
+    /// Emits once per attached window label.
+    ///
+    /// `emit` would deliver to EVERY open webview, listener or not: the sidebar and every
+    /// detached terminal window each pay a receive-side deserialization before their event
+    /// router discards the payload. With `emit_to` the bridge multiplier is the number of
+    /// (session, attached window) pairs instead, which is what bounds the webview axis at all.
+    /// `emit_to` returns `Ok` for a label with no listener and for a label whose window is
+    /// already gone, so a window that died before the destroy reap ran is benign.
     pub(crate) fn from_app_handle<R: tauri::Runtime>(app_handle: AppHandle<R>) -> Self {
         Self {
-            emit_pty_output: Arc::new(move |payload| {
-                app_handle
-                    .emit("pty_output", payload)
-                    .map_err(|_| PtyOutputEmitError::Emit)
+            emit_pty_output: Arc::new(move |labels, payload| {
+                let mut result = Ok(());
+                for label in labels {
+                    if app_handle
+                        .emit_to(label.as_str(), "pty_output", payload.clone())
+                        .is_err()
+                    {
+                        result = Err(PtyOutputEmitError::Emit);
+                    }
+                }
+                result
             }),
         }
     }
@@ -551,28 +372,17 @@ impl PtyOutputTarget {
     #[cfg(test)]
     pub(crate) fn noop() -> Self {
         Self {
-            emit_pty_output: Arc::new(|_| Ok(())),
+            emit_pty_output: Arc::new(|_, _| Ok(())),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn from_test_sink(sink: PtyOutputTestSink) -> Self {
         Self {
-            emit_pty_output: Arc::new(move |payload| {
-                let event = match payload {
-                    TerminalOutputDelivery::Data {
-                        session_id,
-                        data,
-                        sequence,
-                        ..
-                    } => (session_id, data, sequence.parse().ok()),
-                    TerminalOutputDelivery::ResyncRequired {
-                        session_id,
-                        sequence,
-                        ..
-                    } => (session_id, Vec::new(), sequence.parse().ok()),
-                };
-                sink.lock().unwrap().push(event);
+            emit_pty_output: Arc::new(move |_labels, payload| {
+                sink.lock()
+                    .unwrap()
+                    .push((payload.session_id, payload.data, payload.sequence));
                 Ok(())
             }),
         }
@@ -582,15 +392,19 @@ impl PtyOutputTarget {
     fn failing_test_sink(sink: PtyOutputTestSink) -> Self {
         let target = Self::from_test_sink(sink);
         Self {
-            emit_pty_output: Arc::new(move |payload| {
-                let _ = target.emit_pty_output(payload);
+            emit_pty_output: Arc::new(move |labels, payload| {
+                let _ = target.emit_pty_output(labels, payload);
                 Err(PtyOutputEmitError::Emit)
             }),
         }
     }
 
-    fn emit_pty_output(&self, payload: TerminalOutputDelivery) -> Result<(), PtyOutputEmitError> {
-        (self.emit_pty_output)(payload)
+    fn emit_pty_output(
+        &self,
+        labels: &[WindowLabel],
+        payload: PtyOutputPayload,
+    ) -> Result<(), PtyOutputEmitError> {
+        (self.emit_pty_output)(labels, payload)
     }
 }
 
@@ -698,941 +512,328 @@ impl Drop for ReaderOperationLease {
     }
 }
 
+/// A window label, exactly as Tauri reports it for the calling webview. It is never a value
+/// JavaScript chooses, so a frontend cannot forge one or attach on another window's behalf.
+type WindowLabel = String;
+
+/// The emission gate: a map from session id to the set of window labels watching it, where a
+/// session's attach count is `set.len()`.
+///
+/// The count is what stops a second window from stealing or releasing the first window's
+/// delivery, which is the whole of #1363. The label is what makes the count count OWNERS
+/// rather than CALLS: a bare counter cannot tell a decrement owed by window 1 from one issued
+/// by window 2, so a single over-detach out of the frontend's several disposal paths would
+/// silently mute a session another window is still watching. With labels every one of those
+/// paths degrades into a window-local no-op, and two further things become possible that a
+/// counter cannot express - reaping a dead window's attachments in the backend, and scoping
+/// the emit with `emit_to`.
+pub(crate) struct TerminalOutputAttachments {
+    state: Mutex<AttachmentState>,
+}
+
 #[derive(Default)]
-struct PendingBatch {
-    first_sequence: Option<u64>,
-    last_sequence: Option<u64>,
-    data: Vec<u8>,
+struct AttachmentState {
+    attached: HashMap<Uuid, HashSet<WindowLabel>>,
+    /// Per-session coalescing buffers, present only while a session has an attachment. The
+    /// outer map is locked for lookup only: holding it across an emit would let one flooding
+    /// session throttle every other session's ingest.
+    accumulators: HashMap<Uuid, Arc<Mutex<SessionAccumulator>>>,
 }
 
-impl PendingBatch {
-    fn append(
-        &mut self,
-        sequence: u64,
-        mut data: Vec<u8>,
-        in_flight_bytes: usize,
-    ) -> Result<(), ()> {
-        let used = in_flight_bytes
-            .checked_add(self.data.len())
-            .and_then(|value| value.checked_add(data.len()))
-            .ok_or(())?;
-        if used > UI_PENDING_LIMIT_BYTES {
-            return Err(());
-        }
-        if let Some(last_sequence) = self.last_sequence {
-            if last_sequence.checked_add(1) != Some(sequence) {
-                return Err(());
-            }
-        } else {
-            self.first_sequence = Some(sequence);
-        }
-        self.last_sequence = Some(sequence);
-        self.data.append(&mut data);
-        Ok(())
-    }
-
-    fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-}
-
-struct DeliveryCredit {
-    first_sequence: u64,
-    sequence: u64,
-    bytes: usize,
-    delivery_token: u64,
-    deadline_token: u64,
-}
-
-enum DeliveryPhase {
-    AwaitingFrontendReady {
-        pending: PendingBatch,
-        ready_deadline_token: u64,
-    },
-    Active {
-        pending: PendingBatch,
-        scheduled_flush_token: Option<u64>,
-        in_flight: Option<DeliveryCredit>,
-    },
-    ResyncRequired {
-        sequence: u64,
-        activation_ready: bool,
-        marker_reserved: bool,
-    },
-}
-
-struct SelectedDeliveryRecord {
+/// One session's pending batch.
+///
+/// Two emitters drain it, the 64 KiB threshold flush on the ingest thread and the 16 ms timer
+/// flush on a Tokio task, and both do the drain AND the emit while holding this mutex. A drain
+/// that released the mutex before emitting would let the two interleave a session's bytes,
+/// which is a silently corrupted terminal.
+struct SessionAccumulator {
     registration: Arc<RegisteredPtyOutputTarget>,
-    generation: u64,
-    snapshot_sequence: u64,
-    counter_exhausted: bool,
-    phase: DeliveryPhase,
-    effect_gate: Arc<GenerationEffectGate>,
+    data: Vec<u8>,
+    /// The batch's LAST sequence, or `None` once the parser is unavailable. A batch never
+    /// mixes the two: the accumulator is flushed at the `Available -> Unavailable` transition,
+    /// so one scalar always describes the whole batch. Labelled with the last real sequence, a
+    /// mixed batch would make the client watermark-drop bytes that were never seeded; labelled
+    /// `None`, its sequenced prefix would escape reconciliation and duplicate against the seed.
+    sequence: Option<u64>,
+    /// A one-shot timer task is pending for this session. Only that task clears the flag, so a
+    /// threshold flush cannot arm a second timer behind the one already in flight.
+    timer_armed: bool,
+    /// Whether the last emit failed. A webview torn down mid-flood makes every flush fail, and
+    /// logging one line per flush would be ~62 lines/s per session, which would itself read as
+    /// the bug. Only the transition into the failing state and the recovery are logged.
+    emit_failing: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutputEffectKind {
-    Data,
-    Marker,
-}
-
-struct PendingEffect {
-    target: Arc<RegisteredPtyOutputTarget>,
-    delivery: TerminalOutputDelivery,
-    kind: OutputEffectKind,
-}
-
-enum EffectPermit {
-    Pending(PendingEffect),
-    Executing,
-}
-
-struct GenerationEffectGateState {
-    open: bool,
-    next_permit: u64,
-    executing: usize,
-    permits: HashMap<u64, EffectPermit>,
-}
-
-struct GenerationEffectGate {
-    state: Mutex<GenerationEffectGateState>,
-    settled: Condvar,
-}
-
-impl GenerationEffectGate {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(GenerationEffectGateState {
-                open: true,
-                next_permit: 0,
-                executing: 0,
-                permits: HashMap::new(),
-            }),
-            settled: Condvar::new(),
-        })
+impl SessionAccumulator {
+    fn new(registration: Arc<RegisteredPtyOutputTarget>) -> Self {
+        Self {
+            registration,
+            data: Vec::new(),
+            sequence: None,
+            timer_armed: false,
+            emit_failing: false,
+        }
     }
 
-    fn reserve(&self, effect: PendingEffect) -> Option<u64> {
-        let mut state = self.state.lock().ok()?;
-        if !state.open {
-            return None;
-        }
-        let permit = state.next_permit.checked_add(1)?;
-        state.next_permit = permit;
-        state.permits.insert(permit, EffectPermit::Pending(effect));
-        Some(permit)
+    fn discard(&mut self) {
+        self.data.clear();
+        self.sequence = None;
     }
 
-    fn begin(&self, permit: u64) -> Option<PendingEffect> {
-        let mut state = self.state.lock().ok()?;
-        if !state.open {
-            return None;
+    /// Drains the batch and emits it to `labels`, under the caller's lock on this accumulator.
+    /// With no label left the bytes are dropped rather than deferred: they must not surface on
+    /// a later re-attach, out of order and after that attach's reset.
+    fn flush(&mut self, labels: &[WindowLabel]) {
+        if self.data.is_empty() || labels.is_empty() {
+            self.discard();
+            return;
         }
-        let effect = match state.permits.remove(&permit)? {
-            EffectPermit::Pending(effect) => effect,
-            EffectPermit::Executing => return None,
+        let session_id = self.registration.session_id;
+        let payload = PtyOutputPayload {
+            session_id: session_id.to_string(),
+            data: std::mem::take(&mut self.data),
+            sequence: self.sequence.take(),
         };
-        state.executing = state.executing.checked_add(1)?;
-        state.permits.insert(permit, EffectPermit::Executing);
-        Some(effect)
-    }
-
-    fn finish(&self, permit: u64) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if matches!(state.permits.remove(&permit), Some(EffectPermit::Executing)) {
-            state.executing = state.executing.saturating_sub(1);
-        }
-        if state.executing == 0 {
-            self.settled.notify_all();
-        }
-    }
-
-    fn cancel_pending(&self, permit: u64) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if matches!(state.permits.get(&permit), Some(EffectPermit::Pending(_))) {
-            state.permits.remove(&permit);
-        }
-        if state.executing == 0 {
-            self.settled.notify_all();
-        }
-    }
-
-    fn close_and_wait(&self) {
-        let cancelled = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.open = false;
-            let pending_ids: Vec<u64> = state
-                .permits
-                .iter()
-                .filter_map(|(id, permit)| {
-                    matches!(permit, EffectPermit::Pending(_)).then_some(*id)
-                })
-                .collect();
-            let mut cancelled = Vec::new();
-            for id in pending_ids {
-                if let Some(EffectPermit::Pending(effect)) = state.permits.remove(&id) {
-                    cancelled.push(effect);
+        match self.registration.target.emit_pty_output(labels, payload) {
+            Ok(()) => {
+                if self.emit_failing {
+                    self.emit_failing = false;
+                    log::info!("[terminal-output] session {session_id} delivery recovered");
                 }
             }
-            cancelled
-        };
-        // Drop every pending payload and target before the lifecycle barrier waits.
-        drop(cancelled);
-
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        while state.executing != 0 {
-            state = self
-                .settled
-                .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+            Err(PtyOutputEmitError::Emit) => {
+                if !self.emit_failing {
+                    self.emit_failing = true;
+                    log::warn!("[terminal-output] session {session_id} delivery is failing");
+                }
+            }
         }
     }
 }
 
-struct OutputEffectDescriptor {
-    coordinator: Weak<TerminalOutputCoordinator>,
-    gate: Weak<GenerationEffectGate>,
-    registration_identity: Arc<RegistrationIdentity>,
-    generation: u64,
-    permit: u64,
+/// What the ingest must still do once it has dropped the `screen_parsers` lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Accumulated {
+    /// No window is attached to this session, so nothing was retained. At 20-30 sessions the
+    /// alternative would hold up to 30 x 64 KiB of bytes nobody will ever receive.
+    Unattached,
+    /// Appended, and a flush is already scheduled.
+    Pending,
+    /// Appended, and this session's one-shot 16 ms timer must be armed.
+    ArmTimer,
+    /// Appended, and the batch reached its ceiling: flush now, on the reader thread.
+    FlushNow,
 }
 
-impl OutputEffectDescriptor {
-    fn run(self) {
-        let Some(gate) = self.gate.upgrade() else {
-            return;
-        };
-        let Some(effect) = gate.begin(self.permit) else {
-            return;
-        };
-        let PendingEffect {
-            target,
-            delivery,
-            kind,
-        } = effect;
-        let result = target.target.emit_pty_output(delivery);
-        let next = self.coordinator.upgrade().and_then(|coordinator| {
-            coordinator.consume_effect_result(
-                &self.registration_identity,
-                self.generation,
-                self.permit,
-                kind,
-                result,
-            )
-        });
-        gate.finish(self.permit);
-        if let Some(next) = next {
-            next.run();
-        }
-    }
-}
-
-impl Drop for OutputEffectDescriptor {
-    fn drop(&mut self) {
-        if let Some(gate) = self.gate.upgrade() {
-            gate.cancel_pending(self.permit);
-        }
-    }
-}
-
-struct TerminalDeliveryState {
-    next_generation: u64,
-    selected: Option<SelectedDeliveryRecord>,
-    renderer_metric_reports: u64,
-    ui_emit_failures: u64,
-    ui_marker_emit_failures: u64,
-}
-
-pub(crate) struct TerminalOutputCoordinator {
-    state: Mutex<TerminalDeliveryState>,
-    activation_gate: Mutex<()>,
-    timer_sequence: AtomicU64,
-}
-
-impl TerminalOutputCoordinator {
+impl TerminalOutputAttachments {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(TerminalDeliveryState {
-                next_generation: 0,
-                selected: None,
-                renderer_metric_reports: 0,
-                ui_emit_failures: 0,
-                ui_marker_emit_failures: 0,
-            }),
-            activation_gate: Mutex::new(()),
-            timer_sequence: AtomicU64::new(0),
+            state: Mutex::new(AttachmentState::default()),
         })
     }
 
-    fn next_timer_token(&self) -> Option<u64> {
-        self.timer_sequence
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                current.checked_add(1)
-            })
-            .ok()
-            .map(|current| current + 1)
+    /// The gate must never stop gating because a thread panicked while holding it: a poisoned
+    /// map that refused every read would leave every terminal black.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, AttachmentState> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    fn matches_record(
-        record: &SelectedDeliveryRecord,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-    ) -> bool {
-        record.generation == generation && Arc::ptr_eq(&record.registration.identity, identity)
-    }
-
-    fn control_state(record: &SelectedDeliveryRecord) -> TerminalOutputControlState {
-        let session_id = record.registration.session_id.to_string();
-        let generation = record.generation.to_string();
-        if record.counter_exhausted {
-            return TerminalOutputControlState::RecoveryError {
-                session_id,
-                generation,
-                code: "counterExhausted",
-            };
-        }
-        match &record.phase {
-            DeliveryPhase::AwaitingFrontendReady { .. } => {
-                TerminalOutputControlState::AwaitingFrontendReady {
-                    session_id,
-                    generation,
-                    snapshot_sequence: record.snapshot_sequence.to_string(),
-                }
-            }
-            DeliveryPhase::Active { .. } => TerminalOutputControlState::Active {
-                session_id,
-                generation,
-            },
-            DeliveryPhase::ResyncRequired { sequence, .. } => {
-                TerminalOutputControlState::ResyncRequired {
-                    session_id,
-                    generation,
-                    sequence: sequence.to_string(),
-                }
-            }
-        }
-    }
-
-    fn retire_after_counter_exhaustion(record: &mut SelectedDeliveryRecord) {
-        record.counter_exhausted = true;
-        record.phase = DeliveryPhase::ResyncRequired {
-            sequence: record.snapshot_sequence,
-            activation_ready: false,
-            marker_reserved: true,
-        };
-    }
-
-    fn reserve_effect(
-        self: &Arc<Self>,
-        record: &SelectedDeliveryRecord,
-        delivery: TerminalOutputDelivery,
-        kind: OutputEffectKind,
-    ) -> Option<OutputEffectDescriptor> {
-        let permit = record.effect_gate.reserve(PendingEffect {
-            target: Arc::clone(&record.registration),
-            delivery,
-            kind,
-        })?;
-        Some(OutputEffectDescriptor {
-            coordinator: Arc::downgrade(self),
-            gate: Arc::downgrade(&record.effect_gate),
-            registration_identity: Arc::clone(&record.registration.identity),
-            generation: record.generation,
-            permit,
-        })
-    }
-
-    fn reserve_marker(
-        self: &Arc<Self>,
-        record: &mut SelectedDeliveryRecord,
-    ) -> Option<OutputEffectDescriptor> {
-        let (sequence, activation_ready, marker_reserved) = match &record.phase {
-            DeliveryPhase::ResyncRequired {
-                sequence,
-                activation_ready,
-                marker_reserved,
-            } => (*sequence, *activation_ready, *marker_reserved),
-            _ => return None,
-        };
-        if !activation_ready || marker_reserved {
-            return None;
-        }
-        let delivery = TerminalOutputDelivery::ResyncRequired {
-            session_id: record.registration.session_id.to_string(),
-            generation: record.generation.to_string(),
-            sequence: sequence.to_string(),
-        };
-        let descriptor = self.reserve_effect(record, delivery, OutputEffectKind::Marker);
-        if descriptor.is_some() {
-            if let DeliveryPhase::ResyncRequired {
-                marker_reserved, ..
-            } = &mut record.phase
-            {
-                *marker_reserved = true;
-            }
-        }
-        descriptor
-    }
-
-    fn transition_to_resync(
-        self: &Arc<Self>,
-        record: &mut SelectedDeliveryRecord,
-        sequence: u64,
-        activation_ready: bool,
-    ) -> Option<OutputEffectDescriptor> {
-        if matches!(record.phase, DeliveryPhase::ResyncRequired { .. }) {
-            return None;
-        }
-        record.phase = DeliveryPhase::ResyncRequired {
-            sequence,
-            activation_ready,
-            marker_reserved: false,
-        };
-        self.reserve_marker(record)
-    }
-
-    fn schedule_ready_timeout(
-        self: &Arc<Self>,
-        identity: Arc<RegistrationIdentity>,
-        generation: u64,
-        timer_token: u64,
-    ) {
-        let coordinator = Arc::downgrade(self);
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(UI_ACTIVATION_READY_TIMEOUT_MS)).await;
-            if let Some(coordinator) = coordinator.upgrade() {
-                if let Some(descriptor) =
-                    coordinator.handle_ready_timeout(&identity, generation, timer_token)
-                {
-                    descriptor.run();
-                }
-            }
-        });
-    }
-
-    fn schedule_flush(
-        self: &Arc<Self>,
-        identity: Arc<RegistrationIdentity>,
-        generation: u64,
-        timer_token: u64,
-    ) {
-        let coordinator = Arc::downgrade(self);
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(UI_BATCH_INTERVAL_MS)).await;
-            if let Some(coordinator) = coordinator.upgrade() {
-                if let Some(descriptor) = coordinator.flush(&identity, generation, timer_token) {
-                    descriptor.run();
-                }
-            }
-        });
-    }
-
-    fn schedule_ack_timeout(
-        self: &Arc<Self>,
-        identity: Arc<RegistrationIdentity>,
-        generation: u64,
-        delivery_token: u64,
-        deadline_token: u64,
-    ) {
-        let coordinator = Arc::downgrade(self);
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(UI_DELIVERY_ACK_TIMEOUT_MS)).await;
-            if let Some(coordinator) = coordinator.upgrade() {
-                if let Some(descriptor) = coordinator.handle_ack_timeout(
-                    &identity,
-                    generation,
-                    delivery_token,
-                    deadline_token,
-                ) {
-                    descriptor.run();
-                }
-            }
-        });
-    }
-
-    fn activate(
-        self: &Arc<Self>,
-        registration: Arc<RegisteredPtyOutputTarget>,
-        snapshot: PtyScreenSnapshot,
-    ) -> TerminalOutputActivationResult {
-        let _activation_guard = self
-            .activation_gate
+    fn lock_accumulator(
+        accumulator: &Arc<Mutex<SessionAccumulator>>,
+    ) -> std::sync::MutexGuard<'_, SessionAccumulator> {
+        accumulator
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let retired = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.selected.take()
-        };
-        if let Some(retired) = retired {
-            retired.effect_gate.close_and_wait();
-        }
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
-        let (generation, timer_token) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let Some(generation) = state.next_generation.checked_add(1) else {
-                return TerminalOutputActivationResult::recovery(
-                    registration.session_id,
-                    TerminalOutputActivationRecoveryCode::CounterExhausted,
-                );
-            };
-            let Some(timer_token) = self.next_timer_token() else {
-                return TerminalOutputActivationResult::recovery(
-                    registration.session_id,
-                    TerminalOutputActivationRecoveryCode::CounterExhausted,
-                );
-            };
-            state.next_generation = generation;
-            state.selected = Some(SelectedDeliveryRecord {
-                registration: Arc::clone(&registration),
-                generation,
-                snapshot_sequence: snapshot.sequence,
-                counter_exhausted: false,
-                phase: DeliveryPhase::AwaitingFrontendReady {
-                    pending: PendingBatch::default(),
-                    ready_deadline_token: timer_token,
-                },
-                effect_gate: GenerationEffectGate::new(),
-            });
-            (generation, timer_token)
-        };
-        self.schedule_ready_timeout(Arc::clone(&registration.identity), generation, timer_token);
-        TerminalOutputActivationResult::Activated {
-            activation: TerminalOutputActivation {
-                session_id: registration.session_id.to_string(),
-                generation: generation.to_string(),
-                snapshot: TerminalOutputActivationSnapshot {
-                    data: snapshot.data,
-                    rows: snapshot.rows,
-                    cols: snapshot.cols,
-                    sequence: snapshot.sequence.to_string(),
-                },
-            },
+    fn labels_of(state: &AttachmentState, session_id: Uuid) -> Vec<WindowLabel> {
+        state
+            .attached
+            .get(&session_id)
+            .map(|labels| labels.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Records that `label`'s window is watching this session. The caller holds
+    /// `screen_parsers` and has already decided to succeed, which is what makes the attach
+    /// transactional: no error path can leak an attachment, so no guard and no compensating
+    /// release exist.
+    ///
+    /// Whatever the session had pending is flushed first, to the windows attached BEFORE this
+    /// one. Every byte of it carries a sequence at or below the snapshot this attach is about
+    /// to read, so the arriving window loses nothing by not receiving it - but a window
+    /// already watching this session has not received it yet, and discarding it would punch a
+    /// silent hole in that window's output. The accumulator only ever holds bytes for a session
+    /// that already has an attachment, so on a first attach there is nothing here at all and
+    /// this costs nothing.
+    fn attach(&self, session_id: Uuid, label: &str) {
+        let mut state = self.lock_state();
+        let pending = state.accumulators.get(&session_id).map(Arc::clone);
+        let labels = Self::labels_of(&state, session_id);
+        state
+            .attached
+            .entry(session_id)
+            .or_default()
+            .insert(label.to_string());
+        drop(state);
+        if let Some(pending) = pending {
+            Self::lock_accumulator(&pending).flush(&labels);
         }
     }
 
-    fn admit_output(
-        self: &Arc<Self>,
-        registration: &Arc<RegisteredPtyOutputTarget>,
-        sequence: u64,
-        data: Vec<u8>,
-    ) -> Option<OutputEffectDescriptor> {
-        let mut flush_schedule = None;
-        let descriptor = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let record = state.selected.as_mut()?;
-            if !Arc::ptr_eq(&record.registration.identity, &registration.identity) {
-                return None;
-            }
-            match &mut record.phase {
-                DeliveryPhase::AwaitingFrontendReady { pending, .. } => {
-                    if pending.append(sequence, data, 0).is_err() {
-                        self.transition_to_resync(record, sequence, false)
-                    } else {
-                        None
-                    }
-                }
-                DeliveryPhase::Active {
-                    pending,
-                    scheduled_flush_token,
-                    in_flight,
-                } => {
-                    let in_flight_bytes =
-                        in_flight.as_ref().map(|credit| credit.bytes).unwrap_or(0);
-                    if pending.append(sequence, data, in_flight_bytes).is_err() {
-                        self.transition_to_resync(record, sequence, true)
-                    } else if in_flight.is_none() && scheduled_flush_token.is_none() {
-                        if let Some(timer_token) = self.next_timer_token() {
-                            *scheduled_flush_token = Some(timer_token);
-                            flush_schedule = Some((
-                                Arc::clone(&record.registration.identity),
-                                record.generation,
-                                timer_token,
-                            ));
-                        } else {
-                            Self::retire_after_counter_exhaustion(record);
-                        }
-                        None
-                    } else {
-                        None
-                    }
-                }
-                DeliveryPhase::ResyncRequired { .. } => None,
-            }
-        };
-        if let Some((identity, generation, timer_token)) = flush_schedule {
-            self.schedule_flush(identity, generation, timer_token);
-        }
-        descriptor
-    }
-
-    fn flush(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        timer_token: u64,
-    ) -> Option<OutputEffectDescriptor> {
-        let (descriptor, (identity, generation, delivery_token, deadline_token)) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let record = state.selected.as_mut()?;
-            if !Self::matches_record(record, identity, generation) {
-                return None;
-            }
-            let (batch, first_sequence, sequence) = {
-                let DeliveryPhase::Active {
-                    pending,
-                    scheduled_flush_token,
-                    in_flight,
-                } = &mut record.phase
-                else {
-                    return None;
-                };
-                if *scheduled_flush_token != Some(timer_token)
-                    || in_flight.is_some()
-                    || pending.is_empty()
-                {
-                    return None;
-                }
-                *scheduled_flush_token = None;
-                let batch = pending.take();
-                let first_sequence = batch.first_sequence?;
-                let sequence = batch.last_sequence?;
-                (batch, first_sequence, sequence)
+    /// Releases `label`'s attachment. Detaching a session this window never attached, and
+    /// detaching twice, are window-local no-ops, and neither can disturb another window.
+    fn detach(&self, session_id: Uuid, label: &str) {
+        let orphaned = {
+            let mut state = self.lock_state();
+            let Some(labels) = state.attached.get_mut(&session_id) else {
+                return;
             };
-            let batch_bytes = batch.data.len();
-            let Some(deadline_token) = self.next_timer_token() else {
-                Self::retire_after_counter_exhaustion(record);
-                return None;
-            };
-            let delivery = TerminalOutputDelivery::Data {
-                session_id: record.registration.session_id.to_string(),
-                generation: record.generation.to_string(),
-                first_sequence: first_sequence.to_string(),
-                sequence: sequence.to_string(),
-                data: batch.data,
-            };
-            let descriptor = self.reserve_effect(record, delivery, OutputEffectKind::Data)?;
-            if let DeliveryPhase::Active { in_flight, .. } = &mut record.phase {
-                *in_flight = Some(DeliveryCredit {
-                    first_sequence,
-                    sequence,
-                    bytes: batch_bytes,
-                    delivery_token: descriptor.permit,
-                    deadline_token,
-                });
-            } else {
-                return None;
+            if !labels.remove(label) || !labels.is_empty() {
+                return;
             }
-            let delivery_token = descriptor.permit;
-            (
-                descriptor,
-                (
-                    Arc::clone(identity),
-                    generation,
-                    delivery_token,
-                    deadline_token,
-                ),
-            )
+            state.attached.remove(&session_id);
+            state.accumulators.remove(&session_id)
         };
-        self.schedule_ack_timeout(identity, generation, delivery_token, deadline_token);
-        Some(descriptor)
+        Self::discard_orphaned(orphaned);
     }
 
-    fn handle_ready_timeout(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        timer_token: u64,
-    ) -> Option<OutputEffectDescriptor> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let record = state.selected.as_mut()?;
-        if !Self::matches_record(record, identity, generation) {
-            return None;
-        }
-        let DeliveryPhase::AwaitingFrontendReady {
-            ready_deadline_token,
-            ..
-        } = &record.phase
-        else {
-            return None;
-        };
-        if *ready_deadline_token != timer_token {
-            return None;
-        }
-        // A ready timeout is deliberately unready: its one marker stays deferred until an
-        // exact later readiness acknowledgement reaches this same generation.
-        self.transition_to_resync(record, record.snapshot_sequence, false)
-    }
-
-    fn handle_ack_timeout(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        delivery_token: u64,
-        deadline_token: u64,
-    ) -> Option<OutputEffectDescriptor> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let record = state.selected.as_mut()?;
-        if !Self::matches_record(record, identity, generation) {
-            return None;
-        }
-        let anchor = match &record.phase {
-            DeliveryPhase::Active {
-                in_flight: Some(credit),
-                ..
-            } if credit.delivery_token == delivery_token
-                && credit.deadline_token == deadline_token =>
-            {
-                credit.sequence
-            }
-            _ => return None,
-        };
-        self.transition_to_resync(record, anchor, true)
-    }
-
-    fn consume_effect_result(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        permit: u64,
-        kind: OutputEffectKind,
-        result: Result<(), PtyOutputEmitError>,
-    ) -> Option<OutputEffectDescriptor> {
-        let Err(PtyOutputEmitError::Emit) = result else {
-            return None;
-        };
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        match kind {
-            OutputEffectKind::Data => {
-                let anchor = {
-                    let record = state.selected.as_ref()?;
-                    if !Self::matches_record(record, identity, generation) {
-                        return None;
-                    }
-                    match &record.phase {
-                        DeliveryPhase::Active {
-                            in_flight: Some(credit),
-                            ..
-                        } if credit.delivery_token == permit => credit.sequence,
-                        _ => return None,
-                    }
-                };
-                state.ui_emit_failures = state.ui_emit_failures.saturating_add(1);
-                let record = state.selected.as_mut()?;
-                self.transition_to_resync(record, anchor, true)
-            }
-            OutputEffectKind::Marker => {
-                let resync = {
-                    let record = state.selected.as_ref()?;
-                    if !Self::matches_record(record, identity, generation) {
-                        return None;
-                    }
-                    matches!(record.phase, DeliveryPhase::ResyncRequired { .. })
-                };
-                if resync {
-                    state.ui_marker_emit_failures = state.ui_marker_emit_failures.saturating_add(1);
-                    log::warn!(
-                        "[terminal-output] resync marker emit failed generation={generation}"
-                    );
-                }
-                None
-            }
-        }
-    }
-
-    fn ready(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> (TerminalOutputControlState, Option<OutputEffectDescriptor>) {
-        let mut flush_schedule = None;
-        let (result, descriptor) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let Some(record) = state.selected.as_mut() else {
-                return (TerminalOutputControlState::stale(), None);
-            };
-            if !Self::matches_record(record, identity, generation)
-                || record.snapshot_sequence != snapshot_sequence
-            {
-                return (TerminalOutputControlState::stale(), None);
-            }
-            match &mut record.phase {
-                DeliveryPhase::AwaitingFrontendReady { pending, .. } => {
-                    let pending = pending.take();
-                    record.phase = DeliveryPhase::Active {
-                        pending,
-                        scheduled_flush_token: None,
-                        in_flight: None,
-                    };
-                    if let DeliveryPhase::Active {
-                        pending,
-                        scheduled_flush_token,
-                        ..
-                    } = &mut record.phase
-                    {
-                        if !pending.is_empty() {
-                            if let Some(timer_token) = self.next_timer_token() {
-                                *scheduled_flush_token = Some(timer_token);
-                                flush_schedule = Some((
-                                    Arc::clone(&record.registration.identity),
-                                    record.generation,
-                                    timer_token,
-                                ));
-                            }
-                        }
-                    }
-                    (Self::control_state(record), None)
-                }
-                DeliveryPhase::Active { .. } => (Self::control_state(record), None),
-                DeliveryPhase::ResyncRequired {
-                    activation_ready, ..
-                } => {
-                    if !*activation_ready {
-                        *activation_ready = true;
-                    }
-                    let descriptor = self.reserve_marker(record);
-                    (Self::control_state(record), descriptor)
+    /// A window was destroyed: release every attachment it held. This runs with no frontend
+    /// cooperation, which is what makes the frontend detach a bandwidth optimization rather
+    /// than a correctness dependency, and what lets the close hook avoid blocking the close.
+    fn release_window(&self, label: &str) {
+        let orphaned = {
+            let mut state = self.lock_state();
+            let emptied = state
+                .attached
+                .iter_mut()
+                .filter_map(|(session_id, labels)| {
+                    (labels.remove(label) && labels.is_empty()).then_some(*session_id)
+                })
+                .collect::<Vec<_>>();
+            let mut orphaned = Vec::new();
+            for session_id in emptied {
+                state.attached.remove(&session_id);
+                if let Some(accumulator) = state.accumulators.remove(&session_id) {
+                    orphaned.push(accumulator);
                 }
             }
+            orphaned
         };
-        if let Some((identity, generation, timer_token)) = flush_schedule {
-            self.schedule_flush(identity, generation, timer_token);
+        for accumulator in orphaned {
+            Self::lock_accumulator(&accumulator).discard();
         }
-        (result, descriptor)
     }
 
-    fn acknowledge(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> TerminalOutputControlState {
-        let mut flush_schedule = None;
-        let result = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let Some(record) = state.selected.as_mut() else {
-                return TerminalOutputControlState::stale();
-            };
-            if !Self::matches_record(record, identity, generation) {
-                return TerminalOutputControlState::stale();
-            }
-            let DeliveryPhase::Active {
-                pending,
-                scheduled_flush_token,
-                in_flight,
-            } = &mut record.phase
-            else {
-                return TerminalOutputControlState::stale();
-            };
-            let matches_credit = in_flight.as_ref().is_some_and(|credit| {
-                credit.first_sequence == first_sequence && credit.sequence == sequence
-            });
-            if !matches_credit {
-                return TerminalOutputControlState::stale();
-            }
-            *in_flight = None;
-            if !pending.is_empty() && scheduled_flush_token.is_none() {
-                if let Some(timer_token) = self.next_timer_token() {
-                    *scheduled_flush_token = Some(timer_token);
-                    flush_schedule = Some((
-                        Arc::clone(&record.registration.identity),
-                        record.generation,
-                        timer_token,
-                    ));
-                }
-            }
-            Self::control_state(record)
+    /// The session is gone: drop its attachments and its pending bytes unconditionally. This
+    /// is the release that makes "session destroy releases attachments" true in the backend
+    /// however the frontend behaves.
+    fn remove_session(&self, session_id: Uuid) {
+        let orphaned = {
+            let mut state = self.lock_state();
+            state.attached.remove(&session_id);
+            state.accumulators.remove(&session_id)
         };
-        if let Some((identity, generation, timer_token)) = flush_schedule {
-            self.schedule_flush(identity, generation, timer_token);
-        }
-        result
+        Self::discard_orphaned(orphaned);
     }
 
-    fn report_metrics(
+    /// Always outside the outer lock: an in-flight emit holds the accumulator mutex, and
+    /// waiting for it with the map locked would stall every other session's ingest.
+    fn discard_orphaned(orphaned: Option<Arc<Mutex<SessionAccumulator>>>) {
+        if let Some(accumulator) = orphaned {
+            Self::lock_accumulator(&accumulator).discard();
+        }
+    }
+
+    /// Ingest side of the gate: appends one chunk to the session's batch.
+    ///
+    /// The caller holds `screen_parsers`, and that is what makes the batch boundary atomic
+    /// with the sequence assignment. No chunk can be appended between the attach's snapshot
+    /// read and the attach's drain, so no batch can straddle the snapshot and the scalar
+    /// `sequence` is sufficient to describe one. The emit is deliberately NOT done here: it is
+    /// reported back so the caller can run it after dropping that lock, because a `serde_json`
+    /// emit under the parser mutex would stall every session's ingest.
+    ///
+    /// `parser_fault` marks the `Available -> Unavailable` transition and flushes what is
+    /// already accumulated, so the unsequenced chunk that follows cannot share a batch with
+    /// sequenced bytes.
+    #[must_use]
+    fn accumulate(
         &self,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-        metrics: TerminalRendererMetrics,
-    ) -> TerminalOutputControlState {
-        // Keep the opaque value consumed inside the policy owner. No terminal payload or metric
-        // field is logged from this control plane.
-        let _metric_count = metrics.values().len();
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let result = {
-            let Some(record) = state.selected.as_ref() else {
-                return TerminalOutputControlState::stale();
-            };
-            if !Self::matches_record(record, identity, generation) {
-                return TerminalOutputControlState::stale();
-            }
-            Self::control_state(record)
-        };
-        state.renderer_metric_reports = state.renderer_metric_reports.saturating_add(1);
-        result
-    }
-
-    fn parser_fault(
-        self: &Arc<Self>,
         registration: &Arc<RegisteredPtyOutputTarget>,
-        last_successful_sequence: u64,
-    ) -> Option<OutputEffectDescriptor> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let record = state.selected.as_mut()?;
-        if !Arc::ptr_eq(&record.registration.identity, &registration.identity) {
-            return None;
+        sequence: Option<u64>,
+        data: &[u8],
+        parser_fault: bool,
+    ) -> Accumulated {
+        let session_id = registration.session_id;
+        let (accumulator, labels) = {
+            let mut state = self.lock_state();
+            let labels = Self::labels_of(&state, session_id);
+            if labels.is_empty() {
+                return Accumulated::Unattached;
+            }
+            let accumulator = Arc::clone(
+                state
+                    .accumulators
+                    .entry(session_id)
+                    .or_insert_with(|| {
+                        Arc::new(Mutex::new(SessionAccumulator::new(Arc::clone(registration))))
+                    }),
+            );
+            (accumulator, labels)
+        };
+
+        let mut pending = Self::lock_accumulator(&accumulator);
+        if parser_fault {
+            pending.flush(&labels);
         }
-        let activation_ready = matches!(record.phase, DeliveryPhase::Active { .. });
-        self.transition_to_resync(record, last_successful_sequence, activation_ready)
+        pending.data.extend_from_slice(data);
+        pending.sequence = sequence;
+        if pending.data.len() >= UI_BATCH_LIMIT_BYTES {
+            return Accumulated::FlushNow;
+        }
+        if pending.timer_armed {
+            return Accumulated::Pending;
+        }
+        pending.timer_armed = true;
+        Accumulated::ArmTimer
     }
 
-    fn deactivate(
-        self: &Arc<Self>,
-        identity: &Arc<RegistrationIdentity>,
-        generation: u64,
-    ) -> TerminalOutputControlState {
-        let retired = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let matches = state
-                .selected
-                .as_ref()
-                .is_some_and(|record| Self::matches_record(record, identity, generation));
-            if matches {
-                state.selected.take()
-            } else {
-                None
-            }
+    /// The flush, and the synchronous seam every backend test drives instead of sleeping.
+    ///
+    /// It emits to the windows attached right now, and does nothing once the session is
+    /// detached or destroyed, because those release sites drain the accumulator rather than
+    /// leaving bytes for a later timer to deliver.
+    fn flush(&self, session_id: Uuid) {
+        let (accumulator, labels) = {
+            let state = self.lock_state();
+            let Some(accumulator) = state.accumulators.get(&session_id).map(Arc::clone) else {
+                return;
+            };
+            (accumulator, Self::labels_of(&state, session_id))
         };
-        let Some(record) = retired else {
-            return TerminalOutputControlState::stale();
-        };
-        record.effect_gate.close_and_wait();
-        TerminalOutputControlState::Inactive {
-            session_id: record.registration.session_id.to_string(),
-            generation: record.generation.to_string(),
-        }
+        let mut pending = Self::lock_accumulator(&accumulator);
+        pending.timer_armed = false;
+        pending.flush(&labels);
     }
 
-    fn retire_registration(&self, registration: &Arc<RegisteredPtyOutputTarget>) {
-        let retired = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            let matches = state.selected.as_ref().is_some_and(|record| {
-                Arc::ptr_eq(&record.registration.identity, &registration.identity)
-            });
-            if matches {
-                state.selected.take()
-            } else {
-                None
-            }
-        };
-        if let Some(record) = retired {
-            record.effect_gate.close_and_wait();
-        }
+    #[cfg(test)]
+    fn labels_for_test(&self, session_id: Uuid) -> Vec<WindowLabel> {
+        let mut labels = Self::labels_of(&self.lock_state(), session_id);
+        labels.sort();
+        labels
+    }
+
+    #[cfg(test)]
+    fn pending_bytes_for_test(&self, session_id: Uuid) -> Option<usize> {
+        let accumulator = self
+            .lock_state()
+            .accumulators
+            .get(&session_id)
+            .map(Arc::clone)?;
+        let pending = Self::lock_accumulator(&accumulator);
+        let bytes = pending.data.len();
+        Some(bytes)
     }
 }
 
@@ -1657,27 +858,13 @@ impl SessionIoFanout {
         idle_detector: Arc<IdleDetector>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
-        Self::with_coordinator(
-            output_senders,
-            idle_detector,
-            ws_broadcaster,
-            TerminalOutputCoordinator::new(),
-        )
-    }
-
-    pub(crate) fn with_coordinator(
-        output_senders: OutputSenderMap,
-        idle_detector: Arc<IdleDetector>,
-        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        coordinator: Arc<TerminalOutputCoordinator>,
-    ) -> Self {
         Self {
             output_senders,
             idle_detector,
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
             ws_broadcaster,
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
-            coordinator,
+            attachments: TerminalOutputAttachments::new(),
             fanout_identity: Arc::new(()),
             #[cfg(test)]
             trace: Arc::new(Mutex::new(Vec::new())),
@@ -1753,13 +940,6 @@ impl SessionIoFanout {
             return None;
         }
         state.reader_gate.acquire()
-    }
-
-    fn registration_for_control(&self, id: Uuid) -> Option<Arc<RegisteredPtyOutputTarget>> {
-        let parsers = self.screen_parsers.lock().ok()?;
-        parsers
-            .get(&id)
-            .map(|state| Arc::clone(&state.registration))
     }
 
     pub(crate) fn registration_token_for_session(
@@ -1841,7 +1021,7 @@ impl SessionIoFanout {
             let _ = sender.try_send(data.clone());
         }
 
-        let (registration, sequence, parser_fault, ui_open, last_successful_sequence) = {
+        let accumulated = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
                 return;
             };
@@ -1855,11 +1035,17 @@ impl SessionIoFanout {
                 return;
             }
             let registration = Arc::clone(&state.registration);
+            // The emission predicate is `reader_gate.is_open() && attached`, and it is an AND:
+            // the gate is the teardown drain gate, the attached set is delivery, and folding
+            // one into the other would let output emit into a session being torn down.
+            //
+            // It is evaluated independently of `parser_availability` on purpose. A faulted
+            // parser must keep emitting, unsequenced, or the terminal goes black for the life
+            // of the process, so the `Unavailable` arm below carries the real `ui_open` rather
+            // than the `false` the delivery contract used to hardcode there.
             let ui_open = state.reader_gate.is_open();
-            match state.parser_availability {
-                ParserAvailability::Unavailable => {
-                    (registration, None, false, false, state.output_sequence)
-                }
+            let (sequence, parser_fault) = match state.parser_availability {
+                ParserAvailability::Unavailable => (None, false),
                 ParserAvailability::Available => {
                     let processed = crate::logging::catch_payload_unwind(|| {
                         state.parser.process(&data);
@@ -1868,11 +1054,11 @@ impl SessionIoFanout {
                         // Order matters, and these two lines must stay contiguous. The ring
                         // may only grow once `output_sequence` has advanced: on overflow the
                         // line above returns `Err` and the parser goes `Unavailable`, and a
-                        // ring that grew anyway would make the activation payload carry bytes
-                        // that `sequence` does not represent. The frontend acks by watermark
-                        // and only skips what is at or below the snapshot sequence, so those
-                        // bytes would be replayed and then written again when they arrive
-                        // live: a duplicated block of history.
+                        // ring that grew anyway would make the attach snapshot carry bytes
+                        // that `sequence` does not represent. The frontend reconciles by
+                        // watermark and only skips what is at or below the snapshot sequence,
+                        // so those bytes would be seeded and then written again when they
+                        // arrive live: a duplicated block of history.
                         append_history(&mut state.history, &data);
                         Ok::<u64, ()>(sequence)
                     });
@@ -1880,38 +1066,28 @@ impl SessionIoFanout {
                         Ok(Ok(sequence)) => {
                             #[cfg(test)]
                             self.trace(FanoutTraceEvent::ParserProcessed(sequence));
-                            (registration, Some(sequence), false, ui_open, sequence)
+                            (Some(sequence), false)
                         }
                         Ok(Err(())) | Err(_) => {
                             state.parser_availability = ParserAvailability::Unavailable;
-                            (registration, None, true, ui_open, state.output_sequence)
+                            (None, true)
                         }
                     }
                 }
+            };
+            if parser_fault {
+                log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+            }
+            // Appending under the parser lock is what keeps the batch boundary atomic with the
+            // sequence assignment, so no coalesced batch can straddle an attach's snapshot.
+            // The emit it may ask for is run below, after the lock is dropped.
+            if ui_open {
+                self.attachments
+                    .accumulate(&registration, sequence, &data, parser_fault)
+            } else {
+                Accumulated::Unattached
             }
         };
-
-        let (descriptor, ui_admitted) = if parser_fault {
-            log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            (
-                self.coordinator
-                    .parser_fault(&registration, last_successful_sequence),
-                false,
-            )
-        } else if ui_open {
-            (
-                sequence.and_then(|sequence| {
-                    self.coordinator
-                        .admit_output(&registration, sequence, data.clone())
-                }),
-                sequence.is_some(),
-            )
-        } else {
-            (None, false)
-        };
-
-        #[cfg(not(test))]
-        let _ = ui_admitted;
 
         if let Some(ref broadcaster) = self.ws_broadcaster {
             #[cfg(test)]
@@ -1919,55 +1095,68 @@ impl SessionIoFanout {
             broadcaster.broadcast_pty_output(session_id_str, &data);
         }
 
+        // The UI is still the last consumer served, which is what keeps a slow emit from
+        // delaying the idle detector, the response-marker scan, the raw sender or the
+        // websocket broadcaster.
         #[cfg(test)]
-        if ui_admitted {
+        if accumulated != Accumulated::Unattached {
             self.trace(FanoutTraceEvent::UiEmit);
         }
-
-        if let Some(descriptor) = descriptor {
-            descriptor.run();
+        match accumulated {
+            Accumulated::Unattached | Accumulated::Pending => {}
+            Accumulated::ArmTimer => self.arm_output_flush(id),
+            Accumulated::FlushNow => self.attachments.flush(id),
         }
         lease.complete();
     }
 
-    /// `include_history` asks for the retained ring instead of the mirrored viewport. The
-    /// caller must only set it for a terminal with no rendered content: replaying the ring
-    /// over a terminal that already has scrollback appends a duplicate block on every
-    /// activation, and the frontend owns that discriminant (`!entry.hasRenderedOutput`).
-    /// The failure is asymmetric on purpose: a wrongly `false` flag is today's behaviour.
+    /// Attaches `label`'s window to this session's output and returns the seed for it.
+    ///
+    /// The whole body runs inside one `screen_parsers` hold and does three things, in this
+    /// order: drain the session's pending batch, read the snapshot at `state.output_sequence`,
+    /// insert the label. Because no chunk can be processed while that lock is held, the three
+    /// are atomic with respect to the ingest, and that removes three hazards at once. No
+    /// coalesced batch can straddle the snapshot, so a scalar `sequence` carrying the batch's
+    /// last sequence is sufficient and no first-sequence field is needed. There is no window
+    /// between reading the snapshot and becoming attached in which chunks are neither seeded
+    /// nor emitted. And an attach racing `remove_session` cannot leave a label behind for a
+    /// session that no longer exists, because the insert only happens with the session present.
+    ///
+    /// The insert is the last step, on a path that has already decided to succeed, so the
+    /// attach is transactional by construction: no guard, no compensating release.
+    ///
+    /// Only two conditions fail, and both mean there is nothing to attach to: the session is
+    /// absent, or the registration identity does not match. Every other condition attaches
+    /// without a snapshot and lets the client write live (see `TerminalOutputAttachError`).
+    ///
+    /// `include_history` asks for the retained ring instead of the mirrored viewport. It is
+    /// safe on every attach because the client applies the snapshot through a reset first:
+    /// replaying the ring over a terminal that still holds scrollback would append a duplicate
+    /// block, and the reset is what makes that impossible. The ring also keeps filling while a
+    /// session is detached, which is what makes a re-attach gap free, so the frontend always
+    /// asks for it; the parameter stays so the mirrored viewport remains addressable.
     pub(crate) fn activate_terminal_output(
         &self,
         id: Uuid,
+        label: &str,
         include_history: bool,
-    ) -> TerminalOutputActivationResult {
-        let candidate = {
-            let Ok(mut parsers) = self.screen_parsers.lock() else {
-                return TerminalOutputActivationResult::recovery(
-                    id,
-                    TerminalOutputActivationRecoveryCode::ParserUnavailable,
-                );
-            };
-            let Some(state) = parsers.get_mut(&id) else {
-                return TerminalOutputActivationResult::recovery(
-                    id,
-                    TerminalOutputActivationRecoveryCode::ParserUnavailable,
-                );
-            };
-            if state.parser_availability != ParserAvailability::Available {
-                return TerminalOutputActivationResult::recovery(
-                    id,
-                    TerminalOutputActivationRecoveryCode::ParserUnavailable,
-                );
-            }
-            if state.registration.session_id != id
-                || !Arc::ptr_eq(&state.registration.fanout_identity, &self.fanout_identity)
-            {
-                return TerminalOutputActivationResult::recovery(
-                    id,
-                    TerminalOutputActivationRecoveryCode::OutputTargetUnavailable,
-                );
-            }
-            let registration = Arc::clone(&state.registration);
+    ) -> Result<Option<PtyScreenSnapshot>, TerminalOutputAttachError> {
+        let Ok(mut parsers) = self.screen_parsers.lock() else {
+            // Nothing can be read through a poisoned parser lock, but that is not "nothing to
+            // attach to": the window attaches and writes live, exactly as it would for a
+            // faulted parser.
+            self.attachments.attach(id, label);
+            return Ok(None);
+        };
+        let Some(state) = parsers.get_mut(&id) else {
+            return Err(TerminalOutputAttachError::SessionUnavailable);
+        };
+        if state.registration.session_id != id
+            || !Arc::ptr_eq(&state.registration.fanout_identity, &self.fanout_identity)
+        {
+            return Err(TerminalOutputAttachError::OutputTargetUnavailable);
+        }
+        let snapshot = if state.parser_availability == ParserAvailability::Available {
             let copied = crate::logging::catch_payload_unwind(|| {
                 let screen = state.parser.screen();
                 let (rows, cols) = screen.size();
@@ -1997,75 +1186,73 @@ impl SessionIoFanout {
                 })
             });
             match copied {
-                Ok(Ok(snapshot)) => Ok((registration, snapshot)),
-                Ok(Err(())) => Err(TerminalOutputActivationRecoveryCode::SnapshotTooLarge),
+                Ok(Ok(snapshot)) => Some(snapshot),
+                Ok(Err(())) => None,
                 Err(_) => {
                     state.parser_availability = ParserAvailability::Unavailable;
-                    Err(TerminalOutputActivationRecoveryCode::SnapshotMalformed)
+                    None
                 }
             }
+        } else {
+            None
         };
-        match candidate {
-            Ok((registration, snapshot)) => self.coordinator.activate(registration, snapshot),
-            Err(code) => TerminalOutputActivationResult::recovery(id, code),
-        }
+        self.attachments.attach(id, label);
+        drop(parsers);
+        Ok(snapshot)
     }
 
-    pub(crate) fn ready_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> TerminalOutputControlState {
-        let Some(registration) = self.registration_for_control(id) else {
-            return TerminalOutputControlState::stale();
-        };
-        let (result, descriptor) =
-            self.coordinator
-                .ready(&registration.identity, generation, snapshot_sequence);
-        if let Some(descriptor) = descriptor {
-            descriptor.run();
-        }
-        result
+    /// Releases `label`'s attachment. Detaching a session this window never attached, and
+    /// detaching twice, are window-local no-ops that cannot disturb another window.
+    pub(crate) fn detach_terminal_output(&self, id: Uuid, label: &str) {
+        self.attachments.detach(id, label);
     }
 
-    pub(crate) fn deactivate_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-    ) -> TerminalOutputControlState {
-        let Some(registration) = self.registration_for_control(id) else {
-            return TerminalOutputControlState::stale();
-        };
-        self.coordinator
-            .deactivate(&registration.identity, generation)
+    /// A window was destroyed: release every attachment it held, with no frontend cooperation.
+    /// This is what makes the frontend detach a bandwidth optimization rather than a
+    /// correctness dependency, and what lets the close hook avoid blocking the close.
+    pub(crate) fn release_window_attachments(&self, label: &str) {
+        self.attachments.release_window(label);
     }
 
-    pub(crate) fn ack_terminal_output_delivery(
-        &self,
-        id: Uuid,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> TerminalOutputControlState {
-        let Some(registration) = self.registration_for_control(id) else {
-            return TerminalOutputControlState::stale();
-        };
-        self.coordinator
-            .acknowledge(&registration.identity, generation, first_sequence, sequence)
+    /// One one-shot task per session, armed when that session's accumulator goes from empty to
+    /// non-empty.
+    ///
+    /// Deliberately not a global 16 ms ticker. A ticker runs forever, including with zero
+    /// attached sessions, which defeats timer coalescing and costs idle power on a
+    /// long-running tray app, and it serializes every attached session's emit onto one task,
+    /// so a flooding session's 64 KiB delays the keystroke echo flush of the interactive
+    /// session queued behind it. Arming on demand preserves today's idle cost, which is zero,
+    /// and today's latency shape, where the first byte after idle is emitted 16 ms later.
+    #[cfg(not(test))]
+    fn arm_output_flush(&self, id: Uuid) {
+        let attachments = Arc::clone(&self.attachments);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(UI_BATCH_INTERVAL_MS)).await;
+            attachments.flush(id);
+        });
     }
 
-    pub(crate) fn report_terminal_renderer_metrics(
-        &self,
-        id: Uuid,
-        generation: u64,
-        metrics: TerminalRendererMetrics,
-    ) -> TerminalOutputControlState {
-        let Some(registration) = self.registration_for_control(id) else {
-            return TerminalOutputControlState::stale();
-        };
-        self.coordinator
-            .report_metrics(&registration.identity, generation, metrics)
+    /// Test builds hold the timer, so every emit a test observes comes from an explicit
+    /// `flush_terminal_output_for_test` and no assertion can race a 16 ms task. The timer's own
+    /// contract, one arming per empty to non-empty transition, is pinned by `Accumulated`.
+    #[cfg(test)]
+    fn arm_output_flush(&self, _id: Uuid) {}
+
+    /// The synchronous flush seam. Every backend test drives it instead of sleeping, so the
+    /// timer is the only spawned thing on this path and no assertion depends on a wall clock.
+    #[cfg(test)]
+    pub(crate) fn flush_terminal_output_for_test(&self, id: Uuid) {
+        self.attachments.flush(id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attached_labels_for_test(&self, id: Uuid) -> Vec<String> {
+        self.attachments.labels_for_test(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_output_bytes_for_test(&self, id: Uuid) -> Option<usize> {
+        self.attachments.pending_bytes_for_test(id)
     }
 
     pub fn record_resize(&self, id: Uuid) {
@@ -2109,16 +1296,16 @@ impl SessionIoFanout {
                 crate::logging::catch_payload_unwind(|| state.parser.set_size(rows, cols));
             if resized.is_err() {
                 state.parser_availability = ParserAvailability::Unavailable;
-                Some((Arc::clone(&state.registration), state.output_sequence))
+                true
             } else {
-                None
+                false
             }
         };
-        if let Some((registration, sequence)) = parser_fault {
+        if parser_fault {
             log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            if let Some(descriptor) = self.coordinator.parser_fault(&registration, sequence) {
-                descriptor.run();
-            }
+            // Flush at the transition: from here every batch carries no sequence, and one
+            // batch cannot describe both with a single scalar.
+            self.attachments.flush(id);
             return;
         }
 
@@ -2150,8 +1337,9 @@ impl SessionIoFanout {
             )
         };
 
-        self.coordinator
-            .retire_registration(&registration_and_gate.0);
+        // Unconditional in the backend, whatever the frontend did: the session is gone, so
+        // its attachments and its pending bytes go with it.
+        self.attachments.remove_session(id);
         registration_and_gate.1.wait_for_drain();
 
         let mut parsers = self
@@ -2418,6 +1606,17 @@ impl SessionIoFanout {
     /// #1171 - poison `screen_parsers` deterministically, so the "a lock we could not take
     /// makes no claim about the session" arm is covered by a test rather than by reasoning.
     /// Mould: `PtyManager::poison_route_registry_for_test` (`manager.rs:346-355`).
+    /// Test-only: parks the sequence one step from overflow, which is the reachable way to make
+    /// the next chunk take the parser-fault path of `handle_output`.
+    #[cfg(test)]
+    pub(crate) fn exhaust_output_sequence_for_test(&self, id: Uuid) {
+        let mut parsers = self.screen_parsers.lock().expect("parser state");
+        parsers
+            .get_mut(&id)
+            .expect("registered session")
+            .output_sequence = u64::MAX;
+    }
+
     #[cfg(test)]
     pub(crate) fn poison_screen_parsers_for_test(&self) {
         let parsers = Arc::clone(&self.screen_parsers);
@@ -2877,6 +2076,48 @@ mod tests {
         assert!(output_has_printable_activity("\x1b[31mready\x1b[0m"));
     }
 
+    const WINDOW: &str = "main";
+    const SECOND_WINDOW: &str = "terminal-2";
+
+    fn new_sink() -> PtyOutputTestSink {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    fn session_with_sink(fanout: &SessionIoFanout, sink: &PtyOutputTestSink) -> Uuid {
+        let id = Uuid::new_v4();
+        fanout
+            .register_session(
+                id,
+                IdleTuning::DEFAULT,
+                30,
+                120,
+                PtyOutputTarget::from_test_sink(Arc::clone(sink)),
+            )
+            .expect("register session with sink");
+        id
+    }
+
+    fn attach(fanout: &SessionIoFanout, id: Uuid, label: &str) -> Option<PtyScreenSnapshot> {
+        fanout
+            .activate_terminal_output(id, label, true)
+            .expect("attach")
+    }
+
+    /// Drives the flush by hand. Nothing on this path emits synchronously except the 64 KiB
+    /// threshold, and test builds hold the 16 ms timer, so every emit a test observes is the one
+    /// it asked for and no assertion races a task.
+    fn flush(fanout: &SessionIoFanout, id: Uuid) {
+        fanout.flush_terminal_output_for_test(id);
+    }
+
+    fn events(sink: &PtyOutputTestSink) -> Vec<PtyOutputTestEvent> {
+        sink.lock().expect("target sink").clone()
+    }
+
+    /// The non-UI consumers keep their order and their behaviour, and the UI is still served
+    /// last of all, which is what keeps a slow emit from delaying any of them. What changed is
+    /// that the UI step no longer EMITS inside the fanout: it appends to the session's 16 ms
+    /// batch, and the flush is what emits.
     #[test]
     fn fanout_characterization_preserves_raw_order_and_ui_is_last() {
         let id = Uuid::new_v4();
@@ -2885,7 +2126,7 @@ mod tests {
         output_senders.lock().unwrap().insert(id, sender);
         let broadcaster = crate::web::broadcast::WsBroadcaster::new();
         let mut websocket_receiver = broadcaster.subscribe();
-        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+        let sink = new_sink();
         let fanout = SessionIoFanout::new(
             output_senders,
             IdleDetector::new(|_| {}, |_| {}),
@@ -2901,20 +2142,7 @@ mod tests {
             )
             .expect("register fanout");
 
-        let activation = match fanout.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected activation, got {other:?}"),
-        };
-        let generation = activation.generation.parse().expect("generation");
-        let snapshot_sequence = activation
-            .snapshot
-            .sequence
-            .parse()
-            .expect("snapshot sequence");
-        assert!(matches!(
-            fanout.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::Active { .. }
-        ));
+        assert!(attach(&fanout, id, WINDOW).is_some());
         assert!(fanout.take_trace_for_test().is_empty());
 
         let bytes = b"characterized raw bytes".to_vec();
@@ -2939,190 +2167,434 @@ mod tests {
             }
             other => panic!("expected websocket binary payload, got {other:?}"),
         }
-        std::thread::sleep(Duration::from_millis(UI_BATCH_INTERVAL_MS + 30));
-        let emitted = sink.lock().unwrap();
+        assert!(
+            events(&sink).is_empty(),
+            "the ingest coalesces; the flush is what emits"
+        );
+
+        flush(&fanout, id);
+        let emitted = events(&sink);
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].1, bytes);
+        assert_eq!(emitted[0].2, Some(1));
     }
 
     #[test]
     fn output_targets_have_explicit_success_and_failure_results() {
-        let delivery = TerminalOutputDelivery::Data {
+        let payload = PtyOutputPayload {
             session_id: Uuid::new_v4().to_string(),
-            generation: "1".to_string(),
-            first_sequence: "1".to_string(),
-            sequence: "1".to_string(),
             data: b"target payload".to_vec(),
+            sequence: Some(1),
         };
+        let labels = vec![WINDOW.to_string()];
         assert_eq!(
-            PtyOutputTarget::noop().emit_pty_output(delivery.clone()),
+            PtyOutputTarget::noop().emit_pty_output(&labels, payload.clone()),
             Ok(())
         );
 
-        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+        let sink = new_sink();
         let failing = PtyOutputTarget::failing_test_sink(Arc::clone(&sink));
         assert_eq!(
-            failing.emit_pty_output(delivery),
+            failing.emit_pty_output(&labels, payload),
             Err(PtyOutputEmitError::Emit)
         );
-        assert_eq!(sink.lock().unwrap().len(), 1);
+        assert_eq!(events(&sink).len(), 1);
     }
 
-    fn wait_for_target_events(sink: &PtyOutputTestSink, expected: usize) {
-        for _ in 0..50 {
-            if sink.lock().expect("target sink").len() >= expected {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("target did not receive {expected} event(s)");
-    }
-
+    /// Section 5's review gate, executable.
+    ///
+    /// Delivery gating is a map from session id to the SET of window labels watching it, so two
+    /// windows on one session hold two attachments and one window's detach cannot mute the
+    /// other. A single slot fails at the second attach, a single key or an uncounted set fails
+    /// at the first detach, and per-window bookkeeping without counts fails the same way.
     #[test]
-    fn ready_flushes_a_pre_ready_batch_through_the_registered_target() {
-        let id = Uuid::new_v4();
-        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+    fn attachments_are_counted_by_window_label() {
         let fanout = fanout();
-        let token = fanout
-            .register_session(
-                id,
-                IdleTuning::DEFAULT,
-                4,
-                40,
-                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
-            )
-            .expect("register session");
-        let activation = match fanout.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected activation, got {other:?}"),
-        };
-        let generation = activation.generation.parse().expect("generation");
-        let snapshot_sequence = activation
-            .snapshot
-            .sequence
-            .parse()
-            .expect("snapshot sequence");
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
 
-        fanout.handle_output(&token, &id.to_string(), b"post-snapshot".to_vec());
-        assert!(sink.lock().expect("target sink").is_empty());
-
-        assert!(matches!(
-            fanout.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::Active { .. }
-        ));
-        wait_for_target_events(&sink, 1);
-        let events = sink.lock().expect("target sink");
-        assert_eq!(events[0].0, id.to_string());
-        assert_eq!(events[0].1, b"post-snapshot");
-        assert_eq!(events[0].2, Some(1));
-    }
-
-    #[test]
-    fn acknowledgement_timeout_emits_one_marker_without_a_later_chunk() {
-        let id = Uuid::new_v4();
-        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
-        let fanout = fanout();
-        let token = fanout
-            .register_session(
-                id,
-                IdleTuning::DEFAULT,
-                4,
-                40,
-                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
-            )
-            .expect("register session");
-        let activation = match fanout.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected activation, got {other:?}"),
-        };
-        let generation = activation.generation.parse().expect("generation");
-        let snapshot_sequence = activation
-            .snapshot
-            .sequence
-            .parse()
-            .expect("snapshot sequence");
-        assert!(matches!(
-            fanout.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::Active { .. }
-        ));
-        fanout.handle_output(&token, &id.to_string(), b"credit".to_vec());
-        wait_for_target_events(&sink, 1);
-
-        let (identity, delivery_token, deadline_token) = {
-            let state = fanout.coordinator.state.lock().expect("coordinator state");
-            let record = state.selected.as_ref().expect("selected record");
-            let DeliveryPhase::Active {
-                in_flight: Some(credit),
-                ..
-            } = &record.phase
-            else {
-                panic!("expected in-flight credit");
-            };
-            (
-                Arc::clone(&record.registration.identity),
-                credit.delivery_token,
-                credit.deadline_token,
-            )
-        };
-        fanout
-            .coordinator
-            .handle_ack_timeout(&identity, generation, delivery_token, deadline_token)
-            .expect("timeout marker")
-            .run();
-
-        let events = sink.lock().expect("target sink");
-        assert_eq!(events.len(), 2);
-        assert!(events[1].1.is_empty());
-        assert_eq!(events[1].2, Some(1));
-    }
-
-    #[test]
-    fn deferred_pre_ready_resync_uses_the_registered_target_after_ready() {
-        let id = Uuid::new_v4();
-        let sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
-        let fanout = fanout();
-        let token = fanout
-            .register_session(
-                id,
-                IdleTuning::DEFAULT,
-                4,
-                40,
-                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
-            )
-            .expect("register session");
-        let activation = match fanout.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected activation, got {other:?}"),
-        };
-        let generation = activation.generation.parse().expect("generation");
-        let snapshot_sequence = activation
-            .snapshot
-            .sequence
-            .parse()
-            .expect("snapshot sequence");
-
-        fanout.handle_output(
-            &token,
-            &id.to_string(),
-            vec![b'x'; UI_PENDING_LIMIT_BYTES + 1],
+        attach(&fanout, id, WINDOW);
+        attach(&fanout, id, SECOND_WINDOW);
+        assert_eq!(
+            fanout.attached_labels_for_test(id),
+            vec![WINDOW.to_string(), SECOND_WINDOW.to_string()]
         );
-        assert!(sink.lock().expect("target sink").is_empty());
+
+        fanout.detach_terminal_output(id, SECOND_WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"still watched".to_vec());
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].1, b"still watched");
+
+        fanout.detach_terminal_output(id, WINDOW);
+        assert!(fanout.attached_labels_for_test(id).is_empty());
+        fanout.handle_output(&token, &id.to_string(), b"unwatched".to_vec());
+        flush(&fanout, id);
+        assert_eq!(events(&sink).len(), 1);
+    }
+
+    /// Criterion M, and the case that IS #1363: two windows on two sessions, both delivering at
+    /// the same time with no reactivation. A single delivery slot passes every other test in
+    /// this family and fails this one, which is why it is here.
+    #[test]
+    fn two_windows_on_two_sessions_both_emit() {
+        let fanout = fanout();
+        let first = new_sink();
+        let second = new_sink();
+        let a = session_with_sink(&fanout, &first);
+        let b = session_with_sink(&fanout, &second);
+        let token_a = fanout.registration_token_for_test(a);
+        let token_b = fanout.registration_token_for_test(b);
+
+        attach(&fanout, a, WINDOW);
+        attach(&fanout, b, SECOND_WINDOW);
+        fanout.handle_output(&token_a, &a.to_string(), b"from a".to_vec());
+        fanout.handle_output(&token_b, &b.to_string(), b"from b".to_vec());
+        flush(&fanout, a);
+        flush(&fanout, b);
+
+        let from_a = events(&first);
+        let from_b = events(&second);
+        assert_eq!(from_a.len(), 1);
+        assert_eq!(from_a[0].1, b"from a");
+        assert_eq!(from_b.len(), 1);
+        assert_eq!(from_b[0].1, b"from b");
+    }
+
+    /// The ingest emit, and its complement: an attached session's chunks produce payloads with
+    /// the right bytes and a monotonic sequence, and a session nobody attached produces nothing
+    /// and retains nothing.
+    #[test]
+    fn only_attached_sessions_emit_and_sequences_stay_monotonic() {
+        let fanout = fanout();
+        let watched_sink = new_sink();
+        let hidden_sink = new_sink();
+        let watched = session_with_sink(&fanout, &watched_sink);
+        let hidden = session_with_sink(&fanout, &hidden_sink);
+        let watched_token = fanout.registration_token_for_test(watched);
+        let hidden_token = fanout.registration_token_for_test(hidden);
+
+        attach(&fanout, watched, WINDOW);
+        for chunk in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+            fanout.handle_output(&watched_token, &watched.to_string(), chunk.to_vec());
+            flush(&fanout, watched);
+        }
+        let emitted = events(&watched_sink);
+        assert_eq!(
+            emitted
+                .iter()
+                .map(|event| (event.1.clone(), event.2))
+                .collect::<Vec<_>>(),
+            vec![
+                (b"one".to_vec(), Some(1)),
+                (b"two".to_vec(), Some(2)),
+                (b"three".to_vec(), Some(3)),
+            ]
+        );
+
+        fanout.handle_output(&hidden_token, &hidden.to_string(), b"unseen".to_vec());
+        flush(&fanout, hidden);
+        assert!(events(&hidden_sink).is_empty());
+        assert_eq!(fanout.pending_output_bytes_for_test(hidden), None);
+    }
+
+    /// Criterion N. Detach is total and window local: an unattached session, a second detach
+    /// past zero and a destroyed session all succeed, and no window's detach can reach another
+    /// window's attachment.
+    #[test]
+    fn detach_is_idempotent_and_never_crosses_windows() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let a = session_with_sink(&fanout, &sink);
+        let b = session_with_sink(&fanout, &sink);
+        let token_a = fanout.registration_token_for_test(a);
+
+        fanout.detach_terminal_output(a, WINDOW);
+        attach(&fanout, a, WINDOW);
+        attach(&fanout, b, SECOND_WINDOW);
+        fanout.detach_terminal_output(b, SECOND_WINDOW);
+        fanout.detach_terminal_output(b, SECOND_WINDOW);
+        fanout.remove_session(b);
+        fanout.detach_terminal_output(b, SECOND_WINDOW);
+
+        assert_eq!(fanout.attached_labels_for_test(a), vec![WINDOW.to_string()]);
+        fanout.handle_output(&token_a, &a.to_string(), b"a keeps delivering".to_vec());
+        flush(&fanout, a);
+        assert_eq!(events(&sink).len(), 1);
+    }
+
+    /// Criterion L. A session whose parser is gone still attaches and still emits, with no
+    /// sequence, and the client writes those bytes live: emitting nothing there is #955, the
+    /// permanently black terminal, and there is no recovery lane left to repair it. A rejected
+    /// attach, by contrast, changes nothing at all.
+    #[test]
+    fn an_unavailable_parser_still_attaches_and_emits_unsequenced() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = Uuid::new_v4();
+        let token = fanout
+            .register_session(
+                id,
+                IdleTuning::DEFAULT,
+                1,
+                1,
+                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
+            )
+            .expect("register one-cell session");
+        // A wide grapheme in a one-column grid removes this session's parser for good.
+        fanout.handle_output(&token, &id.to_string(), "界".as_bytes().to_vec());
 
         assert!(matches!(
-            fanout.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::ResyncRequired { .. }
+            fanout.activate_terminal_output(id, WINDOW, true),
+            Ok(None)
         ));
-        let events = sink.lock().expect("target sink");
-        assert_eq!(events.len(), 1);
-        assert!(events[0].1.is_empty());
-        assert_eq!(events[0].2, Some(1));
+        assert_eq!(fanout.attached_labels_for_test(id), vec![WINDOW.to_string()]);
+
+        fanout.handle_output(&token, &id.to_string(), b"after the fault".to_vec());
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].1, b"after the fault");
+        assert_eq!(emitted[0].2, None);
+
+        let absent = Uuid::new_v4();
+        assert!(matches!(
+            fanout.activate_terminal_output(absent, WINDOW, true),
+            Err(TerminalOutputAttachError::SessionUnavailable)
+        ));
+        assert!(fanout.attached_labels_for_test(absent).is_empty());
+    }
+
+    /// Criterion O. Destroying the session releases its attachments and drops its pending
+    /// bytes in the backend, whatever the frontend did, and the ingest stops even with an
+    /// attachment outstanding.
+    #[test]
+    fn destroying_a_session_releases_its_attachments_and_pending_bytes() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        attach(&fanout, id, WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"pending".to_vec());
+        assert_eq!(
+            fanout.pending_output_bytes_for_test(id),
+            Some(b"pending".len())
+        );
+
+        fanout.remove_session(id);
+        assert!(fanout.attached_labels_for_test(id).is_empty());
+        assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+        flush(&fanout, id);
+        fanout.handle_output(&token, &id.to_string(), b"after destroy".to_vec());
+        assert!(events(&sink).is_empty());
+    }
+
+    /// Criterion O, the other release site. A destroyed window's attachments go with it, in the
+    /// backend, with no frontend call - and only that window's: this is what closes the leak
+    /// class rather than mitigating it, and why the frontend close hook need not block.
+    #[test]
+    fn destroying_a_window_releases_only_its_own_attachments() {
+        let fanout = fanout();
+        let shared_sink = new_sink();
+        let solo_sink = new_sink();
+        let shared = session_with_sink(&fanout, &shared_sink);
+        let solo = session_with_sink(&fanout, &solo_sink);
+        let shared_token = fanout.registration_token_for_test(shared);
+        let solo_token = fanout.registration_token_for_test(solo);
+
+        attach(&fanout, shared, WINDOW);
+        attach(&fanout, shared, SECOND_WINDOW);
+        attach(&fanout, solo, SECOND_WINDOW);
+
+        fanout.release_window_attachments(SECOND_WINDOW);
+        assert_eq!(
+            fanout.attached_labels_for_test(shared),
+            vec![WINDOW.to_string()]
+        );
+        assert!(fanout.attached_labels_for_test(solo).is_empty());
+
+        fanout.handle_output(&shared_token, &shared.to_string(), b"survives".to_vec());
+        fanout.handle_output(&solo_token, &solo.to_string(), b"silenced".to_vec());
+        flush(&fanout, shared);
+        flush(&fanout, solo);
+        assert_eq!(events(&shared_sink).len(), 1);
+        assert!(events(&solo_sink).is_empty());
+    }
+
+    /// Section 3.4.3 rule 4. A detach DRAINS rather than skipping: a flush that fires after it
+    /// emits nothing, and the bytes it would have carried are gone rather than waiting to
+    /// surface on a later re-attach, out of order and after that attach's reset.
+    #[test]
+    fn a_flush_after_detach_emits_nothing_and_drops_the_bytes() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        attach(&fanout, id, WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"never delivered".to_vec());
+        fanout.detach_terminal_output(id, WINDOW);
+        assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+
+        flush(&fanout, id);
+        attach(&fanout, id, WINDOW);
+        flush(&fanout, id);
+        assert!(events(&sink).is_empty());
+    }
+
+    /// Section 3.4.1. The attach cuts the batch exactly at the snapshot: what was pending goes
+    /// to the windows already watching, the snapshot carries every byte up to its own sequence,
+    /// and the ingest continues from there. No batch straddles the boundary, which is what makes
+    /// one scalar `sequence` sufficient to describe a coalesced batch.
+    #[test]
+    fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        attach(&fanout, id, WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"before\r\n".to_vec());
+
+        let snapshot = attach(&fanout, id, SECOND_WINDOW).expect("snapshot on attach");
+        assert_eq!(snapshot.sequence, 1);
+        assert!(String::from_utf8_lossy(&snapshot.data).contains("before"));
+        assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
+        let seeded = events(&sink);
+        assert_eq!(seeded.len(), 1, "the window already watching keeps its bytes");
+        assert_eq!(seeded[0].1, b"before\r\n");
+        assert_eq!(seeded[0].2, Some(1));
+
+        fanout.handle_output(&token, &id.to_string(), b"after".to_vec());
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[1].1, b"after");
+        assert_eq!(emitted[1].2, Some(2));
+    }
+
+    /// Section 3.4.3 rule 5. The batch is flushed at the `Available -> Unavailable` transition,
+    /// so none of them mixes sequenced and unsequenced bytes. Labelled with the last real
+    /// sequence a mixed batch would make the client watermark-drop bytes that were never
+    /// seeded; labelled with none, its sequenced prefix would escape reconciliation and
+    /// duplicate against the seed.
+    #[test]
+    fn a_parser_fault_flushes_at_the_transition_and_unsequences_everything_after() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        attach(&fanout, id, WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"ok".to_vec());
+        // One step from overflow, so the next chunk cannot be sequenced and the parser goes
+        // `Unavailable` for good.
+        fanout.exhaust_output_sequence_for_test(id);
+        fanout.handle_output(&token, &id.to_string(), b"faulting".to_vec());
+        flush(&fanout, id);
+        fanout.handle_output(&token, &id.to_string(), b"later".to_vec());
+        flush(&fanout, id);
+
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 3);
+        assert_eq!(
+            (emitted[0].1.clone(), emitted[0].2),
+            (b"ok".to_vec(), Some(1)),
+            "the sequenced prefix is flushed at the transition"
+        );
+        assert_eq!(
+            (emitted[1].1.clone(), emitted[1].2),
+            (b"faulting".to_vec(), None)
+        );
+        assert_eq!(
+            (emitted[2].1.clone(), emitted[2].2),
+            (b"later".to_vec(), None)
+        );
+    }
+
+    /// Criterion E'. The flush fires when the batch REACHES its ceiling, which happens after
+    /// appending the chunk that crossed it, so accumulation peaks at 64 KiB plus one ingest
+    /// chunk. It runs on the reader thread, and that is the only backpressure left on this path.
+    #[test]
+    fn the_batch_flushes_on_the_reader_thread_at_its_ceiling() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+        attach(&fanout, id, WINDOW);
+
+        let chunk = vec![b'.'; 4_096];
+        for _ in 0..(UI_BATCH_LIMIT_BYTES / chunk.len()) {
+            fanout.handle_output(&token, &id.to_string(), chunk.clone());
+        }
+
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 1, "no timer, no explicit flush: the ceiling did it");
+        assert_eq!(emitted[0].1.len(), UI_BATCH_LIMIT_BYTES);
+        assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
+    }
+
+    /// Criterion P, at the Tauri event layer. `emit` delivers to EVERY open webview, listener
+    /// or not, so an unattached terminal window and the sidebar would each pay a receive-side
+    /// deserialization before discarding the payload. `emit_to` per attached label is what makes
+    /// the bridge multiplier the number of (session, attached window) pairs.
+    #[test]
+    fn pty_output_reaches_only_the_attached_webview() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build attachment app");
+        let attached_webview = tauri::WebviewWindowBuilder::new(&app, WINDOW, Default::default())
+            .build()
+            .expect("attached webview");
+        let unattached_webview =
+            tauri::WebviewWindowBuilder::new(&app, SECOND_WINDOW, Default::default())
+                .build()
+                .expect("unattached webview");
+        let attached_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let unattached_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attached_counter = Arc::clone(&attached_events);
+        attached_webview.listen("pty_output", move |_| {
+            attached_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let unattached_counter = Arc::clone(&unattached_events);
+        unattached_webview.listen("pty_output", move |_| {
+            unattached_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let fanout = SessionIoFanout::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+        );
+        let id = Uuid::new_v4();
+        let token = fanout
+            .register_session(
+                id,
+                IdleTuning::DEFAULT,
+                30,
+                120,
+                PtyOutputTarget::from_app_handle(app.handle().clone()),
+            )
+            .expect("register app-handle session");
+
+        attach(&fanout, id, WINDOW);
+        fanout.handle_output(&token, &id.to_string(), b"only the attached window".to_vec());
+        flush(&fanout, id);
+
+        assert_eq!(attached_events.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(unattached_events.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]
     fn retired_reader_tokens_cannot_target_a_same_uuid_replacement() {
         let id = Uuid::new_v4();
-        let old_sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
-        let new_sink: PtyOutputTestSink = Arc::new(Mutex::new(Vec::new()));
+        let old_sink = new_sink();
+        let new_sink_events = new_sink();
         let fanout = fanout();
         let old_token = fanout
             .register_session(
@@ -3140,7 +2612,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 4,
                 40,
-                PtyOutputTarget::from_test_sink(Arc::clone(&new_sink)),
+                PtyOutputTarget::from_test_sink(Arc::clone(&new_sink_events)),
             )
             .expect("register replacement session");
 
@@ -3150,89 +2622,14 @@ mod tests {
             .expect("replacement snapshot");
         assert_eq!(snapshot.sequence, 0);
         assert!(!String::from_utf8_lossy(&snapshot.data).contains("old output"));
-        assert!(old_sink.lock().expect("old target sink").is_empty());
+        assert!(events(&old_sink).is_empty());
 
-        let activation = match fanout.activate_terminal_output(id, false) {
-            TerminalOutputActivationResult::Activated { activation } => activation,
-            other => panic!("expected replacement activation, got {other:?}"),
-        };
-        let generation = activation.generation.parse().expect("generation");
-        let snapshot_sequence = activation
-            .snapshot
-            .sequence
-            .parse()
-            .expect("snapshot sequence");
-        assert!(matches!(
-            fanout.ready_terminal_output(id, generation, snapshot_sequence),
-            TerminalOutputControlState::Active { .. }
-        ));
+        attach(&fanout, id, WINDOW);
         fanout.handle_output(&new_token, &id.to_string(), b"replacement output".to_vec());
-        wait_for_target_events(&new_sink, 1);
-        assert_eq!(
-            new_sink.lock().expect("new target sink")[0].1,
-            b"replacement output"
-        );
-    }
-
-    #[test]
-    fn metrics_validation_requires_the_exact_object_and_relations() {
-        let valid = serde_json::json!({
-            "retainedTerminalCount": 1,
-            "visibleTerminalCount": 1,
-            "webglContextCount": 1,
-            "webglContextLossCount": 0,
-            "lruEvictionCount": 0,
-            "outputEventsReceived": 0,
-            "inactiveOrStaleEventsRejected": 0,
-            "bytesAccepted": 0,
-            "bytesWritten": 0,
-            "replayPendingBytes": 0,
-            "livePendingBytes": 0,
-            "writeInFlightBytes": 0,
-            "combinedAdmissionHighWaterBytes": 0,
-            "pendingHighWaterBytes": 0,
-            "resyncCount": 0,
-            "activationReadyAcknowledgements": 0,
-            "activationReadyRejections": 0,
-            "activationReadyTimeouts": 0,
-            "generationHealthPollsScheduled": 0,
-            "generationHealthPollsStarted": 0,
-            "generationHealthPollsCancelled": 0,
-            "replayPendingLivenessRecoveries": 0,
-            "snapshotReplayDurationMs": 0,
-            "retiredWriteCallbacksIgnoredAfterDisposal": 0,
-            "maxAnimationFrameLagMs": 0,
-        });
-        assert!(
-            TerminalRendererMetrics::try_from(TerminalRendererMetricsWire(valid.clone())).is_ok()
-        );
-
-        let mut missing = valid.as_object().expect("valid metrics object").clone();
-        missing.remove("retainedTerminalCount");
-        assert!(
-            TerminalRendererMetrics::try_from(TerminalRendererMetricsWire(
-                serde_json::Value::Object(missing)
-            ))
-            .is_err()
-        );
-
-        let mut extra = valid.as_object().expect("valid metrics object").clone();
-        extra.insert("unexpected".to_string(), serde_json::json!(0));
-        assert!(
-            TerminalRendererMetrics::try_from(TerminalRendererMetricsWire(
-                serde_json::Value::Object(extra)
-            ))
-            .is_err()
-        );
-
-        let mut impossible = valid.as_object().expect("valid metrics object").clone();
-        impossible.insert("visibleTerminalCount".to_string(), serde_json::json!(2));
-        assert!(
-            TerminalRendererMetrics::try_from(TerminalRendererMetricsWire(
-                serde_json::Value::Object(impossible)
-            ))
-            .is_err()
-        );
+        flush(&fanout, id);
+        let emitted = events(&new_sink_events);
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].1, b"replacement output");
     }
 
     #[test]
@@ -3571,10 +2968,11 @@ mod tests {
     }
 
     fn activation_data(fanout: &SessionIoFanout, id: Uuid, include_history: bool) -> Vec<u8> {
-        match fanout.activate_terminal_output(id, include_history) {
-            TerminalOutputActivationResult::Activated { activation } => activation.snapshot.data,
-            other => panic!("expected activation, got {other:?}"),
-        }
+        fanout
+            .activate_terminal_output(id, WINDOW, include_history)
+            .expect("attach")
+            .expect("snapshot on attach")
+            .data
     }
 
     fn mirrored_screen(fanout: &SessionIoFanout, id: Uuid) -> Vec<u8> {
@@ -3667,8 +3065,9 @@ mod tests {
         assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
     }
 
-    /// Protects the most frequent path: a retained terminal already holds its scrollback, so
-    /// replaying the ring over it would append a duplicate block on every activation.
+    /// Pins the parameter's contract: `false` is the mirrored viewport, never the ring. The
+    /// frontend asks for the ring on every attach and applies it after a reset, which is what
+    /// makes the replay safe there, but the viewport-only read stays addressable.
     #[test]
     fn activation_payload_ignores_history_when_not_requested() {
         let fanout = fanout();
