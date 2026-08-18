@@ -27,6 +27,7 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 |---|---|
 | [Resource monitor](resource-monitor.md) | Watch what each agent group is using and set the thresholds at which AC warns you or kills it. |
 | [Context tracking](context-tracking.md) | Read how much of an agent context window is used and alert a coordinator when a member crosses a threshold. |
+| [Activity log](activity-log.md) | Read the append-only JSONL record of when each session was working and when it went idle. |
 | [Terminal snapshots](terminal-snapshots.md) | Read one live backend terminal viewport as versioned JSON or a PNG without changing the session. |
 | [Window capture](window-capture.md) | Capture one live native window as a PNG from the CLI or the control-plane API. Windows only. |
 | [Screenshot capture](screenshot-capture.md) | Press a global hotkey, drag a rectangle, and save a PNG inside the replica that owns your session. Windows only. |
@@ -35,6 +36,8 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 
 | Page | What it covers |
 |---|---|
+| [Remote web UI](remote-web-ui.md) | Serve the AgentsCommander interface to a browser, on this machine or a trusted LAN. |
+| [Control-plane API](control-plane-api.md) | Let a machine client speak the inter-agent control plane over HTTP with a scoped token. |
 | [Telegram bridge](telegram-bridge.md) | Attach a Telegram bot to one session so PTY output reaches your phone and your replies reach the agent. |
 
 ## Configuration and packaging
