@@ -161,11 +161,11 @@ Total commands:    14
 | `-p` | Restricts the report to commands whose `project_path` is the current working directory. |
 | `-d` / `-w` / `-m` | Daily, weekly or monthly breakdown. |
 | `-a` | All three breakdowns at once. |
-| `-g` | Adds a per-command impact table and an ASCII graph of daily savings. |
+| `-g` | Adds an ASCII graph of daily savings. The per-command impact table is already in the report without it. |
 | `-q` | Estimates what share of a monthly subscription quota the savings preserve. `-t pro\|5x\|20x` picks the tier, default `20x`. |
 | `-F` | Prints the parse-failure log. |
 | `-f json` / `-f csv` | Machine-readable output. See below: both depend on the breakdown flags. |
-| `--reset` | Zeroes the statistics in the database. Prompts for confirmation; `--yes` skips the prompt. |
+| `--reset` | **Permanently deletes every row** of `commands` and `parse_failures`. RTK confirms with `This will permanently delete all tracking data.` before it does; `--yes` skips the prompt. |
 
 `rtk gain -f json` prints the summary object and nothing else:
 
@@ -254,6 +254,30 @@ To break one agent down by replica or repository checkout, swap the query for `S
 Always open the databases read-only, as `?mode=ro` above does. A live session may be writing to one of them.
 
 ## Failure modes
+
+### A working relative path splits the history
+
+`RTK_DB_PATH=rtk-history.db`, with no placeholder and no absolute path, is a valid configuration that nothing rejects. RTK opens the value as given, so it resolves against the session's current working directory, and the agent creates one database per directory it works in.
+
+Both of these exit 0 and print their normal filtered output:
+
+```bash
+cd <project>/repo-one && rtk wc README.md
+cd <project>/repo-two && rtk wc README.md
+```
+
+Each directory now holds its own `rtk-history.db`, and `rtk gain` reports the one it finds in the directory you run it from:
+
+```text
+RTK Token Savings (Global Scope)
+════════════════════════════════════════════════════════════
+
+Total commands:    1
+```
+
+The header reads **Global Scope** and the number reads like an answer. It is the count for one directory. This is the failure mode to watch for, because the other two announce themselves and this one never does: an agent that moves between `repo-*` checkouts scatters its history across all of them, and every report you read is a fraction whose size you cannot see.
+
+Use `%AC_MATRIX_ROOT%`, or a literal absolute path, so every session of that agent writes to one file.
 
 ### A relative prefix loses tracking silently
 
