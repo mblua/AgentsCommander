@@ -24,7 +24,11 @@ RTK creates the file on the first wrapped command in that session. Verify it:
 ls -l "<project>/.ac/_agent_<name>/rtk-matrix-history.db"
 ```
 
-Exits 0 and prints one line once that agent has run its first `rtk ...` command.
+Once that agent has run its first `rtk ...` command, the command exits 0 and prints one line:
+
+```text
+-rw-r--r-- 1 <user> 197609 49152 Aug 18 00:15 <project>/.ac/_agent_<name>/rtk-matrix-history.db
+```
 
 Repeat the row for every coding agent whose sessions you want to measure. ENVIRONMENT rows belong to one coding agent, not to the whole installation.
 
@@ -46,7 +50,7 @@ Force it from two sides, and use both: a rule in the agent's instructions, and R
 
 ### The rule: prefix every command with `rtk`
 
-Put this in the agent's `Role.md` in its Agent Matrix, or in the session instructions:
+Put this in the agent's role or in the global policy of the installation, wherever your agents read their standing instructions from:
 
 > Prefix every shell command with `rtk`. Always, with no exceptions.
 
@@ -84,7 +88,7 @@ The wrapped command's own exit code does not change any of this. A command that 
 
 ### The hook covers the filtered set, and nothing else
 
-`rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. A patched Claude Code `settings.json` holds a block like this, once per shell tool:
+`rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. This is the excerpt a patched Claude Code `settings.json` holds under `hooks.PreToolUse`, once per shell tool, not a complete settings file:
 
 ```json
 {
@@ -156,8 +160,12 @@ Total commands:    14
 | `-H` | Appends a **Recent Commands** list to the text report. |
 | `-p` | Restricts the report to commands whose `project_path` is the current working directory. |
 | `-d` / `-w` / `-m` | Daily, weekly or monthly breakdown. |
+| `-a` | All three breakdowns at once. |
+| `-g` | Adds a per-command impact table and an ASCII graph of daily savings. |
+| `-q` | Estimates what share of a monthly subscription quota the savings preserve. `-t pro\|5x\|20x` picks the tier, default `20x`. |
 | `-F` | Prints the parse-failure log. |
-| `-f json` | Prints one JSON object. |
+| `-f json` / `-f csv` | Machine-readable output. See below: both depend on the breakdown flags. |
+| `--reset` | Zeroes the statistics in the database. Prompts for confirmation; `--yes` skips the prompt. |
 
 `rtk gain -f json` prints the summary object and nothing else:
 
@@ -175,7 +183,21 @@ Total commands:    14
 }
 ```
 
-`-H`, `-d`, `-w` and `-m` add nothing to that JSON. `rtk gain -f csv` prints zero bytes and exits 0. Do not build a pipeline on either flag. For anything past the summary, read the database.
+Ask for a breakdown and the same object gains a key: `-d` adds `daily`, `-w` adds `weekly`, `-m` adds `monthly`, and `-a` adds all three. `-H` and `-p` add no key.
+
+`rtk gain -f csv` follows the same rule, and its empty case is the one that surprises people. With no breakdown flag, and with `-H` or `-p`, it prints zero bytes and exits 0: there is no CSV rendering of the summary. Ask for a breakdown and it prints well-formed CSV:
+
+```bash
+rtk gain -f csv -d
+```
+
+```text
+# Daily Data
+date,commands,input_tokens,output_tokens,saved_tokens,savings_pct,total_time_ms,avg_time_ms
+2026-08-18,3,413,117,296,71.67,103,34
+```
+
+`-a` prints the daily, weekly and monthly sections in one stream, each behind its own `# ...` comment line, so a consumer has to split on those lines. Neither format exposes individual command rows. For those, read the database.
 
 ### The `commands` table
 
@@ -200,7 +222,7 @@ The same file holds `parse_failures (id, timestamp, raw_command, error_message, 
 
 ### All agents at once
 
-Each agent has its own file, so aggregation is a loop over `_agent_*`. Save this as `rtk-per-agent.py` and run it with any Python 3:
+Each agent has its own file, so aggregation is a loop over `_agent_*`. Save this as `rtk-per-agent.py` and run it with Python 3.9 or later, which `str.removeprefix` requires:
 
 ```python
 import glob, os, sqlite3
@@ -235,13 +257,15 @@ Always open the databases read-only, as `?mode=ro` above does. A live session ma
 
 ### A relative prefix loses tracking silently
 
-A leftover `.\` in front of the placeholder, as in `.\%AC_MATRIX_ROOT%\rtk-matrix-history.db`, expands into an invalid path. RTK reports:
+A leftover `.\` in front of the placeholder, as in `.\%AC_MATRIX_ROOT%\rtk-matrix-history.db`, expands into an invalid path. AC does not reject the value, and **every wrapped command stays completely silent about it**: RTK filters the output as usual, stdout is intact, stderr is empty, the command exits 0, and no row is recorded. Nothing on the writing side tells you the history is being dropped.
+
+The message appears on the reading side. `rtk gain` refuses to open the database and exits **1**:
 
 ```text
-Failed to initialize tracking database ... (os error 123)
+rtk: Failed to initialize tracking database: The filename, directory name, or volume label syntax is incorrect. (os error 123)
 ```
 
-and then **runs the wrapped command anyway and exits 0**. Nothing else fails and no row is recorded, so the loss stays invisible until you read the statistics. If `rtk gain` reports far fewer commands than the agent ran, open the ENVIRONMENT row and confirm the value starts with `%AC_MATRIX_ROOT%` and nothing else.
+So the symptom is not a low command count, it is `rtk gain` failing outright. When you see that line, open the ENVIRONMENT row and confirm the value starts with `%AC_MATRIX_ROOT%` and nothing else.
 
 ### A Windows environment variable blocks the spawn
 
