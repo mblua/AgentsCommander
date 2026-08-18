@@ -13,7 +13,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/ac_rtk_claude.js"
+            "command": "node .claude/hooks/ac_rtk_claude_Bash.js"
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/ac_rtk_claude_PowerShell.js"
           }
         ]
       }
