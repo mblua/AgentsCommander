@@ -38,6 +38,100 @@ Repeat the row for every coding agent whose sessions you want to measure. ENVIRO
 
 The `project_path` column keeps the second dimension. Every row records the working directory the command ran in, so one agent's database still tells you which replica or repository checkout each command came from.
 
+## Make your agents use RTK
+
+A per-agent database records only what runs through RTK. Whatever an agent executes directly leaves no row, and `rtk gain` reports the smaller total with no warning, so an unenforced setup produces statistics that understate the work by an unknown margin. The configuration above is half the job; the other half is making the usage happen.
+
+Force it from two sides, and use both: a rule in the agent's instructions, and RTK's rewrite hook in the coding agent's configuration.
+
+### The rule: prefix every command with `rtk`
+
+Put this in the agent's `Role.md` in its Agent Matrix, or in the session instructions:
+
+> Prefix every shell command with `rtk`. Always, with no exceptions.
+
+The rule carries no branches on purpose. A rule the agent has to reason about is a rule the agent drops under load, and prefixing an unsupported command costs nothing:
+
+- A command RTK has a filter for, such as `git status`, runs through the filter and reaches the agent's context compressed.
+- Any other command runs raw and is recorded anyway.
+
+Confirm that fallback yourself. The commands below were verified against rtk 0.42.4:
+
+```bash
+rtk whoami
+rtk gain -F
+```
+
+`rtk whoami` prints your user name, and the parse-failure report accounts for the invocation:
+
+```text
+RTK Parse Failures
+════════════════════════════════════════════════════════════
+
+Total failures:    1
+Recovery rate:     100.0%
+```
+
+The failure counter rises with each unrecognized command, and a recovery rate of 100% means every one of them still ran. Each one lands in `commands` with `rtk_cmd` set to `rtk fallback: <command>` and with `input_tokens` and `savings_pct` at zero, so the marker doubles as a list of the commands your agents run that have no filter yet:
+
+```sql
+SELECT original_cmd, COUNT(*) FROM commands
+WHERE rtk_cmd LIKE 'rtk fallback:%'
+GROUP BY original_cmd ORDER BY 2 DESC;
+```
+
+The wrapped command's own exit code does not change any of this. A command that fails is recorded the same way as one that succeeds.
+
+### The hook covers the filtered set, and nothing else
+
+`rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. A patched Claude Code `settings.json` holds a block like this, once per shell tool:
+
+```json
+{
+  "matcher": "Bash",
+  "hooks": [{ "type": "command", "command": "rtk hook claude" }]
+}
+```
+
+With that hook active, a command the agent wrote as `ls -al` reaches RTK as `rtk ls -al`. The hook rewrites only what RTK has a filter for. Ask it directly:
+
+```bash
+rtk hook check "git status"
+rtk hook check "hostname"
+```
+
+```text
+rtk git status
+No rewrite for: hostname
+```
+
+The first exits 0 with the rewritten command. The second exits 1 and rewrites nothing, so an unprefixed `hostname` runs outside RTK and leaves no row at all. That gap is what the prompt rule closes: the hook covers the filtered set at no cost to the agent, and the agent's own `rtk` prefix covers everything else.
+
+Pick the target agent with `rtk init --agent <name>`, and run `rtk init --help` for the targets your version supports. Preview before you accept:
+
+```bash
+rtk init --dry-run
+```
+
+```text
+[dry-run] would add rtk instructions to CLAUDE.md
+[dry-run] would create .rtk/filters.toml template: .rtk\filters.toml
+
+[dry-run] Nothing written.
+```
+
+The hook belongs to the coding agent's configuration, not to AgentsCommander. AC contributes the `RTK_DB_PATH` row; which database the rewritten command writes to still comes from the session environment.
+
+### Interactive commands stay interactive
+
+A command that needs a terminal fails when an agent runs it, with or without the prefix:
+
+```text
+Error: stdin is not a terminal
+```
+
+That message comes from the wrapped command, not from RTK. Running the same command without the `rtk` prefix fails identically, and RTK records the invocation either way. Keep interactive tools in a human terminal, and keep the prefix rule for everything the agent runs.
+
 ## Reading the statistics
 
 Every command below reads the database named by `RTK_DB_PATH`. Run them inside a session of the agent you want to inspect, or set `RTK_DB_PATH` in your own shell first. Verified against rtk 0.42.4.
