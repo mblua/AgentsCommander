@@ -205,7 +205,7 @@ Measured, driving the hook the way Claude Code does:
 Two divergences from the `Bash` rule are deliberate:
 
 - `python -c "print(1)"` and `git status > out.txt` reach the ignored log under `Bash`, because the Bash hook tests characters textually, and are routed under `PowerShell`, because the parser tells the difference between an argument and syntax. PowerShell coverage is wider here.
-- Every compound command reaches the ignored log under `PowerShell`, while `Bash` routes many of them. PowerShell coverage is narrower here, on purpose.
+- Every compound command the hook has not already routed reaches the ignored log under `PowerShell`, while `Bash` routes many of them. PowerShell coverage is narrower here, on purpose.
 
 **Clearing the gate does not make a routed command correct**, only unambiguous to PowerShell. Three commands are routed and come out wrong, and they are listed here rather than left out so this table is not read as an all-clear:
 
