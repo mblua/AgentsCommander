@@ -48,7 +48,7 @@ The confirmation is hosted by more than one window, including the Guide, so you 
 
 ## Onboarding
 
-The first-run wizard opens when AC has no configuration to work from, and walks you through adding a coding agent so the app is usable when it closes. `Get started` is the control that carries you through it.
+The first-run wizard is titled `Welcome`. It opens when AC has no configuration to work from, and walks you through adding a coding agent so the app is usable when it closes.
 
 `onboardingDismissed` in `settings.json` records whether the first-run wizard was dismissed, and it defaults to `false`.
 

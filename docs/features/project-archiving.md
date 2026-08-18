@@ -18,7 +18,9 @@ What changes for you:
 
 ## Archiving a project
 
-Archiving is started from the project's own row in the sidebar and applies to that one project.
+Right-click the project's row in the sidebar and choose `Archive Project`. It applies to that one project.
+
+A refusal comes back as an **error toast**, which is sticky: it stays until you dismiss it, so the message naming the sessions that blocked the archive cannot scroll away before you read it.
 
 AC checks for open sessions before it writes anything. If the project has any, the archive is refused and nothing changes; see the next section for what counts as open. If the check passes, AC writes the archive, then **checks a second time**. If a session became live between the two checks, AC unarchives the project again, tells the sidebar, restores the project catalog, and reports the same refusal message as if it had never started.
 

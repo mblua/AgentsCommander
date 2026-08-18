@@ -22,6 +22,8 @@ Because membership is a pattern rather than a list, a workgroup created later jo
 
 **Favorites** is the rail's own cross-project section, listed above the project sections and collapsible independently. Its collapsed state is `railFavoritesCollapsed`.
 
+You mark one from the rail itself: right-click a rail entry and the menu offers `Edit`, which opens the groups editor, and `Favorite`. The same entry reads `Unfavorite` once the group is marked, so the label always tells you what pressing it will do. Only a group entry and the built-in non-stop entry can be favorited; the menu shows that second item for nothing else.
+
 One group is built in and cannot be removed: the non-stop group, described in [Non-stop mode](non-stop-mode.md).
 
 ## Raise hand
@@ -45,6 +47,14 @@ The panel is a tree. Projects contain workgroups and teams; those contain agents
 A replica row shows the replica's path as its tooltip and carries the indicators and controls for that replica: the idle badge, the repo badges from branch discovery, and the per-session controls for voice, detaching and Telegram. The Telegram control opens its own bot menu.
 
 Right-clicking a row opens a context menu, and AC builds a different one depending on whether the row has an active session or is an inactive replica.
+
+**With an active session**, the menu offers `Restart Session`, `Coding Agent`, `Open Replica's Folder` (tooltipped with the path it will open), one entry per repository AC discovered in the replica, `Open Matrix folder` when the replica has an Agent Matrix behind it, then `Open in new window`, which reads `Re-attach to main` when the session is already detached, an entry to add the replica to a group, and `Clear task title`.
+
+**On an inactive replica** the same menu appears without the two entries that need a running session: no `Restart Session` and no detach toggle.
+
+`Clear task title` is disabled when there is nothing to clear, and says which case you are in through its tooltip: `Clear task title`, or `Nothing to clear`.
+
+Right-clicking a project row instead gives you the project's own menu, which is where `Archive Project` lives. See [Project archiving](project-archiving.md).
 
 ## What a session row shows
 

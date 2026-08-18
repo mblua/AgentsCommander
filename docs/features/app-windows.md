@@ -11,8 +11,8 @@ AC is one application that opens several windows. One page routes them all: the 
 | Sidebar | Projects, workgroups, replicas and sessions, plus the workgroup rail | Part of the main window; also runs on its own in the browser build |
 | Main | The default window: the sidebar beside a central pane | Starting AC |
 | Terminal | The central pane's terminal, or a detached window locked to one session | Part of the main window; detaching moves one session into its own window |
-| Guide | Hints and a tutorial | A separate window, routed as `?window=guide` |
-| Watchers | Watcher match activity | A separate window, routed as `?window=watchers`. See [Watchers](watchers.md) |
+| Guide | Hints and a tutorial | A button in the sidebar action bar |
+| Watchers | Watcher match activity | A button in the terminal status bar, which opens it scoped to that session. See [Watchers](watchers.md) |
 | Resource Monitor | Per-agent memory, CPU and process counts | Its own window, or attached to the main window's central pane. See [Resource monitor](resource-monitor.md) |
 | Spec Board | One Mermaid file with a live preview | The Spec Board button in the sidebar toolbar, once `specBoardEnabled` is on. See [Spec Board](spec-board.md) |
 | Screenshot overlay | The frozen-screen selection surface for a capture | The global screenshot hotkey. See [Screenshot capture](screenshot-capture.md) |

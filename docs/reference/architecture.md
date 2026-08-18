@@ -842,7 +842,7 @@ graph TD
 | `sidebar/components/WorkgroupGroupRail.tsx` | Rail with favorites, groups, raise-hand |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
 | `sidebar/components/AcDiscoveryPanel.tsx` | Branch and repo discovery panel |
-| `sidebar/components/AgentPickerModal.tsx` | Agent picker for launching a session |
+| `sidebar/components/AgentPickerModal.tsx` | Coding-agent profile assignment modal: assigns a profile to one target, with replica/kind/workgroup scope |
 | `sidebar/components/AgentUpdateOverlay.tsx` | Startup coding-agent update overlay and prompt |
 | `sidebar/components/CodingAgentQuickConfiguration.tsx` | Inline coding-agent configuration |
 | `sidebar/components/ContextBadge.tsx` | Per-session context-usage badge |
