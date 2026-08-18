@@ -54,7 +54,7 @@ The project-scoped tree. AC creates and maintains it, and the project commits it
 
 | Entry | What it is |
 |---|---|
-| `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md) |
+| `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md), and see [Agent Matrix conventions §11](../agent-matrix-conventions.md#11-agent-memory-rotation-at-spawn) for how the archives are made |
 | `_team_<name>/` | Team definitions: `config.json` (members, coordinator, repos) and `conventions.md` |
 | `wg-<N>-<name>/` | Workgroups: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` workgroup clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`wg-*/`) because the `repo-*` folders are their own git repositories |
 | `competitions/` | Competition packages, one folder per competition with a `MANIFEST.md`. No writer in the current source; treat as hand-managed |
@@ -71,7 +71,7 @@ Per-user instantiation state next to the binary. Everything in this tree is per-
 | `settings.json.lock` | Write lock for settings writers | `config/local_config_io.rs` |
 | `settings.pre-384-v1.json` | Pre-v384 settings backup taken during the settings migration | `config/settings.rs` |
 | `sessions.json` | Session registry | `config/sessions_persistence.rs` |
-| `activity.jsonl` | Activity log | `config/activity_log.rs` |
+| `activity.jsonl` | Activity log, see [Activity log](../features/activity-log.md) | `config/activity_log.rs` |
 | `coordinator_clocks.json` | Coordinator clock state | `config/coordinator_clocks.rs` |
 | `daemon.pid` | PID of the running daemon; the CLI uses it to detect stale sessions | `config/daemon_pid.rs` |
 | `master-token.txt` | CLI master token | `lib.rs` boot |

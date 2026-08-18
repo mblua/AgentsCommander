@@ -83,6 +83,8 @@ On startup AC reads `settings.json → agents[]`. Each entry has:
 
 The default coding-agent catalog includes a Pi entry with command `pi` and instructions file `AGENTS.md`.
 
+**Where `updateCommands` lives.** The catalog is a separate manifest from `settings.json`: it is `agents.json`, inside the per-instance `coding-agents/` directory described in [Directory layout](../reference/directory-layout.md). Each catalog definition can carry `updateCommands`, the commands AC runs to update that tool, and `autoUpdate`; both default to empty and `false` when the manifest omits them. **Neither is a `settings.json` key**, and the CLI exposes the catalog read-only (`coding-agent catalog`). What you set in `settings.json` is your answer to the startup prompt, `agentAutoUpdateByCommand`, described in [Coding agent auto-update](../features/agent-auto-update.md).
+
 ## Switching the coding agent per session
 
 When you launch a session AC shows a dropdown listing every entry in `agents[]`. Pick one. The choice is remembered as the session's `lastCodingAgent` so subsequent wakeups use the same CLI without asking.

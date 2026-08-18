@@ -2,7 +2,14 @@
 
 For developers who want to read the sidebar rather than click around it. After this page you know what each rail entry, row, badge and indicator means, and which page owns the feature behind it.
 
-The sidebar has two parts: a rail of group entries down one edge, and the project panel that lists projects, workgroups, replicas and sessions. This page is the map. Where a badge belongs to a feature with its own page, this page says what the badge means and sends you there.
+The sidebar has three parts: a rail of group entries down one edge, the project panel that lists projects, workgroups, replicas and sessions, and an action bar of toggles across the top. This page is the map. Where a badge belongs to a feature with its own page, this page says what the badge means and sends you there.
+
+Four of the action bar's toggles change what the panel shows, and each tooltip tells you what pressing it will do rather than what is on:
+
+- `Show Home` and `Hide Home` swap the central pane between Home and the terminal.
+- `Show recent coordinators first` and `Show coordinators in default order` reorder the coordinator list. It persists as [`coordSortByActivity`](../reference/settings.md#window--ui).
+- `Show category sections` and `Hide category sections` toggle the panel's category grouping.
+- `Always keep selected workgroup visible` pins the selected workgroup in view. It persists as [`alwaysShowSelectedWorkgroup`](../reference/settings.md#window--ui).
 
 ## The workgroup rail
 

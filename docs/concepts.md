@@ -1,6 +1,6 @@
 # Concepts
 
-For developers reading the docs for the first time. Nine terms. Once these click, the rest of the docs make sense.
+For developers reading the docs for the first time. Thirteen terms. Once these click, the rest of the docs make sense.
 
 ## Agent
 
@@ -50,6 +50,22 @@ The **coordinator** is the only member that can:
 A workgroup is a Team **in action** on a specific task. When the coordinator decides "we are working on task X," AC creates `.ac/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
 
 You can run multiple workgroups for the same team in parallel.
+
+## Non-stop mode
+
+A per-project group of workgroups AC watches for you. While the group has at least one member and at least one alert measure turned on, AC compares how many of its workgroups are working against how many there are; a shortfall that lasts longer than the group's tolerance raises one alert. The default name of that group is `Alert me!`. See [Non-stop mode](features/non-stop-mode.md).
+
+## Project Loop
+
+A scheduled prompt. A Loop belongs to one project, targets one workgroup, and carries a cron expression and the text to send. When it comes due, AC delivers that text to the workgroup's coordinator, waking or respawning the session if it is not running. See [Project Loops](features/project-loops.md).
+
+## Watcher
+
+A pattern AC matches against the terminal output of your agent sessions. Watchers live at the root of `settings.json`, keyed by watcher id, so one pattern can reach every configured agent, which the per-agent context pattern cannot. Matches land in the Watcher Activity window. See [Watchers](features/watchers.md).
+
+## Spec Board
+
+A separate window holding one Mermaid file: the source on one side, the rendered diagram on the other. It saves to a real file in your repository, snapshots your edits as you make them, and can hand the file to a running agent. See [Spec Board](features/spec-board.md).
 
 ## Brief
 
