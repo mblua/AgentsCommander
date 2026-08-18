@@ -4,6 +4,8 @@ Author: architect, wg-17. Authored 2026-08-18 UTC on the Full delivery path.
 
 Status: DRAFT_FOR_ENRICHMENT. This plan is complete as a specification but is **not** certified. It goes to `dev-rust` and `dev-rust-grinch` for enrichment and returns to the architect for the consensus verdict.
 
+Enrichment status: `dev-rust` enrichment landed as **section 11**, which amends sections 3.6, 4.3, 4.4, 4.5, 6.3, 6.5 and 7.3 in place with pointer notes. Three defects in the specified content are recorded there and two need an architect decision before implementation (11.1 and 11.2). `dev-rust-grinch` enrichment pending.
+
 Issue: [mblua/AgentsCommander#1416](https://github.com/mblua/AgentsCommander/issues/1416), `feat: split the RTK hook per shell and cover the PowerShell tool`.
 
 This change touches four files under `docs/integrations/rtk_claude/` and one sentence of `docs/integrations/rtk.md`. It touches no Rust, no TypeScript, no CSS, no build script, no CI workflow and nothing under `src-tauri/`. It adds no crate, no npm dependency, no Tauri command, no IPC surface, no event and no migration.
@@ -124,6 +126,8 @@ Under bash every one of those heads is a real binary emitting text, so the subst
 
 **This hazard lives on the rewrite path, not on the prefix path.** `prefixable()` (`ac_rtk_claude.js:72-82`) only runs when `rtk rewrite` printed nothing. Porting `prefixable()` to PowerShell and leaving the order alone would not catch a single case in the table above. Section 4.3 inverts the order for exactly this reason.
 
+> Enriched by dev-rust, section 11.6: `rtk rewrite` was measured across seven piped shapes and never rewrites an element after a `|`, only the head of each `;` / `&&` segment. That is what makes the section 4.3 gate sufficient rather than merely plausible.
+
 ### 3.7 `rtk init` still registers only `Bash`
 
 Re-verified against the installed `rtk` 0.42.4 binary: it contains the literal `matcher": "Bash` and **zero** occurrences of the byte string `PowerShell`. RTK's own hook is not an alternative to this change.
@@ -211,6 +215,10 @@ Once that holds, accepting `rtk rewrite`'s output is safe:
 - The head was already an external binary, so it already emitted **strings** into the PowerShell pipeline. Replacing it with `rtk <head>`, which also emits strings, preserves the pipeline's type contract. Only the content is compacted, which is the point of RTK.
 - Any pipeline tail is left untouched by `rtk rewrite`, verified in section 3.6.
 
+> Enriched by dev-rust, section 11.1: the second bullet is too strong. The gate closes the hazard for names **PowerShell** owns. It does not close it for names **Windows** owns with different semantics from the POSIX tool `rtk` assumes: `tree` and `find` resolve as `Application`, pass the gate, and break silently with exit 0. Measured, with the disposition, in section 11.1.
+
+> Enriched by dev-rust, section 11.6: `rtk rewrite` was measured never to touch an element after a `|`, which is what makes the first bullet hold.
+
 Everything else goes to the ignored log. That is deliberate: a missed rewrite costs one statistic, a wrong rewrite silently breaks the agent's command.
 
 ### 4.4 The PowerShell stderr filter
@@ -236,6 +244,8 @@ Verified in a real `PowerShell` tool call in this harness:
 - `rtk git status | Select-Object -First 3` runs end to end and returns RTK's compacted git output.
 
 **Do not append `exit $LASTEXITCODE`.** It was measured and is unnecessary: the harness already reports the correct exit code through the wrapper. Adding it would put an `exit` at the end of every routed command for no gain.
+
+> Enriched by dev-rust, section 11.2: the claim that other stderr survives verbatim is true on the console and incomplete. `[Console]::Error.WriteLine` writes to the process stderr handle, not PowerShell's error stream, so `2>`, `2>&1` and `2>$null` all stop working for any routed command. Measured, with a working one-line alternative and a recommendation, in section 11.2. Section 6.3 already shows redirection passes the gate, so this is reachable.
 
 ### 4.5 The PowerShell safety predicate
 
@@ -292,6 +302,10 @@ Two deliberate choices inside the probe:
 
 - **`-NoProfile` is not passed.** The probe must see the same command table the real session will use. A profile that defines a function or alias would otherwise be invisible to the probe, and the hook would prefix `rtk ` onto a name PowerShell owns. Loading the profile can only make the probe more conservative, never less. On the authoring workstation no profile file exists, so the cost measured zero, but the correctness argument holds where one does.
 - **No textual fast path.** A cheap JS pre-filter on `;`, `&&`, newline and so on would skip the probe for most commands and save roughly 240 ms, but it would be a second copy of the shell-syntax question living beside the parser, which is exactly the drift `ac_rtk_claude.js:69-71` was written to avoid. Rejected deliberately. See section 7.3 for the measured cost that is being accepted.
+
+> Enriched by dev-rust, section 11.3: because the profile is loaded, an arbitrary user profile runs on every tool call, and neither `spawnSync` carries a `timeout`, so a blocking profile hangs the hook. Add `timeout: 5000`; a killed probe already yields empty stdout, so the existing fail-closed disposition handles it unchanged.
+
+> Enriched by dev-rust, section 11.4: the rejection is right, and the decomposition strengthens it. 203 ms of the probe's 264 ms is bare `pwsh` process startup, so no cheaper probe exists; the only lever is not spawning `pwsh`, which is what this bullet rejects.
 
 ### 4.6 Per-hook identification
 
@@ -444,6 +458,13 @@ Two divergences from Bash are intentional and must be stated in the README, not 
 - `python -c "print(1)"` and `git status > out.txt` reach the ignored log under Bash, because `ac_rtk_claude.js:73` tests characters textually, and are rewritten under PowerShell, because the parser distinguishes an argument from syntax. PowerShell coverage is wider here.
 - Every compound command reaches the ignored log under PowerShell, while Bash rewrites many of them. PowerShell coverage is narrower here, on purpose (section 4.3).
 
+> Enriched by dev-rust: all 17 rows above reproduce exactly against the prototype. Two rows are missing and must be added as known-broken rather than omitted, per section 11.1:
+
+> | Command | Outcome | Deciding guard |
+> |---|---|---|
+> | `tree` | `rtk tree`, and the listing is **lost**, exit 0 | `tree.com` is an `Application`, so the gate passes it |
+> | `find "NAG" f.js` | `rtk find "NAG" f.js`, and the matches are **lost**, exit 0 | `find.exe` is an `Application`, so the gate passes it |
+
 ### 6.4 The ignored-log line
 
 ```text
@@ -466,6 +487,8 @@ Two new modes, both PowerShell only:
 
 - **The probe cannot run.** If `pwsh` is absent, fails, or prints anything other than `APP`, `headIsExternal` returns false and the command is handed back untouched and logged. **Fail closed.** The cost is one statistic; the alternative is rewriting a command whose shape was never verified, which can silently break it. State this in the README.
 - **`rtk` is absent from PATH under PowerShell.** `Get-Command` finds nothing, `$e` falls back to the literal `'rtk'`, and `& 'rtk'` fails with a PowerShell `CommandNotFoundException` on stderr. This mirrors the Bash mode, where the same situation produces exit 127, and it is equally loud.
+
+> Enriched by dev-rust: two further failure modes belong here, both measured. Section 11.2, stderr redirection stops working for routed commands, including `$c = cmd 2>&1` returning an empty collection. Section 11.1, `tree` and `find` are rewritten into `rtk` subcommands with different Windows semantics and lose their output with exit 0. Section 11.3 adds the probe-hang mode and its fix.
 
 ---
 
@@ -495,6 +518,8 @@ Measured on the authoring workstation, three runs each, warm:
 | `ac_rtk_claude_PowerShell.js` | about 385 ms | `pwsh` + `rtk` |
 
 The delta is PowerShell's own start-up: the probe alone measures about 240 ms, against about 55 ms for `rtk rewrite`. The `rtk `-prefixed passthrough branch skips both spawns. This cost is accepted deliberately; section 4.5 records why the obvious optimisation is rejected.
+
+> Enriched by dev-rust, section 11.4: independently re-measured and signed off. Probe 264 ms median, `rtk rewrite` 34 ms, and **203 ms of the probe is bare `pwsh` startup before it does any work**, so the probe itself is not the cost. End to end, 324 to 423 ms on the rewrite path and 39 ms on the passthrough path. The figure is a floor, not a typical: no PowerShell profile exists on the authoring workstation, and one that does is loaded on every call.
 
 ### 7.4 Dependency-cycle gate
 
@@ -623,3 +648,208 @@ Criterion 16 is the one that proves the issue is closed. Until it is reported, t
 - **Do not append `exit $LASTEXITCODE`** to the emitted PowerShell command (section 4.4).
 - **Do not correct `docs/integrations/rtk.md:93`** (section 5.6).
 - **Do not add a test runner, a markdown linter or a link checker.** None exists in `.github/workflows/`.
+
+---
+
+## 11. Enrichment: dev-rust
+
+Added after the plan reached DRAFT_FOR_ENRICHMENT. Everything below was measured on the same workstation the plan was authored on (Windows 11 Pro 10.0.26200, `rtk` 0.42.4, PowerShell 7.6.5 Core, Node 24.13.0), against a copy of the architect prototype at `<replica root>/1416-check/`, per section 9.2.
+
+Nothing here reopens a decision the issue comment closed. Sections 11.1 to 11.3 are defects in the specified content and each names the section it amends. Sections 11.4 to 11.6 are sign-offs the plan asked for. Section 11.7 is minor. Section 11.8 adds acceptance criteria, numbered on from criterion 17.
+
+### 11.1 The `Application` gate is necessary but not sufficient: `find` and `tree` still break silently
+
+**Amends section 4.3 and section 6.3. The claim in section 4.3 is too strong as written.**
+
+Section 4.3 justifies accepting `rtk rewrite`'s output once `headIsExternal` holds:
+
+> The head was already an external binary, so it already emitted **strings** into the PowerShell pipeline. Replacing it with `rtk <head>`, which also emits strings, preserves the pipeline's type contract.
+
+That is true and it does close the section 3.6 hazard, which is about PowerShell **owning** the name. It does not close a second hazard of the same shape: names Windows owns with a **different meaning** from the POSIX tool `rtk` assumes. Those resolve as `CommandType = Application`, so the gate passes them, the rewrite applies, and the command breaks silently with exit 0.
+
+Two members of the class exist on this workstation. Both are reproducible through the hook exactly as specified:
+
+```text
+383ms | "tree"                        ==>  rtk tree
+355ms | "find \"NAG\" ac_rtk_shared.js" ==>  rtk find "NAG" ac_rtk_shared.js
+```
+
+`tree` resolves to `C:\WINDOWS\system32\tree.com`, `find` to `C:\WINDOWS\system32\find.exe`. Measured before and after:
+
+| Command | Native, in a real `PowerShell` tool call | After the rewrite |
+|---|---|---|
+| `tree` | folder listing, exit 0 | `Too many parameters - node_modules\|.git\|target\|...`, **exit 0**, no listing |
+| `find "NAG" ac_rtk_shared.js` | the two matching lines, exit 0 | **no output at all, exit 0** |
+
+`rtk tree` passes its GNU-`tree` ignore flags (`-I <pattern>`) to `tree.com`, which rejects them and still exits 0. `rtk find` applies GNU `find` semantics to arguments meant for `find.exe`.
+
+This is failure by the exact criterion section 3.6 sets out: empty result, exit 0, no error anywhere. It is worse than the reporting gap the issue closes.
+
+Scope of the class, measured. Of the heads `rtk rewrite` actually rewrites, these resolve as `Application` here: `git`, `curl`, `rg`, `jq`, `find`, `tree`. `curl`, `jq`, `rg` and `tar` were compared native against `rtk <head>` and are byte-identical on `--version`; `more` through the section 4.3 step 4 prefix fallback is also identical. **`find` and `tree` are the whole class on this machine.** `ls`, `ps`, `diff`, `cat` and `sort` never reach the rewrite because they are aliases, which is section 4.5 working as designed.
+
+The class is not PowerShell-specific in origin. It comes from `rtk`'s own subcommands assuming POSIX tools, so `ac_rtk_claude_Bash.js` under Git Bash has the same exposure for any name where the resolved binary is the Windows one. **It is therefore not a blocker for this issue and does not justify a change to the section 4.3 rule.** What it does justify:
+
+1. Section 4.3 must not claim the gate makes accepting the rewrite safe. It makes it safe against names PowerShell owns. Reword to that, and point at this section.
+2. Section 6.3's table gains two rows, `tree` and `find`, marked as known-broken rather than omitted, so the table is not read as an all-clear.
+3. Section 6.5 gains this as a third new failure mode, and the README failure-modes section carries it with the `tree` example, which is the cleanest one-line demonstration.
+
+A name deny-list inside the hook would fix it and should be rejected for the reason section 4.5 already gives: it is a second copy of a shell-and-platform question that drifts. The honest fix belongs upstream in `rtk`. Filing it as a follow-up issue against `rtk` is the right disposition, not a change here.
+
+### 11.2 The section 4.4 filter function defeats PowerShell stderr redirection
+
+**Amends section 4.4, section 6.5 and section 7.1. This is the one item I would not land undocumented.**
+
+The specified filter ends each error record with `[Console]::Error.WriteLine("$_")`. That writes to the process stderr **handle**. PowerShell's `2>` redirects PowerShell's **error stream**. They are not the same channel, so every form of stderr redirection stops working for any command the hook routes.
+
+Measured in one real `PowerShell` tool call inside `repo-AgentsCommander`, same command, filter absent then present:
+
+```text
+A: rtk git nosuchsubcmd 2> e1.txt     (no filter)   exit=1  captured 140 bytes
+B: rtk git nosuchsubcmd 2> e2.txt     (filter)      exit=1  captured   0 bytes
+                                                    error text leaked to the console instead
+```
+
+Both other redirection forms fail the same way:
+
+```text
+$captured = rtk git nosuchsubcmd 2>&1   ->  $captured.Count = 0, text on the console
+rtk git nosuchsubcmd 2>$null            ->  error still printed
+```
+
+`$captured.Count = 0` is the serious one. An agent capturing a command's diagnostics into a variable gets an empty collection and no error, which is the same silent-and-empty shape as the `ps | Where-Object` case in section 3.6. `2>$null` failing to silence is noisy rather than dangerous, but it is a common idiom.
+
+Section 6.3 already shows redirection passes the gate (`git status > out.txt` is a passing row), so `2>` is reachable, not hypothetical. This is also a **regression against Bash**: `exec 2> >(grep ...)` sets the shell's fd 2 for the rest of the script, and a per-command `2> file` still overrides it, so the Bash hook preserves redirection.
+
+The one-token fix restores redirection. Measured, same command:
+
+```powershell
+if ("$_" -notmatch 'No hook installed') { Write-Error -ErrorRecord $_ -ErrorAction Continue }
+```
+
+```text
+C: rtk git nosuchsubcmd 2> e3.txt     (Write-Error)  exit=1  captured 155 bytes
+   nag still suppressed, exit code still preserved
+```
+
+It carries a real cost. `Write-Error` decorates every error with PowerShell's ConciseView position block, so the 140-byte native message becomes 155 bytes across five lines:
+
+```text
+rtk:
+Line |
+   6 |  rtk git nosuchsubcmd 2> $g
+     |  ~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | git: 'nosuchsubcmd' is not a git command. See 'git --help'.
+```
+
+That tax is paid on **every** error line of **every** routed command, in a hook whose purpose is compacting output. Redirection is used on a minority of commands; errors are not.
+
+**My recommendation: keep `[Console]::Error.WriteLine` and document the limitation.** The verbatim-stderr property is worth more than redirection fidelity, and the failure is visible (the text appears, in the wrong place) rather than silent, except for the `2>&1`-into-a-variable case. Required if that is the call:
+
+- Section 4.4 currently says "other stderr survives verbatim". True, but incomplete. Add: it survives on the console and no longer honours `2>`, `2>&1` or `2>$null`.
+- Section 7.1 lists compatibility guarantees and does not mention this. Add it.
+- Section 6.5 gains it as a failure mode, and the README failure-modes section carries the `$captured.Count = 0` example, because that is the one an agent cannot see.
+
+If architect prefers redirection fidelity over verbatim text, the `Write-Error` variant above is measured and works; it is a one-line substitution in section 4.4. Either choice is defensible. Choosing neither, and shipping section 4.4 as written with no note, is not.
+
+### 11.3 Neither `spawnSync` call carries a `timeout`, and the probe is the one that can hang
+
+**Amends section 4.5 and section 6.5. Cheap, and it is what makes the section 6.5 fail-closed promise true in every case rather than most.**
+
+Section 4.5 deliberately does not pass `-NoProfile`, so that the probe sees the same command table the real session will use. The argument is correct. The consequence is that the probe executes an arbitrary user profile on every `PowerShell` tool call, and `spawnSync` as specified has no `timeout`. A profile that blocks, prompts, or waits on the network hangs the hook, and with it the tool call, with nothing in the log.
+
+Measured, both failure paths:
+
+```text
+missing pwsh                  -> error=ENOENT, stdout=undefined     => headIsExternal = false   (fail closed, works today)
+probe sleeping 30s, no timeout -> hangs
+probe sleeping 30s, timeout 1500 -> killed at 1514ms, SIGTERM       => headIsExternal = false   (fail closed)
+```
+
+**Add `timeout` to the probe `spawnSync` in section 4.5, and to the `rtk rewrite` call in section 4.2 for symmetry.** A killed probe already produces empty stdout, so `headIsExternal` returns false and the existing fail-closed disposition handles it with no other change. `5000` is ample: the probe measures 264 ms here and 203 ms of that is bare `pwsh` startup, so a five-second budget tolerates a profile 20 times slower than this machine's before it gives up.
+
+No profile file exists on this workstation (`$PROFILE`, `AllUsersAllHosts` and `CurrentUserAllHosts` all absent), which is why the cost measured zero in section 4.5. That makes the section 7.3 figure a floor, not a typical, on any machine that has one.
+
+One workstation-specific assumption worth stating in the hook's header comment rather than leaving implicit: the probe spawns `pwsh`, and the harness's `PowerShell` tool is `pwsh` 7.6.5 Core here, so probe and session share a command table. On a host where the tool runs Windows PowerShell 5.1, `pwsh` is either absent (every command fails closed to the ignored log, which is degraded but honest) or present and answering for a different command table than the one that will run. The hook cannot detect this. Say so once.
+
+### 11.4 Cost: I sign off on about 385 ms, with the decomposition the plan is missing
+
+**Amends section 7.3.**
+
+Section 7.3 gives probe about 240 ms and `rtk rewrite` about 55 ms. My medians over five warm runs each:
+
+| Step | Median | Min | Max |
+|---|---|---|---|
+| `pwsh` probe, profile loaded | 264 ms | 260 | 271 |
+| `pwsh` probe, `-NoProfile` | 268 ms | 262 | 275 |
+| `pwsh -Command "exit 0"`, bare startup | 203 ms | 201 | 220 |
+| `rtk rewrite "git status"` | 34 ms | 33 | 36 |
+| `bash -c 'type -t'`, the Bash hook's probe | 18 ms | 18 | 22 |
+
+End to end through the hook, including Node startup: 324 to 423 ms on the rewrite path, 260 to 339 ms on the ignored path, **39 ms on the already-`rtk ` path**. Section 7.3's 385 ms is a fair upper figure.
+
+The decomposition matters more than the total, and it supports architect's rejection of the textual pre-filter rather than undermining it: **203 of the 264 ms is bare `pwsh` process startup**, before the probe does any work. The probe's actual parse plus `Get-Command` is about 60 ms. There is no version of "make the probe cheaper" that recovers meaningful time; the only lever is not spawning `pwsh` at all, which is exactly the pre-filter section 4.5 rejects on drift grounds, and I agree with that rejection.
+
+`-NoProfile` measures 4 ms slower than loading the profile here, which is noise, so on this machine keeping the profile costs nothing and the correctness argument in section 4.5 stands unopposed.
+
+**Position: accept the cost.** 385 ms is a fixed per-call addition against `PowerShell` tool calls that already spend about 200 ms starting `pwsh` and typically run for seconds. It is paid once per tool call, not per token, and the passthrough path is 39 ms. I would not trade the drift-free probe for it. The tail risk, not the median, is the thing to guard, and section 11.3 guards it for the price of one option.
+
+### 11.5 The two open dispositions: I sign off on both
+
+**How conservative the PowerShell rule is (section 4.3).** Sign off, unchanged. The asymmetry is the correct trade and the plan already states why: a missed rewrite costs one statistic, a wrong rewrite silently breaks the agent's command. Two things make it safe to accept rather than merely defensible:
+
+- The gap is **measured, not estimated**. Every compound command lands in `rtk_ignored_tools.md` with its own `PowerShell:` field, so the size of the coverage difference is readable off the artifact at any time. That is the property this issue exists to create, and the conservative rule is what preserves it. A wider rule that guessed would trade a visible gap for an invisible one.
+- The difference is smaller than "compound versus simple" suggests. Coverage is wider than Bash in the other direction: `python -c "print(1)"` and `git status > out.txt` reach the ignored log under Bash and are rewritten under PowerShell, because the parser distinguishes an argument from syntax where a character class cannot. Section 6.3 already records this. The net is not uniformly narrower.
+
+If the gap later proves too large in practice, the ignored log is the evidence needed to argue for widening it, and the argument can be made from data instead of intuition. That is the right order.
+
+**Fail-closed on probe failure (section 6.5).** Sign off, and I would not accept fail-open. The disposition differs from the Bash hook for a reason that is not arbitrary: `prefixable()` failing open costs at worst a `rtk cd` style loud 127, whereas `headIsExternal` failing open means rewriting a command whose shape was never verified, which is section 3.6 and section 11.1 territory, silent and exit 0. Different consequence, different default.
+
+The degenerate case is worth stating plainly because it reads alarming and is not: if `pwsh` is missing entirely, **every** `PowerShell` command fails the probe and goes to the ignored log. Zero `commands` rows. That is still strictly better than today, where those calls produce nothing anywhere, and the ignored log makes the total failure obvious on the first read rather than invisible. Fail-closed degrades to honest, which is the whole thesis of the issue. With section 11.3's timeout it also degrades to honest when the probe hangs rather than not degrading at all.
+
+### 11.6 Confirmations
+
+**`rtk rewrite` never reaches past a pipe.** This is the load-bearing fact under section 4.3 and the plan asserts the tail is untouched from a single example. Measured across seven shapes, including ones where the element after the pipe is exactly the hazard class:
+
+```text
+git status | ls          =>  rtk git status | ls
+git status | sort        =>  rtk git status | sort
+git status | cat         =>  rtk git status | cat
+git status | diff a b    =>  rtk git status | diff a b
+git status | ps          =>  rtk git status | ps
+git log | head -5        =>  rtk git log | head -5
+curl -s http://x | cat   =>  rtk curl -s http://x | cat
+```
+
+`rtk rewrite` rewrites only the head of each `;` / `&&` segment and never an element after a `|`. Since the section 4.5 guards already reduce the command to one statement containing one pipeline, `rtk rewrite` can only ever touch the single head the probe just cleared. **The section 4.3 ordering asymmetry does close the section 3.6 hazard, and this is why.** Add these rows to section 3.6; the argument currently rests on one example and it deserves the wider evidence.
+
+**Section 6.3 reproduces exactly.** All 17 rows, run through the architect prototype from `<replica root>/1416-check/`, produce the stated outcome with `permissionDecisionReason = ac_rtk_claude_PowerShell` on every rewritten row. No discrepancies.
+
+**Criterion 12 holds.** After every run above, `_agent_dev-rust/rtk_ignored_tools.md` contains 122 lines and **zero** lines matching `^[0-9]{8}_[0-9]{6} (Bash|PowerShell):`. The tool field cannot appear except from the new hooks, so its absence proves the scratch directory wrote nothing. That grep is a better check than listing the Matrix before and after; section 9.2 criterion 12 should use it.
+
+**The zero-consumer grep re-runs clean, and it is wider than section 4.6 claims.** Section 4.6 says the grep covered `src-tauri/`, `src/` and `scripts/`. I ran it over the whole tracked tree plus the untracked `.claude/`, `.github/` and `scripts/`:
+
+```text
+git grep -n -I -e rtk_ignored_tools -e ignoredTools -e ignored_tools \
+               -e permissionDecisionReason -e ac_rtk_claude -- .
+```
+
+Every hit is in `docs/integrations/rtk_claude/README.md` prose, the hook itself, `settings.local.json`, or this plan. No Rust, no TypeScript, no test, no script, no workflow. The repository's own `.claude/settings.json` inline hook, the one #1424 covers, does not reference either value either, so it is not a hidden consumer. **Both of architect's decisions are safe: the ignored-log `tool` field and the `permissionDecisionReason` rename. No consumer was missed.**
+
+### 11.7 Minor
+
+- **The prototype exports four symbols, section 4.2 specifies six.** `ac_rtk_shared.js` in the prototype exports `{ NAG, ignoredLogPath, logIgnored, runHook }` and the PowerShell hook calls `spawnSync("rtk", ["rewrite", ...])` inline. Section 4.2's contract of six, adding `ALREADY_RTK` and `rtkRewrite`, is the better one: both hooks need both, and `rtkRewrite` is where section 11.3's `timeout` belongs so it is set once. Implement section 4.2, not the prototype. Worth one line in section 8.1 so the implementer does not copy the prototype's shape.
+
+- **Concurrent appends to the ignored log are now possible inside one replica.** Section 6.4 notes that two live replicas of the same agent append to the same file. After this change the two hooks can also run concurrently within one replica, because `Bash` and `PowerShell` tool calls issued in the same assistant turn execute in parallel. `fs.appendFileSync` with the default `a` flag is not guaranteed atomic on Windows. The blast radius is one interleaved line in a human-read log, so no locking is warranted, but section 6.4's sentence should say "and two hooks in one replica" rather than implying only the cross-replica case.
+
+- **Unresolved heads reaching `parse_failures` is expected, and PowerShell will produce more of them.** Section 4.5's `if (-not $g) { 'APP' }` treats an unresolved head as external, matching the Bash hook, where `type -t` also returns empty for not-found. The `rtk <unknown-binary>` fallback writes a `parse_failures` row. Under PowerShell an unresolved name is more often a mistyped cmdlet than a missing binary, so that table will see more traffic than it does from Bash. Not a defect and no change is needed; it is worth one sentence in the README's database section so a reader does not misread the growth as a regression.
+
+### 11.8 Acceptance criteria added
+
+Numbered on from criterion 17. Criteria 18 and 19 are reviewer checks against the branch; 20 and 21 belong with the section 9.3 runtime checks.
+
+| # | Criterion | Owner |
+|---|---|---|
+| 18 | `tree` and `find` appear in the section 6.3 table marked as known-broken, and the README failure-modes section carries the `tree` example with its exit 0. Absence is a documentation defect, not a pass. | reviewer |
+| 19 | Both `spawnSync` calls in the PowerShell hook pass a `timeout`, and the `rtk rewrite` call in `ac_rtk_shared.js` passes one too. `grep -n "timeout" docs/integrations/rtk_claude/hooks/*.js` shows all three. | reviewer |
+| 20 | In a real `PowerShell` tool call, `$c = <routed command> 2>&1; $c.Count` matches what the README says it will be. Whichever disposition section 11.2 takes, the README must predict the observed number. | tech-lead, or `ac-cli-tester` |
+| 21 | In the seeded replica, `rtk_ignored_tools.md` shows both `Bash:` and `PowerShell:` lines from the same agent, proving both hooks are registered and both write to the one file. This is criterion 16 and 17's shared precondition and is cheaper to read than either. | tech-lead, or `ac-cli-tester` |
