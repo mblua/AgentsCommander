@@ -6,3 +6,4 @@
 crates/terminal-snapshot-renderer/assets/LICENSE-DejaVu.txt binary
 crates/terminal-snapshot-renderer/tests/fixtures/*.png binary
 src-tauri/module-arcs.txt text eol=lf
+docs/integrations/rtk_claude/hooks/*.js text eol=lf
