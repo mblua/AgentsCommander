@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-// The only consumer is the coalescing timer, which test builds hold.
-#[cfg(not(test))]
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -38,6 +37,11 @@ pub struct SessionIoFanout {
     ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     screen_parsers: Arc<Mutex<HashMap<Uuid, ScreenReplayState>>>,
     attachments: Arc<TerminalOutputAttachments>,
+    /// Whether `arm_output_flush` really spawns the 16 ms one-shot. Production is always on.
+    /// Test builds start it off so no assertion races a live task, and the one test that
+    /// covers the timer itself switches it on: gating the arming on `cfg(test)` instead
+    /// compiled that path out of every test build, and left it with no coverage at all.
+    output_timer_enabled: Arc<AtomicBool>,
     fanout_identity: Arc<()>,
     #[cfg(test)]
     trace: FanoutTraceRecorder,
@@ -207,8 +211,7 @@ fn convert_color(color: vt100::Color) -> TerminalColor {
 
 /// The UI coalescing window. Its only consumer is the one-shot timer armed per session, which
 /// test builds hold so no assertion depends on a wall clock; the flush itself is driven
-/// synchronously there.
-#[cfg(not(test))]
+/// synchronously there, by every test but the timer's own.
 const UI_BATCH_INTERVAL_MS: u64 = 16;
 
 /// Ingest-thread flush threshold for the per-session coalescing accumulator. Reaching it
@@ -555,8 +558,11 @@ struct SessionAccumulator {
     /// mixed batch would make the client watermark-drop bytes that were never seeded; labelled
     /// `None`, its sequenced prefix would escape reconciliation and duplicate against the seed.
     sequence: Option<u64>,
-    /// A one-shot timer task is pending for this session. Only that task clears the flag, so a
-    /// threshold flush cannot arm a second timer behind the one already in flight.
+    /// A one-shot timer task is pending for this session. Only the timer path clears it, which
+    /// is what keeps exactly one task in flight: a threshold flush leaves the flag set, so the
+    /// chunk that follows it cannot arm a second timer behind the one still sleeping. Clearing
+    /// it on every flush let a flooding session emit its ceiling flushes AND a timer flush
+    /// behind each of them, up to twice the event rate criterion E' bounds.
     timer_armed: bool,
     /// Whether the last emit failed. A webview torn down mid-flood makes every flush fail, and
     /// logging one line per flush would be ~62 lines/s per session, which would itself read as
@@ -804,7 +810,9 @@ impl TerminalOutputAttachments {
     /// It emits to the windows attached right now, and does nothing once the session is
     /// detached or destroyed, because those release sites drain the accumulator rather than
     /// leaving bytes for a later timer to deliver.
-    fn flush(&self, session_id: Uuid) {
+    ///
+    /// `from_timer` marks the one-shot task firing, and only that path clears `timer_armed`.
+    fn flush(&self, session_id: Uuid, from_timer: bool) {
         let (accumulator, labels) = {
             let state = self.lock_state();
             let Some(accumulator) = state.accumulators.get(&session_id).map(Arc::clone) else {
@@ -813,7 +821,9 @@ impl TerminalOutputAttachments {
             (accumulator, Self::labels_of(&state, session_id))
         };
         let mut pending = Self::lock_accumulator(&accumulator);
-        pending.timer_armed = false;
+        if from_timer {
+            pending.timer_armed = false;
+        }
         pending.flush(&labels);
     }
 
@@ -865,6 +875,7 @@ impl SessionIoFanout {
             ws_broadcaster,
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
             attachments: TerminalOutputAttachments::new(),
+            output_timer_enabled: Arc::new(AtomicBool::new(!cfg!(test))),
             fanout_identity: Arc::new(()),
             #[cfg(test)]
             trace: Arc::new(Mutex::new(Vec::new())),
@@ -1105,7 +1116,7 @@ impl SessionIoFanout {
         match accumulated {
             Accumulated::Unattached | Accumulated::Pending => {}
             Accumulated::ArmTimer => self.arm_output_flush(id),
-            Accumulated::FlushNow => self.attachments.flush(id),
+            Accumulated::FlushNow => self.attachments.flush(id, false),
         }
         lease.complete();
     }
@@ -1223,26 +1234,32 @@ impl SessionIoFanout {
     /// so a flooding session's 64 KiB delays the keystroke echo flush of the interactive
     /// session queued behind it. Arming on demand preserves today's idle cost, which is zero,
     /// and today's latency shape, where the first byte after idle is emitted 16 ms later.
-    #[cfg(not(test))]
+    /// Arming is switched at runtime rather than by `cfg(test)`: test builds start it off so
+    /// every emit a test observes comes from an explicit `flush_terminal_output_for_test` and
+    /// no assertion races a 16 ms task, and the one test that covers the timer turns it on.
     fn arm_output_flush(&self, id: Uuid) {
+        if !self.output_timer_enabled.load(Ordering::Relaxed) {
+            return;
+        }
         let attachments = Arc::clone(&self.attachments);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_millis(UI_BATCH_INTERVAL_MS)).await;
-            attachments.flush(id);
+            attachments.flush(id, true);
         });
     }
 
-    /// Test builds hold the timer, so every emit a test observes comes from an explicit
-    /// `flush_terminal_output_for_test` and no assertion can race a 16 ms task. The timer's own
-    /// contract, one arming per empty to non-empty transition, is pinned by `Accumulated`.
-    #[cfg(test)]
-    fn arm_output_flush(&self, _id: Uuid) {}
-
     /// The synchronous flush seam. Every backend test drives it instead of sleeping, so the
     /// timer is the only spawned thing on this path and no assertion depends on a wall clock.
+    /// It stands in for the timer, so it clears `timer_armed` exactly as the timer does.
     #[cfg(test)]
     pub(crate) fn flush_terminal_output_for_test(&self, id: Uuid) {
-        self.attachments.flush(id);
+        self.attachments.flush(id, true);
+    }
+
+    /// Lets the timer's own test run the real arming path. Nothing else switches this on.
+    #[cfg(test)]
+    pub(crate) fn enable_output_timer_for_test(&self) {
+        self.output_timer_enabled.store(true, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -1305,7 +1322,7 @@ impl SessionIoFanout {
             log::error!("[terminal-snapshot] stage=parser_fault session={id}");
             // Flush at the transition: from here every batch carries no sequence, and one
             // batch cannot describe both with a single scalar.
-            self.attachments.flush(id);
+            self.attachments.flush(id, false);
             return;
         }
 
@@ -1337,9 +1354,6 @@ impl SessionIoFanout {
             )
         };
 
-        // Unconditional in the backend, whatever the frontend did: the session is gone, so
-        // its attachments and its pending bytes go with it.
-        self.attachments.remove_session(id);
         registration_and_gate.1.wait_for_drain();
 
         let mut parsers = self
@@ -1353,6 +1367,16 @@ impl SessionIoFanout {
             )
         }) {
             parsers.remove(&id);
+            // Unconditional in the backend, whatever the frontend did: the session is gone, so
+            // its attachments and its pending bytes go with it. The release runs under the same
+            // `screen_parsers` hold that removed the session, and that order is what makes the
+            // no-zombie invariant true. An attach inserts its label while holding this map with
+            // the session present, so with the entry already gone no insert can be in flight and
+            // none can start. Releasing before the drain instead left the whole drain window
+            // open for an attach to insert a label for a session about to disappear, and that
+            // label then survived for the life of the process. It is skipped when the identity
+            // does not match, because the entry then belongs to a same-uuid replacement.
+            self.attachments.remove_session(id);
         }
         drop(parsers);
 
@@ -2557,6 +2581,10 @@ mod tests {
                 .expect("unattached webview");
         let attached_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let unattached_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let any_target_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Label-shaped registrations, which is what the frontend makes: its `listen` passes
+        // `{ target: <this window's label> }`, and Tauri matches an `AnyLabel` candidate
+        // against an `emit_to` on the same label exactly as it matches this one.
         let attached_counter = Arc::clone(&attached_events);
         attached_webview.listen("pty_output", move |_| {
             attached_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2564,6 +2592,16 @@ mod tests {
         let unattached_counter = Arc::clone(&unattached_events);
         unattached_webview.listen("pty_output", move |_| {
             unattached_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        // The guard this test exists for is only worth anything while that stays true. An
+        // `EventTarget::Any` registration - which is what a bare JS `listen(event, handler)`
+        // with no options sends - SHORT-CIRCUITS the label filter: `match_any_or_filter`
+        // returns true for `Any` before the filter is ever consulted, so `emit_to` delivers to
+        // it anyway. That is asserted below rather than described, so that dropping the
+        // target option on the frontend cannot quietly turn criterion P back into a lie.
+        let any_target_counter = Arc::clone(&any_target_events);
+        unattached_webview.listen_any("pty_output", move |_| {
+            any_target_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
         let fanout = SessionIoFanout::new(
@@ -2588,6 +2626,67 @@ mod tests {
 
         assert_eq!(attached_events.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(unattached_events.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(any_target_events.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// 3.4.1's no-zombie invariant, at the one interleaving that broke it: an attach that
+    /// lands while `remove_session` is draining must not leave a label behind for a session
+    /// that is about to disappear. The reader lease is the synchronisation point and no sleep
+    /// is needed - `remove_session` parks in `wait_for_drain` until it is released, and that
+    /// is precisely the window the attach used to slip through.
+    #[test]
+    fn an_attach_racing_remove_session_leaves_no_label_behind() {
+        let sink = new_sink();
+        let fanout = fanout();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout
+            .registration_token_for_session(id)
+            .expect("registration token");
+        let lease = fanout.acquire_reader_lease(&token).expect("reader lease");
+
+        std::thread::scope(|scope| {
+            let destroyer = scope.spawn(|| fanout.remove_session(id));
+            // The gate refusing a new lease IS `remove_session` past its first phase.
+            while fanout.acquire_reader_lease(&token).is_some() {
+                std::thread::yield_now();
+            }
+            attach(&fanout, id, WINDOW);
+            drop(lease);
+            destroyer.join().expect("remove_session thread");
+        });
+
+        assert!(fanout.attached_labels_for_test(id).is_empty());
+        assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+    }
+
+    /// The 16 ms timer, armed and fired for real. Every other backend test holds it and drives
+    /// the synchronous seam instead, which is exactly why the spawned task itself had no
+    /// coverage at all: it is the only emitter that needs no caller, and if it ever stopped
+    /// firing an attached session would emit only on the 64 KiB ceiling, so an interactive
+    /// terminal would look frozen until it produced 64 KiB.
+    #[test]
+    fn the_armed_timer_emits_with_no_explicit_flush() {
+        let sink = new_sink();
+        let fanout = fanout();
+        fanout.enable_output_timer_for_test();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout
+            .registration_token_for_session(id)
+            .expect("registration token");
+        attach(&fanout, id, WINDOW);
+
+        fanout.handle_output(&token, &id.to_string(), b"armed by the ingest".to_vec());
+
+        // The task sleeps on Tauri's own runtime, so this wait is real time. The assertion
+        // hangs on the poll, never on the sleep length: the deadline only bounds a failure.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while events(&sink).is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            events(&sink),
+            vec![(id.to_string(), b"armed by the ingest".to_vec(), Some(1))]
+        );
     }
 
     #[test]

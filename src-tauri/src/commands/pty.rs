@@ -531,7 +531,10 @@ pub(crate) fn activate_terminal_output<R: tauri::Runtime>(
     // attribute on the parameter is not in scope here. Without the default, a missing or
     // misspelled argument makes Tauri reject the command, and the frontend fails closed with
     // no retry, so the terminal panel stays blank until the user reselects the session by
-    // hand. `false` is the safe direction: the mirrored viewport, never a duplicate.
+    // hand. The default is `true`, which is what the only caller sends: the client always
+    // resets before it writes the seed, so a duplicate is impossible, and the failure the
+    // other default produces instead is the silent content gap the plan rules to be the
+    // worse of the two.
     include_history: Option<bool>,
 ) -> Result<Option<PtyScreenSnapshotPayload>, String> {
     let parsed = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
@@ -544,7 +547,7 @@ pub(crate) fn activate_terminal_output<R: tauri::Runtime>(
             .map_err(|error| error.to_string())?
     };
     let snapshot = route
-        .activate_terminal_output(webview.label(), include_history.unwrap_or(false))
+        .activate_terminal_output(webview.label(), include_history.unwrap_or(true))
         .map_err(|error| error.code().to_string())?;
     Ok(snapshot.map(|snapshot| PtyScreenSnapshotPayload {
         session_id,
