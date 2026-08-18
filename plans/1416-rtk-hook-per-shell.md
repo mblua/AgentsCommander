@@ -2,9 +2,11 @@
 
 Author: architect, wg-17. Authored 2026-08-18 UTC on the Full delivery path.
 
-Status: DRAFT_FOR_ENRICHMENT. This plan is complete as a specification but is **not** certified. It goes to `dev-rust` and `dev-rust-grinch` for enrichment and returns to the architect for the consensus verdict.
+Status: READY_FOR_IMPLEMENTATION
 
-Enrichment status: `dev-rust` enrichment landed as **section 11**, which amends sections 3.6, 4.3, 4.4, 4.5, 6.3, 6.5 and 7.3 in place with pointer notes. Three defects in the specified content are recorded there and two need an architect decision before implementation (11.1 and 11.2). `dev-rust-grinch` enrichment landed as **section 12**, which amends sections 4.3, 4.4, 4.5, 6.3, 6.5, 7.1 and 11.6. It records one command shape that defeats all seven section 4.5 guards at the section 3.6 bar (12.1) and five further defects, and it signs off on both decisions section 11 escalated, in `dev-rust`'s favour on each (12.9).
+Certified by architect on 2026-08-18 UTC after the `dev-rust` and `dev-rust-grinch` enrichment passes. Both reviewers' findings are resolved into sections 1 to 10, which are the **sole** implementation specification. Appendices A and B preserve their measurements as evidence and are **not** specification; where an appendix conflicts with sections 1 to 10, sections 1 to 10 govern. Section 11 maps every finding to where it landed.
+
+One decision in this plan overrules both reviewers' recommendation: section 4.4 no longer prepends anything to a routed PowerShell command. The reasoning and the measurements are in section 4.4 and section 11.
 
 Issue: [mblua/AgentsCommander#1416](https://github.com/mblua/AgentsCommander/issues/1416), `feat: split the RTK hook per shell and cover the PowerShell tool`.
 
@@ -97,7 +99,7 @@ Unknown `%...%` text is left literal (`placeholders.rs:169-172`). Files over `CO
 
 Verified by direct execution on the authoring workstation: Windows 11 Pro 10.0.26200, `rtk` 0.42.4, PowerShell 7.6.5, Node 24.13.0.
 
-1. **The stderr filter.** `ac_rtk_claude.js:35` builds `FILTER` as `exec 2> >(grep --line-buffered -v 'No hook installed' >&2)\n` and `:120` prepends it to every rewrite. `exec 2> >(...)` is bash process substitution. PowerShell has no statement that redirects the rest of a script's error stream.
+1. **The stderr filter.** `ac_rtk_claude.js:35` builds `FILTER` as `exec 2> >(grep --line-buffered -v 'No hook installed' >&2)\n` and `:120` prepends it to every rewrite. `exec 2> >(...)` is bash process substitution. PowerShell has no statement that redirects the rest of a script's error stream, and every construct that emulates one costs more than the notice it removes. Section 4.4 settles this: the PowerShell hook prepends nothing.
 
 2. **The builtin question.** `ac_rtk_claude.js:76-81` asks `bash -c 'type -t -- "$1"'` and treats `builtin`, `keyword`, `function` and `alias` as untouchable. That answer says nothing about PowerShell. Measured in a real PowerShell 7.6.5 session, `ls`, `cat`, `echo`, `rm`, `ps`, `diff`, `sort`, `where`, `tee`, `man` and `sleep` are all `CommandType = Alias`; `curl` is `CommandType = Application` (`C:\WINDOWS\system32\curl.exe`); `wget` does not resolve at all.
 
@@ -126,7 +128,21 @@ Under bash every one of those heads is a real binary emitting text, so the subst
 
 **This hazard lives on the rewrite path, not on the prefix path.** `prefixable()` (`ac_rtk_claude.js:72-82`) only runs when `rtk rewrite` printed nothing. Porting `prefixable()` to PowerShell and leaving the order alone would not catch a single case in the table above. Section 4.3 inverts the order for exactly this reason.
 
-> Enriched by dev-rust, section 11.6: `rtk rewrite` was measured across seven piped shapes and never rewrites an element after a `|`, only the head of each `;` / `&&` segment. That is what makes the section 4.3 gate sufficient rather than merely plausible.
+**`rtk rewrite` never touches an element after a pipe.** This is load-bearing under section 4.3 and it is measured across seven shapes, including ones where the element after the pipe is itself in the hazard class:
+
+| Input to `rtk rewrite` | stdout |
+|---|---|
+| `git status \| ls` | `rtk git status \| ls` |
+| `git status \| sort` | `rtk git status \| sort` |
+| `git status \| cat` | `rtk git status \| cat` |
+| `git status \| diff a b` | `rtk git status \| diff a b` |
+| `git status \| ps` | `rtk git status \| ps` |
+| `git log \| head -5` | `rtk git log \| head -5` |
+| `curl -s http://x \| cat` | `rtk curl -s http://x \| cat` |
+
+`rtk rewrite` rewrites only the head of each `;` / `&&` segment. Since the section 4.5 guards already reduce the command to one statement containing one pipeline, `rtk rewrite` can only ever touch the single head the probe just cleared.
+
+That closes the hazard in this section, which is about names PowerShell **owns**. It does not close the two hazards in section 3.10, and section 4.3 must not be read as if it did.
 
 ### 3.7 `rtk init` still registers only `Bash`
 
@@ -147,6 +163,49 @@ ReferenceError: require is not defined in ES module scope, you can use import in
 ```
 
 A live replica has no `package.json` in any ancestor of `.claude/hooks/`, so the hooks load as CommonJS there and `require` works. **The hooks are correct; the repository is simply the wrong place to run them from.** Section 9.2 gives the reviewer the supported way to drive them.
+
+---
+
+### 3.10 Two hazards the `Application` gate does not close
+
+Both are measured, both survive every guard in section 4.5, and both fail at the section 3.6 bar: empty or wrong output, exit 0, nothing on stderr. Neither is a blocker, for the reason given at the end of this section, but the plan must not read as an all-clear and neither must the README.
+
+**Hazard A: names Windows owns with different semantics from the POSIX tool `rtk` assumes.** These resolve as `CommandType = Application`, so the gate passes them, the rewrite applies, and the command breaks silently.
+
+| Command | Native, in a real `PowerShell` tool call | After the rewrite |
+|---|---|---|
+| `tree` | folder listing, exit 0 | `Too many parameters - node_modules\|.git\|target\|...`, **exit 0**, no listing |
+| `find "NAG" ac_rtk_shared.js` | the two matching lines, exit 0 | **no output at all, exit 0** |
+
+`tree` resolves to `C:\WINDOWS\system32\tree.com` and `find` to `C:\WINDOWS\system32\find.exe`. `rtk tree` passes GNU-`tree` ignore flags (`-I <pattern>`) that `tree.com` rejects while still exiting 0; `rtk find` applies GNU `find` semantics to arguments meant for `find.exe`.
+
+The class was bounded by measurement, not estimated. Of the heads `rtk rewrite` actually rewrites, these resolve as `Application` on this workstation: `git`, `curl`, `rg`, `jq`, `find`, `tree`. `curl`, `jq`, `rg` and `tar` were compared native against `rtk <head>` and are byte-identical on `--version`; `more` through the section 4.3 step 4 prefix fallback is also identical. **`find` and `tree` are the whole class here.** `ls`, `ps`, `diff`, `cat` and `sort` never reach the rewrite because they are aliases, which is section 4.5 working as designed.
+
+**Hazard B: the pipeline tail parses content the head no longer produces.** This one does not depend on the head at all.
+
+```text
+git status | Select-String "nothing added to commit"
+```
+
+Every guard passes: it parses, it is one statement, that statement is one `PipelineAst`, the first element is a `CommandAst`, the invocation operator is `Unknown`, `GetCommandName()` returns `git`, the name has no `=`, and `git` resolves as `Application`. The hook routes it to `rtk git status | Select-String "nothing added to commit"`. Measured, running both verbatim:
+
+| | results | exit | `$?` | stderr |
+|---|---|---|---|---|
+| what the agent typed | **1** | 0 | True | none |
+| what the hook makes the tool run | **0** | 0 | True | none |
+
+The cause is that `rtk` does not merely compact `git status`, it reformats it: six lines become two in a different shape. The **type** contract is preserved, because both sides emit strings. The **content** contract is not, and a pipeline tail consumes content, not type.
+
+Bounded by measurement. Comparing native against `rtk` for the same argv: `git rev-parse HEAD`, `git status --porcelain` (apart from a dropped trailing newline), `git log --oneline -3`, `git diff --name-only`, `git branch --show-current`, `git branch`, `git show --stat HEAD` and `rg -n <pat> <file>` are all identical. `git status`, `git log` in its default format, and `git diff HEAD~1 --stat` are **not**. The class is those reformatted subcommands combined with any tail that reads the text: `Select-String`, `-match`, `ConvertFrom-*`, `Where-Object { $_ -like ... }`, `Measure-Object -Line`, or a `> file` whose contents are parsed later.
+
+**Why neither is a blocker, and why no in-hook fix is specified.** Both classes exist today under Bash: the current hook rewrites `git status | grep "nothing added"` identically, and `ac_rtk_claude_Bash.js` under Git Bash has the same `tree` and `find` exposure wherever the resolved binary is the Windows one. **This issue neither creates nor widens either class.** The only in-hook fix would be a deny-list, and it cannot work: a list keys on the **head**, while hazard B is decided by the **tail**. `git` breaks with `Select-String` and does not break with `Select-Object -First 2`. No enumeration of names can express that, and the list would be exactly the drifting second copy of a platform question that section 4.5 exists to avoid.
+
+Disposition, binding:
+
+1. Section 4.3's safety argument covers names PowerShell owns and nothing more. It is worded that way and points here.
+2. Section 6.3's table carries `tree`, `find` and `git status | Select-String` as known-broken rows rather than omitting them.
+3. Section 6.5 carries both as failure modes and the README carries both, `tree` and `git status | Select-String` being the cleanest one-line demonstrations.
+4. The upstream fix belongs in `rtk`, whose subcommands assume POSIX tools and reformat content. **Filing that against `rtk` is a follow-up for the tech-lead, not work in this issue, and not a gate on it.**
 
 ---
 
@@ -176,9 +235,9 @@ module.exports = { NAG, ALREADY_RTK, rtkRewrite, ignoredLogPath, logIgnored, run
 
 | Symbol | Contract |
 |---|---|
-| `NAG` | The string `"No hook installed"`. Each hook interpolates it into its own filter. |
+| `NAG` | The string `"No hook installed"`. Only `ac_rtk_claude_Bash.js` uses it, to build its filter. It lives here because the notice is a property of `rtk`, not of a shell, and section 4.4 explains why the PowerShell hook does not filter it. |
 | `ALREADY_RTK` | The regex `/^rtk\s/`. |
-| `rtkRewrite(cmd)` | `spawnSync("rtk", ["rewrite", cmd], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], shell: false })`, returns `(r.stdout \|\| "").trim()`. Passing `cmd` as a single argv entry with `shell: false` is what keeps the shell from re-parsing it. |
+| `rtkRewrite(cmd)` | `spawnSync("rtk", ["rewrite", cmd], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], shell: false, timeout: 5000 })`, returns `(r.stdout \|\| "").trim()`. Passing `cmd` as a single argv entry with `shell: false` is what keeps the shell from re-parsing it. The `timeout` is required, not optional: a killed call yields empty stdout, which both routing rules already handle. |
 | `ignoredLogPath(hookDir)` | Today's `ignoredLogPath()` with `__dirname` replaced by the `hookDir` argument. Unchanged logic: two levels up from `hookDir` is the replica root; return `null` unless its basename starts with `__`; otherwise join two more levels up with the basename minus one leading underscore and `rtk_ignored_tools.md`. |
 | `logIgnored(hookDir, tool, cmd)` | Today's `logIgnored()` plus the `tool` field in the line. Same local-time `YYYYMMDD_HHMMSS` stamp, same whitespace folding, same empty `catch`. Line format in section 6.4. |
 | `runHook(hookDir, tool, decide)` | The stdin read, the JSON parse, the two early exits, the call to `decide`, the ignored-log write, and the response JSON. Contract in section 6.1. |
@@ -201,51 +260,85 @@ The PowerShell rule asks the safety question **first**, because under PowerShell
 
 ```text
 PowerShell:
-  1. body starts with "rtk "        -> FILTER + body
+  1. body starts with "rtk "        -> body, unchanged
   2. NOT headIsExternal(body)       -> ignored log
-  3. rtk rewrite prints something   -> FILTER + that output
-  4. otherwise                      -> FILTER + "rtk " + body
+  3. rtk rewrite prints something   -> that output
+  4. otherwise                      -> "rtk " + body
 ```
+
+The PowerShell hook prepends nothing. That is not an omission; section 4.4 is the decision and its measurements.
 
 `headIsExternal` returning true means: the command is a single statement, that statement is a single pipeline, the pipeline's **first** element is a plain command invocation with no call operator, its command name is a bare name containing no `=`, and that name either resolves to `CommandType = Application` or does not resolve at all.
 
-Once that holds, accepting `rtk rewrite`'s output is safe:
+Once that holds, accepting `rtk rewrite`'s output is safe **against the section 3.6 hazard, which is names PowerShell owns**, and against nothing more:
 
 - Only one `;` / `&&` segment exists, so `rtk rewrite` can only replace that one head. There is no second segment for it to mis-rewrite.
-- The head was already an external binary, so it already emitted **strings** into the PowerShell pipeline. Replacing it with `rtk <head>`, which also emits strings, preserves the pipeline's type contract. Only the content is compacted, which is the point of RTK.
-- Any pipeline tail is left untouched by `rtk rewrite`, verified in section 3.6.
+- Any pipeline tail is left untouched by `rtk rewrite`, measured across seven shapes in section 3.6.
+- The head was already an external binary, so it already emitted **strings** into the PowerShell pipeline. Replacing it with `rtk <head>`, which also emits strings, preserves the pipeline's **type** contract.
 
-> Enriched by dev-rust, section 11.1: the second bullet is too strong. The gate closes the hazard for names **PowerShell** owns. It does not close it for names **Windows** owns with different semantics from the POSIX tool `rtk` assumes: `tree` and `find` resolve as `Application`, pass the gate, and break silently with exit 0. Measured, with the disposition, in section 11.1.
-
-> Enriched by dev-rust, section 11.6: `rtk rewrite` was measured never to touch an element after a `|`, which is what makes the first bullet hold.
+**The gate does not preserve the content contract, and it does not know what the resolved binary is.** Section 3.10 measures both gaps: `tree` and `find` resolve as `Application` and break silently, and any tail that parses the head's text breaks when `rtk` reformats it. Read this gate as "PowerShell will not misinterpret the rewritten command", never as "the rewritten command does what the agent asked". Neither gap is created or widened by this issue and neither has an in-hook fix; section 3.10 carries the disposition.
 
 Everything else goes to the ignored log. That is deliberate: a missed rewrite costs one statistic, a wrong rewrite silently breaks the agent's command.
 
-### 4.4 The PowerShell stderr filter
+### 4.4 The PowerShell hook prepends nothing, and why
 
-A prepended `rtk` shadow function, emitted as its own statement exactly as the bash `exec` line is, followed by `\n` and then the command:
+**Decision: `ac_rtk_claude_PowerShell.js` emits the routed command on its own, with no prepended statement of any kind.** The `rtk` notice is not silenced under PowerShell. This overrules the recommendation both reviewers reached; the measurements that changed the answer are below.
+
+#### What the bash hook does, and why it does not port
+
+`ac_rtk_claude.js:35` prepends `exec 2> >(grep --line-buffered -v 'No hook installed' >&2)` as its own statement. It costs nothing: bash's fd 2 is reassigned for the rest of the script, `rtk` stays an ordinary external command, and a per-command `2> file` still overrides it.
+
+PowerShell has no equivalent statement. Every construct that filters the notice has to turn `rtk` from an `Application` into a **function**, and that is what does the damage. The candidate that survived the longest, and that earlier drafts of this plan specified, was:
 
 ```powershell
-function rtk { $e = (Get-Command rtk -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source; if (-not $e) { $e = 'rtk' }; & $e @args 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { if ("$_" -notmatch 'No hook installed') { [Console]::Error.WriteLine("$_") } } else { $_ } } }
+function rtk { $e = (Get-Command rtk -CommandType Application ...).Source; & $e @args 2>&1 | ForEach-Object { ... } }
 ```
 
-Why this shape:
+#### What the shadow function costs, measured
 
-- `-CommandType Application` resolves the real executable and cannot recurse into the function being defined. Verified.
-- `2>&1` on a native command yields `ErrorRecord` objects for stderr lines and plain strings for stdout lines, so the two streams can be separated again. Error records that are not the notice are written back to the real stderr with `[Console]::Error.WriteLine`; everything else is passed down the pipeline unchanged.
-- `'No hook installed'` contains no regex metacharacter, so `-notmatch` is safe with it as a literal.
-- It shadows only `rtk`. After the section 4.3 rule the emitted command always begins with `rtk `, so the shadow always applies, and it never touches any other command in the pipeline.
-- The `if (-not $e) { $e = 'rtk' }` fallback keeps the failure mode identical to today's: with `rtk` off the PATH the command fails loudly rather than silently succeeding.
+Same failing command, same session, filter absent then present. Every row was re-measured at certification time, independently of the two enrichment passes that found them:
 
-Verified in a real `PowerShell` tool call in this harness:
+| Channel | `rtk` invoked directly | Through the shadow function | Visible to the agent? |
+|---|---|---|---|
+| `$?` after a failure | `False`, correct | **`True`** | no |
+| `$LASTEXITCODE` | `1` | `1`, preserved | n/a |
+| `$c = cmd 2>&1` | 2 records, error present | **0 records** | no |
+| `cmd 2> file` | 140 bytes captured | **0 bytes**, text leaks to the console | partly |
+| `cmd 2>$null` | silenced | **still printed** | yes |
+| `cmd > file`, LF text | 16 bytes, LF preserved | **20 bytes, every `0a` became `0d 0a`** | no |
+| `cmd > file`, binary | bytes preserved | **`89`, `fe`, `ff` each became `ef bf bd`**, unrecoverable | no |
+| `--format=a,b` argv | `argc=1` | **`argc=2`, split on the comma** | sometimes |
+| `cmd &` background job | completes, returns output | completes; the function does not reach the job's runspace, so the notice leaks there | yes |
 
-- With the function defined, the notice is gone and other stderr survives verbatim. Without it, the notice is printed. Same command, same session.
-- `$LASTEXITCODE` is preserved exactly: `rtk git status` outside a repository still reports `128`, and a wrapped `cmd /c exit 7` is reported by the harness as `Exit code 7`, identical to the unwrapped baseline. The failure signal is not lost.
-- `rtk git status | Select-Object -First 3` runs end to end and returns RTK's compacted git output.
+`$?` breaking is the worst of them, because `cmd; if ($?) { ... }` is an ordinary shape that then takes the wrong branch with no output difference. The `> file` re-encoding is next: `rtk git diff > fix.patch` followed by `git apply fix.patch` fails or applies wrongly, and `rtk curl -s <url> > archive.zip` is destroyed outright.
 
-**Do not append `exit $LASTEXITCODE`.** It was measured and is unnecessary: the harness already reports the correct exit code through the wrapper. Adding it would put an `exit` at the end of every routed command for no gain.
+Cause, for each: `$?` after a **function** reflects whether that function raised an error, not the wrapped binary's exit code, and the shadow raises none. `[Console]::Error.WriteLine` writes to the process stderr **handle**, while `2>` redirects PowerShell's **error stream**; they are different channels. `ForEach-Object` decodes the binary's stdout into PowerShell strings and re-emits them, so anything downstream receives re-encoded text rather than bytes. And PowerShell evaluates each argument before `@args` splats it, so in argument mode an unquoted comma builds an array that splats as two argv entries.
 
-> Enriched by dev-rust, section 11.2: the claim that other stderr survives verbatim is true on the console and incomplete. `[Console]::Error.WriteLine` writes to the process stderr handle, not PowerShell's error stream, so `2>`, `2>&1` and `2>$null` all stop working for any routed command. Measured, with a working one-line alternative and a recommendation, in section 11.2. Section 6.3 already shows redirection passes the gate, so this is reachable.
+The `Write-Error -ErrorRecord $_` variant was measured too. It restores `2>`, `2>&1` and `2>$null`, and **only** those: `$?` stays `True`, and redirected stdout is corrupted identically, because the damage is on the stdout branch. It also decorates every error line with PowerShell's ConciseView position block, turning a 140-byte message into 155 bytes across five lines, in a hook whose purpose is compacting output. One channel restored out of four broken, at a per-error-line tax.
+
+#### What is given up instead
+
+The notice, `[rtk] /!\ No hook installed`, appears on stderr. Measured, it is **not** throttled: it appears on every filtered `rtk` invocation, six out of six in a row. So the cost is one stderr line per routed PowerShell command, and one extra record in a `2>&1` capture.
+
+Measured with no prepended statement at all, every channel is native:
+
+| Channel | Result |
+|---|---|
+| `$?` after a failure | `False`, correct |
+| `$LASTEXITCODE` | `1`, correct |
+| `$c = cmd 2>&1` | full capture, of which exactly 1 record is the notice |
+| `cmd 2> file` | 753 bytes captured, works |
+| `cmd > file`, LF text | 16 bytes, `61 6c 70 68 61 0a ...`, LF preserved |
+| `--format=a,b` argv | `argc=1`, correct |
+| `cmd &` background job | completes, returns `f0031f53` |
+
+#### The trade, stated plainly
+
+One cosmetic stderr line per routed command, against four broken channels of which three are silent, one of which corrupts files. **The notice is not worth it.** This is a deliberate, measured asymmetry with `ac_rtk_claude_Bash.js`, and both hooks' header comments and the README must say so rather than leaving a reader to assume the PowerShell hook simply forgot.
+
+Everything sections 11.2, 12.2, 12.3 and 12.4 of the appendices required to be documented is dissolved by this decision rather than annotated: those defects do not exist in a hook that prepends nothing. What survives from them is the one line above about the notice, and the section 3.10 hazards, which are unrelated to the filter.
+
+**Binding on the implementer:** do not add a `rtk` shadow function, a `Write-Error` variant, an `exit $LASTEXITCODE` trailer, a `2>$null` suffix, or any other prepended or appended statement to the PowerShell hook's output. `ti.command` is exactly the routed command and nothing else.
 
 ### 4.5 The PowerShell safety predicate
 
@@ -258,9 +351,11 @@ const r = spawnSync("pwsh", ["-NonInteractive", "-NoLogo", "-Command", PROBE], {
   encoding: "utf8",
   stdio: ["ignore", "pipe", "ignore"],
   shell: false,
+  timeout: 5000,
   env: { ...process.env, AC_RTK_CMD: cmd },
 });
-return (r.stdout || "").trim() === "APP";
+const marked = (r.stdout || "").split(/\r?\n/).filter((l) => l.startsWith("AC_RTK_VERDICT:"));
+return marked.length > 0 && marked[marked.length - 1].trim() === "AC_RTK_VERDICT:APP";
 ```
 
 `PROBE` is these seventeen statements joined with `\n`:
@@ -269,43 +364,50 @@ return (r.stdout || "").trim() === "APP";
 $ErrorActionPreference = 'SilentlyContinue'
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($env:AC_RTK_CMD, [ref]$t, [ref]$e)
-if ($e.Count) { 'SHELL'; exit 0 }
+if ($e.Count) { 'AC_RTK_VERDICT:SHELL'; exit 0 }
 $st = $ast.EndBlock.Statements
-if ($st.Count -ne 1) { 'SHELL'; exit 0 }
+if ($st.Count -ne 1) { 'AC_RTK_VERDICT:SHELL'; exit 0 }
 $p = $st[0] -as [System.Management.Automation.Language.PipelineAst]
-if (-not $p) { 'SHELL'; exit 0 }
+if (-not $p) { 'AC_RTK_VERDICT:SHELL'; exit 0 }
 $c0 = $p.PipelineElements[0] -as [System.Management.Automation.Language.CommandAst]
-if (-not $c0) { 'SHELL'; exit 0 }
-if ($c0.InvocationOperator -ne 'Unknown') { 'SHELL'; exit 0 }
+if (-not $c0) { 'AC_RTK_VERDICT:SHELL'; exit 0 }
+if ($c0.InvocationOperator -ne 'Unknown') { 'AC_RTK_VERDICT:SHELL'; exit 0 }
 $n = $c0.GetCommandName()
-if (-not $n) { 'SHELL'; exit 0 }
-if ($n -like '*=*') { 'SHELL'; exit 0 }
+if (-not $n) { 'AC_RTK_VERDICT:SHELL'; exit 0 }
+if ($n -like '*=*') { 'AC_RTK_VERDICT:SHELL'; exit 0 }
 $g = Get-Command -Name $n -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $g) { 'APP'; exit 0 }
-if ($g.CommandType -eq 'Application') { 'APP' } else { 'SHELL' }
+if (-not $g) { 'AC_RTK_VERDICT:APP'; exit 0 }
+if ($g.CommandType -eq 'Application') { 'AC_RTK_VERDICT:APP' } else { 'AC_RTK_VERDICT:SHELL' }
 ```
+
+**Both the sentinel and the `timeout` are required, and each closes a measured way the hook silently stops working.**
+
+The sentinel exists because the probe loads the user profile (see below), and a profile that writes to stdout would otherwise prepend its text to the verdict. Comparing the whole trimmed buffer against `APP` then fails for **every** command: the probe answers correctly, the hook discards the answer, every `PowerShell` call goes to the ignored log, `commands` gains zero rows, and nothing reports why. `oh-my-posh`, `starship`, `conda init`, PSReadLine tips and corporate login banners all print on profile load. Measured against four preludes, including one that prints the literal `APP`, the sentinel form returns the correct verdict in every case while a whole-buffer comparison fails in three of them. Scanning for the **last** line carrying the marker also survives output emitted after the verdict, which a last-non-empty-line comparison does not.
+
+The `timeout` exists because the profile runs on every tool call, and a profile that blocks, prompts or waits on the network would otherwise hang the hook and with it the tool call, with nothing in any log. Measured: a probe sleeping 30 s hangs with no `timeout`, and is killed at 1514 ms with `timeout: 1500`, yielding empty stdout, which the fail-closed disposition of section 6.5 already handles unchanged. `5000` is ample: the probe measures 264 ms here, 203 ms of which is bare `pwsh` startup, so a five-second budget tolerates a profile 20 times slower than this machine's.
 
 What each guard buys, all measured:
 
 | Guard | Rejects |
 |---|---|
 | `$e.Count` | Text PowerShell cannot parse. |
-| `$st.Count -ne 1` | `git status; ls`, and any command containing a newline. |
+| `$st.Count -ne 1` | `git status; ls`, and any command whose newline is a **statement separator**. A newline inside a string literal, a here-string, or after a backtick line continuation keeps the input a single statement, so `git commit -m "line one\nline two"` routes, and measurement confirms `rtk rewrite` handles the embedded newline correctly. |
 | not a `PipelineAst` | `$x = 1`, `git status && ls`, `git status \|\| ls` (both become a `PipelineChainAst`), `if (...) { ... }`, `foreach (...) { ... }`. |
 | not a `CommandAst` | A bare expression such as `(Get-Date)`. |
 | `InvocationOperator -ne 'Unknown'` | `& "C:\Program Files\Git\cmd\git.exe" status` and `. .\script.ps1`. |
 | `GetCommandName()` empty | A head that is not a literal, such as `& $exe`. |
-| `$n -like '*=*'` | The bash `FOO=bar cmd` form, which PowerShell would otherwise parse as a command literally named `FOO=bar` and `rtk rewrite` would turn into the bash-only `FOO=bar rtk ls`. |
+| `$n -like '*=*'` | The bash `FOO=bar cmd` form, which PowerShell would otherwise parse as a command literally named `FOO=bar` and `rtk rewrite` would turn into the bash-only `FOO=bar rtk ls`. It fires on the command **name** only and deliberately not on an argument, so `git log --pretty=format:%h` routes, and must. |
 | `CommandType -ne 'Application'` | Every PowerShell alias, function, filter, cmdlet, external script and configuration, which is the section 3.6 hazard. |
 
 Two deliberate choices inside the probe:
 
-- **`-NoProfile` is not passed.** The probe must see the same command table the real session will use. A profile that defines a function or alias would otherwise be invisible to the probe, and the hook would prefix `rtk ` onto a name PowerShell owns. Loading the profile can only make the probe more conservative, never less. On the authoring workstation no profile file exists, so the cost measured zero, but the correctness argument holds where one does.
-- **No textual fast path.** A cheap JS pre-filter on `;`, `&&`, newline and so on would skip the probe for most commands and save roughly 240 ms, but it would be a second copy of the shell-syntax question living beside the parser, which is exactly the drift `ac_rtk_claude.js:69-71` was written to avoid. Rejected deliberately. See section 7.3 for the measured cost that is being accepted.
+- **`-NoProfile` is not passed.** The probe must see the same command table the real session will use. A profile that defines a function or alias would otherwise be invisible to the probe, and the hook would prefix `rtk ` onto a name PowerShell owns; measured, a prelude of `function git { 'shadowed' }` correctly flips `git status` from `APP` to `SHELL`.
 
-> Enriched by dev-rust, section 11.3: because the profile is loaded, an arbitrary user profile runs on every tool call, and neither `spawnSync` carries a `timeout`, so a blocking profile hangs the hook. Add `timeout: 5000`; a killed probe already yields empty stdout, so the existing fail-closed disposition handles it unchanged.
+  An earlier draft of this plan claimed that loading the profile "can only make the probe more conservative, never less". **That claim is false and is struck.** A profile that *removes* a name moves the verdict the other way: measured, a prelude of `Remove-Alias -Name ls -Force` makes the probe answer `APP` for `ls`, which section 3.6 measured as broken on Windows outside Git Bash. `Remove-Alias ls` is a real idiom on machines with `eza` or `lsd` installed. The consequence there is loud rather than silent, so this is a correction to the argument rather than a new hazard, and the reason for loading the profile still stands on its remaining leg: the probe must answer for the command table that will actually run.
 
-> Enriched by dev-rust, section 11.4: the rejection is right, and the decomposition strengthens it. 203 ms of the probe's 264 ms is bare `pwsh` process startup, so no cheaper probe exists; the only lever is not spawning `pwsh`, which is what this bullet rejects.
+- **No textual fast path.** A cheap JS pre-filter on `;`, `&&`, newline and so on would skip the probe for most commands and save roughly 240 ms, but it would be a second copy of the shell-syntax question living beside the parser, which is exactly the drift `ac_rtk_claude.js:69-71` was written to avoid. Rejected deliberately, and the measurement strengthens the rejection rather than weakening it: **203 ms of the probe's 264 ms is bare `pwsh` process startup**, before the probe does any work, so no cheaper probe exists and the only lever is not spawning `pwsh` at all. See section 7.3 for the cost that is being accepted.
+
+- **One assumption the hook cannot verify, to be stated in its header comment.** The probe spawns `pwsh`, and the harness's `PowerShell` tool is `pwsh` 7.6.5 Core here, so probe and session share a command table. On a host where the tool runs Windows PowerShell 5.1, `pwsh` is either absent, in which case every command fails closed to the ignored log, which is degraded but honest, or present and answering for a different command table than the one that will run. The hook cannot detect this. Say it once, in the file.
 
 ### 4.6 Per-hook identification
 
@@ -325,7 +427,7 @@ Nothing in the repository parses either value. `git grep` for `rtk_ignored_tools
 Renamed with `git mv`. Changes to the content:
 
 1. The header comment gains, as its own paragraph, the environment statement the issue requires: this hook runs under the `Bash` tool, which means Windows under Git Bash, Linux and macOS. Name all three.
-2. The header comment gains one sentence pointing at `ac_rtk_claude_PowerShell.js` as the sibling that covers the other shell tool, and one naming `ac_rtk_shared.js` as where the shell-independent half lives.
+2. The header comment gains one sentence pointing at `ac_rtk_claude_PowerShell.js` as the sibling that covers the other shell tool, one naming `ac_rtk_shared.js` as where the shell-independent half lives, and one stating that this hook filters the `rtk` notice while the PowerShell hook deliberately does not, with a pointer to section 4.4's reason.
 3. `NAG`, `ignoredLogPath`, `logIgnored` and the whole `process.stdin` block move to `ac_rtk_shared.js`. What stays: the `FILTER` constant (built from the imported `NAG`), `prefixable()` verbatim including `ac_rtk_claude.js:73`'s character class and `:76-81`'s `bash -c 'type -t -- "$1"'` probe, and a `decide` callback implementing the four-step Bash rule of section 4.3.
 4. `require("node:fs")` and `require("node:path")` are dropped; `require("node:child_process")` stays for `prefixable`.
 
@@ -333,9 +435,15 @@ Routing behaviour must be observably identical to the frozen file for every comm
 
 ### 5.2 `docs/integrations/rtk_claude/hooks/ac_rtk_claude_PowerShell.js` (new)
 
-Header comment states: it covers the `PowerShell` tool; PowerShell 7 or newer on any operating system; why the safety question is asked before the rewrite rather than after (section 3.6, with the `ls`-is-`Get-ChildItem` example); and what the prepended function does.
+Header comment states, each as its own short paragraph:
 
-Body: the `FILTER` constant of section 4.4, the `PROBE` constant and `headIsExternal` of section 4.5, and a `decide` callback implementing the three-step PowerShell rule of section 4.3.
+1. It covers the `PowerShell` tool, PowerShell 7 or newer, on any operating system.
+2. Why the safety question is asked before the rewrite rather than after, with the `ls`-is-`Get-ChildItem` example from section 3.6.
+3. That this hook prepends nothing, unlike `ac_rtk_claude_Bash.js`, so the `rtk` notice is not filtered, and why: every construct that filters it turns `rtk` into a function, which breaks `$?`, stderr redirection, redirected stdout bytes and comma-bearing arguments. Section 4.4.
+4. That the probe spawns `pwsh` and cannot verify that the harness's `PowerShell` tool is the same PowerShell, per section 4.5.
+5. That the gate does not make a routed command correct, only unambiguous to PowerShell, with a pointer to the two section 3.10 hazards.
+
+Body: the `PROBE` constant and `headIsExternal` of section 4.5, and a `decide` callback implementing the four-step PowerShell rule of section 4.3. There is no `FILTER` constant in this file.
 
 ### 5.3 `docs/integrations/rtk_claude/hooks/ac_rtk_shared.js` (new)
 
@@ -389,10 +497,11 @@ The page currently documents a single Bash-only hook throughout. Every passage b
 | 58-71 | The heading and section stop saying "the `Bash` tool, and nothing else". State what is now covered (`Bash` and `PowerShell`) and what is still not (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, `Task`, every MCP tool). Keep the "close to complete but not total" list of the two early exits and the rewritten-but-unrecorded case; that text is still correct. |
 | 73-160 | The routing rule becomes two rules under one H2, one H3 per shell. The Bash H3 keeps today's text and today's measured table verbatim. The PowerShell H3 is new: the four-step rule of section 4.3, why the order is inverted, and its own measured table (section 9.2). Keep the closing "not a contract" paragraph at 160 and make it cover both. |
 | 146-154 | The reproduce snippet becomes one per shell, naming the new filenames, and gains the section 3.9 warning that the copies in this repository cannot be run in place. |
-| 158 | The `exec 2> >(grep ...)` paragraph becomes one paragraph per shell, describing the PowerShell shadow function of section 4.4. |
+| 158 | The `exec 2> >(grep ...)` paragraph becomes one paragraph per shell. The Bash paragraph is unchanged. The PowerShell paragraph states that this hook prepends **nothing**, that the `rtk` notice therefore appears on stderr once per routed command, and why: every construct that filters it turns `rtk` into a function, which breaks `$?`, `2>`, redirected stdout bytes and comma-bearing arguments (section 4.4). It must also state the positive half, that a routed PowerShell command is otherwise native in every channel. |
 | 162-189 | The `rtk_ignored_tools.md` section states that both hooks append to the same file, gains the tool field in the format list and in the example at 175, and states that lines written before this change carry no tool field. |
 | 191-207 | Unchanged. The database section is shell-independent. |
-| 209-231 | Failure modes gain the two new ones of section 6.5. The existing three are unchanged. |
+| 209-231 | Failure modes gain **all four** new ones of section 6.5: the probe failing or timing out and its degenerate zero-rows case; `rtk` absent from PATH under PowerShell; the unfiltered notice; and the two section 3.10 hazards. The last is carried with both demonstrations, `tree` losing its listing at exit 0 and `git status \| Select-String` returning zero results where the native command returns one. The existing three modes are unchanged. |
+| 191-207 | The database section gains one sentence: under PowerShell an unresolved head is more often a mistyped cmdlet than a missing binary, so `parse_failures` will see more traffic than it does from Bash. That growth is expected, not a regression. |
 | 233-238 | Unchanged. |
 
 ### 5.6 `docs/integrations/rtk.md`
@@ -442,7 +551,7 @@ Measured against the prototype of section 9.2. `<log>` means handed back untouch
 | `node --version` | `rtk node --version` | `rtk rewrite` empty, prefix fallback |
 | `nosuchbinary-xyz` | `rtk nosuchbinary-xyz` | unresolved head is treated as external |
 | `python -c "print(1)"` | `rtk python -c "print(1)"` | the parenthesis is inside an argument, not syntax |
-| `rtk git status` | `rtk git status` | already routed, filter only |
+| `rtk git status` | `rtk git status`, unchanged | already routed, nothing to do |
 | `ls` | `<log>` | `Alias` |
 | `ls -la` | `<log>` | `Alias` |
 | `echo hola` | `<log>` | `Alias` |
@@ -451,19 +560,23 @@ Measured against the prototype of section 9.2. `<log>` means handed back untouch
 | `git status && ls` | `<log>` | `PipelineChainAst` |
 | `$x = 1; git status` | `<log>` | two statements, first an assignment |
 | `& "C:\Program Files\Git\cmd\git.exe" status` | `<log>` | call operator |
-| a command containing a newline | `<log>` | two statements |
+| a newline used as a statement separator | `<log>` | two statements |
+| `git commit -m "line one<LF>line two"` | `rtk git commit -m "line one<LF>line two"` | a newline **inside a string** does not split a statement |
+
+All of the rows above reproduce exactly against the prototype, independently confirmed by `dev-rust`.
+
+**Known-broken rows.** These are routed and the routed command is wrong. They are listed rather than omitted so this table is not read as an all-clear. Section 3.10 has the measurements and the reason no in-hook fix is specified.
+
+| Command | Outcome | Why it still breaks |
+|---|---|---|
+| `tree` | `rtk tree`, and the listing is **lost**, exit 0 | `tree.com` is an `Application`, so the gate passes it; `rtk` passes it GNU-`tree` flags |
+| `find "NAG" f.js` | `rtk find "NAG" f.js`, and the matches are **lost**, exit 0 | `find.exe` is an `Application`; `rtk` applies GNU `find` semantics |
+| `git status \| Select-String "nothing added to commit"` | routed, and returns **0 results instead of 1**, exit 0 | the head is fine; `rtk` reformats `git status`, and the untouched tail parses the old format |
 
 Two divergences from Bash are intentional and must be stated in the README, not smoothed over:
 
 - `python -c "print(1)"` and `git status > out.txt` reach the ignored log under Bash, because `ac_rtk_claude.js:73` tests characters textually, and are rewritten under PowerShell, because the parser distinguishes an argument from syntax. PowerShell coverage is wider here.
 - Every compound command reaches the ignored log under PowerShell, while Bash rewrites many of them. PowerShell coverage is narrower here, on purpose (section 4.3).
-
-> Enriched by dev-rust: all 17 rows above reproduce exactly against the prototype. Two rows are missing and must be added as known-broken rather than omitted, per section 11.1:
-
-> | Command | Outcome | Deciding guard |
-> |---|---|---|
-> | `tree` | `rtk tree`, and the listing is **lost**, exit 0 | `tree.com` is an `Application`, so the gate passes it |
-> | `find "NAG" f.js` | `rtk find "NAG" f.js`, and the matches are **lost**, exit 0 | `find.exe` is an `Application`, so the gate passes it |
 
 ### 6.4 The ignored-log line
 
@@ -476,19 +589,24 @@ Two divergences from Bash are intentional and must be stated in the README, not 
 - One space, the tool name exactly as it appears in the matcher (`Bash` or `PowerShell`), then a colon and one space.
 - The command is the **original**, not the rewrite, with all whitespace folded to single spaces.
 - The tool name comes from the hook's own constant, not from `data.tool_name`. The payload may omit `tool_name` entirely, as the README's own reproduce snippet does, and the hook must still label the line correctly.
-- Append only. No truncation, no escaping, no rotation, no deduplication, no locking. Two live replicas of the same agent still append to the same file.
+- Append only. No truncation, no escaping, no rotation, no deduplication, no locking. Two live replicas of the same agent still append to the same file, and after this change the two hooks can also append concurrently **within one replica**, because `Bash` and `PowerShell` tool calls issued in the same assistant turn run in parallel. `fs.appendFileSync` with the default `a` flag is not guaranteed atomic on Windows. The blast radius is one interleaved line in a human-read log, so no locking is warranted; the README should say both cases rather than only the cross-replica one.
 - Lines written before this change carry no tool field. Any reader must tolerate both shapes.
 
 ### 6.5 Failure behaviour
 
 Existing modes are unchanged and stay documented: a missing `rtk` on PATH breaks simple commands loudly rather than degrading tracking quietly; an invalid `RTK_DB_PATH` loses the row silently; a failed write to the ignored log is swallowed by an empty `catch`; neither hook can block a tool.
 
-Two new modes, both PowerShell only:
+Four new modes, all PowerShell only, all measured. The README must carry all four.
 
-- **The probe cannot run.** If `pwsh` is absent, fails, or prints anything other than `APP`, `headIsExternal` returns false and the command is handed back untouched and logged. **Fail closed.** The cost is one statistic; the alternative is rewriting a command whose shape was never verified, which can silently break it. State this in the README.
-- **`rtk` is absent from PATH under PowerShell.** `Get-Command` finds nothing, `$e` falls back to the literal `'rtk'`, and `& 'rtk'` fails with a PowerShell `CommandNotFoundException` on stderr. This mirrors the Bash mode, where the same situation produces exit 127, and it is equally loud.
+- **The probe cannot run, or is killed by its `timeout`.** If `pwsh` is absent, fails, hangs past 5 s, or emits no `AC_RTK_VERDICT:` line, `headIsExternal` returns false and the command is handed back untouched and logged. **Fail closed.** The cost is one statistic; the alternative is rewriting a command whose shape was never verified, which can silently break it. The degenerate case reads alarming and is not: with `pwsh` missing entirely, **every** `PowerShell` command goes to the ignored log and `commands` gains zero rows. That is still strictly better than today, where those calls produce nothing anywhere, and the ignored log makes the total failure obvious on first read instead of invisible.
 
-> Enriched by dev-rust: two further failure modes belong here, both measured. Section 11.2, stderr redirection stops working for routed commands, including `$c = cmd 2>&1` returning an empty collection. Section 11.1, `tree` and `find` are rewritten into `rtk` subcommands with different Windows semantics and lose their output with exit 0. Section 11.3 adds the probe-hang mode and its fix.
+- **`rtk` is absent from PATH under PowerShell.** The routed command is `rtk ...`, so PowerShell reports `CommandNotFoundException` on stderr and the command fails. This mirrors the Bash mode, where the same situation produces exit 127, and it is equally loud.
+
+- **The `rtk` notice is not filtered.** One `[rtk] /!\ No hook installed` line on stderr per routed command, measured as not throttled, and one extra record in a `$c = cmd 2>&1` capture. This is the deliberate trade of section 4.4 and the one behavioural difference from the Bash hook that an agent will see.
+
+- **A routed command can be wrong while looking fine.** The two section 3.10 hazards: `tree` and `find` lose their output with exit 0, and any pipeline tail that parses text breaks when `rtk` reformats the head's output, `git status | Select-String` being the cleanest case. Neither is created by this issue and neither has an in-hook fix.
+
+One mode that does **not** exist, recorded because an earlier draft of this plan created it and it may be reintroduced by someone porting the Bash hook's filter: routed commands under PowerShell preserve `$?`, `$LASTEXITCODE`, `2>`, `2>&1`, `2>$null`, redirected stdout bytes, argv fidelity and background jobs, because the hook prepends nothing. Section 4.4 measures each. Adding any wrapper breaks four of them, three silently.
 
 ---
 
@@ -501,25 +619,39 @@ Two new modes, both PowerShell only:
 - **The two hooks coexist with RTK's own hook.** Both are `PreToolUse`; a machine can have both active. Only the AC hooks write `rtk_ignored_tools.md`.
 - **A reader of an existing `rtk_ignored_tools.md`** sees both line shapes in one file. Section 6.4 requires the README to say so.
 - **`docs/integrations/rtk_claude/` stays a byte-faithful mirror** of the workspace `default.claude` tree after section 8.4 is done. Any drift makes the page lie.
+- **A routed PowerShell command behaves natively in every channel.** `$?`, `$LASTEXITCODE`, `2>`, `2>&1`, `2>$null`, redirected stdout bytes, argv fidelity and background jobs are all unchanged from running the command without the hook, because the hook prepends nothing (section 4.4). The single observable difference is one unfiltered `rtk` notice line on stderr per routed command.
+- **A routed command is not guaranteed to be *correct*.** The gate makes it unambiguous to PowerShell, not equivalent to what the agent asked for. Section 3.10's two hazards survive, unchanged from their existing Bash exposure.
 
 ### 7.2 Security
 
 No new attack surface. Both hooks pass the command to `spawnSync` as a **single argv entry** with `shell: false`, so nothing re-parses it. The probe passes the command through the environment rather than the command line, so there is no quoting boundary to escape. Neither hook writes anything except an append to a file inside the agent's own origin Matrix, and that append is already wrapped in an empty `catch`. Neither hook can widen a permission: both only ever answer `allow`, which is what the tool call would have got anyway, and neither has a `deny` path.
 
-The prepended PowerShell function shadows the name `rtk` for the duration of one tool call in a shell whose state does not persist between calls. It shadows nothing else.
+The PowerShell hook prepends no statement at all, so it defines no function, shadows no name and mutates no shell state. That is a smaller surface than the Bash hook's `exec` line, not a larger one.
 
 ### 7.3 Cost
 
-Measured on the authoring workstation, three runs each, warm:
+Measured on the authoring workstation and independently re-measured by `dev-rust` over five warm runs each:
 
-| Hook | Per tool call | Spawns |
+| Step | Median | Min | Max |
+|---|---|---|---|
+| `pwsh` probe, profile loaded | 264 ms | 260 | 271 |
+| `pwsh` probe, `-NoProfile` | 268 ms | 262 | 275 |
+| `pwsh -Command "exit 0"`, bare startup | 203 ms | 201 | 220 |
+| `rtk rewrite "git status"` | 34 ms | 33 | 36 |
+| `bash -c 'type -t'`, the Bash hook's probe | 18 ms | 18 | 22 |
+
+End to end through the hook, including Node startup:
+
+| Hook and path | Per tool call | Spawns |
 |---|---|---|
 | `ac_rtk_claude_Bash.js` | about 105 ms | `bash` + `rtk` |
-| `ac_rtk_claude_PowerShell.js` | about 385 ms | `pwsh` + `rtk` |
+| `ac_rtk_claude_PowerShell.js`, rewrite path | 324 to 423 ms | `pwsh` + `rtk` |
+| `ac_rtk_claude_PowerShell.js`, ignored path | 260 to 339 ms | `pwsh` |
+| `ac_rtk_claude_PowerShell.js`, already-`rtk ` path | 39 ms | none |
 
-The delta is PowerShell's own start-up: the probe alone measures about 240 ms, against about 55 ms for `rtk rewrite`. The `rtk `-prefixed passthrough branch skips both spawns. This cost is accepted deliberately; section 4.5 records why the obvious optimisation is rejected.
+**Position: accept the cost.** The decomposition is what settles it. 203 of the probe's 264 ms is bare `pwsh` process startup, before the probe does any work, so the probe's own parse plus `Get-Command` is about 60 ms and there is no version of "make the probe cheaper" that recovers meaningful time. The only lever is not spawning `pwsh` at all, which is the textual pre-filter section 4.5 rejects on drift grounds. It is a fixed per-call addition against `PowerShell` tool calls that already spend about 200 ms starting `pwsh` and typically run for seconds.
 
-> Enriched by dev-rust, section 11.4: independently re-measured and signed off. Probe 264 ms median, `rtk rewrite` 34 ms, and **203 ms of the probe is bare `pwsh` startup before it does any work**, so the probe itself is not the cost. End to end, 324 to 423 ms on the rewrite path and 39 ms on the passthrough path. The figure is a floor, not a typical: no PowerShell profile exists on the authoring workstation, and one that does is loaded on every call.
+**These figures are a floor, not a typical.** No PowerShell profile exists on the authoring workstation, so the profile load measured zero; `-NoProfile` came out 4 ms *slower*, which is noise. On a machine with a profile, the probe pays that profile's load on every call. Section 4.5's `timeout: 5000` bounds the tail.
 
 ### 7.4 Dependency-cycle gate
 
@@ -529,7 +661,7 @@ The only new module relationship is inside the seeded JavaScript tree: `ac_rtk_c
 
 **Binding acceptance criterion carried into section 9: `ac_rtk_shared.js` must not require either hook file, and the two hooks must not require each other.** A reviewer checks it with `grep -n "require(" docs/integrations/rtk_claude/hooks/*.js`, which must show `ac_rtk_shared.js` requiring only `node:fs`, `node:path` and `node:child_process`.
 
-This section states the gate's result at authoring time. The certification pass re-states it after enrichment.
+**Re-stated at certification.** Neither enrichment pass added, moved or removed a module arc, and the section 4.4 decision removes code rather than adding it. The gate's result is unchanged: no Rust or TypeScript SCC can change, and the JavaScript graph remains two arcs into one sink.
 
 ---
 
@@ -538,7 +670,7 @@ This section states the gate's result at authoring time. The certification pass 
 ### 8.1 Step 1: extract the shared module, Bash still alone
 
 1. `git mv docs/integrations/rtk_claude/hooks/ac_rtk_claude.js docs/integrations/rtk_claude/hooks/ac_rtk_claude_Bash.js`
-2. Create `ac_rtk_shared.js` per section 4.2, moving the code out of the renamed file rather than retyping it.
+2. Create `ac_rtk_shared.js` per section 4.2, moving the code out of the renamed file rather than retyping it. **Implement section 4.2's six-symbol contract, not the four-export shape of the architect prototype at `<replica root>/1416-proto/`.** The prototype exports `{ NAG, ignoredLogPath, logIgnored, runHook }` and inlines the `rtk rewrite` `spawnSync` in the hook; the six-symbol contract adds `ALREADY_RTK` and `rtkRewrite`, and `rtkRewrite` is where section 4.2's `timeout` is set once for both hooks. The prototype is evidence of behaviour, not a template for structure.
 3. Reduce `ac_rtk_claude_Bash.js` to its filter, `prefixable`, and its `decide`, and add the three-environment statement the issue requires.
 4. Point `settings.local.json`'s single existing entry at the new filename.
 
@@ -578,25 +710,32 @@ The change takes effect for a given replica at that replica's **next spawn**, wh
 
 ## 9. Tests and acceptance criteria
 
-No automated test is added. There is no JavaScript test runner wired to `docs/`, and `package.json:5` is `"type": "module"` while these hooks are CommonJS, so adding one would mean new tooling for four mirror files that no build consumes. The acceptance criteria below are scripted, exact, and each names its owner.
+No automated test is added. There is no JavaScript test runner wired to `docs/`, and `package.json:5` is `"type": "module"` while these hooks are CommonJS, so adding one would mean new tooling for four mirror files that no build consumes.
 
-### 9.1 Checkable from the branch alone, by any reviewer, no runtime
+The list below is the consolidated set across all three authoring passes, renumbered once and deduplicated. Every criterion names who checks it and how. Criteria 1 to 21 are provable from the branch by any reviewer; 22 to 28 require the runtime copies, which the user applies by hand, and each names the agent that reads the result afterwards.
+
+### 9.1 Branch-only, static. Owner: reviewer
 
 | # | Criterion | How |
 |---|---|---|
 | 1 | `docs/integrations/rtk_claude/hooks/` holds exactly `ac_rtk_claude_Bash.js`, `ac_rtk_claude_PowerShell.js`, `ac_rtk_shared.js`. `ac_rtk_claude.js` is gone. | `git ls-tree -r --name-only HEAD -- docs/integrations/rtk_claude/` |
-| 2 | The rename is recorded as a rename, not as a delete plus an add. | `git log --follow --oneline -- docs/integrations/rtk_claude/hooks/ac_rtk_claude_Bash.js` |
-| 3 | `settings.local.json` parses and declares exactly two `PreToolUse` entries, matchers `Bash` and `PowerShell`, each pointing at its own hook file. | `node -e "const s=require('fs').readFileSync('docs/integrations/rtk_claude/settings.local.json','utf8');const h=JSON.parse(s).hooks.PreToolUse;console.log(h.map(e=>e.matcher+' -> '+e.hooks[0].command).join('\n'))"` |
-| 4 | No `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%`, `%AC_MATRIX_ROOT%` or `%USER_HOME%` appears in any of the four files (section 3.4). | `git grep -n -e '%AC_REPLICA_ROOT%' -e '%AC_WORKSPACE_ROOT%' -e '%AC_MATRIX_ROOT%' -e '%USER_HOME%' -- docs/integrations/rtk_claude/` returns nothing. |
-| 5 | The JavaScript module graph is a tree (section 7.4). | `grep -n "require(" docs/integrations/rtk_claude/hooks/*.js`: `ac_rtk_shared.js` requires only `node:` builtins; neither hook requires the other. |
-| 6 | `ac_rtk_claude_Bash.js` states in the file that it runs under Windows with Git Bash, Linux and macOS. | Read the header comment. Required by the issue. |
-| 7 | The README names three hook files with their real line counts, shows the two-matcher block, and no longer claims the hook covers the `Bash` tool and nothing else. | `git grep -n "ac_rtk_claude" -- docs/` returns no hit on the bare old filename. |
-| 8 | `docs/integrations/rtk.md:91` no longer says a single hook is seeded, and its link to `rtk_claude/README.md` still resolves. | Read the line. |
-| 9 | `rtk-replica-history.db` is still present at the repository root and still untracked. | `git status --porcelain=v1 --untracked-files=all` reports exactly `?? rtk-replica-history.db`. |
+| 2 | The rename is recorded as a rename, not a delete plus an add. | `git log --follow --oneline -- docs/integrations/rtk_claude/hooks/ac_rtk_claude_Bash.js` |
+| 3 | `settings.local.json` parses and declares exactly two `PreToolUse` entries, matchers `Bash` and `PowerShell`, each pointing at its own hook file. | `node -e "const h=JSON.parse(require('fs').readFileSync('docs/integrations/rtk_claude/settings.local.json','utf8')).hooks.PreToolUse;console.log(h.map(e=>e.matcher+' -> '+e.hooks[0].command).join('\n'))"` |
+| 4 | None of the four seed placeholders appears in any of the four files (section 3.4). | `git grep -n -e '%AC_REPLICA_ROOT%' -e '%AC_WORKSPACE_ROOT%' -e '%AC_MATRIX_ROOT%' -e '%USER_HOME%' -- docs/integrations/rtk_claude/` returns nothing |
+| 5 | The JavaScript module graph is a tree (section 7.4). | `grep -n "require(" docs/integrations/rtk_claude/hooks/*.js`: `ac_rtk_shared.js` requires only `node:` builtins, and neither hook requires the other |
+| 6 | `ac_rtk_claude_Bash.js` states in the file that it runs under Windows with Git Bash, Linux and macOS. Required by the issue. | read the header comment |
+| 7 | **The PowerShell hook prepends nothing** (section 4.4). No shadow function, no `Write-Error` variant, no `exit $LASTEXITCODE`, no `2>$null` suffix. `ti.command` is exactly the routed command. | `grep -nE 'function rtk\|Error\.WriteLine\|Write-Error\|LASTEXITCODE' docs/integrations/rtk_claude/hooks/ac_rtk_claude_PowerShell.js` returns nothing |
+| 8 | `headIsExternal` scans for the **last** `AC_RTK_VERDICT:` line, not a bare comparison of the whole trimmed buffer (section 4.5). | `grep -n "AC_RTK_VERDICT" docs/integrations/rtk_claude/hooks/ac_rtk_claude_PowerShell.js` shows the marker in the probe and the filter in the JS |
+| 9 | All three `spawnSync` calls carry a `timeout` (sections 4.2 and 4.5). | `grep -n "timeout" docs/integrations/rtk_claude/hooks/*.js` shows one in `rtkRewrite`, one in the probe, and one in the Bash hook's `prefixable` |
+| 10 | Section 6.3's known-broken rows are present in the README, not omitted: `tree`, `find` and `git status \| Select-String`. Absence is a documentation defect, not a pass. | read the README routing section |
+| 11 | The README failure-modes section names all four section 6.5 modes and states that `$LASTEXITCODE` and `$?` are both reliable after a routed PowerShell command, because the hook prepends nothing. | read the README failure-modes section |
+| 12 | The README names three hook files with their real line counts, shows the two-matcher block, and no longer claims the hook covers the `Bash` tool and nothing else. | `git grep -n "ac_rtk_claude" -- docs/` returns no hit on the bare old filename |
+| 13 | `docs/integrations/rtk.md:91` no longer says a single hook is seeded, and its link to `rtk_claude/README.md` still resolves. | read the line |
+| 14 | `rtk-replica-history.db` is still present at the repository root and still untracked. | `git status --porcelain=v1 --untracked-files=all` reports exactly `?? rtk-replica-history.db` |
 
-### 9.2 Behaviour, provable from the branch, by any reviewer with `node`, `rtk` and `pwsh`
+### 9.2 Branch-only, behavioural. Owner: any reviewer with `node`, `rtk` and `pwsh`
 
-The hooks **cannot** be run in place: `package.json:5` makes every `.js` in this repository an ES module and `require` is not defined there (section 3.9). Copy them out first. Use a scratch directory at your **replica root**, never inside `.claude/`.
+The hooks **cannot** be run in place: `package.json:5` makes every `.js` in this repository an ES module and `require` is not defined there (section 3.9). Copy them out first, to a scratch directory at your **replica root**, never inside `.claude/`.
 
 ```bash
 mkdir -p "$AGENTSCOMMANDER_ROOT/1416-check"
@@ -605,7 +744,7 @@ cd "$AGENTSCOMMANDER_ROOT/1416-check"
 echo '{"tool_name":"PowerShell","tool_input":{"command":"git status"}}' | node ac_rtk_claude_PowerShell.js
 ```
 
-Expected: one line of JSON whose `updatedInput.command` is the section 4.4 function definition, a newline, then `rtk git status`, and whose `permissionDecisionReason` is `ac_rtk_claude_PowerShell`.
+Expected, on one line: JSON whose `updatedInput.command` is exactly `rtk git status`, with **no** prepended statement and no leading newline, and whose `permissionDecisionReason` is `ac_rtk_claude_PowerShell`.
 
 ```bash
 echo '{"tool_name":"PowerShell","tool_input":{"command":"ls"}}' | node ac_rtk_claude_PowerShell.js
@@ -613,25 +752,31 @@ echo '{"tool_name":"PowerShell","tool_input":{"command":"ls"}}' | node ac_rtk_cl
 
 Expected: no output at all, exit 0. `ls` is a PowerShell alias.
 
+| # | Criterion | How |
+|---|---|---|
+| 15 | Every row of section 6.3 reproduces exactly, known-broken rows included. | drive each row from the scratch directory |
+| 16 | Every row of `README.md:128-144` still reproduces through `ac_rtk_claude_Bash.js`. This is the Bash no-regression suite. | drive each row from the scratch directory |
+| 17 | No run in the scratch directory writes to any `rtk_ignored_tools.md`, because `ignoredLogPath` returns `null` outside a `__`-prefixed replica root. | `grep -cE '^[0-9]{8}_[0-9]{6} (Bash\|PowerShell):' <matrix>/rtk_ignored_tools.md` returns 0 after the whole suite. The tool field cannot appear except from the new hooks, so its absence proves the scratch runs wrote nothing |
+| 18 | A routed command runs end to end. Paste one `updatedInput.command` from criterion 15 into a real `PowerShell` tool call inside a git repository. | RTK's compacted output is present, the `rtk` notice **is** present on stderr, and `$LASTEXITCODE` equals what the unrouted command returns |
+| 19 | The four native-channel results of section 4.4 reproduce for a routed command. | `$?` is `False` after a failing routed command; `$c = <routed> 2>&1` captures the real error plus exactly one notice record; `<routed> > f` writes LF-separated bytes unchanged; `<routed with> --format=a,b` arrives as one argv entry |
+| 20 | Section 4.5's probe survives a printing profile. | run the probe with a `Write-Host 'banner'` prelude and confirm the verdict is still read correctly |
+| 21 | Section 4.5's `timeout` fires. | run the probe against a sleeping prelude and confirm it is killed and the command falls to the ignored log |
+
+### 9.3 After the runtime copies are applied
+
+These cannot be proved from the branch, because the files that take effect are outside every repository.
+
 | # | Criterion | Owner |
 |---|---|---|
-| 10 | Every row of section 6.3 reproduces exactly from the scratch directory. | reviewer |
-| 11 | Every row of `README.md:128-144` still reproduces through `ac_rtk_claude_Bash.js`. This is the Bash no-regression suite. | reviewer |
-| 12 | No run in the scratch directory writes to any `rtk_ignored_tools.md`. `ignoredLogPath` returns `null` unless the hook sits two levels under a directory whose name starts with `__`, so the whole check is side-effect free. Confirm by listing the origin Matrix before and after. | reviewer |
-| 13 | The emitted PowerShell command runs. Paste one full `updatedInput.command` from criterion 10 into a real `PowerShell` tool call inside a git repository. The RTK notice must be absent, RTK's compacted output present, and `$LASTEXITCODE` must equal what the unwrapped command returns. | reviewer |
+| 22 | The four files of section 8.4 are in `<workspace>/.ac/default.claude/`, and `ac_rtk_claude.js` is deleted there. | **the user**, per the decision recorded in the issue comment |
+| 23 | A freshly spawned replica has all three hook files under `.claude/hooks/` and the two-matcher `settings.local.json`. | tech-lead, or `ac-cli-tester`, once the user reports 22 done |
+| 24 | That replica's `rtk_ignored_tools.md` shows both `Bash:` and `PowerShell:` lines from the same agent, proving both hooks are registered and both write to the one file. This is the shared precondition for 25 and 26 and is the cheapest of the three to read. | tech-lead, or `ac-cli-tester` |
+| 25 | In that replica, a `PowerShell` tool call running `git status` produces a `commands` row in that agent's `rtk-matrix-history.db`, and one running `Get-ChildItem` produces a `rtk_ignored_tools.md` line ending in `PowerShell: Get-ChildItem`. | tech-lead, or `ac-cli-tester` |
+| 26 | In the same replica, a `Bash` tool call still behaves as it did before, and its ignored-log lines now carry the `Bash` field. | tech-lead, or `ac-cli-tester` |
+| 27 | `git status \| Select-String "nothing added to commit"` in a real `PowerShell` tool call returns **zero** results with exit 0, and the README predicted it. This is section 3.10's hazard B observed end to end. It is **expected to fail**; the criterion is that the documentation said so in advance. | tech-lead, or `ac-cli-tester` |
+| 28 | `$c = git status 2>&1; $c.Count` in a real `PowerShell` tool call matches the native count plus exactly one notice record, as the README predicts. | tech-lead, or `ac-cli-tester` |
 
-### 9.3 Checkable only after the runtime copies are applied
-
-These cannot be proved from the branch, because the files that take effect are outside every repository and are applied by hand.
-
-| # | Criterion | Owner |
-|---|---|---|
-| 14 | The four files of section 8.4 are in `<workspace>/.ac/default.claude/`, and `ac_rtk_claude.js` is deleted there. | **the user**, per the decision recorded in the issue comment |
-| 15 | A freshly spawned replica has all three hook files under `.claude/hooks/` and the two-matcher `settings.local.json`. | tech-lead, or `ac-cli-tester`, after the user reports criterion 14 done |
-| 16 | In that replica, a `PowerShell` tool call running `git status` produces a `commands` row in that agent's `rtk-matrix-history.db`, and a `PowerShell` tool call running `Get-ChildItem` produces a `rtk_ignored_tools.md` line ending in `PowerShell: Get-ChildItem`. | tech-lead, or `ac-cli-tester` |
-| 17 | In the same replica, a `Bash` tool call still behaves as it did before, and its ignored-log lines now carry the `Bash` field. | tech-lead, or `ac-cli-tester` |
-
-Criterion 16 is the one that proves the issue is closed. Until it is reported, this change is landed but unproven, and the pull request description must say so rather than implying the gap is measured shut.
+Criterion 25 is the one that proves the issue is closed. Until it is reported, this change is landed but unproven, and the pull request description must say so rather than implying the gap is measured shut.
 
 ---
 
@@ -645,13 +790,48 @@ Criterion 16 is the one that proves the issue is closed. Until it is reported, t
 - **Do not rename the hooks to `.cjs`** to work around section 3.9. The issue fixes the two filenames, and `.cjs` would change what the seeder installs and what `settings.local.json` invokes for no runtime benefit.
 - **Do not add a `package.json` to `docs/integrations/rtk_claude/hooks/`.** The seeder would copy it into every replica.
 - **Do not add a textual pre-filter to the PowerShell probe** (section 4.5).
-- **Do not append `exit $LASTEXITCODE`** to the emitted PowerShell command (section 4.4).
+- **Do not prepend or append anything to the PowerShell hook's output** (section 4.4). No `rtk` shadow function, no `Write-Error -ErrorRecord` variant, no `exit $LASTEXITCODE` trailer, no `2>$null` suffix. `ti.command` is exactly the routed command. The appendices contain an earlier design that did prepend one; it is superseded, and section 4.4 measures why.
+- **Do not add a name deny-list to either hook** for the section 3.10 hazards. A list keys on the head, while hazard B is decided by the tail, so it cannot express the condition, and it is the drifting second copy section 4.5 exists to avoid.
 - **Do not correct `docs/integrations/rtk.md:93`** (section 5.6).
+- **Do not file the upstream `rtk` issue as part of this work.** Section 3.10 records it as a follow-up for the tech-lead, and it is not a gate on this issue.
+- **Do not treat the prototype at `<replica root>/1416-proto/` as a template.** It is evidence of behaviour. Its module shape predates section 4.2's six-symbol contract and its PowerShell hook predates section 4.4.
 - **Do not add a test runner, a markdown linter or a link checker.** None exists in `.github/workflows/`.
 
 ---
 
-## 11. Enrichment: dev-rust
+## 11. Review findings and where each one landed
+
+Two enrichment passes ran against the DRAFT_FOR_ENRICHMENT plan. Every finding is resolved into sections 1 to 10 above. This table is the map. **Sections 1 to 10 are the specification; Appendices A and B are evidence and are not.** Where an appendix conflicts with sections 1 to 10, sections 1 to 10 govern.
+
+| Finding | Disposition | Landed in |
+|---|---|---|
+| A.1 `tree` and `find` pass the `Application` gate and break silently | accepted as recommended: document, no deny-list, escalate upstream | 3.10 hazard A, 6.3 known-broken rows, 6.5, 10 |
+| A.2 `[Console]::Error.WriteLine` defeats every `2>` form | **overruled.** Both reviewers recommended keeping the filter and documenting. Re-measured at certification: the shadow function breaks four channels, three silently. The filter is removed entirely | 4.4, and the finding is dissolved rather than documented |
+| A.3 no `timeout` on either `spawnSync` | accepted verbatim, `timeout: 5000` | 4.2, 4.5, 6.5, criterion 9 |
+| A.4 cost decomposition, 203 ms of 264 ms is `pwsh` startup | accepted, folded in, and it strengthens the pre-filter rejection | 7.3, 4.5 |
+| A.5 sign-off on the conservative rule and on fail-closed | accepted, both stand | 4.3, 6.5 |
+| A.6 `rtk rewrite` never touches an element after a pipe, seven shapes | accepted as evidence; its **conclusion** is inverted by B.1 | 3.6, 4.3 |
+| A.7 six-symbol contract, not the prototype's four | accepted | 4.2, 8.1, 10 |
+| A.7 concurrent appends within one replica | accepted | 6.4 |
+| A.7 `parse_failures` will see more traffic under PowerShell | accepted | 5.5 |
+| B.1 any pipeline whose tail parses the head's text | accepted: not a blocker, no rule change, but 4.3, 6.3 and A.6 must stop reading as an all-clear | 3.10 hazard B, 4.3, 6.3, 6.5, criteria 10 and 27 |
+| B.2 `$?` is `True` after every failing routed command | **dissolved** by the 4.4 decision; recorded as a mode that does not exist and must not be reintroduced | 4.4, 6.5, 7.1 |
+| B.3 redirected stdout re-encoded, binary destroyed | **dissolved** by the 4.4 decision | 4.4, 6.5, 7.1 |
+| B.4 unquoted commas split into two arguments | **dissolved** by the 4.4 decision | 4.4, 7.1 |
+| B.5 a printing `$PROFILE` silently disables the hook | **required**, and strengthened: a `AC_RTK_VERDICT:` sentinel with last-match scanning, which also survives output emitted after the verdict | 4.5, criteria 8 and 20 |
+| B.6 "the profile can only make the probe more conservative" is false | accepted, claim struck and replaced with the measured behaviour | 4.5 |
+| B.7 the newline guard row is wrong; the `=` guard is name-only | accepted, both corrected | 4.5, 6.3 |
+| B.8 the nag filter drops a whole `ErrorRecord`, not a line | **dissolved** by the 4.4 decision | 4.4 |
+| B.8 `git status &` routes, behaviour unmeasured | **measured at certification.** With the shadow function the job completes and only the notice leaks, because the function does not reach the job's runspace. With the 4.4 decision there is no function, and the job is native | 4.4, 7.1 |
+| B.9 positions on the two escalated decisions | one accepted (A.1), one overruled (A.2) | 3.10, 4.4 |
+
+Acceptance criteria from all three passes are consolidated and renumbered once in section 9. The per-appendix numbering below is superseded; do not work from it.
+
+---
+
+## Appendix A. `dev-rust` enrichment, as written
+
+**Evidence, not specification.** Preserved as written for its measurements, apart from em dash characters normalised to the house style. Superseded by sections 1 to 10 wherever the two differ, and by section 11's disposition table. In particular, everything this appendix says about the shape or documentation of a prepended PowerShell filter is superseded by section 4.4, which removes the filter.
 
 Added after the plan reached DRAFT_FOR_ENRICHMENT. Everything below was measured on the same workstation the plan was authored on (Windows 11 Pro 10.0.26200, `rtk` 0.42.4, PowerShell 7.6.5 Core, Node 24.13.0), against a copy of the architect prototype at `<replica root>/1416-check/`, per section 9.2.
 
@@ -856,13 +1036,15 @@ Numbered on from criterion 17. Criteria 18 and 19 are reviewer checks against th
 
 ---
 
-## 12. Enrichment: dev-rust-grinch
+## Appendix B. `dev-rust-grinch` enrichment, as written
 
-Added after section 11. Adversarial pass, measured on the same workstation the plan and section 11 were measured on (Windows 11 Pro 10.0.26200, `rtk` 0.42.4, PowerShell 7.6.5 Core, Node 24.13.0), driving a copy of the architect prototype at `<replica root>/1416-grinch/` per section 9.2.
+**Evidence, not specification.** Preserved as written for its measurements, apart from em dash characters normalised to the house style. Superseded by sections 1 to 10 wherever the two differ, and by section 11's disposition table. Sections 12.2, 12.3 and 12.4 describe defects in a design section 4.4 no longer specifies; they are retained because they are the measurements that justify removing it.
+
+Added after Appendix A. Adversarial pass, measured on the same workstation the plan and section 11 were measured on (Windows 11 Pro 10.0.26200, `rtk` 0.42.4, PowerShell 7.6.5 Core, Node 24.13.0), driving a copy of the architect prototype at `<replica root>/1416-grinch/` per section 9.2.
 
 Nothing here reopens a settled decision. The two hooks, the shared module, the tracked surface and the hand-applied runtime copies are all unchanged by everything below.
 
-Scope of what I looked for: the architect asked for a PowerShell command shape that passes all seven section 4.5 guards and still reaches `rtk rewrite` wrongly, at the section 3.6 bar — empty output, exit 0, no error anywhere. **I found one, and it does not depend on the head at all.** It is section 12.1, and it is the reason sections 12.2 to 12.4 matter: once a command is routed, three separate channels between the agent and the command are altered, and none of them announces itself.
+Scope of what I looked for: the architect asked for a PowerShell command shape that passes all seven section 4.5 guards and still reaches `rtk rewrite` wrongly, at the section 3.6 bar - empty output, exit 0, no error anywhere. **I found one, and it does not depend on the head at all.** It is section 12.1, and it is the reason sections 12.2 to 12.4 matter: once a command is routed, three separate channels between the agent and the command are altered, and none of them announces itself.
 
 Sections 12.1 to 12.6 are defects in the specified content. Section 12.7 corrects two factual claims. Section 12.8 is minor. Section 12.9 gives my position on the two decisions section 11 escalated. Section 12.10 adds acceptance criteria, numbered on from 21.
 
@@ -916,15 +1098,15 @@ Bounded by measurement, so the class is not overstated. Comparing native against
 | `git branch` | yes |
 | `git show --stat HEAD` | yes |
 | `rg -n <pat> <file>` | yes |
-| **`git status`** | **no** — 6 lines become 2, different format |
-| **`git log -1`** | **no** — 32 lines become 1 |
+| **`git status`** | **no** - 6 lines become 2, different format |
+| **`git log -1`** | **no** - 32 lines become 1 |
 | **`git diff HEAD~1 --stat`** | **no** |
 
-So the class is the subcommands `rtk` reformats — on this machine `git status`, `git log` in its default format, and `git diff --stat` — combined with any tail that reads the text: `Select-String`, `-match`, `ConvertFrom-*`, `Where-Object { $_ -like ... }`, `Measure-Object -Line`, or a `> file` whose contents are parsed later.
+So the class is the subcommands `rtk` reformats - on this machine `git status`, `git log` in its default format, and `git diff --stat` - combined with any tail that reads the text: `Select-String`, `-match`, `ConvertFrom-*`, `Where-Object { $_ -like ... }`, `Measure-Object -Line`, or a `> file` whose contents are parsed later.
 
 **Section 11.6 is load-bearing in the opposite direction from the one it concludes.** Section 11.6 proves `rtk rewrite` never touches an element after a `|` and reads that as what makes the section 4.3 gate sufficient. The untouched tail is exactly the problem: the tail is left as the agent wrote it, against the format the head no longer produces. A tail that had been rewritten alongside the head would at least fail loudly. Section 11.6's measurement is correct and its conclusion needs inverting.
 
-**Disposition — not a blocker, and no rule change.** The same exposure exists today under Bash: `git status | grep "nothing added"` is rewritten to `rtk git status | grep ...` by the current hook and breaks identically. This issue neither creates nor widens it, and no in-hook fix is available that is not a content-aware deny-list, which section 4.5 rightly rejects on drift grounds. What must change is that the plan stops reading as an all-clear:
+**Disposition - not a blocker, and no rule change.** The same exposure exists today under Bash: `git status | grep "nothing added"` is rewritten to `rtk git status | grep ...` by the current hook and breaks identically. This issue neither creates nor widens it, and no in-hook fix is available that is not a content-aware deny-list, which section 4.5 rightly rejects on drift grounds. What must change is that the plan stops reading as an all-clear:
 
 1. Section 4.3 must not present "only the content is compacted" as part of the safety argument. State that the gate preserves the pipeline's type contract and **not** its content contract, and point here.
 2. Section 6.3's `git status | Select-Object -First 2` row passes only because `Select-Object -First` is format-agnostic. Add the `Select-String` row as known-broken beside the section 11.1 `tree` and `find` rows, so the table is not read as clearance for pipelines generally.
@@ -949,7 +1131,7 @@ $null = rtk git nosuchsubcmd 2>$null
 if ($?) { "command succeeded" }   # taken. The command exited 1.
 ```
 
-Cause: `$?` after a native command reflects its exit code, but after a **function** it reflects whether that function raised a terminating or non-terminating error. The section 4.4 shadow raises neither — it writes through `[Console]::Error.WriteLine` — so `$?` is `True` regardless of what the wrapped binary did. `git ...; if ($?) { ... }` is an ordinary shape and it silently takes the wrong branch, with no output difference to notice.
+Cause: `$?` after a native command reflects its exit code, but after a **function** it reflects whether that function raised a terminating or non-terminating error. The section 4.4 shadow raises neither - it writes through `[Console]::Error.WriteLine` - so `$?` is `True` regardless of what the wrapped binary did. `git ...; if ($?) { ... }` is an ordinary shape and it silently takes the wrong branch, with no output difference to notice.
 
 **This one is not fixable inside the section 4.4 design, and I measured that rather than assuming it.** The section 11.2 `Write-Error` alternative does **not** restore it:
 
@@ -991,7 +1173,7 @@ binary, first 12 bytes of a PNG header
 
 Reachable shapes an agent writes routinely: `rtk git diff > fix.patch` then `git apply fix.patch`, which fails or applies wrongly because the patch body gained CRLF; `rtk curl -s <url> > archive.zip`; `rtk git show HEAD:script.sh > script.sh` on a repository with LF endings.
 
-This channel is **independent of the section 11.2 decision** — I measured the `Write-Error` variant and it corrupts identically (16 bytes native against 20 routed), because the damage is on the stdout branch, not the error branch. Whoever fixes it has to stop passing stdout through `ForEach-Object` at all, which is a redesign of section 4.4 rather than a token change, and I am not asking for that in this issue.
+This channel is **independent of the section 11.2 decision** - I measured the `Write-Error` variant and it corrupts identically (16 bytes native against 20 routed), because the damage is on the stdout branch, not the error branch. Whoever fixes it has to stop passing stdout through `ForEach-Object` at all, which is a redesign of section 4.4 rather than a token change, and I am not asking for that in this issue.
 
 Required: section 4.4, section 6.5 and section 7.1 state it, and the README failure-modes section carries the `> file` line-ending case, which is the one an agent will hit first.
 
@@ -1063,7 +1245,7 @@ baseline (no prelude)                   ->  probe answers SHELL, so the hook ign
 
 With the alias gone, `Get-Command ls` finds nothing, and section 4.5's `if (-not $g) { 'APP' }` treats an unresolved head as external. `ls` is then rewritten to `rtk ls`, which section 3.6 measured as failing on Windows outside Git Bash. The direction of the profile's influence is not one-way: adding to the command table makes the probe more conservative, removing from it makes the probe less conservative.
 
-`Remove-Alias ls` is a real idiom on machines where someone has installed `eza` or `lsd`. The consequence there is loud rather than silent, so this is a correctness note on the argument rather than a new hazard. Section 4.5's justification for loading the profile still stands on its other leg — the probe must see the session's real command table — but the sentence quoted above must be struck or qualified, because an implementer reading it will not add the guard the section 12.5 fix provides.
+`Remove-Alias ls` is a real idiom on machines where someone has installed `eza` or `lsd`. The consequence there is loud rather than silent, so this is a correctness note on the argument rather than a new hazard. Section 4.5's justification for loading the profile still stands on its other leg - the probe must see the session's real command table - but the sentence quoted above must be struck or qualified, because an implementer reading it will not add the guard the section 12.5 fix provides.
 
 For completeness, a profile that **adds** a name does behave as section 4.5 claims: prelude `function git { 'shadowed' }` flips `git status` from `APP` to `SHELL`. Measured.
 
@@ -1079,7 +1261,7 @@ ROUTED | "git commit -m @\"\nhello\n\"@"          ==>  "rtk git commit -m @\"\nh
 ROUTED | "git `\n  status"                        ==>  "rtk git `\n  status"
 ```
 
-The third is a backtick line continuation, also one statement. In all three cases `rtk rewrite` handled the embedded newline correctly and the emitted command is right, so this is a **documentation defect, not a hazard** — but it is the kind of wrong statement that a later reader builds a wrong assumption on. Reword to "every command whose newline is a statement separator", and note that a newline inside a string does not split a statement.
+The third is a backtick line continuation, also one statement. In all three cases `rtk rewrite` handled the embedded newline correctly and the emitted command is right, so this is a **documentation defect, not a hazard** - but it is the kind of wrong statement that a later reader builds a wrong assumption on. Reword to "every command whose newline is a statement separator", and note that a newline inside a string does not split a statement.
 
 **The `$n -like '*=*'` guard rejects less than it looks like it does.** It fires on the command **name** only, which is the bash `FOO=bar cmd` form, exactly as section 4.5 says. It is worth stating explicitly that it does not fire on an argument containing `=`, because `git log --pretty=format:%h` routes and must. No change beyond one clarifying clause; I flag it only because section 12.4's failing case is an `=` argument and a reader may otherwise expect this guard to have caught it.
 
@@ -1087,15 +1269,15 @@ The third is a backtick line continuation, also one statement. In all three case
 
 - **The nag filter drops real stderr that happens to contain the phrase.** `-notmatch 'No hook installed'` is an unanchored substring test over the whole error record. Measured: a producer writing `fatal: cannot open No hook installed.txt` then `fatal: second real error` emits only the second line through the filter. The bash hook's `grep -v 'No hook installed'` has the identical property, so this is **parity, not a regression**, and I am not asking for a change. One difference is worth a line in the README: the bash filter drops a matching **line**, the PowerShell filter drops the entire **ErrorRecord**, which for a multi-line error is more than the matching line.
 
-- **`git status &` routes and I did not verify what happens next.** Measured: the background operator is not checked by any guard — `PipelineAst` carries it as a `Background` flag rather than as a different node type — so `git status &` is rewritten to `rtk git status &`. Whether the prepended function reaches the job's runspace is a real question and I have **not** measured it; I am recording it as untested rather than guessing. One measurement settles it, and if the function does not reach the job the only consequence is a leaked nag line, which is cosmetic. Adding `if ($p.Background) { 'SHELL'; exit 0 }` to the probe would close it for the price of one line if the measurement comes back badly.
+- **`git status &` routes and I did not verify what happens next.** Measured: the background operator is not checked by any guard - `PipelineAst` carries it as a `Background` flag rather than as a different node type - so `git status &` is rewritten to `rtk git status &`. Whether the prepended function reaches the job's runspace is a real question and I have **not** measured it; I am recording it as untested rather than guessing. One measurement settles it, and if the function does not reach the job the only consequence is a leaked nag line, which is cosmetic. Adding `if ($p.Background) { 'SHELL'; exit 0 }` to the probe would close it for the price of one line if the measurement comes back badly.
 
 - **Section 11.7's export-count point is right and I confirmed the prototype's shape.** The prototype exports `{ NAG, ignoredLogPath, logIgnored, runHook }` and inlines the `rtk rewrite` `spawnSync` in the PowerShell hook. Section 4.2's six-symbol contract is the one to implement, and it is where section 11.3's `timeout` belongs.
 
 ### 12.9 My position on the two decisions section 11 escalated
 
-**Section 11.1, the `Application` gate and the `tree` / `find` class. I agree with `dev-rust`: document the known-broken rows, file it upstream against `rtk`, add no deny-list.** Section 12.1 strengthens that conclusion rather than weakening it. A deny-list would have to be keyed on the **head**, and section 12.1's failure is not determined by the head — `git`, the plan's own safe example, breaks when the tail parses text and does not break when the tail is `Select-Object -First 2`. The property that decides it lives in the tail, which no list of names can enumerate. Whatever a deny-list bought, it would still leave section 12.1 open while creating exactly the drifting second copy of a platform question that section 4.5 exists to avoid. Document and escalate upstream is the right disposition, and it should now cover section 12.1's class as well as section 11.1's.
+**Section 11.1, the `Application` gate and the `tree` / `find` class. I agree with `dev-rust`: document the known-broken rows, file it upstream against `rtk`, add no deny-list.** Section 12.1 strengthens that conclusion rather than weakening it. A deny-list would have to be keyed on the **head**, and section 12.1's failure is not determined by the head - `git`, the plan's own safe example, breaks when the tail parses text and does not break when the tail is `Select-Object -First 2`. The property that decides it lives in the tail, which no list of names can enumerate. Whatever a deny-list bought, it would still leave section 12.1 open while creating exactly the drifting second copy of a platform question that section 4.5 exists to avoid. Document and escalate upstream is the right disposition, and it should now cover section 12.1's class as well as section 11.1's.
 
-**Section 11.2, `[Console]::Error.WriteLine` against `Write-Error -ErrorRecord`. I agree with `dev-rust`: keep `[Console]::Error.WriteLine` and document the limitation.** I went in expecting to argue the other side, on the theory that `Write-Error` would also restore `$?` and so buy two channels for one cost. I measured it and it does not: `$?` stays `True` under both variants (section 12.2), and redirected stdout is corrupted identically under both (section 12.3). So `Write-Error` buys exactly the one channel section 11.2 already credits it with — `2>`, `2>&1` and `2>$null` — and pays a ConciseView position block on every error line of every routed command, in a hook whose purpose is compacting output. One channel restored out of three broken, at a per-error-line tax, is not a good trade. `dev-rust`'s recommendation stands, and it stands more firmly with the measurement than without it.
+**Section 11.2, `[Console]::Error.WriteLine` against `Write-Error -ErrorRecord`. I agree with `dev-rust`: keep `[Console]::Error.WriteLine` and document the limitation.** I went in expecting to argue the other side, on the theory that `Write-Error` would also restore `$?` and so buy two channels for one cost. I measured it and it does not: `$?` stays `True` under both variants (section 12.2), and redirected stdout is corrupted identically under both (section 12.3). So `Write-Error` buys exactly the one channel section 11.2 already credits it with - `2>`, `2>&1` and `2>$null` - and pays a ConciseView position block on every error line of every routed command, in a hook whose purpose is compacting output. One channel restored out of three broken, at a per-error-line tax, is not a good trade. `dev-rust`'s recommendation stands, and it stands more firmly with the measurement than without it.
 
 The condition `dev-rust` attached is the important half and I restate it: shipping section 4.4 as written **with no note** is not acceptable. With sections 11.2, 12.2 and 12.3 the note is now three items, and the README must carry all three, because an agent cannot see any of them.
 
