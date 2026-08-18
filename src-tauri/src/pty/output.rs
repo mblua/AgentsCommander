@@ -1095,9 +1095,9 @@ impl SessionIoFanout {
             broadcaster.broadcast_pty_output(session_id_str, &data);
         }
 
-        // The UI is still the last consumer served, which is what keeps a slow emit from
-        // delaying the idle detector, the response-marker scan, the raw sender or the
-        // websocket broadcaster.
+        // The UI EMIT is still the last thing this function does, which is what keeps a slow
+        // one from delaying the idle detector, the response-marker scan, the raw sender or the
+        // websocket broadcaster. Only the append above runs earlier, and it copies bytes.
         #[cfg(test)]
         if accumulated != Accumulated::Unattached {
             self.trace(FanoutTraceEvent::UiEmit);
