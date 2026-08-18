@@ -1,5 +1,20 @@
 // PreToolUse/Bash hook: routes the command through rtk so its output is compacted.
 //
+// This hook covers the `Bash` tool, which means Windows under Git Bash, Linux and
+// macOS. Those are the three environments its shell probe and its character class
+// are written for; no other shell reaches this file.
+//
+// `ac_rtk_claude_PowerShell.js` is the sibling that covers the other shell tool,
+// and `ac_rtk_shared.js` holds the half that does not depend on a shell.
+//
+// This hook filters rtk's "No hook installed" notice off stderr. The PowerShell
+// hook deliberately does not, and that asymmetry is a decision rather than an
+// oversight: PowerShell has no statement that reassigns the rest of a script's
+// error stream, and every construct that emulates one turns rtk from an external
+// binary into a shell function, which breaks `$?`, stderr redirection, the bytes
+// of redirected stdout and comma-bearing arguments. That file's header carries the
+// measurements.
+//
 // The rewrite decision is delegated to `rtk rewrite`, which rtk documents as the
 // single source of truth for hooks. It splits on `&&` / `;`, rewrites each segment
 // that has an rtk equivalent and leaves the rest alone -- notably shell builtins
@@ -28,40 +43,9 @@
 // `rtk_ignored_tools.md` in the origin Agent Matrix before we bow out.
 
 const { spawnSync } = require("node:child_process");
-const fs = require("node:fs");
-const path = require("node:path");
+const { NAG, ALREADY_RTK, rtkRewrite, runHook } = require("./ac_rtk_shared.js");
 
-const NAG = "No hook installed";
 const FILTER = `exec 2> >(grep --line-buffered -v '${NAG}' >&2)\n`;
-
-// The log lives with the canonical agent state, not with the throwaway replica, so it
-// survives across workgroups. Everything is derived, nothing hardcoded: this file sits
-// at <replica root>/.claude/hooks/, so two levels up is the replica root and two more
-// is `.ac`. From there the origin Matrix folder is the replica's own name with one
-// leading underscore dropped (`__agent_foo` -> `_agent_foo`).
-function ignoredLogPath() {
-  const replicaRoot = path.resolve(__dirname, "..", "..");
-  const replicaName = path.basename(replicaRoot);
-  if (!replicaName.startsWith("__")) return null; // not a WG replica: no Matrix above us
-  return path.join(path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk_ignored_tools.md");
-}
-
-// One `YYYYMMDD_HHMMSS: <command>` line per skip, local time. Newlines are folded to
-// spaces so a heredoc stays a single entry. Never touches stdout -- the hook protocol
-// reads it -- and never throws: a missing Matrix or a locked file must not cost the
-// user the command they asked for.
-function logIgnored(cmd) {
-  try {
-    const target = ignoredLogPath();
-    if (!target) return;
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, "0");
-    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-    fs.appendFileSync(target, `${ts}: ${cmd.replace(/\s+/g, " ").trim()}\n`, "utf8");
-  } catch {
-    // best effort
-  }
-}
 
 // Only a bare `cmd arg arg` line is safe to prefix. Anything with shell syntax --
 // operators, redirects, subshells, heredocs, command substitution, newlines -- would
@@ -77,56 +61,23 @@ function prefixable(cmd) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     shell: false,
+    timeout: 5000,
   });
   return !["builtin", "keyword", "function", "alias"].includes((t.stdout || "").trim());
 }
 
-const chunks = [];
-process.stdin.on("data", (c) => chunks.push(c));
-process.stdin.on("end", () => {
-  let data;
-  try {
-    data = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  } catch {
-    process.exit(0); // unreadable input: leave the command untouched
-  }
-
-  const ti = { ...(data.tool_input || {}) };
-  const orig = typeof ti.command === "string" ? ti.command : "";
-  const body = orig.replace(/^\s+/, "");
-  if (!body) process.exit(0);
-
+// Ask rtk first, and only ask the shell when rtk declined. Under bash the rewrite
+// path is the safe one: every head `rtk rewrite` replaces is a real binary emitting
+// text, so the substitution is close to behaviour-preserving whatever the shape of
+// the command. The PowerShell hook inverts this order, for the reason its header
+// gives.
+function decide(body) {
   // Already routed through rtk (e.g. a command we wrote by hand): only silence the notice.
-  let rewritten;
-  if (/^rtk\s/.test(body)) {
-    rewritten = body;
-  } else {
-    // Passed as a single argv entry, so no shell re-parsing happens here.
-    const r = spawnSync("rtk", ["rewrite", body], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      shell: false,
-    });
-    rewritten = (r.stdout || "").trim();
-    if (!rewritten) {
-      if (!prefixable(body)) {
-        logIgnored(body); // builtins / shell syntax: leave it alone, but on the record
-        process.exit(0);
-      }
-      rewritten = "rtk " + body; // unknown binary: wrap it so rtk still reports stats
-    }
-  }
+  if (ALREADY_RTK.test(body)) return FILTER + body;
+  const rewritten = rtkRewrite(body);
+  if (rewritten) return FILTER + rewritten;
+  if (prefixable(body)) return FILTER + "rtk " + body; // unknown binary: wrap it so rtk still reports stats
+  return null; // builtins / shell syntax: leave it alone, but on the record
+}
 
-  ti.command = FILTER + rewritten;
-
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        permissionDecisionReason: "ac_rtk_claude",
-        updatedInput: ti,
-      },
-    })
-  );
-});
+runHook(__dirname, "Bash", decide);
