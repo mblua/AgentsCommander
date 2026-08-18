@@ -1,3 +1,4 @@
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isBrowser, isTauri } from "./platform";
 import {
   measurePtyViewport,
@@ -420,10 +421,20 @@ export const ReposAPI = {
 /**
  * #1363 - resolved once per webview, then cached (including the failure, so a
  * broken lookup cannot warn once per `TerminalView` mount).
+ *
+ * SYNCHRONOUS on purpose, and statically imported rather than `await
+ * import(...)`. Any await here sits between `onPtyOutput` being called and
+ * `transport.listen` actually registering, and a `pty_output` emitted inside
+ * that window is simply lost — there is no replay. A dynamic import made that
+ * window a whole module load on the first call, which was long enough to drop
+ * live output under load. `@tauri-apps/api/webviewWindow` is import-time safe:
+ * its module scope only defines classes and functions, and `window.
+ * __TAURI_INTERNALS__` is read when `getCurrentWebviewWindow()` is CALLED,
+ * which happens only under `isTauri`.
  */
 let ptyOutputTarget: { label: string | undefined } | null = null;
 
-async function resolvePtyOutputTarget(): Promise<string | undefined> {
+function resolvePtyOutputTarget(): string | undefined {
   if (ptyOutputTarget !== null) {
     return ptyOutputTarget.label;
   }
@@ -432,12 +443,11 @@ async function resolvePtyOutputTarget(): Promise<string | undefined> {
     return undefined;
   }
   try {
-    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
     ptyOutputTarget = { label: getCurrentWebviewWindow().label };
   } catch (error) {
     // Fail OPEN, never closed: an unscoped listener costs the bridge multiplier
-    // this scoping exists to remove, but a rejected registration would leave
-    // the window with no output listener at all, which is a black terminal.
+    // this scoping exists to remove, but a failed registration would leave the
+    // window with no output listener at all, which is a black terminal.
     console.warn("[ipc] pty_output listener target unavailable:", error);
     ptyOutputTarget = { label: undefined };
   }
@@ -459,11 +469,11 @@ async function resolvePtyOutputTarget(): Promise<string | undefined> {
  * that); the cost is what regresses. Pinned by
  * `TerminalView.attachment.test.tsx`.
  */
-export async function onPtyOutput(
+export function onPtyOutput(
   callback: (data: PtyOutputEvent) => void
 ): Promise<UnlistenFn> {
   return transport.listen<PtyOutputEvent>("pty_output", callback, {
-    target: await resolvePtyOutputTarget(),
+    target: resolvePtyOutputTarget(),
   });
 }
 
