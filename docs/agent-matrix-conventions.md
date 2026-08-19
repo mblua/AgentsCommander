@@ -64,7 +64,7 @@ The global template must preserve these mandatory runtime tokens for matrix agen
 | `{{WRITE_RESTRICTIONS}}` | Runtime write restrictions and allowed scopes |
 | `{{DELEGATED_TASK_REPORTING}}` | Required completion/blocker reporting instructions |
 | `{{SKILLS_SECTION}}` | Runtime skill index |
-| `{{WORKSPACE_REPOS}}` | Repo list rendered from the replica config `repos` field |
+| `{{AGENT_REPOS}}` | Repo list rendered from the replica config `repos` field |
 | `{{CLI_CONTEXT}}` | CLI binary and help usage rules |
 | `{{SESSION_CREDENTIALS}}` | Environment-variable credential rules |
 | `{{INTER_AGENT_MESSAGING}}` | Peer discovery and file-based messaging instructions |
@@ -83,6 +83,7 @@ Legacy custom templates also support these older runtime tokens:
 | `{{PEER_NAME_FORMAT}}` | Peer-name format for the current session type |
 | `{{SEND_MESSAGE_INSTRUCTIONS}}` | File-based send instructions for the current session type |
 | `{{SKILLS_SECTION}}` | Runtime skill index and warnings |
+| `{{WORKSPACE_REPOS}}` | Pre-#1369 spelling of `{{AGENT_REPOS}}`; still rendered in place, with no duplicate block |
 
 Removing a token is allowed if you intentionally do not want that dynamic section included in generated contexts.
 
@@ -286,7 +287,7 @@ Workgroups are isolated working environments created when a team needs to work o
 
 | Field | Description |
 |---|---|
-| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{WORKSPACE_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
+| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{AGENT_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
 | `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
 | `repos` | Relative paths to the repo clones inside this workgroup. |
 
