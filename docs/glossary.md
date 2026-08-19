@@ -162,6 +162,14 @@ A root-level pattern AC matches against agent terminal output, reaching every co
 
 *Deprecated alias.* See **Project AC Root**.
 
+## Workspace (kept exceptions)
+
+Three "workspace" spellings survive the rename to **Project AC Root** on purpose. Each belongs to someone else's vocabulary (the Rust toolchain, the Codex CLI, the container ecosystem) rather than to AC's product vocabulary, so renaming one would break a build, a flag, or an image instead of clarifying anything. **Do not rename these three.** Any other `workspace` occurrence is not a fourth exception: it is legacy pending rename under epic #1366, not vocabulary to imitate.
+
+- **`[workspace]` and `--workspace`, Cargo's vocabulary** (#1372). The root `Cargo.toml` declares the Rust workspace with this key, and `--workspace` is how a Cargo command targets every member crate: AC's CI gates every pull request on `cargo clippy --workspace --all-targets`. Cargo has no alternative spelling; changing the key breaks the build.
+- **`workspace-write`, the Codex CLI's vocabulary** (#1373). A value of Codex's `--sandbox` flag, as in `codex --sandbox workspace-write`. AC only passes it through: it arrives in a coding agent's profile command, and AC's own UI shows it just as an example placeholder in Settings. Renaming the value breaks the flag.
+- **`/workspace`, the container ecosystem's convention** (#1371). The path inside AC's Docker container where the replica root is bind-mounted, defined as `DEFAULT_CONTAINER_WORKDIR` in `src-tauri/src/pty/container_runtime.rs`. Docker does not impose the path, but Cloud Build and GitPod both mount the checkout at `/workspace`, and tools running inside a container expect to find it there. Kept by user decision of 2026-08-19.
+
 ## Workgroup
 
 A team's activation for a specific task. Lives at `.ac/wg-<N>-<team>/` with replicas of every team member.
