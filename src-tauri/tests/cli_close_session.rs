@@ -208,6 +208,16 @@ while ((Get-Date) -lt $deadline) {
     [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($message.id).json"), $messageBody, $utf8NoBom)
     Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
 
+    if ($Mode -eq 'respond-staged') {
+      # 1440 F1: el daemon escribe el response sin rename atomico y dos veces
+      # (dual-write 224 A.6), asi que el archivo existe truncado durante una
+      # ventana. Aca la ventana es determinista: 600ms (mas de dos ticks del
+      # poll de 250ms del CLI) con un prefijo que no parsea.
+      New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
+      Set-Content -LiteralPath (Join-Path $ResponsesDir "$($message.requestId).json") -Value '{"' -NoNewline -Encoding ascii
+      Start-Sleep -Milliseconds 600
+    }
+
     New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
     $responseBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
     [System.IO.File]::WriteAllText((Join-Path $ResponsesDir "$($message.requestId).json"), $responseBody, $utf8NoBom)
@@ -286,7 +296,8 @@ impl SimulatorHandle {
 
 /// §1440: `mode` is "respond" (write delivered/ + responses/) or "reject"
 /// (write rejected/<msg_id>.reason.txt, no contract validation, no response),
-/// mirroring the daemon's two terminal outcomes.
+/// mirroring the daemon's two terminal outcomes. "respond-staged" is
+/// "respond" with the response left torn for 600ms first (§1440 F1).
 fn spawn_daemon_simulator(
     _tmp: &Path,
     outbox_dir: &Path,
@@ -473,6 +484,17 @@ fn simulate_daemon_response(
     std::fs::write(delivered_dir.join(format!("{}.json", msg_id)), &body)
         .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&msg_path);
+
+    if mode == "respond-staged" {
+        // §1440 F1: el daemon escribe el response sin rename atomico y dos
+        // veces (dual-write §224 A.6), asi que el archivo existe truncado
+        // durante una ventana. Aca la ventana es determinista: 600ms (mas de
+        // dos ticks del poll de 250ms del CLI) con un prefijo que no parsea.
+        std::fs::create_dir_all(responses_dir).map_err(|e| e.to_string())?;
+        std::fs::write(responses_dir.join(format!("{}.json", request_id)), "{\"")
+            .map_err(|e| e.to_string())?;
+        std::thread::sleep(Duration::from_millis(600));
+    }
 
     std::fs::create_dir_all(responses_dir).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -841,6 +863,46 @@ fn close_session_rejected_exits_one_with_reason() {
     assert!(
         !stdout.contains("\"status\""),
         "no response JSON must reach stdout on rejection; got: {}",
+        stdout
+    );
+}
+
+// §1440 F1: el daemon escribe el response sin atomicidad y (en el caso
+// comun) dos veces; respond-staged materializa la ventana: el archivo
+// existe 600ms (mas de dos ticks de poll de 250ms) con un prefijo torn
+// antes de tener el JSON completo. Sin el parse-gate de 5.1.8, un tick
+// lee el torn, imprime basura en stdout y sale 2 sobre un cierre exitoso.
+#[test]
+fn close_session_staged_response_write_still_exits_zero() {
+    let tmp = Tmp::new("close-staged");
+    let fix = build_fixture(tmp.path(), "hank-staged");
+    let target = "proj:wg-1-test/hank-staged";
+    let body = format!(
+        "{{\"action\":\"close-session\",\"target\":\"{}\",\"status\":\"closed\",\"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}",
+        target
+    );
+
+    let (code, stdout, stderr, _sim_out, _sim_err) = run_close_session_in_mode(
+        tmp.path(),
+        &fix,
+        body.clone(),
+        target,
+        "5",
+        "respond-staged",
+    );
+
+    assert_eq!(
+        code,
+        Some(0),
+        "a staged (non-atomic) response write must still exit 0.
+stdout: {}
+stderr: {}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.starts_with(&body),
+        "stdout must begin with the complete response JSON (no torn prefix may reach stdout); got: {}",
         stdout
     );
 }

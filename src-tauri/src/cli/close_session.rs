@@ -307,8 +307,18 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 
     loop {
         if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
+            // §1440 F1: the daemon writes this file with std::fs::write (no
+            // atomic rename) and, in the common case, TWICE (mailbox.rs
+            // handle_close_session, §224 A.6 dual-write: the outbox-derived
+            // write and the resolved-sender write land on the same file,
+            // with an .await in between), so a poll tick can observe it
+            // empty or truncated. An artifact that does not parse yet is
+            // NOT a terminal verdict: keep polling; the next tick reads the
+            // completed file. A genuinely malformed response (daemon bug)
+            // or a persistent read failure therefore reports exit 2 at the
+            // deadline instead of an immediate 2 (or a fabricated 1).
+            if let Ok(content) = std::fs::read_to_string(&response_path) {
+                if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
                     crate::cli_println!("{}", content);
                     // §224 G7 — print a human-readable prose line for no_match
                     // / already_closed / restore_in_progress so AC #2's
@@ -316,13 +326,10 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
                     // even when callers don't parse the JSON.
                     print_status_prose(&content);
                     // §224 G2 — validate the daemon's contract: known status
-                    // → exit 0; unparseable / missing / unknown status → exit 2.
+                    // → exit 0; missing / unknown status → exit 2. (Content
+                    // that does not parse never reaches this call: the §1440
+                    // F1 gate above keeps polling instead.)
                     return interpret_close_response_exit_code(&content);
-                }
-                Err(e) => {
-                    log::error!("failed to read response: {}", e);
-                    eprintln!("Error: failed to read response: {}", e);
-                    return 1;
                 }
             }
         }
