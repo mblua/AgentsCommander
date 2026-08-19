@@ -26,7 +26,7 @@ All subcommands return:
 
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
-- `2` — special: outcome unknown. Used by `close-session` when delivery succeeded but no response landed in the poll window, by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-wg` when the response is unparseable.
+- `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-wg` when the response is unparseable.
 - `3` — `purge-wg` only: gate rejected (one or more peers are busy)
 - `4` — `purge-wg` only: a destroy failed after the gate passed
 
@@ -688,13 +688,13 @@ Default behaviour: graceful shutdown — AC injects the coding agent's exit comm
 | `--token` | Yes | Session token. |
 | `--root` | Yes | Coordinator's root directory. |
 | `--to` | Yes | Target agent name. |
-| `--timeout` | No | Seconds to wait for graceful exit before force-kill. |
+| `--timeout` | No | Seconds to wait for graceful exit before force-kill, per session (default 30). The CLI waits this plus 60 seconds for the daemon's response; the timeout does not cancel the operation. |
 
 Exit codes:
 
 - `0` — known status (`closed`, `already_closed`, `no_match`, `restore_in_progress`).
-- `1` — auth or IO failure.
-- `2` — outcome unknown (delivered, no response in the poll window).
+- `1` — auth, IO, or rejection failure.
+- `2` — outcome unknown (no response within `--timeout` + 60 seconds; the close keeps running server-side).
 
 Only coordinators of the target's team can close. The master/root token bypasses the check.
 
