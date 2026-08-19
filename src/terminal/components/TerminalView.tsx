@@ -67,6 +67,35 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   let desiredSessionId: string | null = null;
   let attachChain: Promise<void> = Promise.resolve();
 
+  // #1363 - never ask the backend to start emitting to this window before this
+  // window is listening.
+  //
+  // Issuing the `listen` first is NOT enough to order the two. `plugin:event|
+  // listen` is an async Tauri command dispatched onto the async runtime, while
+  // `activate_terminal_output` is a sync command on the main thread, so their
+  // completion order is not guaranteed even though the listen IPC leaves first.
+  // The 16 ms coalescing window usually covers the gap, but a >=64 KiB burst
+  // trips the ingest-thread ceiling flush immediately, and that chunk's
+  // sequence is ABOVE the seed's, so the watermark never replays it: the hole
+  // is silent and permanent. It lands exactly on "attach a busy session",
+  // which is criterion C and #1364's scenario.
+  //
+  // A FAILED registration rejects the gate, which correctly leaves this window
+  // unattached: a window with no listener could not render the stream anyway,
+  // and attaching would only ask the backend to emit into nothing. The chain's
+  // `.catch` keeps that from poisoning later transitions, and only the ATTACH
+  // path waits here — detach and teardown run ahead of the gate, so a window
+  // that never manages to listen still releases what it holds.
+  let markListenerReady!: () => void;
+  let failListenerReady!: (error: unknown) => void;
+  const listenerReady = new Promise<void>((resolve, reject) => {
+    markListenerReady = resolve;
+    failListenerReady = reject;
+  });
+  // Browser mode never awaits this gate, so its rejection would otherwise be
+  // an unhandled one. Awaiters still see the rejection.
+  listenerReady.catch(() => undefined);
+
   const beforeResourceDispose = (sessionId: string): void => {
     // Fires for every entry the registry tears down (LRU eviction, session
     // destroy, and every entry of `disposeAll` on unmount): up to five times
@@ -677,6 +706,11 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           return;
         }
 
+        await listenerReady;
+        if (desiredSessionId !== target) {
+          return;
+        }
+
         const entry = registry.get(target);
         if (!entry || entry.destroyed) {
           return; // the entry went away while this transition was queued
@@ -744,7 +778,15 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
     resizeObserver.observe(hostRef);
 
-    unlistenPtyOutput = await onPtyOutput(handlePtyOutput);
+    try {
+      unlistenPtyOutput = await onPtyOutput(handlePtyOutput);
+      markListenerReady();
+    } catch (error) {
+      // Not rethrown: the rest of this mount (session destroy, terminal
+      // detach, the close hook) is still worth registering.
+      console.warn("[terminal] pty_output listener registration failed:", error);
+      failListenerReady(error);
+    }
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {
       registry.remove(id);
@@ -799,6 +841,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   });
 
   onCleanup(() => {
+    // Settle the gate so an attach still queued behind it cannot hang the
+    // chain, and settle it as a FAILURE so it can never authorize an attach
+    // for a view that is going away (settling twice is a no-op).
+    failListenerReady(new Error("TerminalView unmounted"));
     unlistenPtyOutput?.();
     unlistenSessionDestroyed?.();
     unlistenTerminalDetached?.();

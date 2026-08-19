@@ -1,4 +1,3 @@
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isBrowser, isTauri } from "./platform";
 import {
   measurePtyViewport,
@@ -419,43 +418,7 @@ export const ReposAPI = {
 };
 
 /**
- * #1363 - resolved once per webview, then cached (including the failure, so a
- * broken lookup cannot warn once per `TerminalView` mount).
- *
- * SYNCHRONOUS on purpose, and statically imported rather than `await
- * import(...)`. Any await here sits between `onPtyOutput` being called and
- * `transport.listen` actually registering, and a `pty_output` emitted inside
- * that window is simply lost — there is no replay. A dynamic import made that
- * window a whole module load on the first call, which was long enough to drop
- * live output under load. `@tauri-apps/api/webviewWindow` is import-time safe:
- * its module scope only defines classes and functions, and `window.
- * __TAURI_INTERNALS__` is read when `getCurrentWebviewWindow()` is CALLED,
- * which happens only under `isTauri`.
- */
-let ptyOutputTarget: { label: string | undefined } | null = null;
-
-function resolvePtyOutputTarget(): string | undefined {
-  if (ptyOutputTarget !== null) {
-    return ptyOutputTarget.label;
-  }
-  if (!isTauri) {
-    ptyOutputTarget = { label: undefined }; // browser mode has no window labels
-    return undefined;
-  }
-  try {
-    ptyOutputTarget = { label: getCurrentWebviewWindow().label };
-  } catch (error) {
-    // Fail OPEN, never closed: an unscoped listener costs the bridge multiplier
-    // this scoping exists to remove, but a failed registration would leave the
-    // window with no output listener at all, which is a black terminal.
-    console.warn("[ipc] pty_output listener target unavailable:", error);
-    ptyOutputTarget = { label: undefined };
-  }
-  return ptyOutputTarget.label;
-}
-
-/**
- * #1363 - this listener MUST register with this window's label as its target.
+ * #1363 - this listener MUST be scoped to the window it runs in.
  *
  * The backend emits with `emit_to(label, ...)` once per attached window, but
  * Tauri short-circuits that label filter for any listener registered as
@@ -466,14 +429,16 @@ function resolvePtyOutputTarget(): string | undefined {
  * and each pays the deserialization before dropping it — the bridge multiplier
  * of plan 7.4, which `emit_to` exists to remove, silently unfixed. No wrong
  * byte is ever written (the visibility filter at the single writer sees to
- * that); the cost is what regresses. Pinned by
- * `TerminalView.attachment.test.tsx`.
+ * that); the cost is what regresses.
+ *
+ * The label itself is resolved by the transport, never passed from here.
+ * Pinned by `TerminalView.attachment.test.tsx` and `transport-tauri.test.ts`.
  */
 export function onPtyOutput(
   callback: (data: PtyOutputEvent) => void
 ): Promise<UnlistenFn> {
   return transport.listen<PtyOutputEvent>("pty_output", callback, {
-    target: resolvePtyOutputTarget(),
+    scopeToCurrentWindow: true,
   });
 }
 

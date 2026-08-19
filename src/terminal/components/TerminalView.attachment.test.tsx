@@ -122,18 +122,6 @@ vi.mock("../../shared/platform", () => ({
   isBrowser: false,
 }));
 
-// `vi.hoisted`, because `vi.mock` factories are lifted above every module-level
-// const and would otherwise read this in its temporal dead zone — the factory
-// then throws, the dynamic import rejects, and `onPtyOutput` falls back to the
-// unscoped registration this suite exists to forbid.
-const tauriWindow = vi.hoisted(() => ({ label: "terminal-window-1" }));
-
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({ label: tauriWindow.label }),
-}));
-
-const WINDOW_LABEL = tauriWindow.label;
-
 const SNAP = [83, 78, 65, 80]; // "SNAP"
 const GONE = [71, 79, 78, 69]; // "GONE" — produced while detached
 const LIVE = [76, 73, 86, 69]; // "LIVE"
@@ -293,7 +281,7 @@ describe("TerminalView attachment (#1363)", () => {
   // foreign session — so the only thing that can catch it is the registration
   // itself. What it costs is the bridge multiplier of plan 7.4: every attached
   // window deserializing every other attached window's flush.
-  it("registers the pty_output listener scoped to this window's label", async () => {
+  it("registers the pty_output listener scoped to this window", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
 
@@ -303,10 +291,98 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(fake.listensFor("pty_output")).toHaveLength(1));
 
       const [registration] = fake.listensFor("pty_output");
-      expect(registration.options?.target).toBe(WINDOW_LABEL);
-      // Spelled out separately: `undefined` here is the `Any` default, which is
-      // exactly the regression this test exists to fail on.
-      expect(registration.options?.target).not.toBeUndefined();
+      expect(registration.options?.scopeToCurrentWindow).toBe(true);
+      // Spelled out separately: an absent option is the `Any` default, which is
+      // exactly the regression this test exists to fail on. The flag becoming
+      // a concrete window label is pinned in `transport-tauri.test.ts`.
+      expect(registration.options).not.toBeUndefined();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // ORDERING, not outcome: the attach must not reach the backend until this
+  // window is listening. Issuing the `listen` first does not order the two —
+  // `plugin:event|listen` is an async Tauri command on the async runtime while
+  // `activate_terminal_output` is sync on the main thread — so the gate is what
+  // holds. A chunk lost in that window is silent and permanent: its sequence is
+  // above the seed's, so the watermark never replays it.
+  it("does not attach until the pty_output listener has registered", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+
+    // Hold the registration open. Nothing is recorded as listening until the
+    // gate releases, which is exactly the state the invariant is about.
+    const listenGate = deferred<void>();
+    const realListen = fake.listen.bind(fake);
+    fake.listen = (async (event: string, callback, options) => {
+      if (event === "pty_output") {
+        await listenGate.promise;
+      }
+      return realListen(event, callback, options);
+    }) as typeof fake.listen;
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      // The terminal is built and visible; only the attach is withheld.
+      await waitFor(() => expect(instancesFor(SESSION_A)).toHaveLength(1));
+      await flushPromises();
+      await flushPromises();
+      expect(fake.listensFor("pty_output")).toHaveLength(0);
+      expect(attachedSessionIds(fake)).toEqual([]);
+
+      listenGate.resolve();
+
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      expect(fake.listensFor("pty_output")).toHaveLength(1);
+
+      // The other half of criterion C: a chunk emitted at the first
+      // opportunity after the attach still lands. Whether it arrives before or
+      // after the seed settles, it ends on screen exactly once — retained and
+      // replayed past the seed's sequence in the first case, written straight
+      // through in the second.
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 1,
+      });
+      await waitFor(() =>
+        expect(instancesFor(SESSION_A)[0].screen).toEqual([SNAP, LIVE])
+      );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // The gate must fail CLOSED. A window whose listener never registered cannot
+  // render the stream, so attaching would only ask the backend to emit into
+  // nothing — and it must still not poison the chain for anything else.
+  it("leaves the window unattached when the listener registration fails", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const realListen = fake.listen.bind(fake);
+    fake.listen = (async (event: string, callback, options) => {
+      if (event === "pty_output") {
+        throw new Error("listen rejected");
+      }
+      return realListen(event, callback, options);
+    }) as typeof fake.listen;
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)).toHaveLength(1));
+      await flushPromises();
+      await flushPromises();
+
+      expect(attachedSessionIds(fake)).toEqual([]);
+      // Not poisoned, and nothing was attached, so nothing is owed back.
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)).toHaveLength(1));
+      await flushPromises();
+      expect(attachedSessionIds(fake)).toEqual([]);
+      expect(detachedSessionIds(fake)).toEqual([]);
     } finally {
       rendered.cleanup();
     }
