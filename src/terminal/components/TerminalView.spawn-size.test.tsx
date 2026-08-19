@@ -187,10 +187,10 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
 
-  // #1283: the selection path drives the activation protocol instead of the
-  // legacy getScreenSnapshot fetch. The snapshot reports the PTY size the
-  // terminal was created at (backend truth), so no snapshot resize fires and
-  // the resize/viewport behavior under test is untouched.
+  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // resolves to. The snapshot reports the PTY size the terminal was created at
+  // (backend truth) and carries no data, so no snapshot resize fires and the
+  // resize/viewport behavior under test is untouched.
   fake.onInvoke("activate_terminal_output", (args) => {
     const sessionId = String(args.sessionId);
     const instance = xterm.instances.find(
@@ -198,35 +198,14 @@ function setupTerminalTransport(fake: FakeTransport): void {
         candidate.element?.getAttribute("data-ac-session-id") === sessionId,
     );
     return {
-      kind: "activated",
-      activation: {
-        sessionId,
-        generation: "1",
-        snapshot: {
-          data: [],
-          rows: instance?.rows ?? 24,
-          cols: instance?.cols ?? 80,
-          sequence: "0",
-        },
-      },
+      sessionId,
+      data: [],
+      rows: instance?.rows ?? 24,
+      cols: instance?.cols ?? 80,
+      sequence: 0,
     };
   });
-  fake.onInvoke("ready_terminal_output", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.onInvoke("deactivate_terminal_output", (args) => ({
-    kind: "inactive",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
-  fake.onInvoke("report_terminal_renderer_metrics", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
+  fake.resolve("detach_terminal_output", undefined);
 }
 
 function resizesFor(fake: FakeTransport, sessionId: string) {

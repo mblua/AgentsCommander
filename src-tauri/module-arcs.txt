@@ -407,6 +407,7 @@ agentscommander_lib::commands::pty -> agentscommander_lib::config::root_agent
 agentscommander_lib::commands::pty -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::pty -> agentscommander_lib::config::settings
 agentscommander_lib::commands::pty -> agentscommander_lib::config::teams
+agentscommander_lib::commands::pty -> agentscommander_lib::errors
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::context_scrape
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::commands::pty -> agentscommander_lib::pty::input_activity

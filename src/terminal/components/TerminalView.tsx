@@ -18,10 +18,7 @@ import {
 import { terminalStore } from "../stores/terminal";
 import type {
   PtyOutputEvent,
-  TerminalOutputActivation,
-  TerminalOutputActivationResult,
-  TerminalOutputControlState,
-  TerminalRendererMetrics,
+  PtyScreenSnapshot,
   PtyViewport,
 } from "../../shared/types";
 import type { UnlistenFn } from "../../shared/transport";
@@ -32,13 +29,6 @@ import {
   type SessionTerminalEntry,
   type TerminalRegistry,
 } from "./terminal-session-registry";
-import {
-  createTerminalOutputAdmission,
-  parseCanonicalCounter,
-  TELEMETRY_INTERVAL_MS,
-  type CanonicalCounter,
-  type TerminalOutputAdmission,
-} from "./terminal-output-admission";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalViewProps {
@@ -49,81 +39,72 @@ const SNAPSHOT_UNAVAILABLE_MESSAGE =
   "Terminal buffer unavailable. Resize the window to request a repaint.";
 
 const SNAPSHOT_SETTLE_WARN_MS = 500;
+const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
 
 const PTY_RESIZE_RETRY_DELAY_MS = 120;
 const PTY_RESIZE_MAX_RETRIES = 3;
 
-/**
- * #1283 - one session's local desired-selection record (plan 14.2). The
- * admission controller is the sole strong owner of the current callback gate;
- * TerminalView owns only primitive control identity and counters.
- */
-interface ReconcileRecord {
-  causeGeneration: CanonicalCounter; // gA
-  revision: number;
-  bKnownGeneration: CanonicalCounter | null;
-  bAttempt: {
-    attempt: number;
-    outcome: "pending" | TerminalOutputActivationResult;
-  } | null;
-  aDeactivation: "pending" | TerminalOutputControlState;
-}
-
-interface EntryControl {
-  sessionId: string;
-  entry: SessionTerminalEntry;
-  admission: TerminalOutputAdmission;
-  epoch: number;
-  attempt: number;
-  activation: "idle" | "activating" | "active";
-  generation: CanonicalCounter | null;
-  generationStr: string | null;
-  detached: boolean;
-  recoveryInFlight: boolean;
-  reconciliation: ReconcileRecord | null;
-  healthInFlight: boolean;
-  healthPollToken: number;
-  // #1283 telemetry counters owned by the orchestrator (plan 5.6.1).
-  activationReadyAcknowledgements: number;
-  activationReadyRejections: number;
-  activationReadyTimeouts: number;
-  generationHealthPollsScheduled: number;
-  generationHealthPollsStarted: number;
-  generationHealthPollsCancelled: number;
-}
-
 const TerminalView: Component<TerminalViewProps> = (props) => {
   let hostRef!: HTMLDivElement;
   let visibleSessionId: string | null = null;
-  let selectionEpoch = 0;
   let resizeObserver: ResizeObserver | null = null;
   let unlistenPtyOutput: UnlistenFn | null = null;
   let unlistenSessionDestroyed: UnlistenFn | null = null;
   let unlistenTerminalDetached: UnlistenFn | null = null;
-  let lastOrdinaryReportAt = 0;
+  let unlistenCloseRequested: UnlistenFn | null = null;
 
-  const controls = new Map<string, EntryControl>();
+  // #1363 - this window's single output attachment, and the serialization that
+  // keeps it honest. `attachedSessionId` is what the BACKEND holds for this
+  // window; `desiredSessionId` is what the latest transition asked for. Attach
+  // and detach are async invokes whose completion order is not their call
+  // order, so a fast A -> B -> A switch could otherwise land the first
+  // detach(A) after the final attach(A) and leave this window rendering a
+  // session it is no longer attached to: a silent freeze indistinguishable
+  // from #1363 itself. Every transition therefore runs on one promise chain,
+  // re-checks the desired state after each await, and is the ONLY writer of
+  // `attachedSessionId`.
+  let attachedSessionId: string | null = null;
+  let desiredSessionId: string | null = null;
+  let attachChain: Promise<void> = Promise.resolve();
+
+  // #1363 - never ask the backend to start emitting to this window before this
+  // window is listening.
+  //
+  // Issuing the `listen` first is NOT enough to order the two. `plugin:event|
+  // listen` is an async Tauri command dispatched onto the async runtime, while
+  // `activate_terminal_output` is a sync command on the main thread, so their
+  // completion order is not guaranteed even though the listen IPC leaves first.
+  // The 16 ms coalescing window usually covers the gap, but a >=64 KiB burst
+  // trips the ingest-thread ceiling flush immediately, and that chunk's
+  // sequence is ABOVE the seed's, so the watermark never replays it: the hole
+  // is silent and permanent. It lands exactly on "attach a busy session",
+  // which is criterion C and #1364's scenario.
+  //
+  // A FAILED registration rejects the gate, which correctly leaves this window
+  // unattached: a window with no listener could not render the stream anyway,
+  // and attaching would only ask the backend to emit into nothing. The chain's
+  // `.catch` keeps that from poisoning later transitions, and only the ATTACH
+  // path waits here — detach and teardown run ahead of the gate, so a window
+  // that never manages to listen still releases what it holds.
+  let markListenerReady!: () => void;
+  let failListenerReady!: (error: unknown) => void;
+  const listenerReady = new Promise<void>((resolve, reject) => {
+    markListenerReady = resolve;
+    failListenerReady = reject;
+  });
+  // Browser mode never awaits this gate, so its rejection would otherwise be
+  // an unhandled one. Awaiters still see the rejection.
+  listenerReady.catch(() => undefined);
 
   const beforeResourceDispose = (sessionId: string): void => {
-    const control = controls.get(sessionId);
-    if (!control) {
-      return;
+    // Fires for every entry the registry tears down (LRU eviction, session
+    // destroy, and every entry of `disposeAll` on unmount): up to five times
+    // per switch. Only the attached one owes a detach. This hook cannot move
+    // into the registry: `no-terminal-helper-back-edge` forbids that module
+    // from reaching `src/shared/ipc.ts`.
+    if (sessionId === attachedSessionId) {
+      transitionAttachment(null);
     }
-    // Cancel the generation health deadline and invalidate in-flight tokens.
-    if (control.entry.healthTimer !== null) {
-      clearTimeout(control.entry.healthTimer);
-      control.entry.healthTimer = null;
-      control.generationHealthPollsCancelled += 1;
-    }
-    control.healthInFlight = false;
-    const generationStr = control.generationStr;
-    // Admission seal/drop BEFORE any terminal/addon/DOM disposal (plan 5.5.2).
-    control.admission.dispose();
-    if (generationStr !== null) {
-      // Matching deactivation when applicable; stale results are a no-op.
-      void TerminalOutputAPI.deactivate(sessionId, generationStr).catch(() => undefined);
-    }
-    controls.delete(sessionId);
   };
 
   const registry: TerminalRegistry = createTerminalSessionRegistry({
@@ -138,20 +119,15 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   // #1355 INVARIANT - every write of content to xterm goes through here, so
   // `entry.terminal.write` has exactly one call site in the whole frontend
-  // (the line below). That is what makes `hasRenderedOutput` a sound
-  // discriminator for the `includeHistory` argument of activate(): an entry
-  // with content can never have the flag `false`. Adding a direct
-  // `terminal.write` anywhere else (a banner, a reconnect notice, an error
-  // message) silently reintroduces cumulative history duplication on replay
-  // (plan 6.1 / 12.1). Write through this function instead.
-  const writeTerminalBytes = (
-    entry: SessionTerminalEntry,
-    data: Uint8Array,
-    callback?: () => void
-  ) => {
+  // (the line below). Adding a direct `terminal.write` anywhere else (a
+  // banner, a reconnect notice, an error message) breaks the seed watermark
+  // and reintroduces cumulative history duplication on re-attach. Write
+  // through this function instead. Both transports traverse it: the Tauri
+  // window and the browser/websocket fallback (#1363 criterion H').
+  const writeTerminalBytes = (entry: SessionTerminalEntry, data: Uint8Array) => {
     entry.hasRenderedOutput = true;
     setReplayStatus(entry, null);
-    entry.terminal.write(data, callback);
+    entry.terminal.write(data);
   };
 
   const createSessionTerminal = (
@@ -283,7 +259,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
       snapshotSettleTimer: null,
-      healthTimer: null,
+      snapshotReplayPending: false,
+      pendingSnapshotEvents: [],
+      pendingSnapshotBytes: 0,
+      lastAppliedSequence: null,
     };
   };
 
@@ -308,13 +287,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       `[terminal] spawn-size drift ${sessionId}: PTY opened at ${spawn.cols}x${spawn.rows}, ` +
         `view fitted to ${cols}x${rows} — a resize will reach the child during startup (#973)`
     );
-  };
-
-  const clearResizeRetryTimer = (entry: SessionTerminalEntry) => {
-    if (entry.resizeRetryTimer !== null) {
-      clearTimeout(entry.resizeRetryTimer);
-      entry.resizeRetryTimer = null;
-    }
   };
 
   const scheduleResizeRetry = (sessionId: string, entry: SessionTerminalEntry) => {
@@ -454,697 +426,348 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  // ── #1283 activation / admission orchestration ────────────────────────────
+  // ── #961 seed / reconcile (restored from 4de8e11) ─────────────────────────
+  //
+  // Live PTY bytes are never gated. They reach xterm on arrival, whether the
+  // seed settles late, fails, or never settles. The seed is a seed, not a
+  // gate, and it reconciles AFTER the fact against its own sequence:
+  // `parser.process()` and `output_sequence += 1` happen under the same mutex
+  // that the snapshot read holds, so `snapshot.sequence` is exactly "the last
+  // event whose bytes are in this snapshot" — no off-by-one.
 
-  const createControl = (
+  const eventSequence = (event: PtyOutputEvent): number | null =>
+    typeof event.sequence === "number" ? event.sequence : null;
+
+  const shouldDropAlreadyAppliedEvent = (
+    entry: SessionTerminalEntry,
+    sequence: number | null
+  ) =>
+    sequence !== null &&
+    entry.lastAppliedSequence !== null &&
+    sequence <= entry.lastAppliedSequence;
+
+  const markAppliedSequence = (entry: SessionTerminalEntry, sequence: number | null) => {
+    if (sequence === null) {
+      return;
+    }
+
+    entry.lastAppliedSequence =
+      entry.lastAppliedSequence === null
+        ? sequence
+        : Math.max(entry.lastAppliedSequence, sequence);
+  };
+
+  const abandonSnapshotReconcile = (entry: SessionTerminalEntry) => {
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+  };
+
+  const retainForSnapshotReconcile = (
+    entry: SessionTerminalEntry,
+    event: PtyOutputEvent
+  ) => {
+    entry.pendingSnapshotEvents.push(event);
+    entry.pendingSnapshotBytes += event.data.length;
+
+    if (entry.pendingSnapshotBytes > SNAPSHOT_RECONCILE_LIMIT_BYTES) {
+      abandonSnapshotReconcile(entry);
+    }
+  };
+
+  const writeLivePtyOutput = (entry: SessionTerminalEntry, event: PtyOutputEvent) => {
+    const sequence = eventSequence(event);
+
+    if (entry.snapshotReplayPending) {
+      retainForSnapshotReconcile(entry, event);
+    }
+
+    if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
+      return;
+    }
+
+    writeTerminalBytes(entry, new Uint8Array(event.data));
+    markAppliedSequence(entry, sequence);
+  };
+
+  const flushPendingEvents = (
+    entry: SessionTerminalEntry,
+    events: PtyOutputEvent[]
+  ) => {
+    for (const event of events) {
+      writeLivePtyOutput(entry, event);
+    }
+  };
+
+  const clearSnapshotSettleTimer = (entry: SessionTerminalEntry) => {
+    if (entry.snapshotSettleTimer !== null) {
+      clearTimeout(entry.snapshotSettleTimer);
+      entry.snapshotSettleTimer = null;
+    }
+  };
+
+  interface SnapshotSettle {
+    reconcilable: boolean;
+    retainedEvents: PtyOutputEvent[];
+  }
+
+  const concludeSnapshotFetch = (
     sessionId: string,
     entry: SessionTerminalEntry
-  ): EntryControl => {
-    const control: EntryControl = {
-      sessionId,
-      entry,
-      admission: null as unknown as TerminalOutputAdmission,
-      epoch: 0,
-      attempt: 0,
-      activation: "idle",
-      generation: null,
-      generationStr: null,
-      detached: false,
-      recoveryInFlight: false,
-      reconciliation: null,
-      healthInFlight: false,
-      healthPollToken: 0,
-      activationReadyAcknowledgements: 0,
-      activationReadyRejections: 0,
-      activationReadyTimeouts: 0,
-      generationHealthPollsScheduled: 0,
-      generationHealthPollsStarted: 0,
-      generationHealthPollsCancelled: 0,
+  ): SnapshotSettle | null => {
+    if (registry.get(sessionId) !== entry || entry.destroyed) {
+      return null;
+    }
+
+    clearSnapshotSettleTimer(entry);
+
+    const settle: SnapshotSettle = {
+      reconcilable: entry.snapshotReplayPending,
+      retainedEvents: entry.pendingSnapshotEvents,
     };
-    control.admission = createTerminalOutputAdmission(sessionId, {
-      // Resolved at call time: startActivationAttempt may replace the entry.
-      write: (bytes, callback) => writeTerminalBytes(control.entry, bytes, callback),
-      scheduleFrame: (callback) => requestAnimationFrame(callback),
-      cancelFrame: (handle) => cancelAnimationFrame(handle),
-      now: () => performance.now(),
-      acknowledge: (sid, generation, firstSequence, sequence) => {
-        void TerminalOutputAPI.acknowledgeDelivery(
-          sid,
-          generation,
-          firstSequence,
-          sequence
-        ).catch(() => undefined);
-      },
-      resync: (sid) => {
-        const current = controls.get(sid);
-        if (current) {
-          sealAndRecover(current);
-        }
-      },
-    });
-    return control;
+
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+
+    return settle;
   };
 
-  const disposeEntry = (sessionId: string): void => {
-    // `beforeResourceDispose` synchronously seals admission, sends the matching
-    // deactivation, and deletes the control; then resources are disposed once.
-    registry.remove(sessionId);
-  };
+  const logSnapshotSettle = (
+    sessionId: string,
+    requestedAt: number,
+    pendingEvents: number
+  ) => {
+    const elapsedMs = Math.round(performance.now() - requestedAt);
+    const line = `[terminal] snapshot ${sessionId} settled in ${elapsedMs}ms, pendingEvents=${pendingEvents}`;
 
-  const cancelHealth = (control: EntryControl): void => {
-    if (control.entry.healthTimer !== null) {
-      clearTimeout(control.entry.healthTimer);
-      control.entry.healthTimer = null;
-      control.generationHealthPollsCancelled += 1;
-    }
-    control.healthInFlight = false;
-  };
-
-  const armHealthDeadline = (control: EntryControl): void => {
-    cancelHealth(control);
-    control.generationHealthPollsScheduled += 1;
-    control.entry.healthTimer = setTimeout(
-      () => fireHealthPoll(control),
-      TELEMETRY_INTERVAL_MS
-    );
-  };
-
-  const composeMetrics = (control: EntryControl): TerminalRendererMetrics => {
-    const rm = registry.metrics();
-    const am = control.admission.metrics();
-    return {
-      retainedTerminalCount: rm.retained,
-      visibleTerminalCount: rm.visible,
-      webglContextCount: rm.webglContexts,
-      webglContextLossCount: rm.webglContextLosses,
-      lruEvictionCount: rm.lruEvictions,
-      outputEventsReceived: am.outputEventsReceived,
-      inactiveOrStaleEventsRejected: am.inactiveOrStaleEventsRejected,
-      bytesAccepted: am.bytesAccepted,
-      bytesWritten: am.bytesWritten,
-      replayPendingBytes: am.replayPendingBytes,
-      livePendingBytes: am.livePendingBytes,
-      writeInFlightBytes: am.writeInFlightBytes,
-      combinedAdmissionHighWaterBytes: am.combinedAdmissionHighWaterBytes,
-      pendingHighWaterBytes: am.pendingHighWaterBytes,
-      resyncCount: am.resyncCount,
-      activationReadyAcknowledgements: control.activationReadyAcknowledgements,
-      activationReadyRejections: control.activationReadyRejections,
-      activationReadyTimeouts: control.activationReadyTimeouts,
-      generationHealthPollsScheduled: control.generationHealthPollsScheduled,
-      generationHealthPollsStarted: control.generationHealthPollsStarted,
-      generationHealthPollsCancelled: control.generationHealthPollsCancelled,
-      replayPendingLivenessRecoveries: am.replayPendingLivenessRecoveries,
-      snapshotReplayDurationMs: am.snapshotReplayDurationMs,
-      retiredWriteCallbacksIgnoredAfterDisposal:
-        am.retiredWriteCallbacksIgnoredAfterDisposal,
-      maxAnimationFrameLagMs: am.maxAnimationFrameLagMs,
-    };
-  };
-
-  const maybeReportOrdinaryTelemetry = (control: EntryControl): void => {
-    const now = performance.now();
-    if (now - lastOrdinaryReportAt < TELEMETRY_INTERVAL_MS) {
+    if (elapsedMs > SNAPSHOT_SETTLE_WARN_MS) {
+      console.warn(line);
       return;
     }
-    if (control.healthInFlight) {
-      return; // one metrics control lane: never a second in-flight report
-    }
-    lastOrdinaryReportAt = now;
-    const generationStr = control.generationStr ?? control.generation?.toString() ?? "0";
-    void TerminalOutputAPI.reportMetrics(
-      control.sessionId,
-      generationStr,
-      composeMetrics(control)
-    ).catch(() => undefined);
+
+    console.debug(line);
   };
 
-  const fireHealthPoll = (control: EntryControl): void => {
-    const entry = control.entry;
-    entry.healthTimer = null;
-    if (
-      control.epoch !== selectionEpoch ||
-      control.activation !== "active" ||
-      control.generation === null ||
-      entry.destroyed
-    ) {
-      control.generationHealthPollsCancelled += 1;
+  // #1363 plan 3.3 rule 2: the reset is load-bearing and must not be
+  // "simplified" away. Live bytes are written BEFORE the seed arrives, so
+  // writing the seed on top of them would leave the earlier bytes on screen
+  // twice; the reset is also what makes the #1355 history ring safe to replay
+  // on every attach.
+  const rebuildFromSnapshot = (
+    entry: SessionTerminalEntry,
+    snapshot: PtyScreenSnapshot,
+    retainedEvents: PtyOutputEvent[]
+  ) => {
+    entry.terminal.reset();
+    entry.hasRenderedOutput = false;
+    entry.lastAppliedSequence = snapshot.sequence;
+
+    writeTerminalBytes(entry, new Uint8Array(snapshot.data));
+    flushPendingEvents(entry, retainedEvents);
+  };
+
+  const applySnapshot = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    snapshot: PtyScreenSnapshot | null,
+    settle: SnapshotSettle
+  ) => {
+    // A retained event was ALREADY written live on arrival, so replaying the
+    // retention is meaningful only after `rebuildFromSnapshot`'s reset wiped
+    // it off the screen. On a path with no reset, replaying is a no-op for a
+    // sequenced event (the watermark drops it) and a DUPLICATE write for an
+    // unsequenced one — and "attach resolved without a snapshot" is exactly
+    // the unavailable-parser case, where every event is unsequenced.
+    if (!snapshot || snapshot.data.length === 0) {
+      if (!entry.hasRenderedOutput) {
+        setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
+      }
       return;
     }
-    const kind = control.admission.stateKind();
-    if (kind !== "replayPending" && kind !== "live") {
-      control.generationHealthPollsCancelled += 1;
-      return;
-    }
-    if (control.healthInFlight) {
-      // A poll is already in flight: advance only the fixed cadence.
-      entry.healthTimer = setTimeout(
-        () => fireHealthPoll(control),
-        TELEMETRY_INTERVAL_MS
+
+    if (entry.hasRenderedOutput && !settle.reconcilable) {
+      console.warn(
+        `[terminal] snapshot ${sessionId} discarded: live output outran the reconcile budget`
       );
       return;
     }
-    control.healthInFlight = true;
-    control.healthPollToken += 1;
-    const token = control.healthPollToken;
-    control.generationHealthPollsStarted += 1;
-    const generationStr = control.generationStr ?? control.generation.toString();
-    void TerminalOutputAPI.reportMetrics(control.sessionId, generationStr, composeMetrics(control))
-      .then((state) => settleHealthResponse(control, token, state))
-      .catch(() => {
-        if (token !== control.healthPollToken || !control.healthInFlight) {
-          return;
-        }
-        control.healthInFlight = false;
-        // Ordinary transport error: at most the next fixed-cadence deadline.
-        control.entry.healthTimer = setTimeout(
-          () => fireHealthPoll(control),
-          TELEMETRY_INTERVAL_MS
-        );
-      });
-  };
 
-  const settleHealthResponse = (
-    control: EntryControl,
-    token: number,
-    state: TerminalOutputControlState
-  ): void => {
-    if (token !== control.healthPollToken || !control.healthInFlight) {
-      return; // stale/in-flight token invalidated by seal or replacement
-    }
-    control.healthInFlight = false;
     if (
-      control.epoch !== selectionEpoch ||
-      control.activation !== "active" ||
-      control.generation === null
+      snapshot.rows !== null &&
+      snapshot.cols !== null &&
+      (entry.terminal.rows !== snapshot.rows || entry.terminal.cols !== snapshot.cols)
     ) {
-      return;
+      resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
     }
-    switch (state.kind) {
-      case "resyncRequired":
-      case "awaitingFrontendReady": {
-        control.generationHealthPollsCancelled += 1;
-        if (control.admission.isReplayPending()) {
-          control.admission.noteLivenessRecovery();
-        }
-        sealAndRecover(control);
-        break;
-      }
-      case "active":
-        // Matching active response: schedule the next fixed-cadence deadline.
-        control.entry.healthTimer = setTimeout(
-          () => fireHealthPoll(control),
-          TELEMETRY_INTERVAL_MS
-        );
-        break;
-      case "recoveryError":
-        sealAndRecover(control);
-        break;
-      case "inactive":
-      case "stale":
-        // Sealed/stale responses cannot schedule a new poll.
-        control.generationHealthPollsCancelled += 1;
-        break;
+
+    // #1363 plan 3.4.2: EVERY attach re-seeds, reset first. Dropping the seed
+    // on re-attach would preserve the retained xterm's deeper scrollback but
+    // hide everything the session produced while this window was detached —
+    // a silent content gap, which is the worse failure.
+    rebuildFromSnapshot(entry, snapshot, settle.retainedEvents);
+
+    if (sessionId === visibleSessionId) {
+      scheduleViewportSync(sessionId);
     }
   };
 
-  const sealAndRecover = (control: EntryControl): void => {
-    if (control.recoveryInFlight) {
-      return; // exactly one recovery lane at a time
-    }
-    control.admission.sealGeneration();
-    cancelHealth(control);
-    const generationStr = control.generationStr;
-    control.recoveryInFlight = true;
-    if (!control.entry.hasRenderedOutput) {
-      setReplayStatus(control.entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
-    }
-    if (generationStr === null) {
-      control.recoveryInFlight = false;
-      return;
-    }
-    void TerminalOutputAPI.deactivate(control.sessionId, generationStr)
-      .then(() => {
-        control.recoveryInFlight = false;
-        if (control.epoch !== selectionEpoch) {
-          return; // selection moved on: no replacement activation
-        }
-        // Matching inactive (or stale for an already-retired generation): the
-        // old-generation output barrier has passed; serialize one replacement.
-        startActivationAttempt(control.sessionId);
-      })
-      .catch(() => {
-        // Fail closed: no tight retry loop, no auto re-activation.
-        control.recoveryInFlight = false;
-      });
-  };
+  // ── #1363 attach / detach ─────────────────────────────────────────────────
 
-  const startActivationAttempt = (sessionId: string): void => {
-    const control = controls.get(sessionId);
-    if (!control || control.epoch !== selectionEpoch) {
-      return; // C selected / destroyed / unmounted: discard, never reissue
-    }
-    // The entry may have been disposed (displaced-B, recovery after eviction).
-    // #1355 - this reassignment MUST precede the activate() call below:
-    // reconcileStaleSuccess parks a destroyed entry in control.entry (:887-891),
-    // and only refreshing it here keeps includeHistory off a stale flag.
-    const entry = registry.activate(sessionId, createSessionTerminal);
-    control.entry = entry;
-    control.attempt += 1;
-    control.activation = "activating";
-    control.generation = null;
-    control.generationStr = null;
-    control.reconciliation = null;
-    entry.container.hidden = false;
-    entry.terminal.focus();
-    registry.setVisible(sessionId);
-    scheduleViewportSync(sessionId);
-    const attempt = control.attempt;
-    void TerminalOutputAPI.activate(sessionId, !entry.hasRenderedOutput)
-      .then((result) => settleActivationResult(sessionId, attempt, result))
-      .catch((error) => settleActivationError(sessionId, attempt, error));
-  };
+  const beginSeed = (sessionId: string, entry: SessionTerminalEntry): number => {
+    entry.snapshotReplayPending = true;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
 
-  const commitActivation = (
-    control: EntryControl,
-    generation: CanonicalCounter,
-    activation: TerminalOutputActivation
-  ): void => {
-    control.activation = "active";
-    control.generation = generation;
-    control.generationStr = activation.generation;
-    // Synchronous local transition BEFORE readiness: commit ReplayPending and
-    // its strong replay gate, then arm the generation health deadline, then
-    // send readyTerminalOutput with the same S (plan 5.4.2).
-    control.admission.beginSnapshotReplay(
-      control.epoch,
-      generation,
-      activation.snapshot.sequence
-    );
-    const entry = control.entry;
-    if (entry.snapshotSettleTimer !== null) {
-      clearTimeout(entry.snapshotSettleTimer);
-    }
+    clearSnapshotSettleTimer(entry);
     entry.snapshotSettleTimer = setTimeout(() => {
       entry.snapshotSettleTimer = null;
-      if (control.admission.isReplayPending() && !entry.hasRenderedOutput) {
+      if (registry.get(sessionId) !== entry || !entry.snapshotReplayPending) {
+        return;
+      }
+
+      console.warn(
+        `[terminal] snapshot ${sessionId} still pending after ${SNAPSHOT_SETTLE_WARN_MS}ms, pendingEvents=${entry.pendingSnapshotEvents.length}`
+      );
+
+      if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
       }
     }, SNAPSHOT_SETTLE_WARN_MS);
-    armHealthDeadline(control);
-    void TerminalOutputAPI.ready(
-      control.sessionId,
-      activation.generation,
-      activation.snapshot.sequence
-    )
-      .then((state) => settleReady(control, activation, state))
-      .catch(() => settleReadyFailure(control));
+
+    return performance.now();
   };
 
-  const settleReady = (
-    control: EntryControl,
-    activation: TerminalOutputActivation,
-    state: TerminalOutputControlState
-  ): void => {
-    if (control.epoch !== selectionEpoch || control.activation !== "active") {
-      return; // superseded before the ready result linearized
-    }
-    switch (state.kind) {
-      case "active": {
-        if (
-          state.sessionId !== control.sessionId ||
-          parseCanonicalCounter(state.generation) !== control.generation
-        ) {
-          control.activationReadyRejections += 1;
-          sealAndRecover(control);
-          return;
-        }
-        control.activationReadyAcknowledgements += 1;
-        const snapshot = activation.snapshot;
-        if (
-          snapshot.rows !== control.entry.terminal.rows ||
-          snapshot.cols !== control.entry.terminal.cols
-        ) {
-          resizeTerminalForSnapshot(control.entry, snapshot.cols, snapshot.rows);
-        }
-        // Render ONLY the exact activation payload; never a second fetch.
-        control.admission.renderSnapshot(snapshot.data, snapshot.sequence);
-        // The snapshot may have resized xterm to the PTY's dimensions; re-fit
-        // the tile and let the existing sendPtyResize dedup suppress the
-        // redundant same-size resize (#973).
-        if (visibleSessionId === control.sessionId) {
-          scheduleViewportSync(control.sessionId);
-        }
-        break;
-      }
-      case "resyncRequired":
-      case "stale":
-        control.activationReadyRejections += 1;
-        sealAndRecover(control);
-        break;
-      case "awaitingFrontendReady":
-        control.activationReadyTimeouts += 1;
-        sealAndRecover(control);
-        break;
-      case "recoveryError":
-        control.activationReadyRejections += 1;
-        sealAndRecover(control);
-        break;
-      case "inactive":
-        control.activationReadyRejections += 1;
-        control.admission.sealGeneration();
-        control.activation = "idle";
-        break;
-    }
-  };
-
-  const settleReadyFailure = (control: EntryControl): void => {
-    if (control.epoch !== selectionEpoch || control.activation !== "active") {
-      return;
-    }
-    // Transport failure on readiness: seal the just-committed state and enter
-    // the one recovery lane (plan 5.4.2).
-    sealAndRecover(control);
-  };
-
-  const settleReconciliation = (control: EntryControl): void => {
-    const record = control.reconciliation;
-    if (!record || record.aDeactivation === "pending") {
-      return;
-    }
-    const outcome = record.bAttempt?.outcome;
-    if (outcome === undefined || outcome === "pending") {
-      return;
-    }
-    control.reconciliation = null;
-
-    if (outcome.kind !== "activated") {
-      // B recoveryError: a failed b1 attempt that never auto-retries.
-      return;
-    }
-    const gB = parseCanonicalCounter(outcome.activation.generation);
-    const sB = parseCanonicalCounter(outcome.activation.snapshot.sequence);
-    if (gB === null || sB === null) {
-      control.activation = "idle"; // malformed payload: fail closed
-      return;
-    }
-    if (gB > record.causeGeneration) {
-      // B linearized after A: commit B exactly once from its own snapshot.
-      if (
-        control.epoch === selectionEpoch &&
-        control.activation === "activating"
-      ) {
-        commitActivation(control, gB, outcome.activation);
-      }
-      return;
-    }
-    if (gB < record.causeGeneration) {
-      // A displaced B: discard b1 (no ready/ack/write/commit); issue exactly
-      // one b2 only after A teardown has settled (it has, here).
-      if (control.epoch === selectionEpoch) {
-        startActivationAttempt(control.sessionId);
-      }
-      return;
-    }
-    // Equal generations are impossible: fail-closed invariant error.
-    control.activation = "idle";
-  };
-
-  const reconcileStaleSuccess = (
-    aSessionId: string,
-    aGeneration: CanonicalCounter,
-    aActivation: TerminalOutputActivation
-  ): void => {
-    const bControl = controls.get(visibleSessionId ?? "");
-    if (!bControl || bControl.epoch !== selectionEpoch) {
-      return; // no current desired selection
-    }
-    if (bControl.activation === "active" && bControl.generation !== null) {
-      const gB = bControl.generation;
-      if (gB > aGeneration) {
-        // B linearized after A: preserve B unchanged; A deactivation is stale.
-        void TerminalOutputAPI.deactivate(aSessionId, aActivation.generation).catch(
-          () => undefined
-        );
-        return;
-      }
-      // gA > gB: A displaced B. Synchronously seal/dispose B/gB before A
-      // teardown, then issue exactly one fresh B attempt (b2) if B's epoch is
-      // still current. The control record survives with its epoch so the
-      // later re-activation can validate it.
-      const bSessionId = bControl.sessionId;
-      const bEpoch = bControl.epoch;
-      const bAttempt = bControl.attempt;
-      disposeEntry(bSessionId);
-      const b2Control = createControl(
-        bSessionId,
-        registry.get(bSessionId) ?? bControl.entry
-      );
-      b2Control.epoch = bEpoch;
-      b2Control.attempt = bAttempt;
-      controls.set(bSessionId, b2Control);
-      void TerminalOutputAPI.deactivate(aSessionId, aActivation.generation)
-        .then(() => {
-          if (
-            b2Control.epoch === selectionEpoch &&
-            controls.get(bSessionId) === b2Control
-          ) {
-            startActivationAttempt(bSessionId);
-          }
-        })
-        .catch(() => undefined);
-      return;
-    }
-    if (bControl.reconciliation) {
-      return; // one reconciliation record at a time
-    }
-    // B is Activating(b1) (or idle): retain the outstanding attempt/result.
-    const record: ReconcileRecord = {
-      causeGeneration: aGeneration,
-      revision: bControl.epoch,
-      bKnownGeneration: null,
-      bAttempt:
-        bControl.activation === "activating"
-          ? { attempt: bControl.attempt, outcome: "pending" }
-          : null,
-      aDeactivation: "pending",
-    };
-    bControl.reconciliation = record;
-    void TerminalOutputAPI.deactivate(aSessionId, aActivation.generation)
-      .then((state) => {
-        if (bControl.reconciliation !== record) {
-          return;
-        }
-        record.aDeactivation = state;
-        settleReconciliation(bControl);
-      })
-      .catch(() => {
-        if (bControl.reconciliation !== record) {
-          return;
-        }
-        // Transport error on A teardown: fail closed, treat as settled-stale.
-        record.aDeactivation = { kind: "stale" };
-        settleReconciliation(bControl);
-      });
-  };
-
-  const settleActivationResult = (
+  const settleSeed = (
     sessionId: string,
-    attempt: number,
-    result: TerminalOutputActivationResult
+    entry: SessionTerminalEntry,
+    requestedAt: number,
+    snapshot: PtyScreenSnapshot | null
   ): void => {
-    const control = controls.get(sessionId);
-    if (!control) {
+    const settle = concludeSnapshotFetch(sessionId, entry);
+    if (!settle) {
       return;
     }
-    const current =
-      control.epoch === selectionEpoch &&
-      control.attempt === attempt &&
-      control.activation === "activating";
-
-    if (!current) {
-      // Stale-A result.
-      if (result.kind === "activated") {
-        const generation = parseCanonicalCounter(result.activation.generation);
-        if (generation !== null) {
-          reconcileStaleSuccess(sessionId, generation, result.activation);
-        }
-      }
-      // A stale recoveryError is preflight non-mutating: nothing to do.
-      return;
-    }
-
-    if (result.kind === "recoveryError") {
-      // Matching preflight failure: discard only this local attempt and
-      // reclaim its partially created entry (plan 7 failure matrix).
-      if (
-        control.reconciliation?.bAttempt?.attempt === attempt &&
-        control.reconciliation?.bAttempt?.outcome === "pending"
-      ) {
-        control.reconciliation.bAttempt = { attempt, outcome: result };
-        settleReconciliation(control);
-        return;
-      }
-      control.activation = "idle";
-      control.generation = null;
-      if (control.admission.stateKind() === "idle") {
-        disposeEntry(sessionId);
-      }
-      return;
-    }
-
-    const activation = result.activation;
-    if (activation.sessionId !== sessionId) {
-      control.activation = "idle"; // fail-closed invariant
-      return;
-    }
-    const generation = parseCanonicalCounter(activation.generation);
-    const snapshotSeq = parseCanonicalCounter(activation.snapshot.sequence);
-    if (generation === null || snapshotSeq === null) {
-      control.activation = "idle"; // malformed payload: fail closed
-      return;
-    }
-
-    if (
-      control.reconciliation !== null &&
-      control.reconciliation.bAttempt !== null &&
-      control.reconciliation.bAttempt.attempt === attempt
-    ) {
-      // B(b1) settles through the reconciliation record.
-      const record = control.reconciliation;
-      record.bKnownGeneration = generation;
-      record.bAttempt = { attempt, outcome: result };
-      settleReconciliation(control);
-      return;
-    }
-
-    commitActivation(control, generation, activation);
+    logSnapshotSettle(sessionId, requestedAt, settle.retainedEvents.length);
+    applySnapshot(sessionId, entry, snapshot, settle);
   };
 
-  const settleActivationError = (
+  const failSeed = (
     sessionId: string,
-    attempt: number,
+    entry: SessionTerminalEntry,
+    requestedAt: number,
     error: unknown
   ): void => {
-    const control = controls.get(sessionId);
-    if (!control || control.attempt !== attempt || control.epoch !== selectionEpoch) {
+    const settle = concludeSnapshotFetch(sessionId, entry);
+    if (!settle) {
       return;
     }
-    // Fail closed: discard the local attempt; the session stays eligible for
-    // the next explicit user activation. No automatic retry loop.
-    control.activation = "idle";
-    control.generation = null;
-    console.warn(`[terminal] activate_terminal_output ${sessionId} failed:`, error);
+    logSnapshotSettle(sessionId, requestedAt, settle.retainedEvents.length);
+    console.warn(`[terminal] attach_terminal_output ${sessionId} failed:`, error);
+    // No reset ran, so the retention is not replayed here either: see
+    // `applySnapshot`.
+
+    if (!entry.hasRenderedOutput) {
+      setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
+    }
+  };
+
+  /**
+   * The single writer of `attachedSessionId`, and the only issuer of attach and
+   * detach. Never blocks the caller: it appends to the per-window chain and
+   * returns, so a wedged invoke can delay the next transition but can never
+   * hold up a selection change or a window close.
+   */
+  const transitionAttachment = (target: string | null): void => {
+    if (isBrowser) {
+      // Browser mode never attaches: the websocket broadcaster sits upstream
+      // of the backend gate, so an attachment would buy nothing, and a browser
+      // client can vanish with no close event, so nothing would release it.
+      return;
+    }
+
+    desiredSessionId = target;
+    attachChain = attachChain
+      .then(async () => {
+        if (desiredSessionId !== target || attachedSessionId === target) {
+          return; // superseded, or already where this transition wanted to be
+        }
+
+        const previous = attachedSessionId;
+        if (previous !== null) {
+          attachedSessionId = null;
+          await TerminalOutputAPI.detachOutput(previous);
+          if (desiredSessionId !== target) {
+            return;
+          }
+        }
+
+        if (target === null) {
+          return;
+        }
+
+        await listenerReady;
+        if (desiredSessionId !== target) {
+          return;
+        }
+
+        const entry = registry.get(target);
+        if (!entry || entry.destroyed) {
+          return; // the entry went away while this transition was queued
+        }
+
+        attachedSessionId = target;
+        const requestedAt = beginSeed(target, entry);
+        try {
+          const snapshot = await TerminalOutputAPI.attachOutput(target);
+          settleSeed(target, entry, requestedAt, snapshot);
+        } catch (error) {
+          // A rejected attach left the backend map unchanged: this window owes
+          // no detach for it.
+          if (attachedSessionId === target) {
+            attachedSessionId = null;
+          }
+          failSeed(target, entry, requestedAt, error);
+        }
+      })
+      // Without this the first rejected invoke would poison every subsequent
+      // transition for the life of the window.
+      .catch((error: unknown) => {
+        console.warn("[terminal] attachment transition failed:", error);
+      });
   };
 
   const selectSession = (sessionId: string): void => {
     if (visibleSessionId !== null && visibleSessionId !== sessionId) {
-      const oldControl = controls.get(visibleSessionId);
       const oldEntry = registry.get(visibleSessionId);
       if (oldEntry) {
-        if (
-          oldControl &&
-          (oldControl.admission.isReplayPending() ||
-            oldControl.admission.stateKind() === "sealed" ||
-            oldControl.recoveryInFlight)
-        ) {
-          // A newer selection cancels an older replay before allocating its
-          // entry (plan 14.4); sealed/recovering entries are dead weight.
-          disposeEntry(visibleSessionId);
-        } else {
-          oldEntry.container.hidden = true;
-        }
+        oldEntry.container.hidden = true;
       }
     }
 
     visibleSessionId = sessionId;
-    selectionEpoch += 1;
-    // #1355 - as in startActivationAttempt, this must precede the activate()
-    // call below so includeHistory reads a freshly resolved entry.
     const entry = registry.activate(sessionId, createSessionTerminal);
     entry.container.hidden = false;
     registry.setVisible(sessionId);
     entry.terminal.focus();
 
-    let control = controls.get(sessionId);
-    if (!control) {
-      control = createControl(sessionId, entry);
-      controls.set(sessionId, control);
-    } else {
-      control.entry = entry;
-    }
-    control.epoch = selectionEpoch;
-    control.detached = false;
-    cancelHealth(control);
-    control.activation = "activating";
-    control.generation = null;
-    control.generationStr = null;
-    control.recoveryInFlight = false;
-    control.reconciliation = null;
-    control.admission.reset();
-
     scheduleViewportSync(sessionId);
-
-    if (isBrowser) {
-      // Legacy browser/websocket fallback: no #1283 activation protocol.
-      control.activation = "active";
-      return;
-    }
-
-    control.attempt += 1;
-    const attempt = control.attempt;
-    void TerminalOutputAPI.activate(sessionId, !entry.hasRenderedOutput)
-      .then((result) => settleActivationResult(sessionId, attempt, result))
-      .catch((error) => settleActivationError(sessionId, attempt, error));
+    transitionAttachment(sessionId);
   };
 
-  const handleBrowserPtyOutput = (event: PtyOutputEvent): void => {
-    // Legacy websocket fallback: raw bytes without the #1283 protocol.
-    const legacy = event as unknown as { sessionId: string; data?: number[] };
-    if (!Array.isArray(legacy.data)) {
-      return;
-    }
-    if (legacy.sessionId !== visibleSessionId) {
-      return; // only the visible terminal receives writes
-    }
-    const entry = registry.get(legacy.sessionId);
-    if (!entry || entry.destroyed) {
-      return;
-    }
-    writeTerminalBytes(entry, new Uint8Array(legacy.data));
-  };
-
+  // One writer for both transports (#1363 criterion H'). The visibility filter
+  // is the #1283 fix F keeps: a retained but hidden terminal never receives a
+  // write. Browser events carry no `sequence` and never enter a seed, so they
+  // are written straight through.
   const handlePtyOutput = (event: PtyOutputEvent): void => {
-    if (isBrowser) {
-      handleBrowserPtyOutput(event);
+    if (event.sessionId !== visibleSessionId) {
       return;
     }
-    const control = controls.get(event.sessionId);
-    if (!control) {
+    const entry = registry.get(event.sessionId);
+    if (!entry || entry.destroyed) {
       return; // post-removal chunk: no state may be recreated
     }
-    // Guard: current selection, active generation, matching epoch, unsealed
-    // admission, not detached (plan 14.4).
-    if (
-      control.epoch !== selectionEpoch ||
-      control.activation !== "active" ||
-      control.generation === null ||
-      control.detached
-    ) {
-      control.admission.noteRejected();
-      return;
-    }
-    if (event.kind === "data") {
-      const generation = parseCanonicalCounter(event.generation);
-      if (generation === null || generation !== control.generation) {
-        control.admission.noteRejected();
-        return;
-      }
-    }
-    const verdict = control.admission.accept(event);
-    if (verdict === "accepted" || verdict === "ackedSnapshotRepresented") {
-      maybeReportOrdinaryTelemetry(control);
-    }
+    writeLivePtyOutput(entry, event);
   };
 
   onMount(async () => {
@@ -1155,21 +778,45 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
     resizeObserver.observe(hostRef);
 
-    unlistenPtyOutput = await onPtyOutput(handlePtyOutput);
+    try {
+      unlistenPtyOutput = await onPtyOutput(handlePtyOutput);
+      markListenerReady();
+    } catch (error) {
+      // Not rethrown: the rest of this mount (session destroy, terminal
+      // detach, the close hook) is still worth registering.
+      console.warn("[terminal] pty_output listener registration failed:", error);
+      failListenerReady(error);
+    }
 
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {
-      disposeEntry(id);
+      registry.remove(id);
     });
 
     if (!props.lockedSessionId) {
       unlistenTerminalDetached = await onTerminalDetached(({ sessionId }) => {
-        // Plan 5.5.3: record detached state only; never create a hidden
-        // Xterm/WebGL terminal merely because the event arrived.
-        const control = controls.get(sessionId);
-        if (control) {
-          control.detached = true;
+        // The session moved to its own window: release it here rather than
+        // creating a hidden terminal for it.
+        if (sessionId === attachedSessionId) {
+          transitionAttachment(null);
         }
       });
+    }
+
+    if (isTauri) {
+      // Net-new: there is no other close hook in `src/`. Fire-and-forget, with
+      // no `preventDefault()` — awaiting it would let a wedged invoke make the
+      // close button do nothing, and the backend's `WindowEvent::Destroyed`
+      // reap is the real guarantee. This detach is a bandwidth optimization,
+      // never a correctness dependency, so failing to register it is a warning
+      // and nothing more.
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        unlistenCloseRequested = await getCurrentWindow().onCloseRequested(() => {
+          transitionAttachment(null);
+        });
+      } catch (error) {
+        console.warn("[terminal] close-requested detach hook unavailable:", error);
+      }
     }
   });
 
@@ -1184,6 +831,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         visibleSessionId = null;
         registry.setVisible(null);
       }
+      // A cleared or dormant selection releases the attachment: nothing in
+      // this window is rendering that session any more.
+      transitionAttachment(null);
       return;
     }
 
@@ -1191,11 +841,19 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   });
 
   onCleanup(() => {
+    // Settle the gate so an attach still queued behind it cannot hang the
+    // chain, and settle it as a FAILURE so it can never authorize an attach
+    // for a view that is going away (settling twice is a no-op).
+    failListenerReady(new Error("TerminalView unmounted"));
     unlistenPtyOutput?.();
     unlistenSessionDestroyed?.();
     unlistenTerminalDetached?.();
+    unlistenCloseRequested?.();
     resizeObserver?.disconnect();
 
+    // Unmount is frequent and separate from window close: `shouldMountTerminal`
+    // drops this component whenever the selection leaves live mode.
+    transitionAttachment(null);
     registry.disposeAll();
   });
 

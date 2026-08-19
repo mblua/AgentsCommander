@@ -1,8 +1,21 @@
-import type { Transport, TransportConnectionState, UnlistenFn } from "../transport";
+import type {
+  ListenOptions,
+  Transport,
+  TransportConnectionState,
+  UnlistenFn,
+} from "../transport";
 
 export interface InvokeCall {
   cmd: string;
   args: Record<string, unknown>;
+}
+
+/** #1363 - listener registrations, so a test can pin the event TARGET and not
+ *  just the handler. An unscoped `pty_output` listener silently defeats the
+ *  backend's `emit_to`; see `ListenOptions`. */
+export interface ListenCall {
+  event: string;
+  options: ListenOptions | undefined;
 }
 
 type InvokeHandler = (
@@ -15,6 +28,7 @@ interface FakeTransportOptions {
 
 export class FakeTransport implements Transport {
   readonly calls: InvokeCall[] = [];
+  readonly listens: ListenCall[] = [];
   readonly binaryWrites: { sessionId: string; data: number[] }[] = [];
   writePtyBinary?: (sessionId: string, data: Uint8Array) => void;
 
@@ -59,8 +73,10 @@ export class FakeTransport implements Transport {
 
   async listen<T>(
     event: string,
-    callback: (payload: T) => void
+    callback: (payload: T) => void,
+    options?: ListenOptions
   ): Promise<UnlistenFn> {
+    this.listens.push({ event, options });
     let callbacks = this.listeners.get(event);
     if (!callbacks) {
       callbacks = new Set();
@@ -121,5 +137,9 @@ export class FakeTransport implements Transport {
 
   clearCalls(): void {
     this.calls.length = 0;
+  }
+
+  listensFor(event: string): ListenCall[] {
+    return this.listens.filter((call) => call.event === event);
   }
 }

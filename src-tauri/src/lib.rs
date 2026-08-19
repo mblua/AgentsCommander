@@ -2897,10 +2897,7 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::pty::activate_terminal_output,
-            commands::pty::ready_terminal_output,
-            commands::pty::deactivate_terminal_output,
-            commands::pty::ack_terminal_output_delivery,
-            commands::pty::report_terminal_renderer_metrics,
+            commands::pty::detach_terminal_output,
             commands::pty::get_session_context,
             commands::pty::get_watcher_activity,
             commands::pty::preview_watcher_pattern,
@@ -3036,6 +3033,23 @@ pub fn run(
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    // #1363 - a destroyed window's terminal-output attachments are released
+                    // here, in the backend, without any frontend cooperation. It is what keeps
+                    // a window that died without detaching from leaving a session emitting to
+                    // a webview that is gone, and it is why the frontend close hook does not
+                    // need to block the close.
+                    if let Some(pty_mgr) = app_handle
+                        .try_state::<Arc<Mutex<crate::pty::manager::PtyManager>>>()
+                        .map(|state| Arc::clone(state.inner()))
+                    {
+                        let destroyed = label.clone();
+                        tauri::async_runtime::spawn(async move {
+                            pty_mgr
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .release_window_attachments(&destroyed);
+                        });
+                    }
                     if label == "spec-board" {
                         let state = spec_board_state.clone();
                         tauri::async_runtime::spawn(async move {

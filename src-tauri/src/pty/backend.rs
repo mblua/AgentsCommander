@@ -8,8 +8,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::{
-    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputActivationResult,
-    TerminalOutputControlState, TerminalRendererMetrics,
+    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputAttachError,
 };
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
@@ -281,54 +280,25 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     /// backends with no local child (container transport).
     fn publish_stop_witness(&self, _id: Uuid, _source: &str) {}
 
-    /// Terminal-output controls are deliberately defaulted so all existing test-only backends
-    /// remain source-compatible. Only the two production adapters forward to their fanouts.
+    /// Terminal-output attach and detach are deliberately defaulted so all existing test-only
+    /// backends remain source-compatible. Only the two production adapters forward to their
+    /// fanouts.
+    ///
+    /// `label` is the calling webview's window label, supplied by Tauri rather than by
+    /// JavaScript, and it is the identity the emission gate is keyed on.
     fn activate_terminal_output(
         &self,
-        id: Uuid,
+        _id: Uuid,
+        _label: &str,
         _include_history: bool,
-    ) -> TerminalOutputActivationResult {
-        TerminalOutputActivationResult::recovery(
-            id,
-            crate::pty::output::TerminalOutputActivationRecoveryCode::ParserUnavailable,
-        )
+    ) -> Result<Option<PtyScreenSnapshot>, TerminalOutputAttachError> {
+        Err(TerminalOutputAttachError::SessionUnavailable)
     }
 
-    fn ready_terminal_output(
-        &self,
-        _id: Uuid,
-        _generation: u64,
-        _snapshot_sequence: u64,
-    ) -> TerminalOutputControlState {
-        TerminalOutputControlState::stale()
-    }
+    fn detach_terminal_output(&self, _id: Uuid, _label: &str) {}
 
-    fn deactivate_terminal_output(
-        &self,
-        _id: Uuid,
-        _generation: u64,
-    ) -> TerminalOutputControlState {
-        TerminalOutputControlState::stale()
-    }
-
-    fn ack_terminal_output_delivery(
-        &self,
-        _id: Uuid,
-        _generation: u64,
-        _first_sequence: u64,
-        _sequence: u64,
-    ) -> TerminalOutputControlState {
-        TerminalOutputControlState::stale()
-    }
-
-    fn report_terminal_renderer_metrics(
-        &self,
-        _id: Uuid,
-        _generation: u64,
-        _metrics: TerminalRendererMetrics,
-    ) -> TerminalOutputControlState {
-        TerminalOutputControlState::stale()
-    }
+    /// Releases every attachment held by a destroyed window, across every session.
+    fn release_window_attachments(&self, _label: &str) {}
 
     fn shutdown_terminal_output(&self) {}
 

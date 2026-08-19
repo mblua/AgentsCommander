@@ -3,7 +3,12 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
 } from "./terminal-viewport";
-import type { Transport, TransportConnectionState, UnlistenFn } from "./transport";
+import type {
+  ListenOptions,
+  Transport,
+  TransportConnectionState,
+  UnlistenFn,
+} from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
@@ -15,9 +20,6 @@ import type {
   SessionWarning,
   PtyOutputEvent,
   PtyScreenSnapshot,
-  TerminalOutputActivationResult,
-  TerminalOutputControlState,
-  TerminalRendererMetrics,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
@@ -121,8 +123,15 @@ export function __setTransportForTests(next: Transport): () => void {
 const transport: Pick<Transport, "invoke" | "listen" | "emit"> = {
   invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
     currentTransport().invoke<T>(cmd, args),
-  listen: <T>(event: string, callback: (payload: T) => void) =>
-    currentTransport().listen<T>(event, callback),
+  // `options` MUST be forwarded. A shim that declares fewer parameters than
+  // `Transport.listen` still satisfies the type — TypeScript allows a narrower
+  // implementation — so dropping it here is a silent, unchecked loss of the
+  // event target, which is exactly what defeats the backend's `emit_to`.
+  listen: <T>(
+    event: string,
+    callback: (payload: T) => void,
+    options?: ListenOptions
+  ) => currentTransport().listen<T>(event, callback, options),
   emit: <T>(event: string, payload: T) =>
     currentTransport().emit<T>(event, payload),
 };
@@ -408,77 +417,63 @@ export const ReposAPI = {
     transport.invoke<string | null>("git_remote_url", { path }),
 };
 
+/**
+ * #1363 - this listener MUST be scoped to the window it runs in.
+ *
+ * The backend emits with `emit_to(label, ...)` once per attached window, but
+ * Tauri short-circuits that label filter for any listener registered as
+ * `EventTarget::Any` (`tauri-2.10.3/src/event/listener.rs:306-311`), and `Any`
+ * is exactly what the JS `listen()` default sends
+ * (`@tauri-apps/api/event.js:69-73`). Registering unscoped therefore delivers
+ * every attached window's flush to every window that mounts a `TerminalView`,
+ * and each pays the deserialization before dropping it — the bridge multiplier
+ * of plan 7.4, which `emit_to` exists to remove, silently unfixed. No wrong
+ * byte is ever written (the visibility filter at the single writer sees to
+ * that); the cost is what regresses.
+ *
+ * The label itself is resolved by the transport, never passed from here.
+ * Pinned by `TerminalView.attachment.test.tsx` and `transport-tauri.test.ts`.
+ */
 export function onPtyOutput(
   callback: (data: PtyOutputEvent) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<PtyOutputEvent>("pty_output", callback);
+  return transport.listen<PtyOutputEvent>("pty_output", callback, {
+    scopeToCurrentWindow: true,
+  });
 }
 
 /**
- * #1283 - typed wrappers for the five terminal-output control commands. All
- * generation/sequence arguments are canonical unsigned base-10 strings; the
- * backend validates them before any state mutation. TerminalView routes every
- * control call through these wrappers; components never invoke Tauri directly.
+ * #1363 - the two terminal-output attachment wrappers.
+ *
+ * Named `attachOutput` / `detachOutput` rather than `attach` / `detach`
+ * because `WindowAPI.attach` / `detach` in this same file is a different
+ * concept (moving a session into its own window).
+ *
+ * The window label is NOT an argument: Tauri takes it from the calling
+ * webview, so a frontend can only ever attach the window it runs in and the
+ * label can be neither forged nor misattributed.
  */
 export const TerminalOutputAPI = {
-  // #1355 - `includeHistory` asks the backend to replay its retained output ring
-  // instead of the current viewport. Only a fresh xterm instance may request it:
-  // replaying the ring over a terminal that already has content duplicates
-  // history cumulatively (plan 12.1). Callers pass `!entry.hasRenderedOutput`.
-  activate: (
-    sessionId: string,
-    includeHistory: boolean
-  ): Promise<TerminalOutputActivationResult> =>
-    transport.invoke<TerminalOutputActivationResult>("activate_terminal_output", {
+  /** Attaches this window to the session's output and returns the seed
+   *  snapshot, or `null` when there is nothing to seed from (an unavailable
+   *  parser or a failed snapshot read still attaches, and the client then
+   *  writes live with no reconcile). Rejects only when there is nothing to
+   *  attach to: `sessionUnavailable` or `outputTargetUnavailable`.
+   *
+   *  `includeHistory` is always `true`: every seed is applied after a
+   *  `terminal.reset()`, so replaying the 64 KiB ring cannot duplicate
+   *  history, and dropping the seed on re-attach would instead hide
+   *  everything the session produced while detached (plan 3.4.2). */
+  attachOutput: (sessionId: string): Promise<PtyScreenSnapshot | null> =>
+    transport.invoke<PtyScreenSnapshot | null>("activate_terminal_output", {
       sessionId,
-      includeHistory,
+      includeHistory: true,
     }),
 
-  ready: (
-    sessionId: string,
-    generation: string,
-    snapshotSequence: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("ready_terminal_output", {
-      sessionId,
-      generation,
-      snapshotSequence,
-    }),
-
-  deactivate: (
-    sessionId: string,
-    generation: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("deactivate_terminal_output", {
-      sessionId,
-      generation,
-    }),
-
-  acknowledgeDelivery: (
-    sessionId: string,
-    generation: string,
-    firstSequence: string,
-    sequence: string
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("ack_terminal_output_delivery", {
-      sessionId,
-      generation,
-      firstSequence,
-      sequence,
-    }),
-
-  /** Sends only the documented valid metrics shape; the backend wire wrapper
-   *  rejects any malformed value with `invalid terminal renderer metrics`. */
-  reportMetrics: (
-    sessionId: string,
-    generation: string,
-    metrics: TerminalRendererMetrics
-  ): Promise<TerminalOutputControlState> =>
-    transport.invoke<TerminalOutputControlState>("report_terminal_renderer_metrics", {
-      sessionId,
-      generation,
-      metrics,
-    }),
+  /** Releases this window's attachment. Never rejects for a session that is
+   *  already gone: window close races session destroy. */
+  detachOutput: (sessionId: string): Promise<void> =>
+    transport.invoke<void>("detach_terminal_output", { sessionId }),
 };
 
 export function onSessionCreated(

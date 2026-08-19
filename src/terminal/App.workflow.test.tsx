@@ -194,48 +194,24 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
   fake.resolve("pty_resize", undefined);
   fake.resolve("set_last_prompt", undefined);
 
-  // #1283: the selection path drives the activation protocol. The default
-  // activation payload is an empty snapshot at the terminal's own size; the
-  // legacy getScreenSnapshot surface is never consulted.
-  const generationBySession = new Map<string, string>();
+  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // resolves to. The default payload is an empty snapshot at the terminal's
+  // own size; the legacy getScreenSnapshot surface is never consulted.
   fake.onInvoke("activate_terminal_output", (args) => {
     const sessionId = String(args.sessionId);
-    const next = (parseInt(generationBySession.get(sessionId) ?? "0", 10) || 0) + 1;
-    generationBySession.set(sessionId, String(next));
     const instance = xterm.instances.find(
       (candidate) =>
         candidate.element?.getAttribute("data-ac-session-id") === sessionId,
     );
     return {
-      kind: "activated",
-      activation: {
-        sessionId,
-        generation: String(next),
-        snapshot: {
-          data: [],
-          rows: instance?.rows ?? 24,
-          cols: instance?.cols ?? 80,
-          sequence: String((next - 1) * 10),
-        },
-      },
+      sessionId,
+      data: [],
+      rows: instance?.rows ?? 24,
+      cols: instance?.cols ?? 80,
+      sequence: 0,
     };
   });
-  fake.onInvoke("ready_terminal_output", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.onInvoke("deactivate_terminal_output", (args) => ({
-    kind: "inactive",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
-  fake.onInvoke("report_terminal_renderer_metrics", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
+  fake.resolve("detach_terminal_output", undefined);
 }
 
 function deferred<T>(): {
@@ -358,18 +334,15 @@ describe("TerminalApp workflow", () => {
       });
 
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "1",
-        sequence: "1",
         data: [111, 107],
+        sequence: 1,
       });
 
-      // The empty activation snapshot wrote first; the live delivery follows.
-      await waitFor(() => expect(terminal.writes).toHaveLength(2));
-      expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([111, 107]);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(1);
+      // The empty attach snapshot seeds nothing; the live chunk is the only
+      // write.
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([111, 107]);
     } finally {
       rendered.cleanup();
     }
@@ -413,7 +386,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("replays the activation snapshot once without echoing snapshot resize to PTY", async () => {
+  it("seeds from the attach snapshot once without echoing snapshot resize to PTY", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
@@ -422,19 +395,13 @@ describe("TerminalApp workflow", () => {
         workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
       }),
     ]);
-    // The activation payload carries the PTY's reported dimensions.
+    // The attach payload carries the PTY's reported dimensions.
     fake.onInvoke("activate_terminal_output", (args) => ({
-      kind: "activated",
-      activation: {
-        sessionId: String(args.sessionId),
-        generation: "1",
-        snapshot: {
-          data: [83, 78, 65, 80],
-          rows: 30,
-          cols: 120,
-          sequence: "0",
-        },
-      },
+      sessionId: String(args.sessionId),
+      data: [83, 78, 65, 80],
+      rows: 30,
+      cols: 120,
+      sequence: 0,
     }));
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -473,7 +440,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("replays live output after the activation snapshot, in order, exactly once", async () => {
+  it("replays live output after the attach snapshot, in order, exactly once", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
@@ -482,14 +449,13 @@ describe("TerminalApp workflow", () => {
         workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
       }),
     ]);
-    // The activation snapshot predates the live chunk (S=0 < 1).
+    // The attach snapshot predates the live chunk (S=0 < 1).
     fake.onInvoke("activate_terminal_output", (args) => ({
-      kind: "activated",
-      activation: {
-        sessionId: String(args.sessionId),
-        generation: "1",
-        snapshot: { data: [83, 78, 65, 80], rows: 24, cols: 80, sequence: "0" },
-      },
+      sessionId: String(args.sessionId),
+      data: [83, 78, 65, 80],
+      rows: 24,
+      cols: 80,
+      sequence: 0,
     }));
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -497,30 +463,28 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       const terminal = xterm.instances[0];
 
-      // The activation snapshot renders first (the exact payload), then the
-      // post-snapshot delivery drains in order: nothing duplicated, nothing
-      // missing.
+      // The attach snapshot renders first (the exact payload, after the seed
+      // reset), then the post-snapshot delivery drains in order: nothing
+      // duplicated, nothing missing.
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "1",
-        sequence: "1",
         data: liveOutput,
+        sequence: 1,
       });
 
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
       expect(Array.from(terminal.screen[0] as Uint8Array)).toEqual([83, 78, 65, 80]);
       expect(Array.from(terminal.screen[1] as Uint8Array)).toEqual(liveOutput);
-      expect(terminal.resets).toBe(0);
+      // Every attach re-seeds, so the seed reset ran exactly once (plan 3.4.2).
+      expect(terminal.resets).toBe(1);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("drops deliveries already covered by the activation snapshot", async () => {
+  it("drops deliveries already covered by the attach snapshot", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
@@ -531,17 +495,11 @@ describe("TerminalApp workflow", () => {
     ]);
     // The snapshot's screen already contains the live chunk (S=1).
     fake.onInvoke("activate_terminal_output", (args) => ({
-      kind: "activated",
-      activation: {
-        sessionId: String(args.sessionId),
-        generation: "1",
-        snapshot: {
-          data: [83, 78, 65, 80, 76, 73, 86, 69],
-          rows: 24,
-          cols: 80,
-          sequence: "1",
-        },
-      },
+      sessionId: String(args.sessionId),
+      data: [83, 78, 65, 80, 76, 73, 86, 69],
+      rows: 24,
+      cols: 80,
+      sequence: 1,
     }));
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -550,28 +508,21 @@ describe("TerminalApp workflow", () => {
       const terminal = xterm.instances[0];
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
-      // A snapshot-represented delivery is acknowledged WITHOUT allocation: it
+      // A snapshot-represented delivery is dropped by the watermark: it
       // appears exactly ONCE (already inside the snapshot).
       const liveOutput = [76, 73, 86, 69];
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "1",
-        sequence: "1",
         data: liveOutput,
+        sequence: 1,
       });
       await flushPromises();
       expect(terminal.writes).toHaveLength(1);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(1);
 
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "2",
-        sequence: "2",
         data: [78, 69, 87],
+        sequence: 2,
       });
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
       expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([78, 69, 87]);
@@ -580,7 +531,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("drops delayed live output already covered by the activation snapshot", async () => {
+  it("drops delayed live output already covered by the attach snapshot", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake, [
       session({
@@ -590,17 +541,11 @@ describe("TerminalApp workflow", () => {
       }),
     ]);
     fake.onInvoke("activate_terminal_output", (args) => ({
-      kind: "activated",
-      activation: {
-        sessionId: String(args.sessionId),
-        generation: "1",
-        snapshot: {
-          data: [83, 78, 65, 80, 76, 73, 86, 69],
-          rows: 24,
-          cols: 80,
-          sequence: "1",
-        },
-      },
+      sessionId: String(args.sessionId),
+      data: [83, 78, 65, 80, 76, 73, 86, 69],
+      rows: 24,
+      cols: 80,
+      sequence: 1,
     }));
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -610,24 +555,18 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "1",
-        sequence: "1",
         data: [76, 73, 86, 69],
+        sequence: 1,
       });
 
       await flushPromises();
       expect(terminal.writes).toHaveLength(1);
 
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "2",
-        sequence: "2",
         data: [78, 69, 87],
+        sequence: 2,
       });
 
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
@@ -637,73 +576,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  it("rejects malformed deliveries without allocation", async () => {
-    const fake = new FakeTransport();
-    setupTerminalTransport(fake, [
-      session({
-        id: SESSION_A,
-        name: "wg-1-dev-team/architect",
-        workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
-      }),
-    ]);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-
-      // #1283: every delivery is a canonical, sequenced delivery. A malformed
-      // generation is rejected without a write or acknowledgement.
-      fake.emitFromBackend("pty_output", {
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "not-a-counter",
-        firstSequence: "1",
-        sequence: "1",
-        data: [79, 75],
-      });
-      await flushPromises();
-      expect(terminal.writes).toHaveLength(1);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("rejects an unsequenced legacy delivery without allocation", async () => {
-    const fake = new FakeTransport();
-    setupTerminalTransport(fake, [
-      session({
-        id: SESSION_A,
-        name: "wg-1-dev-team/architect",
-        workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
-      }),
-    ]);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-
-      // #1283: the pty_output listener payload is the tagged delivery union;
-      // the legacy unsequenced shape is not part of it and must never reach
-      // xterm or an acknowledgement.
-      fake.emitFromBackend("pty_output", {
-        sessionId: SESSION_A,
-        data: [79, 75],
-      } as unknown as never);
-
-      await waitFor(() => expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(terminal.writes).toHaveLength(1);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("re-activates when switching away and back, never consulting the legacy snapshot", async () => {
+  it("re-attaches when switching away and back, never consulting the legacy snapshot", async () => {
     const sessions = [
       session({
         id: SESSION_A,
@@ -745,107 +618,17 @@ describe("TerminalApp workflow", () => {
         expect(sessionOne?.hidden).toBe(false);
       });
 
-      // Each selection runs the activation protocol; the legacy snapshot
-      // surface stays untouched.
+      // Each selection attaches once and seeds from that attach; the legacy
+      // snapshot surface stays untouched. Switching away detached first.
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
       expect(fake.callsFor("activate_terminal_output")).toHaveLength(3);
+      expect(fake.callsFor("detach_terminal_output")).toHaveLength(2);
     } finally {
       rendered.cleanup();
     }
   });
 
-  it("discards a matching recoveryError attempt and reclaims the partial entry", async () => {
-    const fake = new FakeTransport();
-    setupTerminalTransport(fake, [
-      session({
-        id: SESSION_A,
-        name: "wg-1-dev-team/architect",
-        workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
-      }),
-    ]);
-    // Activation preflight fails: parser unavailable, no generation created.
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      kind: "recoveryError",
-      sessionId: String(args.sessionId),
-      code: "parserUnavailable",
-    }));
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
-      await flushPromises();
-
-      // The matching preflight failure discards only the local attempt: no
-      // write, no ready, no acknowledgement; the partially created entry is
-      // reclaimed (disposed).
-      expect(terminal.writes).toHaveLength(0);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(0);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-      expect(terminal.disposed).toBe(true);
-      expect(
-        document.querySelector(
-          '[data-ac-testid="terminal.session.11111111-1111-4111-8111-111111111111"]'
-        )
-      ).toBeNull();
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("discards a transport-failed activation attempt without stale writes", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const fake = new FakeTransport();
-    setupTerminalTransport(fake, [
-      session({
-        id: SESSION_A,
-        name: "wg-1-dev-team/architect",
-        workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
-      }),
-    ]);
-    // The first activation settles fine; the re-selection transport-fails.
-    let attempts = 0;
-    const original = fake.callsFor;
-    void original;
-    fake.onInvoke("activate_terminal_output", () => {
-      attempts += 1;
-      if (attempts > 1) {
-        throw new Error("activate_terminal_output transport failure");
-      }
-      return {
-        kind: "activated",
-        activation: {
-          sessionId: SESSION_A,
-          generation: "1",
-          snapshot: { data: [83, 78, 65, 80], rows: 24, cols: 80, sequence: "0" },
-        },
-      };
-    });
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-
-      // Switch away and back: the second activation transport-fails and the
-      // attempt is discarded fail-closed (no auto-retry, no stale writes).
-      fake.emitFromBackend("session_switched", noneSelection(2));
-      await waitFor(() => expect(terminalStore.activeSessionId).toBeNull());
-      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
-      await flushPromises();
-      await flushPromises();
-      expect(attempts).toBe(2);
-      expect(terminal.writes).toHaveLength(1);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(1);
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(2);
-    } finally {
-      rendered.cleanup();
-      warn.mockRestore();
-    }
-  });
-
-  it("recovers output dropped during the async session switch list gap via the activation snapshot", async () => {
+  it("recovers output dropped during the async session switch list gap via the attach snapshot", async () => {
     const sessionOne = session({
       id: SESSION_A,
       name: "wg-1-dev-team/architect",
@@ -869,12 +652,9 @@ describe("TerminalApp workflow", () => {
 
       fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_B,
-        generation: "1",
-        firstSequence: "1",
-        sequence: "1",
         data: [68, 82, 79, 80],
+        sequence: 1,
       });
 
       // No terminal exists for B yet; the chunk must not recreate one.
@@ -885,31 +665,18 @@ describe("TerminalApp workflow", () => {
         )
       ).toBe(false);
 
-      // B's activation snapshot restores the dropped window once B binds.
+      // B's attach snapshot restores the dropped window once B binds.
       fake.onInvoke("activate_terminal_output", (args) => {
         const sessionId = String(args.sessionId);
         if (sessionId !== SESSION_B) {
-          return {
-            kind: "activated",
-            activation: {
-              sessionId,
-              generation: "1",
-              snapshot: { data: [], rows: 24, cols: 80, sequence: "0" },
-            },
-          };
+          return { sessionId, data: [], rows: 24, cols: 80, sequence: 0 };
         }
         return {
-          kind: "activated",
-          activation: {
-            sessionId,
-            generation: "1",
-            snapshot: {
-              data: [82, 69, 80, 76, 65, 89],
-              rows: 24,
-              cols: 80,
-              sequence: "1",
-            },
-          },
+          sessionId,
+          data: [82, 69, 80, 76, 65, 89],
+          rows: 24,
+          cols: 80,
+          sequence: 1,
         };
       });
       listSessions.resolve([sessionOne, sessionTwo]);
@@ -921,8 +688,9 @@ describe("TerminalApp workflow", () => {
       expect(Array.from(sessionTwoTerminal.writes[0] as Uint8Array)).toEqual([
         82, 69, 80, 76, 65, 89,
       ]);
-      // The dropped raw chunk is never replayed (it was never retained).
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
+      // The dropped raw chunk is never replayed on top of the seed: the seed
+      // already contains it (its sequence is 1), and it was never retained.
+      expect(sessionTwoTerminal.writes).toHaveLength(1);
     } finally {
       rendered.cleanup();
     }
