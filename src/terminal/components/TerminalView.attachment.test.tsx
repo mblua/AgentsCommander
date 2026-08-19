@@ -28,6 +28,7 @@ import {
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { rememberSpawnViewport } from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
 import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
 
@@ -522,6 +523,94 @@ describe("TerminalView attachment (#1363)", () => {
       for (const instance of instancesFor(SESSION_B)) {
         expect(instance.writes).toEqual([SNAP]);
       }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1439: a re-attach can settle with NO snapshot (the backend grid reconcile
+  // refused the seed) while the PTY sits at the grid the other window drove it
+  // to. The attach settle must invalidate the viewport dedup key and re-impose
+  // this window's grid: the embedded box did not change across the detach, so
+  // without the invalidation `sendPtyResize` compares the refit against the
+  // key primed before the detach, finds them equal, and never invokes
+  // `pty_resize`, leaving live bytes to garble this xterm indefinitely.
+  it("a re-attach that resolves without a snapshot resyncs the viewport before live writes land", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    // The fit dims (80x24, pinned by the FakeTerminal and FitAddon mocks) must
+    // differ from the entry's spawnViewport, or the FIRST sync would dedup at
+    // creation time and the priming assert below would be vacuous.
+    rememberSpawnViewport(SESSION_A, { cols: 100, rows: 30 });
+    let attachesOfA = 0;
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId !== SESSION_A) {
+        return { sessionId, data: [], rows: null, cols: null, sequence: 0 };
+      }
+      attachesOfA += 1;
+      return attachesOfA === 1
+        ? { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 }
+        : // The #1439 reconcile-miss outcome: no seed, parser still Available,
+          // live events still sequenced.
+          null;
+    });
+    const resizesOfA = () =>
+      fake
+        .callsFor("pty_resize")
+        .filter((call) => String(call.args.sessionId) === SESSION_A)
+        .map((call) => ({
+          cols: Number(call.args.cols),
+          rows: Number(call.args.rows),
+        }));
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Priming: the first attach settle schedules `scheduleViewportSync`,
+      // whose two rAF frames are setTimeout(0) under the DOM stubs, so
+      // waitFor's real sleeps flush them. Exactly one pty_resize carries the
+      // fit dims: `lastSentViewport` now equals what the re-attach will refit.
+      await waitFor(() => expect(resizesOfA()).toEqual([{ cols: 80, rows: 24 }]));
+
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(detachedSessionIds(fake)).toEqual([SESSION_A]));
+
+      // Segment the invoke log: only re-attach calls count from here on.
+      const resizesBeforeReattach = resizesOfA().length;
+
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+
+      // The attach settled with no seed; flushing the sync's two rAF frames
+      // must re-impose this window's grid on the PTY. Without the dedup-key
+      // invalidation the refit equals the primed key and this send never
+      // happens: the incident geometry, and this wait times out.
+      await waitFor(() =>
+        expect(resizesOfA().slice(resizesBeforeReattach)).toEqual([
+          { cols: 80, rows: 24 },
+        ])
+      );
+
+      // Ordering: the resync has landed and the live write has not; only now
+      // is the live chunk delivered (harness-controlled ordering, plan 9.2).
+      expect(terminal.writes).toEqual([SNAP]);
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 5,
+      });
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP, LIVE]));
+
+      // The no-snapshot contract held: no reset during the re-attach, and the
+      // pre-detach buffer content survived the whole cycle.
+      expect(terminal.resets).toBe(1);
+      expect(terminal.screen).toEqual([SNAP, LIVE]);
     } finally {
       rendered.cleanup();
     }

@@ -573,15 +573,30 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     snapshot: PtyScreenSnapshot | null,
     settle: SnapshotSettle
   ) => {
+    // #1439: a viewport sent before a detach must never dedup the
+    // re-imposition after the re-attach; the other window may have driven the
+    // PTY elsewhere while this key sat stale. Cleared once per attach settle
+    // (this function's only caller); within an attached interval the dedup
+    // operates unchanged.
+    entry.lastSentViewport = null;
+
     // A retained event was ALREADY written live on arrival, so replaying the
     // retention is meaningful only after `rebuildFromSnapshot`'s reset wiped
-    // it off the screen. On a path with no reset, replaying is a no-op for a
-    // sequenced event (the watermark drops it) and a DUPLICATE write for an
-    // unsequenced one — and "attach resolved without a snapshot" is exactly
-    // the unavailable-parser case, where every event is unsequenced.
+    // it off the screen. An attach can resolve without a snapshot either
+    // because the parser is unavailable (every event unsequenced) or because
+    // the #1439 grid reconcile refused the seed (parser still Available, live
+    // events still sequenced); replaying retention without a reset stays a
+    // no-op for sequenced events (the watermark drops them) and a duplicate
+    // write for unsequenced ones, which is why this branch replays nothing.
     if (!snapshot || snapshot.data.length === 0) {
       if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
+      }
+      // #1439: a seedless attach must still re-impose this window's grid on
+      // the PTY; otherwise live bytes keep arriving for the other window's
+      // grid and garble this xterm until the user resizes something.
+      if (sessionId === visibleSessionId) {
+        scheduleViewportSync(sessionId);
       }
       return;
     }
