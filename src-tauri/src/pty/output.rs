@@ -1176,41 +1176,65 @@ impl SessionIoFanout {
         {
             return Err(TerminalOutputAttachError::OutputTargetUnavailable);
         }
+        let mut reconcile_fault = false;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
-            let copied = crate::logging::catch_payload_unwind(|| {
-                let screen = state.parser.screen();
-                let (rows, cols) = screen.size();
-                let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
-                if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
-                    return Err(());
-                }
-                let data = if include_history && !state.history.is_empty() {
-                    // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
-                    // rotates the buffer during what is otherwise a copy out.
-                    let (front, back) = state.history.as_slices();
-                    let mut replay = Vec::with_capacity(
-                        UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
-                    );
-                    replay.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
-                    replay.extend_from_slice(front);
-                    replay.extend_from_slice(back);
-                    replay
-                } else {
-                    screen.contents_formatted()
-                };
-                Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
-                    data,
-                    rows,
-                    cols,
-                    sequence: state.output_sequence,
-                })
-            });
-            match copied {
-                Ok(Ok(snapshot)) => Some(snapshot),
-                Ok(Err(())) => None,
-                Err(_) => {
+            let (parser_rows, parser_cols) = state.parser.screen().size();
+            if (parser_rows, parser_cols) != state.conpty_size {
+                // #1439: the parser grid diverged from the grid the ConPTY took
+                // (a skipped follow, or any path that resized one without the
+                // other). A seed rendered off this parser adopts the stale grid
+                // in the attaching window and replays other-grid bytes into it:
+                // the garbled re-attach. Converge the grid now, seed nothing;
+                // the frontend attaches live (the no-snapshot path), and the
+                // next attach after the child's next repaint seeds cleanly.
+                let (conpty_rows, conpty_cols) = state.conpty_size;
+                log::warn!(
+                    "[terminal-snapshot] stage=attach_grid_mismatch session={id} parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} (#1439)"
+                );
+                let resized = crate::logging::catch_payload_unwind(|| {
+                    state.parser.set_size(conpty_rows, conpty_cols)
+                });
+                if resized.is_err() {
                     state.parser_availability = ParserAvailability::Unavailable;
-                    None
+                    reconcile_fault = true;
+                }
+                None
+            } else {
+                let copied = crate::logging::catch_payload_unwind(|| {
+                    let screen = state.parser.screen();
+                    let (rows, cols) = screen.size();
+                    let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
+                    if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
+                        return Err(());
+                    }
+                    let data = if include_history && !state.history.is_empty() {
+                        // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
+                        // rotates the buffer during what is otherwise a copy out.
+                        let (front, back) = state.history.as_slices();
+                        let mut replay = Vec::with_capacity(
+                            UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
+                        );
+                        replay.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                        replay.extend_from_slice(front);
+                        replay.extend_from_slice(back);
+                        replay
+                    } else {
+                        screen.contents_formatted()
+                    };
+                    Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
+                        data,
+                        rows,
+                        cols,
+                        sequence: state.output_sequence,
+                    })
+                });
+                match copied {
+                    Ok(Ok(snapshot)) => Some(snapshot),
+                    Ok(Err(())) => None,
+                    Err(_) => {
+                        state.parser_availability = ParserAvailability::Unavailable;
+                        None
+                    }
                 }
             }
         } else {
@@ -1218,6 +1242,13 @@ impl SessionIoFanout {
         };
         self.attachments.attach(id, label);
         drop(parsers);
+        if reconcile_fault {
+            log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+            // #1439 R2: flush at the transition, OUTSIDE the parser lock. An
+            // emit under that lock stalls the PTY reader on its next chunk;
+            // both existing fault sites flush only after releasing the lock.
+            self.attachments.flush(id, false);
+        }
         Ok(snapshot)
     }
 
@@ -1664,6 +1695,18 @@ impl SessionIoFanout {
             panic!("poison the screen parser map for deterministic test coverage");
         });
         assert!(result.is_err(), "screen-parser poison fixture must panic");
+    }
+
+    /// #1439 test-only: force the parser grid WITHOUT recording a ConPTY grid,
+    /// simulating any historical silent-skip divergence.
+    #[cfg(test)]
+    pub(crate) fn desync_screen_size_for_test(&self, id: Uuid, rows: u16, cols: u16) {
+        let mut parsers = self.screen_parsers.lock().expect("parser state");
+        parsers
+            .get_mut(&id)
+            .expect("registered session")
+            .parser
+            .set_size(rows, cols);
     }
 
     pub fn register_response_watcher(
@@ -2513,6 +2556,54 @@ mod tests {
         assert_eq!(emitted.len(), 2);
         assert_eq!(emitted[1].1, b"after");
         assert_eq!(emitted[1].2, Some(2));
+    }
+
+    /// #1439. A parser grid that diverged from the grid the ConPTY last took must never seed
+    /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
+    /// grid, and the next attach seeds cleanly at that grid with the current sequence.
+    ///
+    /// Grid constraints are load-bearing: registration R0=30x120 (from `session_with_sink`),
+    /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
+    /// a transposition of another. With A != R0, an implementation that never writes
+    /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
+    /// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
+    #[test]
+    fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        // One follow the ConPTY took: parser and record both move to A = 24 rows x 80 cols.
+        fanout.resize_screen_and_broadcast(id, 80, 24);
+        fanout.handle_output(&token, &id.to_string(), b"seed me\r\n".to_vec());
+
+        // The divergence class: the parser grid moves, the record does not.
+        fanout.desync_screen_size_for_test(id, 50, 132);
+
+        let seed = attach(&fanout, id, WINDOW);
+        assert!(seed.is_none(), "a diverged grid must not seed the attach");
+        // No batch entry exists yet: the only chunk so far arrived unattached, and a
+        // seedless attach creates none (same `None` the detach test observes).
+        assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+
+        // The seedless window still attached: live bytes keep flowing to it, sequenced.
+        fanout.handle_output(&token, &id.to_string(), b"after divergence".to_vec());
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 1, "the attached window keeps receiving its bytes");
+        assert_eq!(emitted[0].1, b"after divergence");
+        assert_eq!(emitted[0].2, Some(2));
+
+        let reseeded =
+            attach(&fanout, id, SECOND_WINDOW).expect("the attach after convergence seeds");
+        assert_eq!(
+            (reseeded.rows, reseeded.cols),
+            (24, 80),
+            "the parser converged onto the recorded ConPTY grid"
+        );
+        assert_eq!(reseeded.sequence, 2);
+        assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
     }
 
     /// Section 3.4.3 rule 5. The batch is flushed at the `Available -> Unavailable` transition,
