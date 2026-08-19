@@ -36,8 +36,19 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         true
     }
 
+    /// Reports the tree as the OS snapshot saw it. Identity resolution here is
+    /// corpse-TOLERANT: an exited-but-still-queryable process keeps its identity
+    /// (see #1438 G1); liveness filtering belongs to `observe_identity`.
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError>;
+    /// `Ok(Some(identity))` means a live process with that identity exists now. An
+    /// exited process that is still queryable through open handles MUST yield
+    /// `Ok(None)` (#1438).
     fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
+    /// MUST return `Ok(Terminated)` when the target verifiably exited, including when
+    /// other handles keep the corpse queryable. `Err` is reserved for a target that
+    /// demonstrably survives or cannot be verified. Every `TerminateOutcome` variant a
+    /// real backend can produce needs at least one real-process test producing it
+    /// (#1438 Decision 3).
     fn terminate_verified(
         &self,
         process: &ObservedProcess,
@@ -578,8 +589,9 @@ impl ResourceMonitorState {
     /// target SEED, never the verification: when true (app-shutdown bulk cleanup) the
     /// accumulated `observed_processes` set is skipped and only the fresh `observe_tree`
     /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
-    /// which would force a full toolhelp snapshot). The Job Object kill already
-    /// terminated the live tree at shutdown, so the fresh set is normally empty.
+    /// which would force a full toolhelp snapshot). The fresh set is normally empty
+    /// because PTY teardown has already run by then; AC creates no job object of its
+    /// own (`pty/job.rs` is unused in production as of #1438).
     ///
     /// #1151 - `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
     /// than targets: a caller-supplied binding that narrows which registration this kill
@@ -662,9 +674,11 @@ impl ResourceMonitorState {
             (
                 group.root_identity,
                 if fresh_targets_only {
-                    // #632 B2a - at shutdown, ignore the accumulated set entirely;
-                    // target only the fresh live tree captured below. The Job Object
-                    // kill already terminated the tree, so this is normally empty.
+                    // #632 B2a - at shutdown, ignore the accumulated set entirely; target
+                    // only the fresh live tree captured below, which is normally empty
+                    // because PTY teardown has already run. AC creates no job object of
+                    // its own (`pty/job.rs` is unused in production as of #1438), so this
+                    // fresh walk is the only source of targets on this path.
                     Vec::new()
                 } else {
                     group
@@ -828,6 +842,31 @@ impl ResourceMonitorState {
         // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
         // add the exclusion guidance; the per-PID detail stays in `message`.
         let blocked_by_security = quarantined && has_access_denied_signature(&errors);
+        // #1438 - a quarantined session-destroy is the evidence trail for the separate
+        // locked-directory defect: dump the full deduped target list once, so a follow-up
+        // ticket can name the holder instead of guessing. Gated to SessionDestroy because
+        // retry_orphaned_quarantine forwards ResourceKillReason::Watchdog, so a stuck
+        // group cannot multiply the line.
+        if quarantined && matches!(reason, ResourceKillReason::SessionDestroy) {
+            let tree = targets
+                .iter()
+                .map(|p| {
+                    format!(
+                        "pid={} exe={} ppid={:?} depth={} kill_allowed={}",
+                        p.identity.pid, p.exe_name, p.parent_pid, p.depth, p.kill_allowed
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            log::warn!(
+                "[resource-monitor] quarantine-tree session={} reason={} root_pid={} targets={}: {}",
+                session_id,
+                reason.as_log_reason(),
+                root_identity.pid,
+                targets.len(),
+                tree
+            );
+        }
         let state = if quarantined {
             ResourceGroupState::Quarantined
         } else {
