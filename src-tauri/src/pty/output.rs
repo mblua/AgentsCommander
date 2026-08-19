@@ -64,6 +64,14 @@ struct ScreenReplayState {
     /// Bounded suffix of the raw output stream. Must be a `VecDeque`: trimming a `Vec` from
     /// the front would memmove the whole ring on every chunk of the hot path.
     history: std::collections::VecDeque<u8>,
+    /// The last grid the ConPTY actually took (rows, cols): recorded by every
+    /// follow call BEFORE the skippable steps, so a skipped or failed
+    /// `set_size` leaves a visible divergence for the attach reconcile (#1439).
+    /// On transport backends (container) the follow runs after merely queuing
+    /// the resize frame, so there this records the size last REQUESTED of the
+    /// remote, not necessarily taken; the local backend's `if sent` gate is
+    /// what keeps the record honest where #1439 lives.
+    conpty_size: (u16, u16),
 }
 
 enum CaptureFailure {
@@ -910,6 +918,7 @@ impl SessionIoFanout {
             // its ceiling is a property of construction. `VecDeque` growth is amortized, so
             // reserving later cannot pin the ceiling: the doubling already overshot by then.
             history: std::collections::VecDeque::with_capacity(UI_HISTORY_LIMIT_BYTES),
+            conpty_size: (rows, cols),
         };
         let mut parsers = self
             .screen_parsers
@@ -1301,12 +1310,18 @@ impl SessionIoFanout {
 
         let parser_fault = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parsers_lock_poisoned session={id} cols={cols} rows={rows} (#1439)");
                 return;
             };
             let Some(state) = parsers.get_mut(&id) else {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=no_parser_entry session={id} cols={cols} rows={rows} (#1439)");
                 return;
             };
+            // #1439 record-first: the ConPTY took this size whether or not the
+            // parser can follow it; the attach reconcile compares against this.
+            state.conpty_size = (rows, cols);
             if state.parser_availability != ParserAvailability::Available {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parser_unavailable session={id} cols={cols} rows={rows} (#1439)");
                 return;
             }
             let resized =
