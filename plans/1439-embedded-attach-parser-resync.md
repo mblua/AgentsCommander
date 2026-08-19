@@ -6,7 +6,7 @@ Status: READY_FOR_IMPLEMENTATION
 
 Issue: [mblua/AgentsCommander#1439](https://github.com/mblua/AgentsCommander/issues/1439), `Embedded terminal re-attach paints garbled screen-parser state after #1432`.
 
-This is a minimal regression fix. It adds one field and two log-bearing branches inside `src-tauri/src/pty/output.rs`, one injected parameter and one INFO log inside `src-tauri/src/commands/pty.rs`, one guarded call plus a one-line dedup-key invalidation inside `src/terminal/components/TerminalView.tsx`, one test-only seam, and exactly two regression tests. It introduces no new crate, no new npm dependency, no new module, no new Tauri command, no new event, no new IPC payload shape, no new configuration key, and no migration. It adds zero module-to-module dependency arcs.
+This is a minimal regression fix. It adds one field and two log-bearing branches inside `src-tauri/src/pty/output.rs`, one injected parameter and one INFO log inside `src-tauri/src/commands/pty.rs`, one guarded call plus a one-line dedup-key invalidation inside `src/terminal/components/TerminalView.tsx`, one test-only seam, and exactly two regression tests. Round 2 additionally re-pins four existing #973 test cases in `src/terminal/components/TerminalView.spawn-size.test.tsx` to the post-R1 resize contract (expectation and comment edits inside existing cases; zero test cases added or removed). It introduces no new crate, no new npm dependency, no new module, no new Tauri command, no new event, no new IPC payload shape, no new configuration key, and no migration. It adds zero module-to-module dependency arcs.
 
 ## 1. Frozen authority and entry gate
 
@@ -17,6 +17,8 @@ At authoring time (2026-08-19 UTC) the committed `HEAD` of the branch is `b19ee1
 Root `.gitignore` ignores `/plans/`, so the implementation must force-add this exact plan file with `git add -f plans/1439-embedded-attach-parser-resync.md`. Do not remove or weaken the `plans/` ignore rule.
 
 Step 7 (certification) must re-run the authority ritual: fetch `origin/main`, and stop for current-base review if `origin/main`, the local committed branch head, or their merge base no longer equals the frozen SHA above. Every line number in this plan refers to the frozen SHA. If a line number no longer matches the quoted text, stop and re-anchor on the quoted text, never on the number.
+
+Round-2 anchor note (2026-08-19 UTC, post-blocker): steps 1-3 landed as `8d09e835`, `98ae55c5`, `71cd694f` on this branch, and the round-2 amendment is authored at `71cd694f` with a clean tracked tree. `git diff --name-only b19ee185 71cd694f` touches only `plans/` and `src-tauri/` files, so `src/terminal/components/TerminalView.tsx` and `src/terminal/components/TerminalView.spawn-size.test.tsx` are byte-identical at the frozen SHA and at `71cd694f`; line anchors for those two files are valid at either SHA (section 9.2a cites them at `71cd694f`). Everything else keeps the frozen-SHA rule above.
 
 ## 2. Objective and non-goals
 
@@ -30,7 +32,7 @@ Non-goals, binding on the implementer:
 - Do not change `PtyScreenSnapshotPayload`, `src/shared/types.ts`, or `src/shared/ipc.ts`. The IPC surface is untouched.
 - Do not force a ConPTY repaint after a reconcile miss. The issue marks it optional; it would require a resize jiggle against `resize_instance`'s dedup, and the TUI's own repaint cadence (sub-second for the reported Claude Code sessions) converges the content. Known residual: after a reconcile miss, the parser's cell content stays incomplete until the child app next repaints; the seed for that interval is `None`, never garbage.
 - Do not touch the `applySnapshot` discard branch (`live output outran the reconcile budget`). It is dev-rust's kept-alive secondary suspect (#1439 evidence, gap 4) and out of this issue's minimal scope.
-- Do not add tests beyond the two named in section 9.
+- Do not add tests beyond the two named in section 9. The round-2 re-pin (9.2a) amends the EXPECTATIONS of four existing #973 cases and adds or removes none; the spawn-size file's case count stays 9.
 - Do not silence, rename, or reuse existing log stages (`stage=parser_fault` stays exactly as-is on both existing paths).
 
 ## 3. Evidence and identified cause
@@ -57,6 +59,7 @@ In scope:
 4. INFO log for every window-requested PTY resize (session, cols, rows, requesting window label).
 5. Frontend: schedule the viewport sync on the no-snapshot attach path for the visible session.
 6. Exactly two regression tests (one Rust in `output.rs`, one case in `TerminalView.attachment.test.tsx`) plus the one test-only seam the Rust test needs.
+7. Round 2: re-pin the four #973 invoke-count cases in `TerminalView.spawn-size.test.tsx` to the post-R1 contract (section 9.2a); expectation and comment edits inside existing cases only.
 
 Out of scope (per issue and section 2 non-goals): forced ConPTY repaint, pending/deferred resize application, the discard branch, `local_backend.rs` internals, container backend specifics (`ContainerTransportBackend` inherits whatever it already gets from the shared fanout code paths), any IPC/type change, any refactor.
 
@@ -244,6 +247,8 @@ Why this line is required: `sendPtyResize` (`TerminalView.tsx:319-347`) early-re
 
 Why the placement is fixed at the top of the function (G3; the narrower inside-the-branch variant is REJECTED): the in-branch variant leaves the seeded cross-grid re-attach deduped and leaves the section 7 reconcile race residual unhealed, and either alone fails 9.3. `applySnapshot` has exactly one caller (the attach-settle path) and attach settles are discrete UI events, never per-resize-tick, so the key clears once per settle and the dedup operates unchanged within an attached interval. Worst added cost is one same-size `pty_resize` per attach settle, which `resize_instance` answers with `sent = false` (no follow, no broadcast), plus at most one `reportSpawnSizeDrift` console line. The failure rollback in `sendPtyResize` restores `null` and the retry path is unaffected. The discard branch's own body stays untouched (section 2 non-goal); this line merely runs before it, where letting the next natural resize through is the desired behavior.
 
+Round-2 ratification (Step 7 round 2, W1): the #973 child-protection guarantee transfers its enforcement point. R1's settle send is frontend-visible, and the #973 suite (`TerminalView.spawn-size.test.tsx`) pins frontend `pty_resize` INVOKE COUNTS as its acceptance, so R1 shifts those pins by exactly one send per attach settle. The guarantee "no resize reaches the child while it is starting up" is hereby ratified as enforced like this: WITHIN an attached interval the frontend dedup suppresses identical sends exactly as before (R1 clears the key only at the discrete attach settle); the settle send itself is same-size and is answered by the backend `resize_instance` dedup with `sent = false` (no ConPTY motion, no parser follow, no broadcast; the G3/E6 body reads at `local_backend.rs:1991-1997`, 2013-2015); and during the startup hold window a held size never moves the ConPTY while a deduped size is already the parser's size (G8), so on every path nothing reaches the starting child. The four suite cases that pinned the OLD frontend counts are re-pinned in 9.2a; the suite keeps guarding what the frontend can actually observe (exact send counts, exact dims, drift reporting, retry boundedness). Field evidence reinforcing the every-attach placement: the second #1439 incident (issue #1439 comment 5346328441, 2026-08-19) reproduced the corruption through a plain deselect -> re-select (`source=userSwitch`, `targetDetached=false`, no detach at all), so the healed path must fire on every attach settle, which is exactly what the top-of-function placement provides and what any narrower variant misses.
+
 Second: extend the early no-snapshot branch:
 
 ```tsx
@@ -277,6 +282,7 @@ Doc amendment in the same diff (Step 5 N2, ratified, zero behavior): the retenti
 | `src-tauri/src/commands/pty.rs` | `pty_resize` (452-464) | generic `R`, injected `webview`, INFO log (section 5.4) |
 | `src/terminal/components/TerminalView.tsx` | `applySnapshot` (570-613) | dedup-key invalidation at function top + viewport sync in the no-snapshot branch + one comment-clause amendment (section 5.5) |
 | `src/terminal/components/TerminalView.attachment.test.tsx` | `describe("TerminalView attachment (#1363)")` | one new test case (section 9.2) |
+| `src/terminal/components/TerminalView.spawn-size.test.tsx` | the four cases at lines 313, 364, 481, 528 (anchors at `71cd694f`) | round 2: expectations re-pinned to the post-R1 contract (section 9.2a); zero cases added or removed |
 
 No other file changes. `pty/manager.rs`, `pty/local_backend.rs`, `pty/backend.rs`, `pty/container_backend.rs`, `shared/types.ts`, `shared/ipc.ts` are read-only context for this fix.
 
@@ -294,6 +300,7 @@ No other file changes. `pty/manager.rs`, `pty/local_backend.rs`, `pty/backend.rs
 - Known residual (accepted, documented): the divergence-interval parser cells stay unreliable until the child's next full repaint; the plan trades a garbled seed for a `None` seed during that interval. A second residual: a healthy cross-grid re-attach still reflows previously seeded wide content in the local scrollback (cosmetic, scrollback-only, inherent to the #1432 seed-then-refit design); out of scope, noted for the record.
 - Reconcile false-negative window (Step 6 G6, documented residual): `LocalProcessBackend::resize` computes `sent` under the `ptys` guard and calls the follow only after dropping it, so an attach landing between the ConPTY resize and the follow sees parser == record == old grid and seeds the old grid. That seed is internally consistent; live bytes garble only until the 5.5 sync re-imposes the attacher's grid, so the residual is transient and self-heals BECAUSE of the R1 invalidation. Closing it would require holding `ptys` across the follow, which the in-code comment rejects for lock-queueing reasons; out of scope. Triage rule for 9.3: a garble report WITHOUT a `stage=attach_grid_mismatch` WARN is attributed to this race, not read as the fix failing.
 - Transport backends (Step 6 G5, documented residual): `ContainerTransportBackend::resize` calls the follow unconditionally after merely queuing the resize frame to the bridge; no applied-ack exists, so for container sessions `conpty_size` records the size last requested of the remote and the reconcile is structurally blind to remote-apply divergence. Identical blindness ships today, parser and record always move together there (no new false positives), and the local path's `if sent` gate keeps the record honest where the incident lives.
+- Retry-budget accounting in an all-fail world (round 2, W1, accepted residual): when every `pty_resize` invoke fails, the R1 settle burst consumes the whole retry budget first. `resizeRetryAttempts` resets only on success (`sendPtyResize`, `TerminalView.tsx:319-347`; `scheduleResizeRetry`, 292-317; `PTY_RESIZE_MAX_RETRIES = 3` and `PTY_RESIZE_RETRY_DELAY_MS = 120`, lines 44-45), so a later user resize still sends its first attempt (first attempts are never budget-gated) but arms no retry, and the loud "giving up" line fires at the settle burst and again after that attempt. The outcome stays bounded and loud, only the burst that spends the budget changes, and the state is reachable only while the resize IPC is persistently dead, a world in which no frontend policy can correct the PTY grid anyway. Pinned by the re-pinned budget test (9.2a, T4).
 
 ## 8. Compatibility and security
 
@@ -304,7 +311,7 @@ No other file changes. `pty/manager.rs`, `pty/local_backend.rs`, `pty/backend.rs
 
 ## 9. Tests and objective acceptance criteria
 
-Exactly two tests. No others.
+Exactly two tests. No others. Round 2 re-pins four existing #973 cases (9.2a) without adding any.
 
 ### 9.1 Rust regression test (`src-tauri/src/pty/output.rs`, existing tests mod)
 
@@ -345,9 +352,36 @@ Harness mechanics (Step 5 E5 + Step 6 G2, binding): (i) pin the harness so the F
 
 Objective criteria: the new case passes; every existing case in the file passes unchanged; the full frontend suite stays green.
 
+### 9.2a Round-2 re-pin: the four #973 invoke-count cases (`src/terminal/components/TerminalView.spawn-size.test.tsx`, anchors at `71cd694f`)
+
+Why: R1 admits exactly one settle-driven `pty_resize` per attach settle, and this suite pins frontend invoke counts as #973's acceptance; the collision is test-contract level only (5.5 round-2 ratification). The new pins below are the binding contract. They were derived from the implementer's measured post-R1 run (blocker report 20260819-190311: T1 observed 1, T2 observed 2, T3 premise observed 2, T4 observed 6) plus a direct read of the suite and of the resize mechanics at `71cd694f`. If any pin misses under a scheduling difference during implementation, STOP and report the observed sequence; do not adjust counts unilaterally.
+
+Suite mechanics every re-pin builds on (verified by direct read):
+
+- Every attach in this suite settles through the no-snapshot branch: the suite's `activate_terminal_output` fake returns `data: []`, so `applySnapshot` takes the 5.5 early branch and the settle sync is that branch's `scheduleViewportSync`.
+- The file installs `installDeterministicAnimationFrames()`: rAF callbacks run only under `frames.flush()` / `frames.flushFrame()`, and `waitFor` sleeps real time without advancing frames. A settle sync whose rAFs are queued after a flush has drained would never run under flush-then-assert, so every NEW settle-send assertion must use the file's own `driveFramesUntil(frames, ...)` helper (drive, re-check, stop), then may flush the remainder and assert stability.
+- Resize mechanics (`TerminalView.tsx`): `sendPtyResize` (319-347) dedups on `lastSentViewport`, sets the key optimistically, resets `resizeRetryAttempts` to 0 on success, and on failure rolls the key back, warns, and calls `scheduleResizeRetry` (292-317), which coalesces onto a pending timer, gives up loudly at `resizeRetryAttempts >= PTY_RESIZE_MAX_RETRIES` (3), and otherwise arms one real timer (120ms x attempt) that re-sends the terminal's current dims. `reportSpawnSizeDrift` (271-290) fires at most once per entry (`spawnDriftReported` latch) and only for dims that differ from `spawnViewport`.
+- Consequence per settle: with sends succeeding, exactly ONE extra invoke (the first post-clear sync sends; the second rAF frame and every later sync dedup against the freshly written key). With every send failing, the rollback re-nulls the cleared key between frame passes, so the settle burst is one rAF-frame send, at most one repeat from the second frame, then exactly 3 timer retries, then the loud give-up: 4 or 5 sends, bounded either way.
+
+The four re-pins. In all of them `resizesFor(fake, SPAWNED)` payload asserts include `sessionId: SPAWNED`; comment rewrites are free in wording but must name #1439/R1 and, where the old comment claimed "no resize reaches the child", the `resize_instance` dedup as the new enforcement point.
+
+**T1 (line 313, was `issues no resize at all when the fitted size already equals the spawn size`; expected 0 sends).** New title: `sends exactly one same-size resize at the attach settle, and the backend dedup keeps it from the starting child`. Replace the final flush-then-assert-0 sequence with: `await driveFramesUntil(frames, "the settle sync sent", () => resizesFor(fake, SPAWNED).length > 0)`; assert the payload list equals exactly `[{ sessionId: SPAWNED, cols: 74, rows: 23 }]`; then `await frames.flush()` and assert the list is STILL exactly that one element (the second rAF frame and any other queued sync dedup: one send per settle, no more). Keep the ON_SCREEN `length > 0` assert unchanged. Red/green: without R1 the settle sync dedups against the creation-primed key and the count stays 0, so the case is red (a live R1-regression detector); wrong dims or a more-than-once-per-settle key clear (the storm class G3 excluded) also fail the exact-payload pin.
+
+**T2 (line 364, was `resizes exactly once, and says so, when the fit drifts from the spawn size`; expected exactly 1 send of 74x24).** New title: `resizes once for the drift and once more at the settle, and reports the drift exactly once`. After the attach: `await driveFramesUntil(frames, "drift send and settle re-send landed", () => resizesFor(fake, SPAWNED).length >= 2)`; assert the payload list equals exactly `[{ sessionId: SPAWNED, cols: 74, rows: 24 }, { sessionId: SPAWNED, cols: 74, rows: 24 }]` (the pre-settle drift send, then the settle re-imposition of the identical size); then `await frames.flush()` and assert still exactly 2. Strengthen the drift assert to EXACTLY one warn call containing `spawn-size drift` (deterministic: the `spawnDriftReported` latch, and the settle re-send carries no drift anyway). Red/green: without R1 the settle re-send dedups and the count stays 1, red against the new pin; the exact-two pin still kills the original #973 defect class (any identical-resize burst beyond the two named senders).
+
+**T3 (line 481, `re-sends a failed resize that is the only one of its burst`; title and object KEPT).** Problem to fix: post-R1 the settle send (74x23) is the first SPAWNED send, so the fake's positional `spawnedAttempts === 1` failure is consumed by the settle send (premise observed: failed settle send plus its timer retry = 2), and the user drag then succeeds first try, so the case stops exercising a failed USER resize. Re-aim the failure by dims, not position: replace the counter with a one-shot latch that throws for the FIRST SPAWNED invoke whose `rows === 24` (the drag size; the settle sends rows 23, which must succeed). New premise (replacing the assert-0): `await driveFramesUntil(frames, "the settle send landed", () => resizesFor(fake, SPAWNED).length > 0)`; assert the payload list equals exactly `[{ sessionId: SPAWNED, cols: 74, rows: 23 }]`; `await frames.flush()`; assert still exactly 1 (settle send succeeded, so nothing is armed and nothing else will send until the drag). Then keep `spawned.emitResize(74, 24)` and re-pin the tail: `waitFor(() => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(3), 2000)`, then assert entries [1] and [2] both equal `{ sessionId: SPAWNED, cols: 74, rows: 24 }` (the failed drag attempt and its rollback-driven timer re-send). Update the leading comment block: the settle send now exists and succeeds; after it settles, nothing else in the system sends for this session until the drag, so the drag's failure still has nothing to hide behind. Red/green: the case keeps its original object (a rollback that is not a real retry leaves the drag at one call) verbatim on the drag segment, and the premise now also pins the settle send's exact payload.
+
+**T4 (line 528, `gives up loudly, and boundedly, when the resize can never land`; title and object KEPT).** The all-fail fake is unchanged. Force the order so the pins are deterministic: after the existing `frames.flush()`, move the give-up `waitFor` to BEFORE the drag; the settle burst alone exhausts the budget (one rAF-frame send, at most one second-frame repeat, exactly 3 timer retries at 120/240/360ms, then the loud line; the existing 3000ms budget covers it). Then record `const settleSends = resizesFor(fake, SPAWNED).length` and assert `settleSends <= 5`. Then `spawned.emitResize(74, 24)`; `await waitFor(() => expect(resizesFor(fake, SPAWNED).length).toBe(settleSends + 1))`; assert the LAST payload equals `{ sessionId: SPAWNED, cols: 74, rows: 24 }` and the total is `<= 6`. Keep the `giving up` console.error assert as-is (already satisfied by the settle burst; it fires again after the drag attempt). Replace the budget comment: the budget is one frame-driven send plus at most one frame repeat plus `PTY_RESIZE_MAX_RETRIES` timer re-sends, all consumed by the settle burst in an all-fail world, after which the user's own attempt still goes out (first attempts are never budget-gated) but arms no retry until a success resets the counter (section 7 residual, round 2). Red/green: boundedness stays the object and is tightened per segment: the drag adds EXACTLY one send, pinning "no retry without a prior success"; an unbounded or key-corrupting implementation reddens on the <= 6 bound.
+
+The OTHER FIVE cases in the file must pass UNCHANGED, and the file's case count stays 9. Per case, why they hold: `opens the PTY at the size...` (295) asserts `create_session` args only; `starts xterm at the size...` (345) asserts the xterm start size and xterm reflows (`spawned.resizes`), never invoke counts, and the settle sync's `fit()` is a no-op on an already-fitted terminal; `still fits and resizes a session opened without a spawn size` (397) asserts `length > 0` and the FIRST payload, both stable under one extra deduped-or-first settle send; `sends no size for a collapsed tile...` (434) same shape (`> 0` plus first payload); `never measures a hidden session...` (587) asserts exact ON_SCREEN payload lists whose settle syncs are either blocked by the visibility guards while hidden or dedup to the same single send while visible. Any of the five turning red during implementation is a STOP-and-report signal, not a case to amend.
+
+Objective criteria (9.2a): `npx vitest run src/terminal/components/TerminalView.spawn-size.test.tsx` reports 9 passed (9) with the full step-4 change applied; red-first spot check: with ONLY the R1 line removed and everything else in place, T1 and T2 go red on their new counts (0 and 1 observed instead of 1 and 2); the full frontend suite stays green (9.2 criteria unchanged).
+
 ### 9.3 Field acceptance (post-merge verification, evidence over intuition)
 
 Reproduce the incident choreography (embedded at a small grid, detach, resize detached window, keep output active ~1 min, re-attach): the embedded view must show either a clean seed or a live view that converges without manual resizing, and `app.log` must now contain the INFO resize lines for both windows plus, if any skip occurred, exactly one WARN naming its `reason=`. Any `stage=attach_grid_mismatch` WARN in the field identifies the residual divergence source with evidence, which is the diagnosability the issue demands.
+
+Second, cheaper repro (round 2, from the field): per issue #1439 comment 5346328441, deselect a working embedded session, let its agent keep printing for a while, then re-select it; same acceptance criteria as above. This choreography involves no detached window at all (`source=userSwitch`, `targetDetached=false` in the incident log), so it exercises the reconcile and the R1 re-imposition through the plain selection-switch attach path; run both choreographies.
 
 9.3 spans BOTH halves and runs only after the Rust half (steps 1-3) and the TypeScript half (step 4) are both landed on this branch: the backend half supplies trustworthy-or-None seeds and the log evidence, the frontend half supplies the guaranteed grid re-imposition, and neither half alone satisfies the criteria above (see also the section 7 triage rule for a garble without a mismatch WARN).
 
@@ -356,7 +390,7 @@ Reproduce the incident choreography (embedded at a small grid, detach, resize de
 1. `output.rs`: `ScreenReplayState.conpty_size` + record-first + WARNs (5.2). Compile + existing tests green. Owner: dev-rust.
 2. `output.rs`: reconcile arm in `activate_terminal_output` with the hoisted fault pair (5.3) + seam + Rust test (9.1). Green. Owner: dev-rust.
 3. `commands/pty.rs`: `pty_resize` generic + INFO (5.4). Green. Owner: dev-rust.
-4. `TerminalView.tsx`: dedup-key invalidation + no-snapshot viewport sync + comment amendment (5.5) + frontend test (9.2). Green. Owner: dev-webpage-ui.
+4. `TerminalView.tsx`: dedup-key invalidation + no-snapshot viewport sync + comment amendment (5.5) + frontend test (9.2) + the four #973 re-pins (9.2a). Green, including the full frontend suite. Owner: dev-webpage-ui.
 
 Each step is independently compilable and testable; no step depends on a later one. Ownership and landing order (Step 7, ratifying dev E7): the Rust half (steps 1-3, dev-rust) lands first, the TypeScript half (step 4, dev-webpage-ui) lands second, both on this branch. The 9.2 harness fakes the backend, so step 4 has no build-time dependency on steps 1-3; the ordering is a certification ordering, not a technical one. Field acceptance 9.3 runs only after both halves are landed (section 9.3).
 
@@ -521,3 +555,35 @@ Arcs enumerated against the actual bodies at the frozen SHA, not the plan text: 
 ### Verdict
 
 READY_FOR_IMPLEMENTATION (round 1). All four REQUIRED items and all four NOTEs are resolved and incorporated above; the Plan Contract holds: no TBD, no open decision, no competing alternative (the R1 placement alternative is closed in 5.5). The Plan-SHA256 of the certified file bytes is recorded in the Step 7 reply message to the tech-lead, never inside the file it hashes.
+
+## Step 7 consensus resolution (round 2): the #973 suite collision
+
+Author: architect, wg-8, 2026-08-19 UTC, on the tech-lead's amendment dispatch (20260819-190800) after the Step-8 stop. The round-1 certification (digest `43054DC7...DFA43`) was INVALIDATED by the Step-4 blocker; this round amends and re-certifies. The round-1 sections above stay untouched as the historical record.
+
+### W1 (Step 8 blocker, dev-webpage-ui 20260819-190311): verified and accepted as a plan insufficiency
+
+The finding: R1 alone, by isolation proof, reddens the four invoke-count cases of `TerminalView.spawn-size.test.tsx` (313, 364, 481, 528), while the certified plan simultaneously mandated R1 at top-of-`applySnapshot`, section 6 "No other file changes", and 9.2 "the full frontend suite stays green": three clauses unsatisfiable together. No enrichment step had read or run that suite; the production-layer analysis (the settle send is same-size and `resize_instance` answers `sent = false`) was and remains unchallenged. Round-2 verification, independent of the blocker report: fresh CBM gate ready first attempt at `71cd694f` (same project), 11 graph operations, 1 bounded fallback (the two retry constants, unindexed), plus a full direct read of the suite file and of the preserved step-4 patch; every mechanism claim in the blocker reproduced against the actual bodies (`sendPtyResize` dedup and rollback, `scheduleResizeRetry` coalescing and give-up at 3 attempts, `reportSpawnSizeDrift` once-per-entry latch, the suite's `data: []` fake and deterministic-rAF harness), and the observed counts (1, 2, 2, 6) are exactly what those mechanics predict. W1 also surfaced the retry-budget accounting consequence, resolved below.
+
+### Decision: (a). R1 stands; the four #973 cases are re-pinned
+
+Alternative (b), re-deciding R1, has no winning variant: dropping R1 reopens the incident itself (the healing resize dedups away and 9.3 fails on a healthy repro, per E2/G3); the narrow in-branch variant was already rejected in round 1 for failing 9.3 on the healthy seeded cross-grid re-attach and leaving the G6 race unhealed, and it would not even dodge this collision, because the suite's attaches all settle through the no-snapshot branch (the fake's snapshots carry `data: []`), where the in-branch line fires too; and the new field evidence (issue comment 5346328441: corruption reproduced by a plain deselect -> re-select with no detach) demands the heal on every attach settle, which only the top-of-function placement provides. What actually broke was the test contract: #973's acceptance was pinned as frontend send-suppression, and R1 deliberately moves the settle-send suppression to the backend dedup. The transfer is ratified in 5.5 (round-2 paragraph), the four cases are re-pinned with exact expectations in 9.2a, and no production behavior changes relative to the round-1 certification.
+
+### Resolution table (round 2)
+
+| Item | Verdict | Landed in |
+|---|---|---|
+| W1 main: R1 vs the #973 invoke-count pins | RATIFIED as re-pin: guarantee-transfer paragraph + four exact case specs; R1 and its placement unchanged; "full suite green" kept binding | 5.5, 6, 9, 9.2a, 10, intro, 1, 2, 4 |
+| W1 retry-budget accounting note | ACCEPTED as documented residual, pinned by T4's new bound (settle burst spends the budget; first attempts never gated; reset only on success) | 7, 9.2a |
+| Field evidence: second incident, no detach involved | INCORPORATED: reinforces every-attach placement; adds the cheaper 9.3 repro choreography | 5.5, 9.3 |
+
+### Three-clause consistency restored
+
+(i) R1 stays at top-of-`applySnapshot` (5.5, unchanged). (ii) Section 6 now lists `TerminalView.spawn-size.test.tsx` as an amended surface, so "No other file changes" holds again over the widened, still-exhaustive list. (iii) 9.2's "the full frontend suite stays green" stays binding and is again satisfiable because 9.2a re-pins the four cases to the true post-R1 contract. No TBD, no open decision, no competing alternative.
+
+### Dependency-cycle gate (verify-no-dependency-cycles, round 2)
+
+The round-2 amendment consists of expectation and comment edits inside one existing frontend test file plus plan text: it adds and removes ZERO module-to-module references, so no SCC can appear, grow, or merge and no cross-boundary arc can be created; role/layering hygiene is untouched (no lower layer gains an `AppHandle`/`tauri` dependency; the edited file is a test file that already imports its own harness). The round-1 per-arc manual analysis and section 8's binding on the implementation review (`rust-levelization-run` pre/post with the five-point criterion) stand unchanged. GATE RESULT: PASS.
+
+### Verdict (round 2)
+
+READY_FOR_IMPLEMENTATION (round 2). W1 and its accounting note are resolved and incorporated; the Plan Contract holds across the amended sections. The round-2 Plan-SHA256 of the certified file bytes is recorded in the round-2 reply message to the tech-lead, never inside the file it hashes; the round-1 digest is superseded.
