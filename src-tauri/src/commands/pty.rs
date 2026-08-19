@@ -449,13 +449,20 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn pty_resize(
+pub fn pty_resize<R: tauri::Runtime>(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    webview: tauri::Webview<R>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    // #1439: the only record of who drove a grid change; the incident was
+    // diagnosable only by inference because no pty resize was ever logged.
+    log::info!(
+        "[pty] resize session={uuid} cols={cols} rows={rows} from={}",
+        webview.label()
+    );
     pty_mgr
         .lock()
         .unwrap()
