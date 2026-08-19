@@ -10,7 +10,7 @@ mod platform {
     use super::*;
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
-        WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -20,8 +20,9 @@ mod platform {
         K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
-        PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess,
+        WaitForSingleObject, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        PROCESS_VM_READ,
     };
 
     pub struct PlatformProcessTreeBackend;
@@ -58,7 +59,7 @@ mod platform {
                 |pid| {
                     *identity_cache
                         .entry(pid)
-                        .or_insert_with(|| observe_identity(pid).ok().flatten())
+                        .or_insert_with(|| observe_identity_queryable(pid).ok().flatten())
                 },
                 |pid| process_memory(pid).unwrap_or_default(),
             ))
@@ -88,10 +89,15 @@ mod platform {
             };
             let ok = unsafe { TerminateProcess(handle.raw(), 1) };
             if ok == 0 {
-                return verify_identity_exited(
-                    process.identity,
-                    last_error("TerminateProcess failed").to_string(),
-                );
+                let failure = last_error("TerminateProcess failed").to_string();
+                // #1438 - ERROR_ACCESS_DENIED here is usually STATUS_PROCESS_IS_TERMINATING:
+                // the process is already tearing itself down. Give it the same grace the
+                // success path gets so verification sees the settled state. The wait result
+                // is deliberately ignored: a target that is still alive after it produces
+                // the same Err, carrying the original message, so blocked_by_security still
+                // fires on a genuine denial.
+                let _ = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
+                return verify_identity_exited(process.identity, failure);
             }
             let wait_result = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
             let failure = match wait_result {
@@ -296,7 +302,12 @@ mod platform {
         Ok(entries)
     }
 
-    fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+    /// #1438 - shared probe body: open the pid and read its creation time, returning
+    /// the OPENED HANDLE alongside the identity so the caller can keep querying the
+    /// SAME handle. The handle must be shared rather than re-opened per query: a
+    /// second `OpenProcess` between two reads could land on a recycled pid and report
+    /// the new occupant's state as the old identity's.
+    fn query_identity(pid: u32) -> Result<Option<(OwnedHandle, ProcessIdentity)>, ResourceError> {
         let handle = match open_process(pid, PROCESS_QUERY_INFORMATION) {
             Ok(handle) => handle,
             Err(err) => {
@@ -323,10 +334,49 @@ mod platform {
             let err = last_error("GetProcessTimes failed");
             return if pid_exists(pid)? { Err(err) } else { Ok(None) };
         }
-        Ok(Some(ProcessIdentity {
-            pid,
-            creation_time_100ns: filetime_to_u64(creation),
-        }))
+        Ok(Some((
+            handle,
+            ProcessIdentity {
+                pid,
+                creation_time_100ns: filetime_to_u64(creation),
+            },
+        )))
+    }
+
+    /// #1438 - corpse-AWARE probe: `Ok(Some(identity))` means a LIVE process with that
+    /// identity exists right now. A process that has exited yields `Ok(None)` even while
+    /// open handles elsewhere keep the corpse queryable (Windows keeps a terminated
+    /// process openable, with its creation time intact, for as long as ANY handle to it
+    /// exists, which is what made `Ok(Terminated)` unreachable). Every kill and verify
+    /// path uses this: the terminate pre-check, `verify_identity_exited`, the trait
+    /// method, the registry's `!kill_allowed` checks and second-chance drain, and every
+    /// watchdog retry.
+    fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        let Some((handle, identity)) = query_identity(pid)? else {
+            return Ok(None);
+        };
+        let mut exit_code: u32 = 0;
+        let ok = unsafe { GetExitCodeProcess(handle.raw(), &mut exit_code) };
+        if ok == 0 {
+            let err = last_error("GetExitCodeProcess failed");
+            return if pid_exists(pid)? { Err(err) } else { Ok(None) };
+        }
+        if exit_code != STILL_ACTIVE as u32 {
+            // Exited; open handles elsewhere merely keep the corpse queryable.
+            return Ok(None);
+        }
+        Ok(Some(identity))
+    }
+
+    /// #1438 G1 - corpse-TOLERANT resolver for the tree walk: returns the identity of
+    /// any process that is still queryable, INCLUDING one that has exited but is kept
+    /// queryable by open handles elsewhere. The tree walk's question is "what did the OS
+    /// snapshot contain", never "is this alive right now", and answering it with the
+    /// corpse-aware probe would let a root that exits mid-walk fail the root guard and
+    /// drop its whole subtree from the target set. Kill and verify paths must use
+    /// `observe_identity` instead.
+    fn observe_identity_queryable(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        Ok(query_identity(pid)?.map(|(_handle, identity)| identity))
     }
 
     fn process_memory(pid: u32) -> Result<ProcessMemory, ResourceError> {
@@ -388,6 +438,7 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::process::{Command, Stdio};
 
         fn entry(pid: u32, parent_pid: u32, exe: &str) -> ProcessEntry {
             ProcessEntry {
@@ -566,6 +617,73 @@ mod platform {
                 !probed.contains(&2000) && !probed.contains(&2001),
                 "identity resolver must not touch processes outside the subtree, probed={probed:?}"
             );
+        }
+
+        /// #1438 - real-process guard for the corpse-aware probe, following the
+        /// `pty/job.rs` real-process precedent. The `Child` is deliberately kept in
+        /// scope and un-waited: its open process handle keeps the terminated process
+        /// queryable, which is the exact production condition (the PTY layer holds the
+        /// same kind of handle) that made `Ok(Terminated)` unreachable.
+        #[test]
+        fn terminate_verified_reports_terminated_then_already_gone_for_real_process() {
+            let mut child = Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn ping child");
+            let pid = child.id();
+
+            let backend = PlatformProcessTreeBackend::new();
+            let live = backend
+                .observe_identity(pid)
+                .expect("observe live child")
+                .expect("a live child must resolve to an identity");
+            assert!(
+                observe_identity(pid).expect("probe live child").is_some(),
+                "negative control: a live process must be observable to the kill path"
+            );
+
+            let observed = ObservedProcess {
+                identity: live,
+                parent_pid: None,
+                parent_identity: None,
+                exe_name: "ping.exe".to_string(),
+                depth: 0,
+                private_bytes: None,
+                working_set_bytes: None,
+                cpu_percent: None,
+                kill_allowed: true,
+            };
+
+            assert_eq!(
+                backend
+                    .terminate_verified(&observed)
+                    .expect("first terminate must verify the exit"),
+                TerminateOutcome::Terminated
+            );
+
+            // The `Child` handle is still held here: the exact production condition.
+            assert!(
+                observe_identity(pid).expect("probe corpse").is_none(),
+                "a corpse must not be observable to the kill path"
+            );
+            assert!(
+                observe_identity_queryable(pid)
+                    .expect("resolve corpse")
+                    .is_some(),
+                "a corpse must stay queryable to the tree resolver (#1438 G1)"
+            );
+
+            assert_eq!(
+                backend
+                    .terminate_verified(&observed)
+                    .expect("retry must not error"),
+                TerminateOutcome::AlreadyGone,
+                "a watchdog retry over a dead target must converge without TerminateProcess"
+            );
+
+            child.wait().expect("reap the child");
         }
     }
 }

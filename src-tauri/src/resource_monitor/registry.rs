@@ -36,8 +36,19 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         true
     }
 
+    /// Reports the tree as the OS snapshot saw it. Identity resolution here is
+    /// corpse-TOLERANT: an exited-but-still-queryable process keeps its identity
+    /// (see #1438 G1); liveness filtering belongs to `observe_identity`.
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError>;
+    /// `Ok(Some(identity))` means a live process with that identity exists now. An
+    /// exited process that is still queryable through open handles MUST yield
+    /// `Ok(None)` (#1438).
     fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
+    /// MUST return `Ok(Terminated)` when the target verifiably exited, including when
+    /// other handles keep the corpse queryable. `Err` is reserved for a target that
+    /// demonstrably survives or cannot be verified. Every `TerminateOutcome` variant a
+    /// real backend can produce needs at least one real-process test producing it
+    /// (#1438 Decision 3).
     fn terminate_verified(
         &self,
         process: &ObservedProcess,
@@ -578,8 +589,10 @@ impl ResourceMonitorState {
     /// target SEED, never the verification: when true (app-shutdown bulk cleanup) the
     /// accumulated `observed_processes` set is skipped and only the fresh `observe_tree`
     /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
-    /// which would force a full toolhelp snapshot). The Job Object kill already
-    /// terminated the live tree at shutdown, so the fresh set is normally empty.
+    /// which would force a full toolhelp snapshot). The Job Object kill has already
+    /// terminated each jobbed session's live tree at shutdown (`kill_all_jobs()` runs
+    /// before this path; jobs are created per child in `spawn_sync`, `pty/job.rs`), so
+    /// the fresh set is normally empty; its survivors are job-less sessions' trees.
     ///
     /// #1151 - `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
     /// than targets: a caller-supplied binding that narrows which registration this kill
@@ -662,9 +675,13 @@ impl ResourceMonitorState {
             (
                 group.root_identity,
                 if fresh_targets_only {
-                    // #632 B2a - at shutdown, ignore the accumulated set entirely;
-                    // target only the fresh live tree captured below. The Job Object
-                    // kill already terminated the tree, so this is normally empty.
+                    // #632 B2a - at shutdown, ignore the accumulated set entirely; target only the
+                    // fresh live tree captured below. It is normally empty because the Job Object
+                    // kill has already terminated each jobbed session's tree (lib.rs fires
+                    // kill_all_jobs() before this path runs; jobs are created per child at spawn,
+                    // pty/job.rs), so this fresh walk exists to catch job-less survivors and is
+                    // the only source of targets on this path. Targets commonly resolve
+                    // AlreadyGone here; killed=0 is the expected, correct record (#1438).
                     Vec::new()
                 } else {
                     group
@@ -828,6 +845,31 @@ impl ResourceMonitorState {
         // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
         // add the exclusion guidance; the per-PID detail stays in `message`.
         let blocked_by_security = quarantined && has_access_denied_signature(&errors);
+        // #1438 - a quarantined session-destroy is the evidence trail for the separate
+        // locked-directory defect: dump the full deduped target list once, so a follow-up
+        // ticket can name the holder instead of guessing. Gated to SessionDestroy because
+        // retry_orphaned_quarantine forwards ResourceKillReason::Watchdog, so a stuck
+        // group cannot multiply the line.
+        if quarantined && matches!(reason, ResourceKillReason::SessionDestroy) {
+            let tree = targets
+                .iter()
+                .map(|p| {
+                    format!(
+                        "pid={} exe={} ppid={:?} depth={} kill_allowed={}",
+                        p.identity.pid, p.exe_name, p.parent_pid, p.depth, p.kill_allowed
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            log::warn!(
+                "[resource-monitor] quarantine-tree session={} reason={} root_pid={} targets={}: {}",
+                session_id,
+                reason.as_log_reason(),
+                root_identity.pid,
+                targets.len(),
+                tree
+            );
+        }
         let state = if quarantined {
             ResourceGroupState::Quarantined
         } else {
