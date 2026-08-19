@@ -589,9 +589,10 @@ impl ResourceMonitorState {
     /// target SEED, never the verification: when true (app-shutdown bulk cleanup) the
     /// accumulated `observed_processes` set is skipped and only the fresh `observe_tree`
     /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
-    /// which would force a full toolhelp snapshot). The fresh set is normally empty
-    /// because PTY teardown has already run by then; AC creates no job object of its
-    /// own (`pty/job.rs` is unused in production as of #1438).
+    /// which would force a full toolhelp snapshot). The Job Object kill has already
+    /// terminated each jobbed session's live tree at shutdown (`kill_all_jobs()` runs
+    /// before this path; jobs are created per child in `spawn_sync`, `pty/job.rs`), so
+    /// the fresh set is normally empty; its survivors are job-less sessions' trees.
     ///
     /// #1151 - `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
     /// than targets: a caller-supplied binding that narrows which registration this kill
@@ -674,11 +675,13 @@ impl ResourceMonitorState {
             (
                 group.root_identity,
                 if fresh_targets_only {
-                    // #632 B2a - at shutdown, ignore the accumulated set entirely; target
-                    // only the fresh live tree captured below, which is normally empty
-                    // because PTY teardown has already run. AC creates no job object of
-                    // its own (`pty/job.rs` is unused in production as of #1438), so this
-                    // fresh walk is the only source of targets on this path.
+                    // #632 B2a - at shutdown, ignore the accumulated set entirely; target only the
+                    // fresh live tree captured below. It is normally empty because the Job Object
+                    // kill has already terminated each jobbed session's tree (lib.rs fires
+                    // kill_all_jobs() before this path runs; jobs are created per child at spawn,
+                    // pty/job.rs), so this fresh walk exists to catch job-less survivors and is
+                    // the only source of targets on this path. Targets commonly resolve
+                    // AlreadyGone here; killed=0 is the expected, correct record (#1438).
                     Vec::new()
                 } else {
                     group
