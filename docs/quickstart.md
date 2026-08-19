@@ -85,6 +85,7 @@ That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 - [Concepts](concepts.md) — the vocabulary (agent, team, workgroup, coordinator, brief).
 - [Teams and workgroups](agents/teams-and-workgroups.md) — coordinator authority, brief writing, recovery.
 - [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
+- [Feature index](features/README.md): every feature page, grouped by what it does.
 - [Use cases](use-cases.md) — recipes other people are running.
 - [Troubleshooting](troubleshooting.md) — when something does not work.
 

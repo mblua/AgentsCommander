@@ -77,6 +77,7 @@ A minimal `settings.json`:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agents` | `AgentConfig[]` | See example | The dropdown of available coding agents. |
+| `agentAutoUpdateByCommand` | object | `{}` | Per-coding-agent-command answer to the startup update prompt. Keys are coding-agent commands (for example `claude`, `codex`); `true` means AC updates that command at startup without asking again, `false` means it never asks again and never updates. An absent key means AC asks on the next startup. See [Coding agent auto-update](../features/agent-auto-update.md). |
 
 Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
 
@@ -119,6 +120,8 @@ Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writ
 | `dest` | string | `""` | Destination folder name under the replica root (for example `.claude`). Validated as a safe name, no path separators or traversal. |
 
 Seeding is active only when `enabled` is true and `dest` is non-empty. See [Config seed](../features/config-seed.md) for template precedence and token substitution.
+
+See [Context tracking](../features/context-tracking.md).
 
 ### Coding agent profiles
 
@@ -188,6 +191,8 @@ Each registered project is stored in two forms: a canonical absolute path (the e
 | `archivedProjectPaths` | string[] | `[]` | Absolute paths of archived (registered but hidden) projects. |
 | `archivedProjectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `archivedProjectPaths`: same length and order. |
 
+See [Project archiving](../features/project-archiving.md).
+
 **Companion format.** A companion string is relative to the directory of the running executable (see [Portable instances](../features/portable-instances.md#portable-project-paths)), always written with `/` separators on every OS. `.` means the instance folder itself; `..` is allowed as long as it does not climb above the filesystem root. A project on a different Windows drive or UNC share than the binary has no relative form, so its companion slot is `null` and it stays absolute-only.
 
 **Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
@@ -226,12 +231,16 @@ Each registered project is stored in two forms: a canonical absolute path (the e
 | `resourceKeepLastSnapshot` | bool | `true` | Keep the last snapshot. |
 | `resourceBackoffPolling` | bool | `true` | Use backoff polling. |
 
+See [Resource monitor](../features/resource-monitor.md).
+
 ### Git status sweeper
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `gitSweepConcurrency` | number | `1` | How many repositories the global git sweeper inspects at once. Clamped to `1..=4` when read. `1` is strictly sequential, which is what bounds concurrent `git.exe`; raise it to `2` only if one slow repository is delaying the others. |
 | `gitSweepMinIntervalSecs` | number | `10` | Lower bound, in seconds, on one sweeper round. Clamped to `1..=3600` when read; `0` is raised to `1`. The effective period is `max(this, round duration)`, so on a large workgroup set the round duration dominates and this never fires. |
+
+See [Sidebar guide](../features/sidebar-guide.md).
 
 Both are manual-only (no UI) and are read from the in-memory settings, so an edit takes effect on the next **restart**.
 
@@ -316,6 +325,8 @@ See [Telegram bridge setup](../integrations/telegram.md).
 | `webServerPort` | u16 | platform-default per binary suffix | Listening port. |
 | `webServerBind` | string | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` only if you understand the implications. |
 
+See [Remote web UI](../features/remote-web-ui.md).
+
 #### Web Remote Access on a trusted LAN
 
 Web Remote Access is the embedded HTTP/WebSocket listener controlled by the
@@ -393,6 +404,8 @@ In-daemon control-plane API server for Docker/distributed agents. Default off: n
 | `apiServerPort` | u16 | profile-aware default per binary suffix | Listening port. |
 | `apiServerBind` | string | `"127.0.0.1"` | Bind address. Any non-loopback bind logs a loud startup warning. |
 
+See [Control-plane API](../features/control-plane-api.md).
+
 See [`api-client`](cli.md#api-client) for minting and revoking control-plane client tokens.
 
 ### Brief auto-title
@@ -422,6 +435,8 @@ Root-level context-scrape watcher patterns, keyed by watcher id. A pattern can a
 |---|---|---|---|
 | `watchers` | `{ <id>: WatcherEntry }` | `{}` | Watcher patterns, resolved in key order against an 8-watcher budget. |
 | `watchersGeometry` | object \| null | `null` | Geometry of the watcher activity window. |
+
+See [Watchers](../features/watchers.md).
 
 `WatcherConfig` (one valid entry):
 
@@ -459,6 +474,8 @@ Root-level context-scrape watcher patterns, keyed by watcher id. A pattern can a
 |---|---|---|---|
 | `logLevel` | string \| null | `null` | One of `error`, `warn`, `info`, `debug`, `trace`. Applied live, no restart. An invalid value, a legacy filter string, or `null` falls back to `info`. The `RUST_LOG` env var, if set, overrides this and freezes the live selector until restart. |
 | `activityLogEnabled` | bool | `false` | Enable the activity log. |
+
+See [Activity log](../features/activity-log.md).
 
 See [Log filtering](log-filtering.md).
 

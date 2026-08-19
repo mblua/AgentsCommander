@@ -47,6 +47,10 @@ The badge changes color as idle time grows:
 | At or above the yellow threshold (default 30m) | Yellow |
 | At or above the red threshold (default 60m) | Red |
 
+You set both thresholds yourself. `coordinatorIdleBadgeYellowMinutes` (default `30`) is the idle minute count at which the badge turns yellow, and `coordinatorIdleBadgeRedMinutes` (default `60`) is the count at which it turns red.
+
+Both keys change **the badge color only**. They do not move the auto-close timeout: that stays `coordinatorAutoCloseMinutes`. Raising the red threshold to `120` while the timeout stays at `60` gives you a team that is closed while its badge is still yellow, so keep the red threshold at or below the timeout if you want the red badge to mean "about to close".
+
 The badge is **informational and always on**. It shows even when auto-close is turned off, so you can monitor idle teams without letting AC close them.
 
 ## The AUTO-CLOSED badge
@@ -54,6 +58,18 @@ The badge is **informational and always on**. It shows even when auto-close is t
 When auto-close fires and the session it destroys is the team's **coordinator**, AC stamps that coordinator row with an **AUTO-CLOSED** badge. This is your record that the team was closed by the timeout, not by you.
 
 If only a non-coordinator member is reaped while the coordinator survives (the coordinator was spared by a grace window or a late user message), the surviving coordinator keeps its idle counter and is **not** stamped. The AUTO-CLOSED badge means specifically "this coordinator's own session was auto-closed."
+
+## Coordinator cascade close
+
+Cascade close is the other way a team's sessions go down together, and it is **the one you trigger**. When you close a coordinator yourself, `coordinatorCascadeCloseEnabled` decides whether AC also closes that team's member sessions. It is `true` by default, so closing a coordinator closes the team.
+
+The cascade covers the members of that coordinator's team that have a live PTY, and never the coordinator's own siblings in other teams. Dormant and already-exited member rows are left alone: there is nothing to terminate.
+
+If at least one live member is still working (it is not waiting for your input), AC does not close anything yet. It reports how many members are busy and asks you to confirm, so a cascade never silently kills an agent mid-task.
+
+Set the key to `false` and only the coordinator closes. Its members keep running as independent sessions, which is what you want when you are restarting a coordinator and do not want its agents to lose their PTYs.
+
+This key does **not** change what auto-close does. Auto-close closes coordinators and agent-owned member sessions on the rules described above, whatever `coordinatorCascadeCloseEnabled` is set to.
 
 ## Settings
 
@@ -64,8 +80,9 @@ These keys live in `settings.json` (see the [settings reference](../reference/se
 | `coordinatorAutoCloseEnabled` | bool | `true` | Master switch. When false, AC never auto-closes a team (the badge still shows). |
 | `coordinatorAutoCloseMinutes` | number | `60` | Idle minutes before a team is closed. `0` also disables auto-close. |
 | `coordinatorAutoCloseSkipTelegramAssigned` | bool | `false` | When true, auto-close skips sessions with Telegram assigned. Other sessions keep following the normal auto-close rules. |
-| `coordinatorIdleBadgeYellowMinutes` | number | `30` | Idle minutes at which the badge turns yellow. |
-| `coordinatorIdleBadgeRedMinutes` | number | `60` | Idle minutes at which the badge turns red. |
+| `coordinatorCascadeCloseEnabled` | bool | `true` | When true, closing a coordinator yourself also closes its team's live member sessions. When false, only the coordinator closes. It does not affect auto-close. |
+| `coordinatorIdleBadgeYellowMinutes` | number | `30` | Idle minutes at which the badge turns yellow. Badge color only. |
+| `coordinatorIdleBadgeRedMinutes` | number | `60` | Idle minutes at which the badge turns red. Badge color only. |
 
 Out of the box (`coordinatorAutoCloseEnabled` true, `coordinatorAutoCloseMinutes` 60), a team that sits idle for more than an hour is closed automatically.
 
