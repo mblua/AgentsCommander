@@ -53,7 +53,7 @@ The group's display name is derived, not stored blindly:
 - The legacy name `Non-stop` also falls back to `Alert me!`, so instances configured before the rename show the current name.
 - A longer name is capped at the group-name limit.
 
-The rail entry and the project-panel tooltip both show that derived name, which is why they always agree.
+The rail entry shows that derived name. The project panel does not: its non-stop slot and the slot's tooltip always render the built-in `Alert me!`, so after you rename the group the two surfaces disagree until you rename it back.
 
 ## Where the configuration lives
 

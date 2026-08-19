@@ -44,7 +44,7 @@ Two things the reference is explicit about and this page will not soften. **A fi
 
 ## What the browser UI can do
 
-The served page is **the full AgentsCommander UI**: it renders the same sidebar and the same terminal pane you use on the desktop, side by side with a draggable divider, running over a WebSocket transport rather than the Tauri one. Event payloads are byte-equivalent across the two transports, so the browser is not a reduced view of your sessions.
+The served page is **the full AgentsCommander UI**: it renders the same sidebar and terminal components you use on the desktop, side by side with a draggable divider, running over a WebSocket transport rather than the Tauri one. It is the same interface, not a reduced view of your sessions. The session-selection event is pinned by a test to carry the same payload on both transports; other events are not covered by that guarantee, and terminal output travels as a binary frame rather than JSON.
 
 What is not there:
 

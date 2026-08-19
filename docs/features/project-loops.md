@@ -81,7 +81,7 @@ Each outcome produces a toast in the sidebar:
 | Came due while AC was closed | `Loop "<name>" was missed while AgentsCommander was closed` |
 | Delivery failed | `Loop "<name>" failed` |
 
-The first four and the last carry the backend's own message when it has one, so the text you see can be more specific than the table above.
+Every one of them carries the backend's own message when it has one, so the text you see can be more specific than the table above.
 
 ## Busy sessions and respawn
 
