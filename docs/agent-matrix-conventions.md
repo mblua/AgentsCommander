@@ -330,9 +330,9 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 ## 5. Profile Path Placeholders
 
-> These tokens are used **inside** a profile cell's command or env. For the profile matrix itself (the lettered A/B/C launch variants per coding agent), see [Coding Agent Profiles](features/coding-agent-profiles.md).
+> These tokens are used **inside** a coding agent's own ENVIRONMENT rows, inside a profile cell's command or env, or inside the effective launch command. For the profile matrix itself (the lettered A/B/C launch variants per coding agent), see [Coding Agent Profiles](features/coding-agent-profiles.md).
 
-Coding-agent profile command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
+Coding-agent command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Three command and env value surfaces are expanded: the effective launch command tokens, the coding agent's own ENVIRONMENT rows (`agents[].envs` in `settings.json`, edited in Settings → Coding Agents), and a profile cell's `env` map. The same three tokens are also substituted inside the **content** of seeded files, under different rules; see [Config seed](features/config-seed.md#token-substitution). Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
 
 The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `wg-*` workgroup, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
 
@@ -389,6 +389,8 @@ CLAUDE_CONFIG_DIR   = %AC_REPLICA_ROOT%\.claude
 `CODEX_HOME` is validated more strictly than other keys: its value must **start** with a token as a complete leading path segment (or be a literal absolute path). A value like `prefix%AC_MATRIX_ROOT%\x`, where the token is not the leading segment, is rejected at save-time with a "must start with … as a complete path segment" error. `CLAUDE_CONFIG_DIR` and other env keys accept the tokens wherever a path is expected, with no special leading-segment rule.
 
 The backend is the single authority for real expansion and absolute-path validation at launch; the sidebar's profile preview only mirrors these tokens for display.
+
+For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's ENVIRONMENT row, see [RTK usage and per-agent statistics](integrations/rtk.md).
 
 ---
 
