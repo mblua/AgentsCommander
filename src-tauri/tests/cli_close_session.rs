@@ -122,7 +122,8 @@ param(
   [Parameter(Mandatory=$true)][string]$ExpectedTarget,
   [Parameter(Mandatory=$true)][string]$ExpectedTo,
   [Parameter(Mandatory=$true)][int]$ExpectedTimeoutSec,
-  [Parameter(Mandatory=$true)][int]$TimeoutSec
+  [Parameter(Mandatory=$true)][int]$TimeoutSec,
+  [string]$Mode = 'respond'
 )
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
@@ -154,6 +155,20 @@ while ((Get-Date) -lt $deadline) {
       $lastReadinessError = "message visible but missing requestId at ${messagePath}"
       Start-Sleep -Milliseconds 50
       continue
+    }
+
+    if ($Mode -eq 'reject') {
+      # 1440: el daemon rechaza antes de validar force/timeout y escribe la
+      # reason ANTES del JSON espejado (mailbox.rs reject_message).
+      $rejectedDir = Join-Path $OutboxDir 'rejected'
+      New-Item -ItemType Directory -Force -Path $rejectedDir | Out-Null
+      $utf8NoBomReject = New-Object System.Text.UTF8Encoding($false)
+      $reasonBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
+      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($message.id).reason.txt"), $reasonBody, $utf8NoBomReject)
+      [System.IO.File]::WriteAllText((Join-Path $rejectedDir "$($message.id).json"), $messageBody, $utf8NoBomReject)
+      Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
+      Write-Output $message.id
+      exit 0
     }
 
     if ($message.action -ne 'close-session') {
@@ -192,6 +207,16 @@ while ((Get-Date) -lt $deadline) {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $deliveredDir "$($message.id).json"), $messageBody, $utf8NoBom)
     Remove-Item -LiteralPath $messagePath -Force -ErrorAction SilentlyContinue
+
+    if ($Mode -eq 'respond-staged') {
+      # 1440 F1: el daemon escribe el response sin rename atomico y dos veces
+      # (dual-write 224 A.6), asi que el archivo existe truncado durante una
+      # ventana. Aca la ventana es determinista: 600ms (mas de dos ticks del
+      # poll de 250ms del CLI) con un prefijo que no parsea.
+      New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
+      Set-Content -LiteralPath (Join-Path $ResponsesDir "$($message.requestId).json") -Value '{"' -NoNewline -Encoding ascii
+      Start-Sleep -Milliseconds 600
+    }
 
     New-Item -ItemType Directory -Force -Path $ResponsesDir | Out-Null
     $responseBody = Get-Content -LiteralPath $ResponseBodyPath -Raw -ErrorAction Stop
@@ -269,6 +294,10 @@ impl SimulatorHandle {
     }
 }
 
+/// §1440: `mode` is "respond" (write delivered/ + responses/) or "reject"
+/// (write rejected/<msg_id>.reason.txt, no contract validation, no response),
+/// mirroring the daemon's two terminal outcomes. "respond-staged" is
+/// "respond" with the response left torn for 600ms first (§1440 F1).
 fn spawn_daemon_simulator(
     _tmp: &Path,
     outbox_dir: &Path,
@@ -276,6 +305,7 @@ fn spawn_daemon_simulator(
     response_body: &str,
     expected_target: &str,
     expected_timeout_secs: &str,
+    mode: &str,
 ) -> SimulatorHandle {
     #[cfg(target_os = "windows")]
     {
@@ -305,6 +335,8 @@ fn spawn_daemon_simulator(
                 expected_timeout_secs,
                 "-TimeoutSec",
                 "20",
+                "-Mode",
+                mode,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -319,6 +351,7 @@ fn spawn_daemon_simulator(
         let responses_for_thread = responses_dir.to_path_buf();
         let response_owned = response_body.to_string();
         let target_owned = expected_target.to_string();
+        let mode_owned = mode.to_string();
         let timeout_secs = expected_timeout_secs
             .parse::<u32>()
             .expect("test timeout secs must parse");
@@ -330,6 +363,7 @@ fn spawn_daemon_simulator(
                 &response_owned,
                 &target_owned,
                 timeout_secs,
+                &mode_owned,
                 Duration::from_secs(20),
             );
             let _ = tx.send(result);
@@ -345,6 +379,7 @@ fn simulate_daemon_response(
     response_body: &str,
     expected_target: &str,
     expected_timeout_secs: u32,
+    mode: &str,
     overall_timeout: Duration,
 ) -> Result<String, String> {
     let start = Instant::now();
@@ -425,6 +460,22 @@ fn simulate_daemon_response(
         break (path, body, msg, msg_id, request_id);
     };
 
+    if mode == "reject" {
+        // §1440: el daemon rechaza antes de validar el contrato y antes de
+        // tocar sesiones; escribe la reason primero y nunca un response.
+        let rejected_dir = outbox_dir.join("rejected");
+        std::fs::create_dir_all(&rejected_dir).map_err(|e| e.to_string())?;
+        std::fs::write(
+            rejected_dir.join(format!("{}.reason.txt", msg_id)),
+            response_body,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(rejected_dir.join(format!("{}.json", msg_id)), &body)
+            .map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&msg_path);
+        return Ok(msg_id);
+    }
+
     validate_close_session_message(&msg, expected_target, expected_timeout_secs)
         .map_err(|e| format!("contract violation in {:?}: {}", msg_path, e))?;
 
@@ -433,6 +484,17 @@ fn simulate_daemon_response(
     std::fs::write(delivered_dir.join(format!("{}.json", msg_id)), &body)
         .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&msg_path);
+
+    if mode == "respond-staged" {
+        // §1440 F1: el daemon escribe el response sin rename atomico y dos
+        // veces (dual-write §224 A.6), asi que el archivo existe truncado
+        // durante una ventana. Aca la ventana es determinista: 600ms (mas de
+        // dos ticks del poll de 250ms del CLI) con un prefijo que no parsea.
+        std::fs::create_dir_all(responses_dir).map_err(|e| e.to_string())?;
+        std::fs::write(responses_dir.join(format!("{}.json", request_id)), "{\"")
+            .map_err(|e| e.to_string())?;
+        std::thread::sleep(Duration::from_millis(600));
+    }
 
     std::fs::create_dir_all(responses_dir).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -476,6 +538,29 @@ fn run_close_session_with_simulator(
     target: &str,
     timeout_secs: &str,
 ) -> (Option<i32>, String, String, String, String) {
+    run_close_session_in_mode(tmp, fix, response_body, target, timeout_secs, "respond")
+}
+
+/// §1440: same run, but the simulator rejects the message instead of
+/// responding; `reason` is written to rejected/<msg_id>.reason.txt.
+fn run_close_session_expecting_rejection(
+    tmp: &Path,
+    fix: &Fixture,
+    reason: String,
+    target: &str,
+    timeout_secs: &str,
+) -> (Option<i32>, String, String, String, String) {
+    run_close_session_in_mode(tmp, fix, reason, target, timeout_secs, "reject")
+}
+
+fn run_close_session_in_mode(
+    tmp: &Path,
+    fix: &Fixture,
+    response_body: String,
+    target: &str,
+    timeout_secs: &str,
+    mode: &str,
+) -> (Option<i32>, String, String, String, String) {
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
     let ac_dir = fix.agent_root.join(format!(".{}", stem));
     let outbox_dir = ac_dir.join("outbox");
@@ -489,6 +574,7 @@ fn run_close_session_with_simulator(
         &response_body,
         target,
         timeout_secs,
+        mode,
     );
 
     let out = Command::new(&fix.bin)
@@ -739,6 +825,84 @@ fn close_session_incoherent_response_exits_two() {
     assert!(
         stdout.contains("new_unrecognized_status"),
         "stdout must include daemon JSON; got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn close_session_rejected_exits_one_with_reason() {
+    let tmp = Tmp::new("close-rejected");
+    let fix = build_fixture(tmp.path(), "hank-unauthorized");
+    let target = "proj:wg-1-test/hank-unauthorized";
+
+    let (code, stdout, stderr, _sim_out, _sim_err) = run_close_session_expecting_rejection(
+        tmp.path(),
+        &fix,
+        "close-session target unresolvable: nope".to_string(),
+        target,
+        "5",
+    );
+
+    assert_eq!(
+        code,
+        Some(1),
+        "a rejected close-session must exit 1.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stderr.contains("close-session rejected"),
+        "stderr must carry the rejection prefix; got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("target unresolvable: nope"),
+        "stderr must carry the daemon reason; got: {}",
+        stderr
+    );
+    assert!(
+        !stdout.contains("\"status\""),
+        "no response JSON must reach stdout on rejection; got: {}",
+        stdout
+    );
+}
+
+// §1440 F1: el daemon escribe el response sin atomicidad y (en el caso
+// comun) dos veces; respond-staged materializa la ventana: el archivo
+// existe 600ms (mas de dos ticks de poll de 250ms) con un prefijo torn
+// antes de tener el JSON completo. Sin el parse-gate de 5.1.8, un tick
+// lee el torn, imprime basura en stdout y sale 2 sobre un cierre exitoso.
+#[test]
+fn close_session_staged_response_write_still_exits_zero() {
+    let tmp = Tmp::new("close-staged");
+    let fix = build_fixture(tmp.path(), "hank-staged");
+    let target = "proj:wg-1-test/hank-staged";
+    let body = format!(
+        "{{\"action\":\"close-session\",\"target\":\"{}\",\"status\":\"closed\",\"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}",
+        target
+    );
+
+    let (code, stdout, stderr, _sim_out, _sim_err) = run_close_session_in_mode(
+        tmp.path(),
+        &fix,
+        body.clone(),
+        target,
+        "5",
+        "respond-staged",
+    );
+
+    assert_eq!(
+        code,
+        Some(0),
+        "a staged (non-atomic) response write must still exit 0.
+stdout: {}
+stderr: {}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.starts_with(&body),
+        "stdout must begin with the complete response JSON (no torn prefix may reach stdout); got: {}",
         stdout
     );
 }

@@ -64,6 +64,21 @@ struct ScreenReplayState {
     /// Bounded suffix of the raw output stream. Must be a `VecDeque`: trimming a `Vec` from
     /// the front would memmove the whole ring on every chunk of the hot path.
     history: std::collections::VecDeque<u8>,
+    /// Whether the ring's front byte is known to sit at the start of a line, that is, at a
+    /// point a parser in ground state can start reading from. Starts true, which is correct
+    /// for a ring that is still growing from the first byte the session emitted, and is
+    /// corrected by `append_history` both when a trim moves the front and when an oversized
+    /// chunk installs a truncated one. Conservative in one direction only: `false` never
+    /// means the front is definitely unsafe, it means nothing proved it safe (#1458).
+    history_aligned: bool,
+    /// The last grid the ConPTY actually took (rows, cols): recorded by every
+    /// follow call BEFORE the skippable steps, so a skipped or failed
+    /// `set_size` leaves a visible divergence for the attach reconcile (#1439).
+    /// On transport backends (container) the follow runs after merely queuing
+    /// the resize frame, so there this records the size last REQUESTED of the
+    /// remote, not necessarily taken; the local backend's `if sent` gate is
+    /// what keeps the record honest where #1439 lives.
+    conpty_size: (u16, u16),
 }
 
 enum CaptureFailure {
@@ -233,13 +248,14 @@ const UI_HISTORY_LINE_SCAN_BYTES: usize = 4_096;
 const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[0m";
 
 /// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
-/// trim to a line boundary, then append, so the ring stays line aligned and its length
-/// never exceeds the limit.
+/// trim to a line boundary, then append. Only the length bound is guaranteed; the line
+/// alignment is best effort, because the boundary scan is capped and can find nothing. Its
+/// outcome is recorded in `aligned` and enforced at the attach seed instead (#1458).
 ///
 /// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
 /// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
 /// which leaves that console dead for the rest of the process.
-fn append_history(history: &mut std::collections::VecDeque<u8>, data: &[u8]) {
+fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bool, data: &[u8]) {
     // A chunk larger than the whole ring keeps only its tail. Unreachable in production
     // (the local backend reads 4 KiB buffers, the container backend rejects frames over
     // 64 KiB) but it is where the trim arithmetic gets written wrong.
@@ -247,15 +263,53 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, data: &[u8]) {
     let over = (history.len() + tail.len()).saturating_sub(UI_HISTORY_LIMIT_BYTES);
     if over > 0 {
         history.drain(..over.min(history.len()));
-        if let Some(newline) = history
+        // The scan stays capped: this runs per chunk inside the parser mutex the whole
+        // backend shares. What #1458 changes is only that its failure is now RECORDED
+        // instead of assumed away, so the cold attach path knows it has work to do.
+        match history
             .iter()
             .take(UI_HISTORY_LINE_SCAN_BYTES)
             .position(|byte| *byte == b'\n')
         {
-            history.drain(..=newline);
+            Some(newline) => {
+                history.drain(..=newline);
+                *aligned = true;
+            }
+            None => *aligned = false,
         }
     }
+    // #1458: the one path on which the front changes without `over` ever being positive.
+    // When `tail` becomes the WHOLE ring the front is `tail[0]`, and a chunk larger than the
+    // ring was truncated at an arbitrary byte, so that front is not a line start and nothing
+    // above recorded it. The `<` is load bearing: `tail.len() == data.len()` means the chunk
+    // was NOT truncated, so `tail[0]` is a real stream boundary and `true` is correct.
+    if history.is_empty() && tail.len() < data.len() {
+        *aligned = false;
+    }
     history.extend(tail);
+}
+
+/// The ring sliced from the byte after its first `\n`, or `None` when the ring holds no `\n`
+/// at all or holds nothing after it.
+///
+/// Only the cold attach path calls this, so the scan is unbounded on purpose. `\n` is the one
+/// resync point a replay can trust: a parser reading the ring from an arbitrary byte offset
+/// renders the tail of whatever escape sequence that offset falls inside as literal text
+/// (#1458), and no in-band cancel undoes it, because that parser is already in ground state.
+fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+    if let Some(newline) = front.iter().position(|byte| *byte == b'\n') {
+        let aligned_front = &front[newline + 1..];
+        if aligned_front.is_empty() && back.is_empty() {
+            return None;
+        }
+        return Some((aligned_front, back));
+    }
+    let newline = back.iter().position(|byte| *byte == b'\n')?;
+    let aligned_back = &back[newline + 1..];
+    if aligned_back.is_empty() {
+        return None;
+    }
+    Some((&[], aligned_back))
 }
 
 /// The private result surface of the Tauri output effect. It deliberately carries no
@@ -910,6 +964,8 @@ impl SessionIoFanout {
             // its ceiling is a property of construction. `VecDeque` growth is amortized, so
             // reserving later cannot pin the ceiling: the doubling already overshot by then.
             history: std::collections::VecDeque::with_capacity(UI_HISTORY_LIMIT_BYTES),
+            history_aligned: true,
+            conpty_size: (rows, cols),
         };
         let mut parsers = self
             .screen_parsers
@@ -1070,7 +1126,7 @@ impl SessionIoFanout {
                         // watermark and only skips what is at or below the snapshot sequence,
                         // so those bytes would be seeded and then written again when they
                         // arrive live: a duplicated block of history.
-                        append_history(&mut state.history, &data);
+                        append_history(&mut state.history, &mut state.history_aligned, &data);
                         Ok::<u64, ()>(sequence)
                     });
                     match processed {
@@ -1167,41 +1223,95 @@ impl SessionIoFanout {
         {
             return Err(TerminalOutputAttachError::OutputTargetUnavailable);
         }
+        let mut reconcile_fault = false;
+        // #1458: carried out of the parser lock exactly like `reconcile_fault`. `Some` only
+        // when the ring was flagged unaligned; the pair is (ring length, bytes kept).
+        let mut history_unaligned: Option<(usize, usize)> = None;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
-            let copied = crate::logging::catch_payload_unwind(|| {
-                let screen = state.parser.screen();
-                let (rows, cols) = screen.size();
-                let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
-                if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
-                    return Err(());
+            let (parser_rows, parser_cols) = state.parser.screen().size();
+            if (parser_rows, parser_cols) != state.conpty_size {
+                // #1439: the parser grid diverged from the grid the ConPTY took
+                // (a skipped follow, or any path that resized one without the
+                // other). A seed rendered off this parser adopts the stale grid
+                // in the attaching window and replays other-grid bytes into it:
+                // the garbled re-attach. Converge the grid now, seed nothing;
+                // the frontend attaches live (the no-snapshot path), and the
+                // next attach after the child's next repaint seeds cleanly.
+                let (conpty_rows, conpty_cols) = state.conpty_size;
+                log::warn!(
+                    "[terminal-snapshot] stage=attach_grid_mismatch session={id} parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} (#1439)"
+                );
+                let resized = crate::logging::catch_payload_unwind(|| {
+                    state.parser.set_size(conpty_rows, conpty_cols)
+                });
+                if resized.is_err() {
+                    state.parser_availability = ParserAvailability::Unavailable;
+                    reconcile_fault = true;
                 }
-                let data = if include_history && !state.history.is_empty() {
+                None
+            } else {
+                let copied = {
+                    let uses_history = include_history && !state.history.is_empty();
                     // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
                     // rotates the buffer during what is otherwise a copy out.
-                    let (front, back) = state.history.as_slices();
-                    let mut replay = Vec::with_capacity(
-                        UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
-                    );
-                    replay.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
-                    replay.extend_from_slice(front);
-                    replay.extend_from_slice(back);
-                    replay
-                } else {
-                    screen.contents_formatted()
+                    let replay = if uses_history {
+                        let (front, back) = state.history.as_slices();
+                        // #1458: the hot-path realignment is capped at 4 KiB and stays failed
+                        // for as long as the front sits in a newline-free region, so it can
+                        // leave the front inside an escape sequence. Attach is cold: pay the
+                        // full scan here rather than seed a literal sequence tail.
+                        if state.history_aligned {
+                            Some((front, back))
+                        } else {
+                            history_from_first_line(front, back)
+                        }
+                    } else {
+                        None
+                    };
+                    if uses_history && !state.history_aligned {
+                        history_unaligned = Some((
+                            state.history.len(),
+                            replay.map_or(0, |(front, back)| front.len() + back.len()),
+                        ));
+                    }
+                    crate::logging::catch_payload_unwind(|| {
+                        let screen = state.parser.screen();
+                        let (rows, cols) = screen.size();
+                        let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
+                        if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
+                            return Err(());
+                        }
+                        let data = match replay {
+                            Some((front, back)) => {
+                                let mut bytes = Vec::with_capacity(
+                                    UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
+                                );
+                                bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                                bytes.extend_from_slice(front);
+                                bytes.extend_from_slice(back);
+                                bytes
+                            }
+                            // No line start with content behind it. The ring cannot be
+                            // replayed from any offset, and in the observed incident it holds
+                            // nothing but spinner frames anyway. The mirror is a consistent
+                            // full repaint on a grid the #1439 branch above already validated.
+                            None => screen.contents_formatted(),
+                        };
+                        Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
+                            data,
+                            rows,
+                            cols,
+                            sequence: state.output_sequence,
+                        })
+                    })
                 };
-                Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
-                    data,
-                    rows,
-                    cols,
-                    sequence: state.output_sequence,
-                })
-            });
-            match copied {
-                Ok(Ok(snapshot)) => Some(snapshot),
-                Ok(Err(())) => None,
-                Err(_) => {
-                    state.parser_availability = ParserAvailability::Unavailable;
-                    None
+                match copied {
+                    Ok(Ok(snapshot)) => Some(snapshot),
+                    Ok(Err(())) => None,
+                    Err(_) => {
+                        state.parser_availability = ParserAvailability::Unavailable;
+                        None
+                    }
                 }
             }
         } else {
@@ -1209,6 +1319,18 @@ impl SessionIoFanout {
         };
         self.attachments.attach(id, label);
         drop(parsers);
+        if let Some((ring, kept)) = history_unaligned {
+            log::warn!(
+                "[terminal-snapshot] stage=attach_history_unaligned session={id} ring={ring} kept={kept} (#1458)"
+            );
+        }
+        if reconcile_fault {
+            log::error!("[terminal-snapshot] stage=parser_fault session={id}");
+            // #1439 R2: flush at the transition, OUTSIDE the parser lock. An
+            // emit under that lock stalls the PTY reader on its next chunk;
+            // both existing fault sites flush only after releasing the lock.
+            self.attachments.flush(id, false);
+        }
         Ok(snapshot)
     }
 
@@ -1301,12 +1423,18 @@ impl SessionIoFanout {
 
         let parser_fault = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parsers_lock_poisoned session={id} cols={cols} rows={rows} (#1439)");
                 return;
             };
             let Some(state) = parsers.get_mut(&id) else {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=no_parser_entry session={id} cols={cols} rows={rows} (#1439)");
                 return;
             };
+            // #1439 record-first: the ConPTY took this size whether or not the
+            // parser can follow it; the attach reconcile compares against this.
+            state.conpty_size = (rows, cols);
             if state.parser_availability != ParserAvailability::Available {
+                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parser_unavailable session={id} cols={cols} rows={rows} (#1439)");
                 return;
             }
             let resized =
@@ -1649,6 +1777,18 @@ impl SessionIoFanout {
             panic!("poison the screen parser map for deterministic test coverage");
         });
         assert!(result.is_err(), "screen-parser poison fixture must panic");
+    }
+
+    /// #1439 test-only: force the parser grid WITHOUT recording a ConPTY grid,
+    /// simulating any historical silent-skip divergence.
+    #[cfg(test)]
+    pub(crate) fn desync_screen_size_for_test(&self, id: Uuid, rows: u16, cols: u16) {
+        let mut parsers = self.screen_parsers.lock().expect("parser state");
+        parsers
+            .get_mut(&id)
+            .expect("registered session")
+            .parser
+            .set_size(rows, cols);
     }
 
     pub fn register_response_watcher(
@@ -2500,6 +2640,54 @@ mod tests {
         assert_eq!(emitted[1].2, Some(2));
     }
 
+    /// #1439. A parser grid that diverged from the grid the ConPTY last took must never seed
+    /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
+    /// grid, and the next attach seeds cleanly at that grid with the current sequence.
+    ///
+    /// Grid constraints are load-bearing: registration R0=30x120 (from `session_with_sink`),
+    /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
+    /// a transposition of another. With A != R0, an implementation that never writes
+    /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
+    /// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
+    #[test]
+    fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+
+        // One follow the ConPTY took: parser and record both move to A = 24 rows x 80 cols.
+        fanout.resize_screen_and_broadcast(id, 80, 24);
+        fanout.handle_output(&token, &id.to_string(), b"seed me\r\n".to_vec());
+
+        // The divergence class: the parser grid moves, the record does not.
+        fanout.desync_screen_size_for_test(id, 50, 132);
+
+        let seed = attach(&fanout, id, WINDOW);
+        assert!(seed.is_none(), "a diverged grid must not seed the attach");
+        // No batch entry exists yet: the only chunk so far arrived unattached, and a
+        // seedless attach creates none (same `None` the detach test observes).
+        assert_eq!(fanout.pending_output_bytes_for_test(id), None);
+
+        // The seedless window still attached: live bytes keep flowing to it, sequenced.
+        fanout.handle_output(&token, &id.to_string(), b"after divergence".to_vec());
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        assert_eq!(emitted.len(), 1, "the attached window keeps receiving its bytes");
+        assert_eq!(emitted[0].1, b"after divergence");
+        assert_eq!(emitted[0].2, Some(2));
+
+        let reseeded =
+            attach(&fanout, id, SECOND_WINDOW).expect("the attach after convergence seeds");
+        assert_eq!(
+            (reseeded.rows, reseeded.cols),
+            (24, 80),
+            "the parser converged onto the recorded ConPTY grid"
+        );
+        assert_eq!(reseeded.sequence, 2);
+        assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
+    }
+
     /// Section 3.4.3 rule 5. The batch is flushed at the `Available -> Unavailable` transition,
     /// so none of them mixes sequenced and unsequenced bytes. Labelled with the last real
     /// sequence a mixed batch would make the client watermark-drop bytes that were never
@@ -3123,6 +3311,177 @@ mod tests {
         assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
         assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
         assert_eq!(state.parser_availability, ParserAvailability::Available);
+    }
+
+    /// #1458. A ring saturated by a newline-free stream (a coding agent's spinner rewriting one
+    /// line with `\r`) leaves the ring's front at an arbitrary byte offset, which lands inside an
+    /// escape sequence most of the time. The seed must never emit that sequence's literal tail;
+    /// with no `\n` anywhere in the ring there is nothing to realign to, so the attach takes the
+    /// parser mirror.
+    #[test]
+    fn a_newline_free_ring_seeds_the_mirror_instead_of_a_partial_sequence() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        // A realistic spinner frame: truecolor SGR, label, carriage return. No `\n`. 33 bytes, so
+        // the steady-state front lands 2 bytes into the SGR, exactly where the incident cut.
+        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
+        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+            feed(&fanout, id, &[frame]);
+        }
+        {
+            // The precondition of the defect, asserted rather than assumed.
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
+            assert!(!state.history_aligned);
+        }
+
+        let expected = mirrored_screen(&fanout, id);
+        let data = activation_data(&fanout, id, true);
+
+        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        assert_eq!(data, expected);
+    }
+
+    /// #1458. The healthy path must stay byte identical: when the capped trim did realign the
+    /// ring, the seed is the ring verbatim, from its very first byte. Asserting the whole body
+    /// against the ring is the point. An alignment scan applied unconditionally would silently
+    /// drop the ring's first line here, and a `starts_with` on the line's prefix would still pass,
+    /// because every line of such a replay begins with the same SGR bytes.
+    #[test]
+    fn a_line_aligned_ring_still_seeds_the_whole_ring() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        // 102 bytes per line, not a divisor of the 65 536 byte ring, so the space trim lands off a
+        // line boundary and the realignment has to do real work: 50 bytes drained for space and 52
+        // more to realign, on every overflow.
+        for index in 0..2_000 {
+            feed(
+                &fanout,
+                id,
+                &[format!("\x1b[38;2;153;153;153m>{index:081}\n").as_bytes()],
+            );
+        }
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert!(state.history_aligned);
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+
+        let data = activation_data(&fanout, id, true);
+
+        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        assert_eq!(
+            &data[UI_HISTORY_REPLAY_PROLOGUE.len()..],
+            expected.as_slice()
+        );
+    }
+
+    /// #1458 edge case. A ring whose only `\n` is its last byte does have a line start, but has
+    /// nothing after it: aligning to it would seed the prologue and zero bytes of content, which
+    /// blanks the attaching terminal. That case must take the mirror, exactly like a ring with no
+    /// `\n` at all.
+    #[test]
+    fn a_ring_whose_only_newline_is_its_last_byte_seeds_the_mirror() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
+        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+            feed(&fanout, id, &[frame]);
+        }
+        // One frame that ends in the ring's only newline. The capped trim scan still sees no `\n`
+        // in the first 4 KiB, so the ring stays flagged unaligned.
+        feed(&fanout, id, &[b"\x1b[38;2;153;153;153m* Drizzling..\n"]);
+        {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert!(!state.history_aligned);
+            assert_eq!(state.history.back().copied(), Some(b'\n'));
+            assert_eq!(
+                state.history.iter().filter(|byte| **byte == b'\n').count(),
+                1
+            );
+        }
+
+        let expected = mirrored_screen(&fanout, id);
+        let data = activation_data(&fanout, id, true);
+
+        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        assert_eq!(data, expected);
+    }
+
+    /// #1458. The recovering case, and the only one that exercises `history_from_first_line`'s
+    /// `Some` arm: an unaligned ring that still holds lines must seed from the byte after its
+    /// first `\n`, not fall back to the mirror. Asserting the whole body is the point; a stub
+    /// helper that always returns `None` passes every other test in this file.
+    #[test]
+    fn an_unaligned_ring_with_a_later_newline_seeds_from_that_line() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r"; // 33 bytes, no `\n`
+        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+            feed(&fanout, id, &[frame]);
+        }
+        for index in 0..40 {
+            feed(
+                &fanout,
+                id,
+                &[format!("\x1b[38;2;153;153;153mrecovered line {index:03}\n").as_bytes()],
+            );
+        }
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            // The 4 KiB hot scan still sees only spinner at the front, so the flag stays false
+            // even though the ring now holds 40 newlines further in.
+            assert!(!state.history_aligned);
+            let (front, back) = state.history.as_slices();
+            let ring = [front, back].concat();
+            let newline = ring
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .expect("a newline");
+            ring[newline + 1..].to_vec()
+        };
+
+        let data = activation_data(&fanout, id, true);
+
+        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        assert_eq!(
+            &data[UI_HISTORY_REPLAY_PROLOGUE.len()..],
+            expected.as_slice()
+        );
+    }
+
+    /// #1458. The helper's four decided branches, pinned without a fixture because which half of
+    /// the ring holds the first `\n` is a `VecDeque` layout detail no fanout test can choose.
+    /// Covers 7.2 rows 8, 9 and 10 and the both-halves emptiness check.
+    #[test]
+    fn history_from_first_line_decides_every_branch() {
+        // A newline in `front`, content behind it: seed from the byte after it, keep all of `back`.
+        assert_eq!(
+            history_from_first_line(b"ab\ncd", b""),
+            Some((&b"cd"[..], &b""[..]))
+        );
+        // The newline is `front`'s last byte but `back` is not empty: still a normal seed. The
+        // emptiness check is on BOTH halves for exactly this row.
+        assert_eq!(
+            history_from_first_line(b"ab\n", b"cd"),
+            Some((&b""[..], &b"cd"[..]))
+        );
+        // No newline in `front`, one in `back` with content behind it: the whole of `front` is
+        // unreplayable and is dropped. Deleting the second scan makes this row dead.
+        assert_eq!(
+            history_from_first_line(b"ab", b"cd\nef"),
+            Some((&b""[..], &b"ef"[..]))
+        );
+        // The ring's only newline is its last byte: nothing survives it, so the caller must take
+        // the mirror rather than seed a prologue and zero bytes.
+        assert_eq!(history_from_first_line(b"ab", b"cd\n"), None);
+        // No newline anywhere: the reported incident.
+        assert_eq!(history_from_first_line(b"ab", b"cd"), None);
     }
 
     /// The regression the issue reports: a session that produced output while another one was
