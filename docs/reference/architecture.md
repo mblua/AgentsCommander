@@ -218,7 +218,7 @@ graph TD
 
     PP --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path, mic,<br/>detach, telegram, close"]
 
-    AB --> SM["SettingsModal.tsx<br/>tabs: General, Agents, Integrations,<br/>Watchers, API clients, ..."]
+    AB --> SM["SettingsModal.tsx<br/>tabs: General, Coding Agents,<br/>Resources, Watchers, Integrations"]
     SI --> OA["OpenAgentModal.tsx<br/>Repo search → Agent picker → launch"]
 
     subgraph "Sidebar Stores"
@@ -298,15 +298,16 @@ graph LR
 
 ---
 
-## 4. IPC Contract: All Commands
+## 4. IPC Contract: Command Modules
 
-Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them through `shared/ipc.ts`, which routes over a Tauri or WebSocket transport.
+Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them through `shared/ipc.ts`, which routes over a Tauri or WebSocket transport. The table maps each frontend API area to its Rust module and names representative commands; it is not an exhaustive command list.
 
 | Frontend API area | Rust handler | Examples |
 |---|---|---|
 | SessionAPI | `commands/session.rs` | `create_session`, `destroy_session`, `switch_session`, `rename_session`, `list_sessions`, `get_active_session` (selection hydration) |
 | PtyAPI | `commands/pty.rs` | `pty_write`, `pty_resize` |
 | SettingsAPI | `commands/config.rs` | `get_settings`, `update_settings`, `save_debug_logs` |
+| AgentUpdateAPI | `commands/config.rs` | `get_agent_update_status`, `agent_update_answer` |
 | ReposAPI | `commands/repos.rs` | `search_repos` |
 | TelegramAPI | `commands/telegram.rs` | `attach_telegram`, `detach_telegram`, `list_bridges`, `send_test` |
 | WindowAPI | `commands/window.rs` | `detach_terminal`, `close_detached_terminal` |
@@ -811,18 +812,27 @@ graph TD
 | File | Purpose |
 |------|---------|
 | `main.tsx` | Entry, window routing by `?window=` param |
+| `main/App.tsx` | Main window root: central view routing |
+| `main/components/HomeView.tsx` | Home markdown view (fetch, markdown-it, DOMPurify) |
+| `main/components/ErrorModal.tsx` | Global error modal |
+| `main/components/QuitConfirmModal.tsx` | Quit confirmation |
+| `main/stores/centralView.ts`, `main/stores/home.ts`, `main/stores/error-modal.ts` | Main-window state |
+| `main/listeners-central-view.ts`, `main/listeners-home.ts` | Main-window event listeners |
 | `shared/types.ts` | TypeScript interfaces and the invariant-bearing `SessionSelection` union |
 | `shared/session-selection.ts` | Runtime decoder for untrusted selection hydration and events |
 | `shared/ipc.ts` | API wrappers, decoded selection hydration, event listeners |
 | `shared/transport.ts` | Transport abstraction (Tauri vs WebSocket) |
 | `shared/transport-tauri.ts`, `shared/transport-ws.ts` | Concrete transports |
-| `shared/shortcuts.ts` | Global keyboard shortcuts (Ctrl+Shift+W/R) |
+| `shared/shortcuts.ts` | Document-level keyboard shortcuts: Ctrl+Shift+W closes the selected session, Ctrl+Shift+R toggles voice capture. Active only while an AC window has focus. |
 | `shared/constants.ts` | Window type constants |
 | `shared/voice-recorder.ts` | Mic recording → Gemini → PTY inject |
 | `shared/console-capture.ts` | Console monkey-patch, 500 entries buffer |
 | `shared/stores/settings.ts` | Global `AppSettings` signal |
 | `shared/stores/toasts.ts` | Toast host state |
 | `shared/stores/resourceMonitor.ts` | Resource monitor state |
+| `shared/components/ToastHost.tsx` | Toast host rendering |
+| `shared/components/ExternalLinkConfirm.tsx` | External-link confirmation dialog |
+| `shared/external-links.ts`, `shared/github-url.ts` | External-link resolution |
 | `shared/screenshot-hotkey.ts`, `shared/zoom.ts`, `shared/window-geometry.ts` | Window helpers |
 | `sidebar/App.tsx` | Sidebar root: events, shortcuts, bridge subs |
 | `sidebar/stores/sessions.ts` | Session rows plus authoritative selection state |
@@ -831,8 +841,20 @@ graph TD
 | `sidebar/components/ProjectPanel.tsx` | Projects, workgroups and replicas → `SessionItem` |
 | `sidebar/components/WorkgroupGroupRail.tsx` | Rail with favorites, groups, raise-hand |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
+| `sidebar/components/AcDiscoveryPanel.tsx` | Branch and repo discovery panel |
+| `sidebar/components/AgentPickerModal.tsx` | Coding-agent profile assignment modal: assigns a profile to one target, with replica/kind/workgroup scope |
+| `sidebar/components/AgentUpdateOverlay.tsx` | Startup coding-agent update overlay and prompt |
+| `sidebar/components/CodingAgentQuickConfiguration.tsx` | Inline coding-agent configuration |
+| `sidebar/components/ContextBadge.tsx` | Per-session context-usage badge |
+| `sidebar/components/ContextTemplateUpdateModal.tsx` | Context-template update flow |
+| `sidebar/components/ProfileOutdatedBadge.tsx` | Profile-drift badge |
+| `sidebar/components/RaiseHandIcon.tsx` | Raise-hand indicator |
+| `sidebar/components/TeamContextAlertsEditor.tsx` | Per-team context-alert thresholds |
+| `sidebar/components/WorkgroupGroupsModal.tsx` | Workgroup group administration |
+| `sidebar/components/ZoomStepper.tsx` | Sidebar zoom control |
+| `sidebar/components/Titlebar.tsx` | Sidebar titlebar: zoom, web-server menu, screenshot chip |
 | `sidebar/components/ActionBar.tsx` | Project creation + Settings gear |
-| `sidebar/components/SettingsModal.tsx` | Settings tabs: General, Agents, Integrations, Watchers, API clients, ... |
+| `sidebar/components/SettingsModal.tsx` | Settings tabs: General, Coding Agents, Resources, Watchers, Integrations |
 | `sidebar/components/OpenAgentModal.tsx` | Repo search → agent picker → launch |
 | `sidebar/components/NewTeamModal.tsx`, `EditTeamModal.tsx`, `NewWorkgroupModal.tsx`, `NewEntityAgentModal.tsx` | Entity creation |
 | `sidebar/components/NewLoopModal.tsx`, `EditLoopModal.tsx` | Loop CRUD UI |

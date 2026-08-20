@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::shutdown::ShutdownSignal;
 use crate::testability::window_placement::TESTABLE_EXE_NAME;
 
-pub const UI_AUTOMATION_DIR: &str = "ui-automation";
+pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
 pub const SESSION_FILE: &str = "session.json";
 pub const REQUESTS_DIR: &str = "requests";
 pub const RESPONSES_DIR: &str = "responses";

@@ -154,7 +154,7 @@ const WorkgroupTask: Component = () => {
     setError(null);
     try {
       const result = await TaskAPI.setTitle(id, title);
-      terminalStore.setActiveWorkgroupTask(result.task);
+      terminalStore.applyLocalTask(result.workgroupRoot, result.task);
       setEditing(false);
       setTitleDraft("");
       setCapturedSessionId(null);
@@ -202,7 +202,7 @@ const WorkgroupTask: Component = () => {
     setError(null);
     try {
       const result = await TaskAPI.clean(id);
-      terminalStore.setActiveWorkgroupTask(result.task);
+      terminalStore.applyLocalTask(result.workgroupRoot, result.task);
       setEditing(false);
       setTitleDraft("");
     } catch (err) {

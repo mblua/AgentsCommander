@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicU64;
 #[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
+use crate::config::instance_artifacts::GIT_GUARD_DIR_NAME;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, ResolvedAgentHostShell};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
@@ -331,7 +333,7 @@ fn resolve_real_git_path() -> Option<String> {
 fn ensure_git_guard_wrapper() -> Result<std::path::PathBuf, AppError> {
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
-    let guard_dir = config_dir.join("git-guard");
+    let guard_dir = config_dir.join(GIT_GUARD_DIR_NAME);
     std::fs::create_dir_all(&guard_dir)
         .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {}", e)))?;
 
@@ -434,7 +436,7 @@ fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result<(), String
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("git-guard");
+        .unwrap_or(GIT_GUARD_DIR_NAME);
     let counter = GIT_GUARD_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
 
@@ -1378,30 +1380,9 @@ impl LocalProcessBackend {
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     ) -> Self {
-        Self::with_coordinator(
-            output_senders,
-            idle_detector,
-            git_watcher,
-            ws_broadcaster,
-            crate::pty::output::TerminalOutputCoordinator::new(),
-        )
-    }
-
-    pub(crate) fn with_coordinator(
-        output_senders: OutputSenderMap,
-        idle_detector: Arc<IdleDetector>,
-        git_watcher: Arc<GitWatcher>,
-        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        coordinator: Arc<crate::pty::output::TerminalOutputCoordinator>,
-    ) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
-            fanout: SessionIoFanout::with_coordinator(
-                output_senders,
-                idle_detector,
-                ws_broadcaster,
-                coordinator,
-            ),
+            fanout: SessionIoFanout::new(output_senders, idle_detector, ws_broadcaster),
             git_watcher,
             #[cfg(test)]
             pre_pty_attempts: Arc::new(AtomicUsize::new(0)),
@@ -2194,48 +2175,22 @@ impl PtyBackend for LocalProcessBackend {
     fn activate_terminal_output(
         &self,
         id: Uuid,
+        label: &str,
         include_history: bool,
-    ) -> crate::pty::output::TerminalOutputActivationResult {
-        self.fanout.activate_terminal_output(id, include_history)
-    }
-
-    fn ready_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
+    ) -> Result<
+        Option<crate::pty::output::PtyScreenSnapshot>,
+        crate::pty::output::TerminalOutputAttachError,
+    > {
         self.fanout
-            .ready_terminal_output(id, generation, snapshot_sequence)
+            .activate_terminal_output(id, label, include_history)
     }
 
-    fn deactivate_terminal_output(
-        &self,
-        id: Uuid,
-        generation: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout.deactivate_terminal_output(id, generation)
+    fn detach_terminal_output(&self, id: Uuid, label: &str) {
+        self.fanout.detach_terminal_output(id, label);
     }
 
-    fn ack_terminal_output_delivery(
-        &self,
-        id: Uuid,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .ack_terminal_output_delivery(id, generation, first_sequence, sequence)
-    }
-
-    fn report_terminal_renderer_metrics(
-        &self,
-        id: Uuid,
-        generation: u64,
-        metrics: crate::pty::output::TerminalRendererMetrics,
-    ) -> crate::pty::output::TerminalOutputControlState {
-        self.fanout
-            .report_terminal_renderer_metrics(id, generation, metrics)
+    fn release_window_attachments(&self, label: &str) {
+        self.fanout.release_window_attachments(label);
     }
 
     fn shutdown_terminal_output(&self) {

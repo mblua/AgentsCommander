@@ -170,6 +170,9 @@ struct OwnedWebServer {
 #[derive(Default)]
 pub struct WebServerHandle {
     inner: Arc<Mutex<Option<OwnedWebServer>>>,
+    /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
+    /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
+    bind_failure: std::sync::Mutex<Option<crate::web::StartServerError>>,
 }
 
 impl WebServerHandle {
@@ -209,6 +212,18 @@ impl WebServerHandle {
         } else {
             false
         }
+    }
+
+    pub fn record_bind_failure(&self, failure: crate::web::StartServerError) {
+        *self.bind_failure.lock().unwrap() = Some(failure);
+    }
+
+    pub fn clear_bind_failure(&self) {
+        *self.bind_failure.lock().unwrap() = None;
+    }
+
+    pub fn last_bind_failure(&self) -> Option<crate::web::StartServerError> {
+        self.bind_failure.lock().unwrap().clone()
     }
 }
 
@@ -1793,18 +1808,6 @@ pub(crate) fn spawn_restore_startup(
                 shutdown.clone(),
             );
             ui_automation_state.start(app.app_handle().clone(), shutdown.clone());
-
-            let screenshot_hotkey = app
-                .state::<SettingsState>()
-                .read()
-                .await
-                .screenshot_capture_hotkey
-                .clone();
-            if let Err(error) =
-                crate::screenshot::register_configured_hotkey(app.app_handle(), &screenshot_hotkey)
-            {
-                log::warn!("[screenshot] global hotkey registration failed: {}", error);
-            }
         });
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
@@ -1830,7 +1833,7 @@ pub fn run(
 
     // Create instance-private outbox directory and clean up stale ones
     let config_dir = config::config_dir().expect("Cannot determine home directory");
-    let instances_dir = config_dir.join("instances");
+    let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
 
     // Clean up old instance dirs (from previous runs)
     if let Ok(entries) = std::fs::read_dir(&instances_dir) {
@@ -2114,6 +2117,36 @@ pub fn run(
             // Make AppHandle available to idle detector callbacks
             let _ = app_handle_lock.set(app.handle().clone());
 
+            // #1398 - registered here, at the top of setup, and NOT in the
+            // post-restore tail where a308271c parked it by adjacency: the
+            // registration depends only on the global-shortcut plugin plus the
+            // `SettingsState` and `ScreenshotHotkeyState` managed above, so
+            // waiting for the restore left the hotkey dead for the whole
+            // restore window, which grows with the number of sessions. Its own
+            // short task keeps the async settings read off the main thread; a
+            // `block_on` here would reintroduce the #1341 WebView2 starvation.
+            {
+                let app_for_hotkey = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let configured = app_for_hotkey
+                        .state::<SettingsState>()
+                        .read()
+                        .await
+                        .screenshot_capture_hotkey
+                        .clone();
+                    match crate::screenshot::register_configured_hotkey(&app_for_hotkey, &configured)
+                    {
+                        Ok(()) => log::info!(
+                            "[screenshot] global hotkey registered '{}'",
+                            configured
+                        ),
+                        Err(error) => {
+                            log::warn!("[screenshot] global hotkey registration failed: {}", error)
+                        }
+                    }
+                });
+            }
+
             // #264 — spawn the background task that emits `error_log_event`
             // pings to the UI when ERROR entries are captured. The task runs
             // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
@@ -2295,6 +2328,8 @@ pub fn run(
                         }
                         Err(err) => {
                             log::warn!("[web-server] startup failed: {}", err);
+                            let ws_handle = app.state::<WebServerHandle>();
+                            ws_handle.record_bind_failure(err);
                         }
                     }
                 }
@@ -2879,10 +2914,7 @@ pub fn run(
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
             commands::pty::activate_terminal_output,
-            commands::pty::ready_terminal_output,
-            commands::pty::deactivate_terminal_output,
-            commands::pty::ack_terminal_output_delivery,
-            commands::pty::report_terminal_renderer_metrics,
+            commands::pty::detach_terminal_output,
             commands::pty::get_session_context,
             commands::pty::get_watcher_activity,
             commands::pty::preview_watcher_pattern,
@@ -2961,6 +2993,7 @@ pub fn run(
             commands::config::stop_web_server,
             commands::config::get_web_server_status,
             commands::config::get_web_server_owned_status,
+            commands::config::list_web_server_interfaces,
             commands::config::get_instance_label,
             commands::config::fetch_home_markdown,
             commands::agent_creator::pick_folder,
@@ -3018,6 +3051,23 @@ pub fn run(
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
+                    // #1363 - a destroyed window's terminal-output attachments are released
+                    // here, in the backend, without any frontend cooperation. It is what keeps
+                    // a window that died without detaching from leaving a session emitting to
+                    // a webview that is gone, and it is why the frontend close hook does not
+                    // need to block the close.
+                    if let Some(pty_mgr) = app_handle
+                        .try_state::<Arc<Mutex<crate::pty::manager::PtyManager>>>()
+                        .map(|state| Arc::clone(state.inner()))
+                    {
+                        let destroyed = label.clone();
+                        tauri::async_runtime::spawn(async move {
+                            pty_mgr
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .release_window_attachments(&destroyed);
+                        });
+                    }
                     if label == "spec-board" {
                         let state = spec_board_state.clone();
                         tauri::async_runtime::spawn(async move {
@@ -3741,6 +3791,28 @@ mod tests {
 
         assert!(handle.abort_running());
         assert!(!handle.is_owned_running("127.0.0.1", 8765));
+    }
+
+    #[test]
+    fn web_server_handle_bind_failure_roundtrip() {
+        let handle = WebServerHandle::default();
+        assert!(handle.last_bind_failure().is_none());
+
+        let failure = crate::web::StartServerError::BindFailed {
+            bind: "192.168.1.12".to_string(),
+            addr: "192.168.1.12:8888".parse().unwrap(),
+            detail: "os error 10049".to_string(),
+        };
+        handle.record_bind_failure(failure.clone());
+        assert_eq!(
+            handle
+                .last_bind_failure()
+                .expect("failure must be recorded"),
+            failure
+        );
+
+        handle.clear_bind_failure();
+        assert!(handle.last_bind_failure().is_none());
     }
 
     #[tokio::test]

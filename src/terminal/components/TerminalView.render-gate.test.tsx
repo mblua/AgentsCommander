@@ -1,29 +1,30 @@
 // @vitest-environment jsdom
 //
-// #1283 — the terminal render gate, updated to the activation protocol.
+// #955 — a new terminal rendered NOTHING until the `get_screen_snapshot` IPC
+// round-trip settled. A Trace capture proved the agent painted at 418 ms and
+// kept painting for the entire 5.4 s the user stared at a black tile: every
+// byte reached the backend, and the frontend buffered them in an array instead
+// of writing them to xterm.
 //
-// The legacy #955 contract ("a live PTY byte is rendered on arrival, never
-// gated behind a snapshot round-trip") is superseded by the #1283 contract:
-// the backend refuses to emit current-generation data or markers until the
-// frontend has synchronously committed the exact activation payload and
-// accepted readiness, so the frontend barrier is the Activating window itself.
+// The contract these tests lock down:
+//   1. A live PTY byte is NEVER gated behind an IPC round-trip. It renders on
+//      arrival, whether the snapshot settles late, or never.
+//   2. The snapshot still restores re-attach scrollback — with no duplicated
+//      and no missing output — by reconciling AFTER the fact, not by gating.
 //
-// These tests lock down the new gate:
-//   1. No byte reaches xterm, ready, or ack while Activating (pre-promise).
-//   2. The activated path renders ONLY the exact activation payload: the
-//      legacy snapshot provider is never consulted, even when it could return
-//      newer S+1 content, and retained S+1 writes exactly once after replay.
-//   3. A terminal that has rendered nothing says so when replay stalls; one
-//      that IS rendering has nothing to report.
-//   4. Snapshot-represented deliveries never write twice; a post-snapshot gap
-//      seals without acknowledgement and recovers exactly once.
+// The xterm double models `reset()` faithfully: `writes` is the full write
+// history (proving live bytes were rendered immediately), `screen` is what is
+// actually visible now (proving the reconciled result is correct).
+//
+// #1363 restored this suite. The one thing that moved is where the snapshot
+// comes from: it is the value `activate_terminal_output` (the attach) resolves
+// to, not a separate `get_screen_snapshot` fetch. The contract above is
+// unchanged, and every attach now re-seeds with a reset (plan 3.4.2), so the
+// fast path resets once too.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TerminalApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
-import type {
-  TerminalOutputActivationResult,
-  TerminalOutputControlState,
-} from "../../shared/types";
+import type { PtyScreenSnapshot } from "../../shared/types";
 import {
   baseSettings,
   installBrowserDomStubs,
@@ -42,12 +43,9 @@ interface FakeTerminalInstance {
   screen: unknown[];
   resets: number;
   resizes: { cols: number; rows: number }[];
-  holdNextWrites: number;
-  heldWrites: { bytes: number[]; callback: (() => void) | null }[];
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
   reset(): void;
-  releaseHeld(index?: number): void;
 }
 
 const xterm = vi.hoisted(() => ({
@@ -68,15 +66,15 @@ vi.mock("@xterm/xterm", () => ({
     screen: unknown[] = [];
     resets = 0;
     resizes: { cols: number; rows: number }[] = [];
-    holdNextWrites = 0;
-    heldWrites: { bytes: number[]; callback: (() => void) | null }[] = [];
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     constructor() {
       xterm.instances.push(this);
     }
 
-    loadAddon(): void {}
+    loadAddon(addon?: { activate?: (terminal: FakeTerminalInstance) => void }): void {
+      addon?.activate?.(this);
+    }
 
     open(element: HTMLElement): void {
       this.element = element;
@@ -88,20 +86,9 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
 
-    write(data: unknown, callback?: () => void): void {
-      const record = { bytes: Array.from(data as Uint8Array), callback: callback ?? null };
+    write(data: unknown): void {
       this.writes.push(data);
       this.screen.push(data);
-      if (this.holdNextWrites > 0) {
-        this.holdNextWrites -= 1;
-        this.heldWrites.push(record);
-        return;
-      }
-      callback?.();
-    }
-
-    releaseHeld(index = 0): void {
-      this.heldWrites[index]?.callback?.();
     }
 
     /** Real xterm RIS: clears the screen and scrollback. */
@@ -111,21 +98,30 @@ vi.mock("@xterm/xterm", () => ({
     }
 
     scrollToBottom(): void {}
+
     paste(): void {}
+
     hasSelection(): boolean {
       return false;
     }
+
     getSelection(): string {
       return "";
     }
+
     attachCustomKeyEventHandler(): void {}
+
     onData(): { dispose: () => void } {
       return { dispose: () => {} };
     }
-    onResize(handler: (size: { cols: number; rows: number }) => void): { dispose: () => void } {
+
+    onResize(
+      handler: (size: { cols: number; rows: number }) => void
+    ): { dispose: () => void } {
       this.resizeHandlers.add(handler);
       return { dispose: () => this.resizeHandlers.delete(handler) };
     }
+
     emitResize(cols: number, rows: number): void {
       this.cols = cols;
       this.rows = rows;
@@ -134,6 +130,7 @@ vi.mock("@xterm/xterm", () => ({
         handler({ cols, rows });
       }
     }
+
     resize(cols: number, rows: number): void {
       this.emitResize(cols, rows);
     }
@@ -172,8 +169,6 @@ const SNAP = [83, 78, 65, 80]; // "SNAP"
 const LIVE = [76, 73, 86, 69]; // "LIVE"
 const NEXT = [78, 69, 88, 84]; // "NEXT"
 
-const GENERATION = "1";
-
 function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): void {
   fake.resolve("get_settings", baseSettings());
   fake.resolve(
@@ -183,56 +178,9 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
   fake.onInvoke("list_sessions", () => sessions);
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
+  fake.resolve("activate_terminal_output", null);
+  fake.resolve("detach_terminal_output", undefined);
   fake.resolve("set_last_prompt", undefined);
-  // #1283: activation payload is the only snapshot source. The legacy provider
-  // is wired to return a NEWER snapshot containing S+1: the activated path
-  // must never consult it.
-  fake.onInvoke("get_screen_snapshot", ({ sessionId }) => ({
-    sessionId,
-    data: [...SNAP, ...LIVE],
-    rows: null,
-    cols: null,
-    sequence: 1,
-  }));
-  const generationBySession = new Map<string, string>();
-  fake.onInvoke("activate_terminal_output", (args) => {
-    const sessionId = String(args.sessionId);
-    const next = (parseInt(generationBySession.get(sessionId) ?? "0", 10) || 0) + 1;
-    generationBySession.set(sessionId, String(next));
-    const instance = xterm.instances.find(
-      (candidate) =>
-        candidate.element?.getAttribute("data-ac-session-id") === sessionId,
-    );
-    return {
-      kind: "activated",
-      activation: {
-        sessionId,
-        generation: String(next),
-        snapshot: {
-          data: SNAP,
-          rows: instance?.rows ?? 24,
-          cols: instance?.cols ?? 80,
-          sequence: "0",
-        },
-      },
-    } as TerminalOutputActivationResult;
-  });
-  fake.onInvoke("ready_terminal_output", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.onInvoke("deactivate_terminal_output", (args) => ({
-    kind: "inactive",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
-  fake.onInvoke("report_terminal_renderer_metrics", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
 }
 
 function deferred<T>(): {
@@ -252,7 +200,6 @@ function deferred<T>(): {
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
-  await Promise.resolve();
 }
 
 function onlySession() {
@@ -267,21 +214,17 @@ function bytes(writes: unknown[]): number[][] {
   return writes.map((write) => Array.from(write as Uint8Array));
 }
 
-function statusFor(root: HTMLElement): HTMLDivElement | null {
-  return root.querySelector<HTMLDivElement>(
-    '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]',
-  );
-}
-
-describe("TerminalView activation render gate (#1283)", () => {
+describe("TerminalView snapshot render gate (#955)", () => {
   let cleanupDom: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;
+  let debug: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
     xterm.instances.length = 0;
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    debug = vi.spyOn(console, "debug").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -290,271 +233,322 @@ describe("TerminalView activation render gate (#1283)", () => {
     resetUiStoresForTests();
     xterm.instances.length = 0;
     warn.mockRestore();
+    debug.mockRestore();
   });
 
-  // THE GATE. While the activation promise is outstanding, current-generation
-  // data and a resync marker are parsed but rejected: no xterm write, no ready
-  // call, no acknowledgement. After the exact local commit, readiness carries
-  // S, and only then does the payload reach xterm.
-  it("renders nothing before the activation commits and readiness accepts", async () => {
+  // THE REGRESSION. Red against main: the live chunk is pushed onto
+  // pendingSnapshotEvents and never written, so `writes` stays empty forever —
+  // the black tile. Green with the gate removed.
+  it("renders live PTY output while the snapshot round-trip is still in flight", async () => {
     const fake = new FakeTransport();
-    const activation = deferred<TerminalOutputActivationResult>();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    fake.onInvoke("activate_terminal_output", () => activation.promise);
+    // Never settles: exactly the state the Trace capture proved.
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
       const terminal = xterm.instances[0];
-
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
         data: LIVE,
-      });
-      fake.emitFromBackend("pty_output", {
-        kind: "resyncRequired",
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        sequence: "0",
+        sequence: 1,
       });
 
-      expect(terminal.writes).toHaveLength(0);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(0);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-
-      activation.resolve({
-        kind: "activated",
-        activation: {
-          sessionId: SESSION_A,
-          generation: GENERATION,
-          snapshot: { data: SNAP, rows: 24, cols: 80, sequence: "0" },
-        },
-      });
-      await flushPromises();
-
-      // The ReplayPending commit precedes readiness: one ready call with S.
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(1);
-      expect(fake.lastCall("ready_terminal_output")?.args).toEqual({
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        snapshotSequence: "0",
-      });
-
-      // Ready accepted: the exact activation payload renders.
-      await flushPromises();
-      expect(bytes(terminal.writes)).toEqual([SNAP]);
-
-      // The bytes rejected during Activating are NOT replayed; a fresh S+1
-      // delivery is retained and drains exactly once after replay.
-      fake.emitFromBackend("pty_output", {
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
-        data: LIVE,
-      });
-      await waitFor(() => expect(bytes(terminal.writes)).toEqual([SNAP, LIVE]));
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(1);
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+      expect(bytes(terminal.screen)).toEqual([LIVE]);
     } finally {
       rendered.cleanup();
     }
   });
 
-  // The legacy provider could return a newer snapshot containing S+1. The
-  // activated path must make ZERO legacy fetches, use S as the filter anchor,
-  // and write retained S+1 exactly once after the replay callback.
-  it("renders only the exact activation payload and never consults the legacy snapshot", async () => {
+  // The trace showed ~40 chunks over 5.4 s into a black tile. Every one of them
+  // must reach the screen while the round-trip is still outstanding.
+  it("keeps rendering every live chunk while the snapshot never settles", async () => {
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    const activation = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", () => activation.promise);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
       const terminal = xterm.instances[0];
-      terminal.holdNextWrites = 1; // hold the snapshot write: ReplayPending
-      activation.resolve({
-        kind: "activated",
-        activation: {
+      for (let index = 0; index < 5; index += 1) {
+        fake.emitFromBackend("pty_output", {
           sessionId: SESSION_A,
-          generation: GENERATION,
-          snapshot: { data: SNAP, rows: 24, cols: 80, sequence: "0" },
-        },
-      });
+          data: [65 + index],
+          sequence: index + 1,
+        });
+      }
 
-      await flushPromises();
-      expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
-      expect(bytes(terminal.writes)).toEqual([SNAP]);
-      expect(terminal.heldWrites[0].bytes).toEqual(SNAP);
-
-      fake.emitFromBackend("pty_output", {
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
-        data: LIVE,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      // Retained but never written while ReplayPending.
-      expect(bytes(terminal.writes)).toEqual([SNAP]);
-
-      terminal.releaseHeld(0);
-      await waitFor(() => expect(bytes(terminal.writes)).toEqual([SNAP, LIVE]));
-      expect(bytes(terminal.writes.filter((_, index) => index > 0))).toEqual([LIVE]);
-      expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
-
-      const acks = fake.callsFor("ack_terminal_output_delivery");
-      expect(acks).toHaveLength(1);
-      expect(acks[0].args).toEqual({
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
-      });
+      await waitFor(() => expect(terminal.writes).toHaveLength(5));
+      expect(bytes(terminal.screen)).toEqual([[65], [66], [67], [68], [69]]);
     } finally {
       rendered.cleanup();
     }
   });
 
-  // A terminal that has rendered nothing at all says so instead of sitting
-  // black and silent while readiness never settles.
-  it("surfaces the unavailable status when readiness stalls with nothing rendered", async () => {
+  // Safety net, not a gate: a terminal that has rendered nothing at all says so
+  // instead of sitting black and silent. Red against main (no status is ever
+  // surfaced while the promise is outstanding).
+  it("surfaces the unavailable status when the snapshot stalls with nothing rendered", async () => {
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    const ready = deferred<TerminalOutputControlState>();
-    fake.onInvoke("ready_terminal_output", () => ready.promise);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
 
       await waitFor(() => {
-        expect(statusFor(rendered.root)?.hidden).toBe(false);
+        const status = rendered.root.querySelector<HTMLDivElement>(
+          '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
+        );
+        expect(status?.hidden).toBe(false);
       }, 3000);
-      // Nothing rendered: the payload is never written before readiness.
-      expect(terminal.writes).toHaveLength(0);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("still pending after 500ms")
+      );
     } finally {
       rendered.cleanup();
     }
   });
 
-  // ...but a terminal that IS rendering has nothing to report.
-  it("does not surface the unavailable status while output is rendering", async () => {
+  // ...but a terminal that IS rendering live output has nothing to report.
+  it("does not surface the unavailable status while live output is rendering", async () => {
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
         data: LIVE,
+        sequence: 1,
       });
-      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       await new Promise((resolve) => setTimeout(resolve, 700));
-      expect(statusFor(rendered.root)?.hidden).toBe(true);
-      expect(bytes(terminal.screen)).toEqual([SNAP, LIVE]);
+
+      const status = rendered.root.querySelector<HTMLDivElement>(
+        '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
+      );
+      expect(status?.hidden).toBe(true);
+      expect(bytes(terminal.screen)).toEqual([LIVE]);
     } finally {
       rendered.cleanup();
     }
   });
 
-  // A delivery wholly represented by the activation snapshot is acknowledged
-  // WITHOUT allocation: no duplicate write, ever.
-  it("acknowledges a snapshot-represented delivery without writing it twice", async () => {
+  // RE-ATTACH, snapshot loses the race. The snapshot is a full-screen repaint,
+  // so it cannot simply be written on top of live bytes. The screen is rebuilt:
+  // reset -> snapshot (everything <= its sequence) -> live events after it.
+  // Here the snapshot already contains the live chunk (sequence 1), so the
+  // chunk must NOT be replayed on top of it: no duplication.
+  it("rebuilds from the snapshot without duplicating live output it already contains", async () => {
     const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
       const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-
       fake.emitFromBackend("pty_output", {
-        kind: "data",
         sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "0",
-        sequence: "0",
-        data: [...SNAP],
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(bytes(terminal.writes)).toEqual([SNAP]);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(1);
-      expect(fake.lastCall("ack_terminal_output_delivery")?.args).toEqual({
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "0",
-        sequence: "0",
-      });
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  // A post-snapshot gap receives no normal acknowledgement and enters exactly
-  // one recovery lane (deactivate + replacement activation); old-generation
-  // deliveries after it are rejected without allocation.
-  it("seals without acknowledgement on a post-snapshot gap and recovers once", async () => {
-    const fake = new FakeTransport();
-    setupTerminalTransport(fake, [onlySession()]);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
-      const terminal = xterm.instances[0];
-      await waitFor(() => expect(terminal.writes).toHaveLength(1));
-
-      fake.emitFromBackend("pty_output", {
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "3",
-        sequence: "3",
-        data: NEXT,
-      });
-      await flushPromises();
-      await flushPromises();
-
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(1);
-      expect(fake.callsFor("deactivate_terminal_output")[0].args).toEqual({
-        sessionId: SESSION_A,
-        generation: GENERATION,
-      });
-      // The replacement activation is a fresh generation.
-      await flushPromises();
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(2);
-
-      // Old-generation events are rejected.
-      fake.emitFromBackend("pty_output", {
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: GENERATION,
-        firstSequence: "1",
-        sequence: "1",
         data: LIVE,
+        sequence: 1,
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
+
+      // The gate is gone: it is on screen before the snapshot settles.
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+
+      snapshot.resolve({
+        sessionId: SESSION_A,
+        data: [...SNAP, ...LIVE],
+        rows: null,
+        cols: null,
+        sequence: 1, // the snapshot's screen already includes event #1
+      });
+
+      await waitFor(() => expect(terminal.resets).toBe(1));
+      await flushPromises();
+
+      // Visible screen: the snapshot alone. The live chunk is inside it and is
+      // dropped by the sequence dedup rather than written a second time.
+      expect(bytes(terminal.screen)).toEqual([[...SNAP, ...LIVE]]);
+      // History proves the live byte was rendered immediately, before the
+      // snapshot arrived — that is the whole point of the fix.
+      expect(bytes(terminal.writes)).toEqual([LIVE, [...SNAP, ...LIVE]]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // RE-ATTACH, snapshot loses the race and does NOT cover the newest live
+  // event. The rebuild must replay everything after the snapshot's sequence:
+  // no missing output.
+  it("replays the live output the late snapshot does not cover", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
+      const terminal = xterm.instances[0];
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 1,
+      });
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: NEXT,
+        sequence: 2,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+
+      snapshot.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 1, // covers event #1 only
+      });
+
+      await waitFor(() => expect(terminal.resets).toBe(1));
+      await flushPromises();
+
+      // Snapshot, then only the event it did not contain. Event #1 is dropped
+      // (already in the snapshot), event #2 is replayed (it was not).
+      expect(bytes(terminal.screen)).toEqual([SNAP, NEXT]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // RE-ATTACH, snapshot WINS the race (the normal, fast path). #1363 changed
+  // one thing here: the seed is applied with a reset even on a clean terminal,
+  // because every attach re-seeds and the reset is what makes replaying the
+  // 64 KiB history ring safe (plan 3.4.2 / 3.3 rule 2).
+  it("seeds a clean terminal from the snapshot with exactly one reset", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
+      const terminal = xterm.instances[0];
+      snapshot.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 1,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: NEXT,
+        sequence: 2,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+
+      expect(terminal.resets).toBe(1);
+      expect(bytes(terminal.screen)).toEqual([SNAP, NEXT]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // The retention budget bounds memory when the round-trip never settles. Once
+  // it is spent the live events after the snapshot's sequence are no longer
+  // held, so a rebuild would DROP them: the snapshot must be discarded instead,
+  // and the live screen kept.
+  it("discards a snapshot that lands after the reconcile budget is spent", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
+
+      const terminal = xterm.instances[0];
+      // One chunk larger than the 2 MiB retention budget.
+      const flood = new Array<number>(2 * 1024 * 1024 + 1).fill(65);
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: flood,
+        sequence: 1,
+      });
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: NEXT,
+        sequence: 2,
+      });
+
+      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+
+      snapshot.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 1,
+      });
+
+      await flushPromises();
+      await flushPromises();
+
+      // No reset: the live screen survives intact, snapshot dropped.
+      expect(terminal.resets).toBe(0);
+      expect(bytes(terminal.screen.slice(1))).toEqual([NEXT]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("outran the reconcile budget")
+      );
     } finally {
       rendered.cleanup();
     }

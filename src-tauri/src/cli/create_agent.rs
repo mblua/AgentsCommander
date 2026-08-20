@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::create_agent_matrix;
 use crate::config;
+use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -130,7 +131,7 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
 pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), String> {
     let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
 
-    let requests_dir = config_dir.join("session-requests");
+    let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
     std::fs::create_dir_all(&requests_dir)
         .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
 
@@ -292,7 +293,7 @@ mod tests {
 
         let path = crate::config::config_dir()
             .expect("config dir")
-            .join("session-requests")
+            .join(SESSION_REQUESTS_DIR_NAME)
             .join(format!("{}.json", request.id));
         let json = std::fs::read_to_string(&path).expect("read request");
         let _ = std::fs::remove_file(&path);

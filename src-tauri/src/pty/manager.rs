@@ -14,13 +14,10 @@ use crate::pty::docker_runtime::DockerRuntime;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::local_backend::LocalProcessBackend;
-use crate::pty::output::{PtyScreenSnapshot, TerminalOutputCoordinator};
+use crate::pty::output::PtyScreenSnapshot;
 use crate::telegram::manager::OutputSenderMap;
 
-pub(crate) use crate::pty::output::{
-    TerminalOutputActivationResult, TerminalOutputControlState, TerminalRendererMetrics,
-    TerminalRendererMetricsWire,
-};
+pub(crate) use crate::pty::output::TerminalOutputAttachError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingSpawn {
@@ -153,7 +150,7 @@ pub struct PtyManager {
 }
 
 /// An owned shallow route selected while PtyManager is locked. All forwarding happens after the
-/// caller has dropped that manager lock, so the shared output coordinator never inherits it.
+/// caller has dropped that manager lock, so the output path never inherits it.
 pub(crate) struct PtyTerminalOutputRoute {
     session_id: Uuid,
     backend: Arc<dyn PtyBackend>,
@@ -162,47 +159,15 @@ pub(crate) struct PtyTerminalOutputRoute {
 impl PtyTerminalOutputRoute {
     pub(crate) fn activate_terminal_output(
         &self,
+        label: &str,
         include_history: bool,
-    ) -> TerminalOutputActivationResult {
+    ) -> Result<Option<PtyScreenSnapshot>, TerminalOutputAttachError> {
         self.backend
-            .activate_terminal_output(self.session_id, include_history)
+            .activate_terminal_output(self.session_id, label, include_history)
     }
 
-    pub(crate) fn ready_terminal_output(
-        &self,
-        generation: u64,
-        snapshot_sequence: u64,
-    ) -> TerminalOutputControlState {
-        self.backend
-            .ready_terminal_output(self.session_id, generation, snapshot_sequence)
-    }
-
-    pub(crate) fn deactivate_terminal_output(&self, generation: u64) -> TerminalOutputControlState {
-        self.backend
-            .deactivate_terminal_output(self.session_id, generation)
-    }
-
-    pub(crate) fn ack_terminal_output_delivery(
-        &self,
-        generation: u64,
-        first_sequence: u64,
-        sequence: u64,
-    ) -> TerminalOutputControlState {
-        self.backend.ack_terminal_output_delivery(
-            self.session_id,
-            generation,
-            first_sequence,
-            sequence,
-        )
-    }
-
-    pub(crate) fn report_terminal_renderer_metrics(
-        &self,
-        generation: u64,
-        metrics: TerminalRendererMetrics,
-    ) -> TerminalOutputControlState {
-        self.backend
-            .report_terminal_renderer_metrics(self.session_id, generation, metrics)
+    pub(crate) fn detach_terminal_output(&self, label: &str) {
+        self.backend.detach_terminal_output(self.session_id, label);
     }
 }
 
@@ -214,22 +179,19 @@ impl PtyManager {
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
         lifecycle_sender: Option<crate::session::selection::ContainerLifecycleSender>,
     ) -> Self {
-        let coordinator = TerminalOutputCoordinator::new();
-        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::with_coordinator(
+        let local_backend: Arc<dyn PtyBackend> = Arc::new(LocalProcessBackend::new(
             output_senders.clone(),
             idle_detector.clone(),
             git_watcher,
             ws_broadcaster.clone(),
-            Arc::clone(&coordinator),
         ));
-        let container_backend = Arc::new(ContainerTransportBackend::with_runtime_and_coordinator(
+        let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
             output_senders,
             idle_detector,
             ws_broadcaster,
             lifecycle_sender,
             Arc::new(DockerRuntime::new()),
             ContainerApiTokenManager::at_config_dir(),
-            coordinator,
         ));
         debug_assert!(local_backend.as_any().is::<LocalProcessBackend>());
         debug_assert!(container_backend.as_any().is::<ContainerTransportBackend>());
@@ -288,6 +250,14 @@ impl PtyManager {
             session_id,
             backend: self.backend_for_kind(kind),
         })
+    }
+
+    /// #1363 - a destroyed window releases every terminal-output attachment it held, in both
+    /// backends. The window that died is the only thing identified, so a session another window
+    /// still watches keeps delivering.
+    pub(crate) fn release_window_attachments(&self, label: &str) {
+        self.local_backend.release_window_attachments(label);
+        self.container_backend.release_window_attachments(label);
     }
 
     pub fn start_container_pending_reaper(&self, shutdown: crate::shutdown::ShutdownSignal) {

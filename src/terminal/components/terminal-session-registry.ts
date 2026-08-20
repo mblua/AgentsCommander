@@ -7,9 +7,10 @@
  * order:
  *
  *   1. scheduled-work and listener cleanup (timers cancelled),
- *   2. admission seal/drop (injected `beforeResourceDispose` hook: mark any
- *      replay/write gate inert and clear its sole strong state owner BEFORE
- *      zeroing pending/in-flight counters and releasing raw bytes),
+ *   2. the injected `beforeResourceDispose` hook (TerminalView releases this
+ *      window's output attachment there, because the dependency-cruiser rule
+ *      `no-terminal-helper-back-edge` forbids this module from reaching
+ *      `src/shared/ipc.ts`),
  *   3. WebGL addon disposal (exactly once, if present),
  *   4. `terminal.dispose()`,
  *   5. container removal,
@@ -20,14 +21,14 @@
  * only weak/inert token state.
  *
  * TerminalView remains the orchestration module: it supplies the Terminal/
- * addon/status factory, the admission-dispose hook, and the viewport policy.
+ * addon/status factory, the pre-dispose hook, and the viewport policy.
  * This module never imports TerminalView, a sidebar module, `src/shared/ipc.ts`,
  * or `@tauri-apps/api`.
  */
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
-import type { PtyViewport } from "../../shared/types";
+import type { PtyOutputEvent, PtyViewport } from "../../shared/types";
 
 /** Plan 5.5 / Section 9: at most four retained terminal instances. */
 export const TERMINAL_RETENTION_LIMIT = 4;
@@ -49,10 +50,17 @@ export interface SessionTerminalEntry {
   spawnDriftReported: boolean;
   resizeRetryTimer: ReturnType<typeof setTimeout> | null;
   resizeRetryAttempts: number;
-  /** #1283 replay-pending settle warning timer; cancelled at disposal. */
+  /** Seed settle warning timer; cancelled at disposal. */
   snapshotSettleTimer: ReturnType<typeof setTimeout> | null;
-  /** #1283 generation health-deadline timer; cancelled at disposal. */
-  healthTimer: ReturnType<typeof setTimeout> | null;
+  /** #961 seed/reconcile state. While an attach is in flight the live events
+   *  are BOTH written and retained, so the seed that lands afterwards can be
+   *  applied by reset-then-replay instead of gating the live bytes behind it. */
+  snapshotReplayPending: boolean;
+  pendingSnapshotEvents: PtyOutputEvent[];
+  pendingSnapshotBytes: number;
+  /** Watermark: the highest sequence already on screen. `null` until the first
+   *  sequenced write (browser mode never sets it). */
+  lastAppliedSequence: number | null;
   /** LRU recency stamp (monotonic, owned by the registry). */
   lastActivatedAt: number;
   destroyed: boolean;
@@ -70,8 +78,8 @@ export interface TerminalRegistryMetrics {
 export interface TerminalRegistryOptions {
   /** Lazily resolved host element (assigned at render time). */
   host: () => HTMLElement;
-  /** #1283 plan 5.5.2: called synchronously BEFORE WebGL/Xterm/DOM disposal so
-   *  admission can mark gates inert and clear their sole strong owners first. */
+  /** Called synchronously BEFORE WebGL/Xterm/DOM disposal, so TerminalView can
+   *  release this window's output attachment while the entry still exists. */
   beforeResourceDispose: (sessionId: string) => void;
 }
 
@@ -131,12 +139,8 @@ export function createTerminalSessionRegistry(
       clearTimeout(entry.resizeRetryTimer);
       entry.resizeRetryTimer = null;
     }
-    if (entry.healthTimer !== null) {
-      clearTimeout(entry.healthTimer);
-      entry.healthTimer = null;
-    }
 
-    // 2. admission seal/drop BEFORE any resource disposal.
+    // 2. the orchestrator's pre-dispose hook, BEFORE any resource disposal.
     options.beforeResourceDispose(sessionId);
 
     // 3. WebGL addon disposal (exactly once).

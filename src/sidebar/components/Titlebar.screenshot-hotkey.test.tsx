@@ -124,6 +124,7 @@ describe("Titlebar screenshot hotkey status", () => {
     while (cleanups.length > 0) cleanups.pop()?.();
     setNativeRuntime(false);
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it("renders an active native status before WebServerMenu and ZoomStepper", async () => {
@@ -205,5 +206,25 @@ describe("Titlebar screenshot hotkey status", () => {
 
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
     expect(mocks.invoke.mock.calls).toEqual([["get_instance_label"]]);
+  });
+
+  it("shows the chip when a later status reports the registration", async () => {
+    vi.useFakeTimers();
+    // The first read lands before the backend registration completes; the
+    // mocked default supplies the registered status to every later read.
+    mocks.getHotkeyStatus.mockResolvedValueOnce(screenshotStatus({ registered: false }));
+
+    const { root } = await mountTitlebar();
+
+    expect(getChip(root)).toBeNull();
+    expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
+
+    // Comfortably past HOTKEY_STATUS_RETRY_DELAY_MS; the second read is
+    // terminal, so no third read is ever scheduled.
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(2);
+    expect(getChip(root)?.querySelector(".screenshot-hotkey-status-text")?.textContent)
+      .toBe("Ctrl + 1");
   });
 });

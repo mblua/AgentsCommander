@@ -21,6 +21,50 @@ const [activeWorkingDirectory, setActiveWorkingDirectory] = createSignal("");
 const [activeWorkgroupTask, setActiveWorkgroupTask] = createSignal<string | null>(null);
 const [activeIsRootAgent, setActiveIsRootAgent] = createSignal(false);
 
+// #1455 - `activeWorkgroupTask` is a pure cache with no periodic refresh, so its two
+// asynchronous writers (a local TASK mutation and a `SessionAPI.list()` snapshot)
+// used to resolve last-write-wins, and a snapshot taken before a save could revert
+// the header after it. These two values give the writers an order. Deliberately NOT
+// signals: they are race tokens that are never rendered, and a reactive read from a
+// memo would be a subscription nobody wants.
+let taskWriteSeq = 0;
+let lastLocalTaskWrite: { workgroupRoot: string; seq: number } | null = null;
+
+// #1455 - TASK.md is per-WORKGROUP, not per-session: `find_workgroup_task_path_for_cwd`
+// (src-tauri/src/session/session.rs:242-256) walks up from a session's cwd to the first
+// `wg-*` ancestor, and `SessionInfo.workgroup_task` re-reads that path on every list
+// (`session.rs:396`), so every session under one workgroup root shows the same file.
+// Ownership of a task write is therefore a workgroup question, never a session one.
+// This is the same normalise-and-prefix comparison the manual-event handler already
+// uses at src/terminal/App.tsx:326-347; the two must stay in agreement.
+function normalizeTaskPath(path: string): string {
+  let normalized = path;
+  if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
+  else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  return normalized.replace(/\\/g, "/").toLowerCase();
+}
+
+function cwdUnderWorkgroupRoot(cwd: string, workgroupRoot: string): boolean {
+  if (!cwd || !workgroupRoot) return false;
+  const normalizedCwd = normalizeTaskPath(cwd);
+  const normalizedRoot = normalizeTaskPath(workgroupRoot);
+  return (
+    normalizedCwd === normalizedRoot ||
+    normalizedCwd.startsWith(`${normalizedRoot}/`)
+  );
+}
+
+// #1455 - true when an accepted local task write landed after the caller took its
+// session snapshot AND that session displays the same TASK.md, i.e. the snapshot's
+// task field is already stale.
+function localTaskWriteWins(sessionCwd: string, expectedTaskSeq: number): boolean {
+  return (
+    lastLocalTaskWrite !== null &&
+    lastLocalTaskWrite.seq > expectedTaskSeq &&
+    cwdUnderWorkgroupRoot(sessionCwd, lastLocalTaskWrite.workgroupRoot)
+  );
+}
+
 function clearLiveMetadata(): void {
   setActiveSessionId(null);
   setActiveSessionName("");
@@ -165,7 +209,12 @@ export const terminalStore = {
     return matchesCurrentSelection(selection, generation);
   },
 
-  bindLive(selection: SessionSelection, generation: number, session: Session): boolean {
+  bindLive(
+    selection: SessionSelection,
+    generation: number,
+    session: Session,
+    expectedTaskSeq: number,
+  ): boolean {
     if (
       selection.mode !== "live" ||
       session.id !== selection.id ||
@@ -179,7 +228,11 @@ export const terminalStore = {
     setActiveShell(session.shell);
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
-    setActiveWorkgroupTask(session.workgroupTask ?? null);
+    // #1455 - every other field binds unconditionally; only the task field can lose
+    // to a newer local write against the same workgroup's TASK.md.
+    if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
+      setActiveWorkgroupTask(session.workgroupTask ?? null);
+    }
     setActiveIsRootAgent(session.isRootAgent);
     setBindingState("bound");
     return true;
@@ -207,7 +260,7 @@ export const terminalStore = {
     setBindingState("unavailable");
   },
 
-  bindLockedSession(session: Session): void {
+  bindLockedSession(session: Session, expectedTaskSeq: number): void {
     setSelectionId(session.id);
     setSelectionMode("live");
     setActiveSessionId(session.id);
@@ -215,7 +268,10 @@ export const terminalStore = {
     setActiveShell(session.shell);
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
-    setActiveWorkgroupTask(session.workgroupTask ?? null);
+    // #1455 - see bindLive.
+    if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
+      setActiveWorkgroupTask(session.workgroupTask ?? null);
+    }
     setActiveIsRootAgent(session.isRootAgent);
     setBindingState("bound");
   },
@@ -235,7 +291,31 @@ export const terminalStore = {
     setActiveWorkgroupTask(task);
   },
 
+  // #1455 - capture this immediately BEFORE an awaited `SessionAPI.list()` and hand
+  // it back to `bindLive` / `bindLockedSession`. Non-reactive on purpose; see the
+  // declaration.
+  get taskWriteSeq() {
+    return taskWriteSeq;
+  },
+
+  // #1455 - the local-write side of the task ordering. `workgroupRoot` is the root
+  // whose TASK.md the mutation just rewrote, straight off `TaskUpdateResult`. The
+  // write is accepted unless the header is positively known to be showing a
+  // DIFFERENT workgroup's file. While the store is unbound (`clearLiveMetadata`
+  // blanks the cwd on every selection reserve and every transport generation change)
+  // the workgroup cannot be resolved, so the write is accepted and the bind that
+  // blanked it decides the final value through `localTaskWriteWins`.
+  applyLocalTask(workgroupRoot: string, task: string | null): void {
+    const cwd = activeWorkingDirectory();
+    if (cwd && !cwdUnderWorkgroupRoot(cwd, workgroupRoot)) return;
+    taskWriteSeq += 1;
+    lastLocalTaskWrite = { workgroupRoot, seq: taskWriteSeq };
+    setActiveWorkgroupTask(task);
+  },
+
   resetForTests(): void {
+    taskWriteSeq = 0;
+    lastLocalTaskWrite = null;
     setSelectionId(null);
     setSelectionMode("none");
     setSelectionEpoch(null);

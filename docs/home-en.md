@@ -24,4 +24,5 @@ Use the Agent Commander / Root Agent when work spans more than one team or workg
 - [Quickstart](quickstart.md) for a guided first team.
 - [Creating agents](agents/creating-agents.md) to define durable roles.
 - [Teams and workgroups](agents/teams-and-workgroups.md) to understand coordinators, workers, and briefs.
+- [Feature index](features/README.md) to find the page for one feature.
 - [Troubleshooting](troubleshooting.md) when a session, message, or launch does not behave as expected.

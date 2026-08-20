@@ -6,6 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::process::Command;
 
+use crate::config::instance_artifacts::LOGS_DIR_NAME;
+
 const MAX_LOGGED_COMMAND_LEN: usize = 512;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -472,7 +474,7 @@ fn write_audit_log(
 ) -> Result<(), String> {
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| "could not determine config directory".to_string())?;
-    let log_dir = config_dir.join("logs");
+    let log_dir = config_dir.join(LOGS_DIR_NAME);
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log_path = log_dir.join("harness.log");
 

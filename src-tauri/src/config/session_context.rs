@@ -5,10 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
+use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+
+pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str =
+    crate::config::instance_artifacts::GLOBAL_CONTEXT_TEMPLATE_FILENAME;
 const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
-pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
+pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =
+    crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME;
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +106,7 @@ fn ensure_session_context_with_config(
 ) -> Result<String, String> {
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -201,6 +205,13 @@ pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
 
 /// Special token in context[] that generates workspace repo info from the "repos" field.
 const CONTEXT_TOKEN_REPOS: &str = "$REPOS_WORKSPACE_INFO";
+
+/// #1369 (C4): the pre-rename spelling of `{{AGENT_REPOS}}`. These bytes are on
+/// users' disks: the token was written into every seeded
+/// `.ac/Context.AgentsCommander.md` from #658 through v2, and a customized or
+/// user-ignored template is preserved by `sync_one_template` and never
+/// auto-upgraded. The alias therefore has NO expiry. Never edit.
+const LEGACY_AGENT_REPOS_PLACEHOLDER: &str = "{{WORKSPACE_REPOS}}";
 
 /// Filename for the agent role definition, auto-injected from the identity matrix.
 const ROLE_MD_FILENAME: &str = "Role.md";
@@ -1403,7 +1414,7 @@ fn write_combined_context_file(
 
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -1543,29 +1554,29 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
 /// sentence name the Root Agent instead of a workgroup replica. `is_root_agent`
 /// is `is_root_agent_path`, which no matrix or WG root satisfies, so every
 /// non-root rendering stays byte-identical to before.
-fn workspace_repos_empty_block(is_root_agent: bool) -> &'static str {
+fn agent_repos_empty_block(is_root_agent: bool) -> &'static str {
     if is_root_agent {
-        "# Workspace Repos\n\nNo repos configured for the Root Agent.\n"
+        "# Agent Repos\n\nNo repos configured for the Root Agent.\n"
     } else {
-        "# Workspace Repos\n\nNo repos configured for this replica.\n"
+        "# Agent Repos\n\nNo repos configured for this replica.\n"
     }
 }
 
-fn workspace_repos_header(is_root_agent: bool) -> &'static str {
+fn agent_repos_header(is_root_agent: bool) -> &'static str {
     if is_root_agent {
-        "# Workspace Repos\n\n\
+        "# Agent Repos\n\n\
          You are the Root Agent. Your code repos are listed below; you MUST change into the \
          appropriate repo directory before any code work (git, file edits, builds).\n\n\
          ## Repos\n\n"
     } else {
-        "# Workspace Repos\n\n\
+        "# Agent Repos\n\n\
          You are working inside a workgroup replica. Your code repos are listed below; you MUST change into the \
          appropriate repo directory before any code work (git, file edits, builds).\n\n\
          ## Repos\n\n"
     }
 }
 
-fn render_workspace_repos_string(
+fn render_agent_repos_string(
     cwd_path: &std::path::Path,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
@@ -1576,7 +1587,7 @@ fn render_workspace_repos_string(
     // and the Docker mounts cannot disagree. A local session (repo_mounts = None)
     // keeps today's host-path rendering, byte-for-byte.
     if let Some(resolution) = repo_mounts {
-        return render_workspace_repos_containerized(resolution, is_root_agent);
+        return render_agent_repos_containerized(resolution, is_root_agent);
     }
     let repos = config
         .and_then(|config| config.get("repos"))
@@ -1585,10 +1596,10 @@ fn render_workspace_repos_string(
         .unwrap_or_default();
 
     if repos.is_empty() {
-        return workspace_repos_empty_block(is_root_agent).to_string();
+        return agent_repos_empty_block(is_root_agent).to_string();
     }
 
-    let mut md = String::from(workspace_repos_header(is_root_agent));
+    let mut md = String::from(agent_repos_header(is_root_agent));
 
     for repo_val in &repos {
         let rel = match repo_val.as_str() {
@@ -1622,21 +1633,21 @@ fn render_workspace_repos_string(
     md
 }
 
-/// #935 - render the injected "Workspace Repos" block for a CONTAINER session
+/// #935 - render the injected "Agent Repos" block for a CONTAINER session
 /// from the resolved mounts. Container paths (/repos/repo-X) are shown, never the
 /// Windows host path, which does not resolve inside the container (defect D2). The
 /// branch is still detected host-side from the canonical host path.
-fn render_workspace_repos_containerized(
+fn render_agent_repos_containerized(
     resolution: &crate::pty::container_repos::RepoMountResolution,
     is_root_agent: bool,
 ) -> String {
     use crate::pty::container_repos::RepoOutcome;
 
     if resolution.entries.is_empty() {
-        return workspace_repos_empty_block(is_root_agent).to_string();
+        return agent_repos_empty_block(is_root_agent).to_string();
     }
 
-    let mut md = String::from(workspace_repos_header(is_root_agent));
+    let mut md = String::from(agent_repos_header(is_root_agent));
 
     for entry in &resolution.entries {
         match &entry.outcome {
@@ -2381,7 +2392,7 @@ const CONTEXT_CACHE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// removed workgroups (their cache ages out) AND the cap for the unbounded-growth
 /// secondary finding.
 pub fn sweep_context_cache_at_startup() {
-    let Some(context_dir) = super::config_dir().map(|d| d.join("context-cache")) else {
+    let Some(context_dir) = super::config_dir().map(|d| d.join(CONTEXT_CACHE_DIR_NAME)) else {
         log::warn!("[context-cache] no config dir; skipping startup sweep");
         return;
     };
@@ -2472,7 +2483,7 @@ You are running inside an AgentsCommander session - a terminal session manager c
 
 {{SKILLS_SECTION}}
 
-{{WORKSPACE_REPOS}}
+{{AGENT_REPOS}}
 
 {{CLI_CONTEXT}}
 
@@ -2557,8 +2568,13 @@ fn render_agent_context_template_inner(
     let mut template = template.to_string();
     let signals = TemplateTokenSignals::capture(&template);
     for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
-        if template.contains(placeholder) {
-            // Token present: the replace chain below fills it in place.
+        if template.contains(placeholder)
+            || mandatory_placeholder_aliases(placeholder)
+                .iter()
+                .any(|alias| template.contains(alias))
+        {
+            // Token (or a frozen legacy spelling of it) present: the replace
+            // chain below fills it in place.
             continue;
         }
         // #658: a legacy template wrote this section's prose without its coarse
@@ -2588,6 +2604,26 @@ fn render_agent_context_template_inner(
         template.push_str(placeholder);
     }
 
+    let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
+    // #1369 (C4): a template may carry the current token, the frozen legacy
+    // alias, or - pathologically, if a user pasted both - the two of them.
+    // Exactly one block must be emitted, so the alias renders the block only
+    // when the current token is absent. Computed AFTER the mandatory loop,
+    // because that loop may have appended the current token.
+    //
+    // This guard is LOAD-BEARING and must never be deleted as dead defensive
+    // code: it is the single reason the both-tokens case cannot emit two
+    // blocks. Removing it while keeping the `mandatory_placeholder_aliases`
+    // arm renders TWO `# Agent Repos` blocks with no raw placeholder left, so
+    // `assert_no_raw_template_placeholders` stays green and the only test in
+    // the suite that notices is
+    // `agent_repos_both_tokens_render_exactly_one_block` (AC-2.3).
+    let legacy_repos_replacement = if template.contains("{{AGENT_REPOS}}") {
+        ""
+    } else {
+        agent_repos.as_str()
+    };
+
     template
         .replace("{{AGENT_ROOT}}", agent_root)
         .replace("{{MATRIX_SECTION}}", &rendered.matrix_section)
@@ -2615,10 +2651,8 @@ fn render_agent_context_template_inner(
             "{{INTER_AGENT_MESSAGING}}",
             &render_inter_agent_messaging_block(&rendered),
         )
-        .replace(
-            "{{WORKSPACE_REPOS}}",
-            &render_workspace_repos_string(cwd_path, config, repo_mounts, is_root_agent),
-        )
+        .replace(LEGACY_AGENT_REPOS_PLACEHOLDER, legacy_repos_replacement)
+        .replace("{{AGENT_REPOS}}", &agent_repos)
         .replace(
             "{{DELEGATED_TASK_REPORTING}}",
             DEFAULT_DELEGATED_TASK_REPORTING,
@@ -3007,7 +3041,7 @@ const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
     "{{SESSION_CREDENTIALS}}",
     "{{CLI_CONTEXT}}",
     "{{SKILLS_SECTION}}",
-    "{{WORKSPACE_REPOS}}",
+    "{{AGENT_REPOS}}",
     "{{DELEGATED_TASK_REPORTING}}",
 ];
 
@@ -3024,10 +3058,21 @@ fn mandatory_section_heading(placeholder: &str) -> Option<&'static str> {
         "{{SESSION_CREDENTIALS}}" => "## Session credentials",
         "{{CLI_CONTEXT}}" => "## CLI executable",
         "{{SKILLS_SECTION}}" => "## Skills",
-        "{{WORKSPACE_REPOS}}" => "# Workspace Repos",
+        "{{AGENT_REPOS}}" => "# Agent Repos",
         "{{DELEGATED_TASK_REPORTING}}" => "## Delegated Task Reporting",
         _ => return None,
     })
+}
+
+/// #1369 (C4): pre-rename spellings that still SATISFY a mandatory placeholder.
+/// A template on disk carrying only the legacy token must not receive a second,
+/// appended copy of the same block; the replace chain fills the legacy token in
+/// place. Empty for every other placeholder.
+fn mandatory_placeholder_aliases(placeholder: &str) -> &'static [&'static str] {
+    match placeholder {
+        "{{AGENT_REPOS}}" => &[LEGACY_AGENT_REPOS_PLACEHOLDER],
+        _ => &[],
+    }
 }
 
 /// True when `template` already contains the section that `placeholder` would
@@ -3116,7 +3161,7 @@ fn coarse_section_dedup_safe(
         // Coarse dynamic lists: reaching the append branch means the coarse token
         // is absent, so any inline copy is a baked/stale list -> never dedup,
         // always append the current block.
-        "{{SKILLS_SECTION}}" | "{{WORKSPACE_REPOS}}" => false,
+        "{{SKILLS_SECTION}}" | "{{AGENT_REPOS}}" => false,
         _ => false,
     }
 }
@@ -3194,8 +3239,7 @@ fn render_root_runtime_prologue_inner(
     // invariant in `default_context_dynamic_values` debug-asserts exactly that.
     let rendered = default_context_dynamic_values(agent_root, None, skills_section, is_root_agent);
     let write_restrictions = render_write_restrictions_block(agent_root, &rendered);
-    let workspace_repos =
-        render_workspace_repos_string(cwd_path, config, repo_mounts, is_root_agent);
+    let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
     let inter_agent_messaging = render_inter_agent_messaging_block(&rendered);
 
     // Nine blocks (#979 G4): the heading and Core Concepts reproduce the built-in
@@ -3209,7 +3253,7 @@ fn render_root_runtime_prologue_inner(
         &write_restrictions,
         DEFAULT_DELEGATED_TASK_REPORTING,
         skills_section,
-        &workspace_repos,
+        &agent_repos,
         DEFAULT_CLI_CONTEXT,
         DEFAULT_SESSION_CREDENTIALS,
         &inter_agent_messaging,
@@ -4004,7 +4048,14 @@ fn looks_like_generated_legacy_default_context(normalized: &str) -> bool {
     if normalized.contains("{{") || normalized.contains("}}") {
         return false;
     }
-    if normalized.contains("## Core Concepts") || normalized.contains("# Workspace Repos") {
+    // #1369 (C4): both spellings. `# Workspace Repos` is frozen: it is what
+    // contexts rendered by v1/v2 builds carry on disk. `# Agent Repos` is what
+    // this build renders. Neither is in `is_known_legacy_default_heading`, so
+    // this guard is a fast path, not the only rejection - AC-3 pins that.
+    if normalized.contains("## Core Concepts")
+        || normalized.contains("# Workspace Repos")
+        || normalized.contains("# Agent Repos")
+    {
         return false;
     }
 
@@ -4250,7 +4301,7 @@ mod tests {
             1
         );
         assert_eq!(count_context_occurrences(out, "## Skills"), 1);
-        assert_eq!(count_context_occurrences(out, "# Workspace Repos"), 1);
+        assert_eq!(count_context_occurrences(out, "# Agent Repos"), 1);
         assert_eq!(count_context_occurrences(out, "## CLI executable"), 1);
         assert_eq!(count_context_occurrences(out, "## Session credentials"), 1);
         assert_eq!(
@@ -4264,7 +4315,7 @@ mod tests {
     /// Compact mirror of the real stale-hybrid `Context.AgentsCommander.md`: the
     /// governance sections written INLINE with fine-grained tokens, but WITHOUT
     /// the coarse `{{...}}` tokens the current renderer expects, and without an
-    /// inline `# Workspace Repos` section. The Golden Rule heading carries a
+    /// inline `# Agent Repos` section. The Golden Rule heading carries a
     /// trailing descriptor (exercises the prefix match) and the Self-discovery
     /// prose carries the realistic backtick reference to `## Inter-Agent
     /// Messaging` (exercises line-anchoring over `contains`).
@@ -4384,9 +4435,9 @@ Run list-peers-lean.
         );
         // The fine-grained tokens inside the inline copy are still filled.
         assert_no_raw_template_placeholders(&out);
-        // {{WORKSPACE_REPOS}} had neither token nor inline section, so the safety
+        // {{AGENT_REPOS}} had neither token nor inline section, so the safety
         // net must still append it exactly once.
-        assert_eq!(count_section_headings(&out, "# Workspace Repos"), 1);
+        assert_eq!(count_section_headings(&out, "# Agent Repos"), 1);
     }
 
     #[test]
@@ -4529,8 +4580,8 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
                 ("{{CLI_CONTEXT}}", DEFAULT_CLI_CONTEXT.to_string()),
                 ("{{SKILLS_SECTION}}", no_skill_section()),
                 (
-                    "{{WORKSPACE_REPOS}}",
-                    render_workspace_repos_string(Path::new(agent_root), None, None, is_root),
+                    "{{AGENT_REPOS}}",
+                    render_agent_repos_string(Path::new(agent_root), None, None, is_root),
                 ),
                 (
                     "{{DELEGATED_TASK_REPORTING}}",
@@ -5400,7 +5451,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "## GOLDEN RULE",
             "## Delegated Task Reporting",
             "## Skills",
-            "# Workspace Repos",
+            "# Agent Repos",
             "## CLI executable",
             "## Session credentials",
             "## Inter-Agent Messaging",
@@ -5458,20 +5509,20 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&repo).expect("create repo");
         let config = serde_json::json!({ "repos": ["repo-demo"] });
 
-        let non_root = render_workspace_repos_string(temp.path(), Some(&config), None, false);
+        let non_root = render_agent_repos_string(temp.path(), Some(&config), None, false);
         assert!(non_root.contains("You are working inside a workgroup replica."));
         assert!(!non_root.contains("You are the Root Agent."));
         assert_eq!(
-            render_workspace_repos_string(temp.path(), None, None, false),
-            "# Workspace Repos\n\nNo repos configured for this replica.\n"
+            render_agent_repos_string(temp.path(), None, None, false),
+            "# Agent Repos\n\nNo repos configured for this replica.\n"
         );
 
-        let as_root = render_workspace_repos_string(temp.path(), Some(&config), None, true);
+        let as_root = render_agent_repos_string(temp.path(), Some(&config), None, true);
         assert!(as_root.contains("You are the Root Agent."));
         assert!(!as_root.contains("You are working inside a workgroup replica."));
         assert_eq!(
-            render_workspace_repos_string(temp.path(), None, None, true),
-            "# Workspace Repos\n\nNo repos configured for the Root Agent.\n"
+            render_agent_repos_string(temp.path(), None, None, true),
+            "# Agent Repos\n\nNo repos configured for the Root Agent.\n"
         );
     }
 
@@ -5936,7 +5987,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             assert!(out.contains("## Inter-Agent Messaging"));
             assert!(out.contains("## CLI executable"));
             assert!(out.contains("## Session credentials"));
-            assert!(out.contains("# Workspace Repos"));
+            assert!(out.contains("# Agent Repos"));
             assert_no_raw_template_placeholders(&out);
         }
     }
@@ -6080,7 +6131,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("## GOLDEN RULE"));
         assert!(content.contains("## Delegated Task Reporting"));
         assert!(content.contains("## Skills"));
-        assert!(content.contains("# Workspace Repos"));
+        assert!(content.contains("# Agent Repos"));
         assert!(content.contains("## CLI executable"));
         assert!(content.contains("## Session credentials"));
         assert!(content.contains("## Inter-Agent Messaging"));
@@ -7190,7 +7241,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn workspace_repos_placeholder_uses_repaired_replica_config() {
+    fn agent_repos_placeholder_via_legacy_token_uses_repaired_replica_config() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
@@ -7225,10 +7276,14 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("repo-Example"));
         assert_contains_canonical_path(&content, &repo_dir);
         assert!(!content.contains("No repos configured"));
+        assert!(
+            content.starts_with("# Agent Repos"),
+            "legacy token was appended instead of rendered in place"
+        );
     }
 
     #[test]
-    fn workspace_repos_placeholder_uses_missing_context_repaired_to_global() {
+    fn agent_repos_placeholder_uses_missing_context_repaired_to_global() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
@@ -7241,7 +7296,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&repo_dir).expect("create repo dir");
         std::fs::write(
             ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            "{{WORKSPACE_REPOS}}",
+            "{{AGENT_REPOS}}",
         )
         .expect("write repos-only template");
         std::fs::write(
@@ -7273,7 +7328,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn workspace_repos_placeholder_uses_empty_context_repaired_to_global() {
+    fn agent_repos_placeholder_uses_empty_context_repaired_to_global() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
@@ -7286,7 +7341,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::create_dir_all(&repo_dir).expect("create repo dir");
         std::fs::write(
             ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            "{{WORKSPACE_REPOS}}",
+            "{{AGENT_REPOS}}",
         )
         .expect("write repos-only template");
         std::fs::write(
@@ -7315,6 +7370,122 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             repaired["context"],
             serde_json::json!(["$AGENTSCOMMANDER_CONTEXT"])
         );
+    }
+
+    /// #1369 (C4) AC-2: render `template` as the whole global template of a
+    /// replica that has one repo, end to end through
+    /// `materialize_agent_context_file`, and return the materialized bytes. Same
+    /// shape as the three legacy-token tests above; kept local to the alias
+    /// cases so those tests stay untouched.
+    fn render_repos_only_template(template: &str) -> String {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        std::fs::create_dir_all(&repo_dir).expect("create repo dir");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), template)
+            .expect("write repos-only template");
+        std::fs::write(
+            replica_root.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","context":["$AGENTSCOMMANDER_CONTEXT"],"repos":["../repo-Example"]}"#,
+        )
+        .expect("write replica config");
+
+        let materialized = materialize_agent_context_file(
+            &path_string(&replica_root),
+            ManagedContextTarget::Codex,
+            false,
+        )
+        .expect("materialize context")
+        .expect("context path");
+        std::fs::read_to_string(materialized).expect("read materialized context")
+    }
+
+    /// AC-2 case 2.1: the current token renders exactly one block.
+    #[test]
+    fn agent_repos_current_token_renders_exactly_one_block() {
+        let content = render_repos_only_template("{{AGENT_REPOS}}");
+
+        assert_eq!(count_section_headings(&content, "# Agent Repos"), 1);
+        assert_no_raw_template_placeholders(&content);
+        assert!(content.contains("## Repos"));
+        assert!(content.contains("repo-Example"));
+    }
+
+    /// AC-2 case 2.2 (the issue's AC#2 verbatim): a template carrying ONLY the
+    /// pre-#1369 token renders exactly one block, and the legacy token itself
+    /// does not survive into the prompt.
+    #[test]
+    fn agent_repos_legacy_token_renders_exactly_one_block() {
+        let content = render_repos_only_template("{{WORKSPACE_REPOS}}");
+
+        assert_eq!(count_section_headings(&content, "# Agent Repos"), 1);
+        assert_no_raw_template_placeholders(&content);
+        assert!(content.contains("## Repos"));
+        assert!(content.contains("repo-Example"));
+        assert!(!content.contains("{{WORKSPACE_REPOS}}"));
+    }
+
+    /// AC-2 case 2.3: both tokens in one template still emit exactly one block.
+    /// This is the ONLY detector of a deleted `legacy_repos_replacement` guard:
+    /// without it two `# Agent Repos` blocks are emitted with no raw
+    /// placeholder left, so `assert_no_raw_template_placeholders` stays green.
+    #[test]
+    fn agent_repos_both_tokens_render_exactly_one_block() {
+        let content = render_repos_only_template("{{AGENT_REPOS}}\n\n{{WORKSPACE_REPOS}}");
+
+        assert_eq!(count_section_headings(&content, "# Agent Repos"), 1);
+        assert_no_raw_template_placeholders(&content);
+    }
+
+    /// #1369 (C4) AC-3: the #664 heuristic's verdict is invariant across the
+    /// rename. Neither spelling is in the closed `is_known_legacy_default_heading`
+    /// list, so a rendered context carrying either heading is rejected whether or
+    /// not the fast-path guard in `looks_like_generated_legacy_default_context`
+    /// names it.
+    #[test]
+    fn legacy_default_heuristic_rejects_both_repos_headings() {
+        assert!(!is_known_legacy_default_heading("# Workspace Repos"));
+        assert!(!is_known_legacy_default_heading("# Agent Repos"));
+
+        // The reconstruction re-derives the skills section from the matrix root
+        // it extracts out of the content, so the fixture must be built with the
+        // index of a REAL root, exactly as the #664 healing tests do.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root
+            .join("wg-19-dev-team")
+            .join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        let skills_section =
+            render_skills_section(&discover_skill_index(Some(&path_string(&matrix_root))));
+        let legacy = legacy_rendered_default_context_for_compat(
+            &path_string(&replica_root),
+            Some(&path_string(&matrix_root)),
+            &skills_section,
+        );
+        // Positive control: without either heading this fixture IS recognized,
+        // so the two assertions below cannot pass vacuously.
+        assert!(looks_like_generated_legacy_default_context(
+            &normalize_context_for_compat(&legacy)
+        ));
+
+        for heading in ["# Workspace Repos", "# Agent Repos"] {
+            let with_heading = format!("{legacy}\n\n{heading}\n\nNo repos configured.\n");
+            assert!(
+                !looks_like_generated_legacy_default_context(&normalize_context_for_compat(
+                    &with_heading
+                )),
+                "a rendered context carrying {heading} must never be treated as a stale generated default"
+            );
+        }
     }
 
     #[test]
@@ -7346,12 +7517,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("parse repaired config");
 
-        assert!(content.contains("# Workspace Repos"));
+        assert!(content.contains("# Agent Repos"));
         assert_eq!(
             repaired["context"],
             serde_json::json!(["$AGENTSCOMMANDER_CONTEXT"])
         );
-        assert_eq!(content.matches("# Workspace Repos").count(), 1);
+        assert_eq!(content.matches("# Agent Repos").count(), 1);
     }
 
     #[test]
@@ -8083,7 +8254,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("## GOLDEN RULE"));
         assert!(content.contains("## Delegated Task Reporting"));
         assert!(content.contains("## Skills"));
-        assert!(content.contains("# Workspace Repos"));
+        assert!(content.contains("# Agent Repos"));
         assert!(content.contains("## CLI executable"));
         assert!(content.contains("## Session credentials"));
         assert!(content.contains("## Inter-Agent Messaging"));
@@ -9677,8 +9848,8 @@ mod token_accounting {
         );
         let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
         let messaging = super::render_inter_agent_messaging_block(&values);
-        let workspace_repos =
-            super::render_workspace_repos_string(Path::new(FAKE_REPLICA_ROOT), None, None, false);
+        let agent_repos =
+            super::render_agent_repos_string(Path::new(FAKE_REPLICA_ROOT), None, None, false);
 
         println!();
         println!("## #1005 token accounting (chars, chars/4)");
@@ -9703,18 +9874,18 @@ mod token_accounting {
             super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
         );
         print_row(
-            "block: workspace repos header (A6, replica variant)",
-            super::workspace_repos_header(false).len(),
+            "block: agent repos header (A6, replica variant)",
+            super::agent_repos_header(false).len(),
         );
         print_row(
-            "block: workspace repos header (A6, root variant)",
-            super::workspace_repos_header(true).len(),
+            "block: agent repos header (A6, root variant)",
+            super::agent_repos_header(true).len(),
         );
         print_row(
             "block: skills section (A5, synthetic 2 skills)",
             skills.len(),
         );
-        print_row("block: workspace repos (A6, empty)", workspace_repos.len());
+        print_row("block: agent repos (A6, empty)", agent_repos.len());
         print_row(
             "block: self-maintenance (A8)",
             super::SELF_MAINTENANCE_AUTO_SECTION.len(),

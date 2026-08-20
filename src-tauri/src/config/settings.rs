@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::config::instance_artifacts::SETTINGS_LOCK_FILE_NAME;
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::CodingAgentKind;
@@ -1893,12 +1894,14 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
             // first snapshot, and so a present-but-invalid file is never
             // overwritten (the preserve writer's disk gate returns Err). On
             // success adopt the fresh-decoded settings so runtime/hidden agree.
-            match save_settings_to_path_preserving_project_paths(&settings, path) {
+            match save_settings_to_path_preserving_project_paths_typed(&settings, path) {
                 Ok(written) => settings = written,
-                Err(e) => log::error!(
-                    "Failed to persist settings (root_token gen and/or settings migration): {}",
-                    e
-                ),
+                Err(error) => {
+                    let _ = report_settings_save_error(
+                        error,
+                        SettingsSaveReportSurface::GeneralSettings,
+                    );
+                }
             }
         }
     }
@@ -2740,30 +2743,524 @@ fn reconcile_group_with_retained(
 /// Fresh-read the whole disk object for a project-preserving/reconciling write.
 /// `None` = absent (materialize). `Err` = present-but-unreadable/invalid JSON,
 /// non-object root, or non-project settings that fail to deserialize — in which
-/// case the caller must NOT write (§4.1). A valid object is returned for reuse.
+const SETTINGS_SAVE_FAILED_CODE: &str = "settings_save_failed";
+const SETTINGS_LOCK_UNAVAILABLE_CODE: &str = "settings_lock_unavailable";
+const TERMINAL_SNAPSHOT_SETTING_SAVE_FAILED_CODE: &str = "terminal_snapshot_setting_save_failed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSaveReportSurface {
+    GeneralSettings,
+    TerminalSnapshotCompareAndSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSaveStage {
+    LockAcquire,
+    PreserveDiskGate,
+    ReconcileDiskGate,
+    ProjectPathsRefreshDiskGate,
+    Serialize,
+    PrepareTarget,
+    TempCreate,
+    TempWrite,
+    TempFlush,
+    TempSync,
+    TempVerify,
+    AtomicReplace,
+    #[cfg(unix)]
+    TargetPermissions,
+    #[cfg(unix)]
+    ParentDirectorySync,
+    PostWriteRead,
+    PostWriteVerify,
+    ReDecode,
+}
+
+impl SettingsSaveStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LockAcquire => "lock_acquire",
+            Self::PreserveDiskGate => "preserve_disk_gate",
+            Self::ReconcileDiskGate => "reconcile_disk_gate",
+            Self::ProjectPathsRefreshDiskGate => "project_paths_refresh_disk_gate",
+            Self::Serialize => "serialize",
+            Self::PrepareTarget => "prepare_target",
+            Self::TempCreate => "temp_create",
+            Self::TempWrite => "temp_write",
+            Self::TempFlush => "temp_flush",
+            Self::TempSync => "temp_sync",
+            Self::TempVerify => "temp_verify",
+            Self::AtomicReplace => "atomic_replace",
+            #[cfg(unix)]
+            Self::TargetPermissions => "target_permissions",
+            #[cfg(unix)]
+            Self::ParentDirectorySync => "parent_directory_sync",
+            Self::PostWriteRead => "post_write_read",
+            Self::PostWriteVerify => "post_write_verify",
+            Self::ReDecode => "re_decode",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSaveReason {
+    LockTimedOut,
+    LockDeadlineOverflow,
+    LockFileNotRegular,
+    #[cfg(unix)]
+    LockLinkCountRejected,
+    #[cfg(not(any(unix, windows)))]
+    LockPlatformUnsupported,
+    LockIdentityRejected,
+    MissingParentDirectory,
+    DiskJsonNotObject,
+    DiskSettingsValidationRejected,
+    SerializedJsonNotObject,
+    TargetNotRegularFile,
+    TargetIdentityRejected,
+    TerminalSnapshotSettingInvalid,
+    SerializedPayloadTooLarge,
+    TempIdentityRejected,
+    PostWriteReadRejected,
+    WrittenBytesMismatch,
+}
+
+impl SettingsSaveReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LockTimedOut => "lock_timed_out",
+            Self::LockDeadlineOverflow => "lock_deadline_overflow",
+            Self::LockFileNotRegular => "lock_file_not_regular",
+            #[cfg(unix)]
+            Self::LockLinkCountRejected => "lock_link_count_rejected",
+            #[cfg(not(any(unix, windows)))]
+            Self::LockPlatformUnsupported => "lock_platform_unsupported",
+            Self::LockIdentityRejected => "lock_identity_rejected",
+            Self::MissingParentDirectory => "missing_parent_directory",
+            Self::DiskJsonNotObject => "disk_json_not_object",
+            Self::DiskSettingsValidationRejected => "disk_settings_validation_rejected",
+            Self::SerializedJsonNotObject => "serialized_json_not_object",
+            Self::TargetNotRegularFile => "target_not_regular_file",
+            Self::TargetIdentityRejected => "target_identity_rejected",
+            Self::TerminalSnapshotSettingInvalid => "terminal_snapshot_setting_invalid",
+            Self::SerializedPayloadTooLarge => "serialized_payload_too_large",
+            Self::TempIdentityRejected => "temp_identity_rejected",
+            Self::PostWriteReadRejected => "post_write_read_rejected",
+            Self::WrittenBytesMismatch => "written_bytes_mismatch",
+        }
+    }
+}
+
+enum SettingsSaveCause {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    Semantic(SettingsSaveReason),
+}
+
+enum SettingsSaveLegacyOutward {
+    SettingsLockUnavailable,
+    SettingsSaveFailed,
+    DiskRead(String),
+    DiskJson(String),
+    DiskJsonNotObject(String),
+    DiskValidation(String),
+    Serialize(String),
+    SerializedJsonNotObject(String),
+    TerminalSnapshotSettingInvalid(String),
+    ReDecode(String),
+}
+
+impl SettingsSaveLegacyOutward {
+    fn into_general_string(self) -> String {
+        match self {
+            Self::SettingsLockUnavailable => SETTINGS_LOCK_UNAVAILABLE_CODE.to_string(),
+            Self::SettingsSaveFailed => SETTINGS_SAVE_FAILED_CODE.to_string(),
+            Self::DiskRead(value)
+            | Self::DiskJson(value)
+            | Self::DiskJsonNotObject(value)
+            | Self::DiskValidation(value)
+            | Self::Serialize(value)
+            | Self::SerializedJsonNotObject(value)
+            | Self::TerminalSnapshotSettingInvalid(value)
+            | Self::ReDecode(value) => value,
+        }
+    }
+}
+
+struct SettingsSaveError {
+    stage: SettingsSaveStage,
+    target_path: std::path::PathBuf,
+    temp_path: Option<std::path::PathBuf>,
+    pid: u32,
+    cause: SettingsSaveCause,
+    legacy_outward: SettingsSaveLegacyOutward,
+}
+
+impl SettingsSaveError {
+    fn io(
+        stage: SettingsSaveStage,
+        target_path: &Path,
+        temp_path: Option<&Path>,
+        source: std::io::Error,
+        legacy_outward: SettingsSaveLegacyOutward,
+    ) -> Self {
+        Self {
+            stage,
+            target_path: target_path.to_path_buf(),
+            temp_path: temp_path.map(Path::to_path_buf),
+            pid: std::process::id(),
+            cause: SettingsSaveCause::Io(source),
+            legacy_outward,
+        }
+    }
+
+    fn json(
+        stage: SettingsSaveStage,
+        target_path: &Path,
+        temp_path: Option<&Path>,
+        source: serde_json::Error,
+        legacy_outward: SettingsSaveLegacyOutward,
+    ) -> Self {
+        Self {
+            stage,
+            target_path: target_path.to_path_buf(),
+            temp_path: temp_path.map(Path::to_path_buf),
+            pid: std::process::id(),
+            cause: SettingsSaveCause::Json(source),
+            legacy_outward,
+        }
+    }
+
+    fn semantic(
+        stage: SettingsSaveStage,
+        target_path: &Path,
+        temp_path: Option<&Path>,
+        reason: SettingsSaveReason,
+        legacy_outward: SettingsSaveLegacyOutward,
+    ) -> Self {
+        Self {
+            stage,
+            target_path: target_path.to_path_buf(),
+            temp_path: temp_path.map(Path::to_path_buf),
+            pid: std::process::id(),
+            cause: SettingsSaveCause::Semantic(reason),
+            legacy_outward,
+        }
+    }
+
+    fn general_settings_diagnostic_code(&self) -> &'static str {
+        match self.stage {
+            SettingsSaveStage::LockAcquire => SETTINGS_LOCK_UNAVAILABLE_CODE,
+            _ => SETTINGS_SAVE_FAILED_CODE,
+        }
+    }
+
+    fn safe_diagnostic(&self, surface: SettingsSaveReportSurface) -> SettingsSaveDiagnostic {
+        let (source_kind, reason, io_kind, raw_os_error, json_category, json_line, json_column) =
+            match &self.cause {
+                SettingsSaveCause::Io(source) => (
+                    "io",
+                    "none",
+                    Some(io_error_kind_as_str(source.kind())),
+                    source.raw_os_error(),
+                    None,
+                    None,
+                    None,
+                ),
+                SettingsSaveCause::Json(source) => (
+                    "json",
+                    "none",
+                    None,
+                    None,
+                    Some(json_error_category_as_str(source.classify())),
+                    Some(source.line()),
+                    Some(source.column()),
+                ),
+                SettingsSaveCause::Semantic(reason) => {
+                    ("semantic", reason.as_str(), None, None, None, None, None)
+                }
+            };
+
+        SettingsSaveDiagnostic {
+            code: surface.diagnostic_code(self),
+            stage: self.stage.as_str(),
+            reason,
+            pid: self.pid,
+            target_path: render_diagnostic_path(&self.target_path),
+            temp_path: self.temp_path.as_deref().map(render_diagnostic_path),
+            source_kind,
+            io_kind,
+            raw_os_error,
+            json_category,
+            json_line,
+            json_column,
+        }
+    }
+}
+
+impl std::fmt::Debug for SettingsSaveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let diagnostic = self.safe_diagnostic(SettingsSaveReportSurface::GeneralSettings);
+        formatter
+            .debug_struct("SettingsSaveError")
+            .field("code", &diagnostic.code)
+            .field("stage", &diagnostic.stage)
+            .field("reason", &diagnostic.reason)
+            .field("pid", &diagnostic.pid)
+            .field("source_kind", &diagnostic.source_kind)
+            .field("io_kind", &diagnostic.io_kind)
+            .field("raw_os_error", &diagnostic.raw_os_error)
+            .field("json_category", &diagnostic.json_category)
+            .field("json_line", &diagnostic.json_line)
+            .field("json_column", &diagnostic.json_column)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for SettingsSaveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.general_settings_diagnostic_code())
+    }
+}
+
+impl std::error::Error for SettingsSaveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.cause {
+            SettingsSaveCause::Io(source) => Some(source),
+            SettingsSaveCause::Json(source) => Some(source),
+            SettingsSaveCause::Semantic(_) => None,
+        }
+    }
+}
+
+impl SettingsSaveReportSurface {
+    fn diagnostic_code(self, error: &SettingsSaveError) -> &'static str {
+        match self {
+            Self::GeneralSettings => error.general_settings_diagnostic_code(),
+            Self::TerminalSnapshotCompareAndSet => TERMINAL_SNAPSHOT_SETTING_SAVE_FAILED_CODE,
+        }
+    }
+
+    fn into_outward_string(self, error: SettingsSaveError) -> String {
+        match self {
+            Self::GeneralSettings => error.legacy_outward.into_general_string(),
+            Self::TerminalSnapshotCompareAndSet => {
+                drop(error);
+                TERMINAL_SNAPSHOT_SETTING_SAVE_FAILED_CODE.to_string()
+            }
+        }
+    }
+}
+
+struct SettingsSaveDiagnostic {
+    code: &'static str,
+    stage: &'static str,
+    reason: &'static str,
+    pid: u32,
+    target_path: String,
+    temp_path: Option<String>,
+    source_kind: &'static str,
+    io_kind: Option<&'static str>,
+    raw_os_error: Option<i32>,
+    json_category: Option<&'static str>,
+    json_line: Option<usize>,
+    json_column: Option<usize>,
+}
+
+fn io_error_kind_as_str(kind: std::io::ErrorKind) -> &'static str {
+    match kind {
+        std::io::ErrorKind::NotFound => "not_found",
+        std::io::ErrorKind::PermissionDenied => "permission_denied",
+        std::io::ErrorKind::ConnectionRefused => "connection_refused",
+        std::io::ErrorKind::ConnectionReset => "connection_reset",
+        std::io::ErrorKind::HostUnreachable => "host_unreachable",
+        std::io::ErrorKind::NetworkUnreachable => "network_unreachable",
+        std::io::ErrorKind::ConnectionAborted => "connection_aborted",
+        std::io::ErrorKind::NotConnected => "not_connected",
+        std::io::ErrorKind::AddrInUse => "addr_in_use",
+        std::io::ErrorKind::AddrNotAvailable => "addr_not_available",
+        std::io::ErrorKind::NetworkDown => "network_down",
+        std::io::ErrorKind::BrokenPipe => "broken_pipe",
+        std::io::ErrorKind::AlreadyExists => "already_exists",
+        std::io::ErrorKind::WouldBlock => "would_block",
+        std::io::ErrorKind::NotADirectory => "not_a_directory",
+        std::io::ErrorKind::IsADirectory => "is_a_directory",
+        std::io::ErrorKind::DirectoryNotEmpty => "directory_not_empty",
+        std::io::ErrorKind::ReadOnlyFilesystem => "read_only_filesystem",
+        std::io::ErrorKind::StaleNetworkFileHandle => "stale_network_file_handle",
+        std::io::ErrorKind::InvalidInput => "invalid_input",
+        std::io::ErrorKind::InvalidData => "invalid_data",
+        std::io::ErrorKind::TimedOut => "timed_out",
+        std::io::ErrorKind::WriteZero => "write_zero",
+        std::io::ErrorKind::StorageFull => "storage_full",
+        std::io::ErrorKind::NotSeekable => "not_seekable",
+        std::io::ErrorKind::QuotaExceeded => "quota_exceeded",
+        std::io::ErrorKind::FileTooLarge => "file_too_large",
+        std::io::ErrorKind::ResourceBusy => "resource_busy",
+        std::io::ErrorKind::ExecutableFileBusy => "executable_file_busy",
+        std::io::ErrorKind::Deadlock => "deadlock",
+        std::io::ErrorKind::CrossesDevices => "crosses_devices",
+        std::io::ErrorKind::TooManyLinks => "too_many_links",
+        std::io::ErrorKind::InvalidFilename => "invalid_filename",
+        std::io::ErrorKind::ArgumentListTooLong => "argument_list_too_long",
+        std::io::ErrorKind::Interrupted => "interrupted",
+        std::io::ErrorKind::Unsupported => "unsupported",
+        std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+        std::io::ErrorKind::OutOfMemory => "out_of_memory",
+        std::io::ErrorKind::Other => "other",
+        _ => "other",
+    }
+}
+
+fn json_error_category_as_str(category: serde_json::error::Category) -> &'static str {
+    match category {
+        serde_json::error::Category::Io => "io",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "data",
+        serde_json::error::Category::Eof => "eof",
+    }
+}
+
+fn render_diagnostic_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    let mut rendered = String::with_capacity(path.len() + 2);
+    rendered.push('"');
+    for character in path.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '/' | ':') {
+            rendered.push(character);
+        } else {
+            rendered.extend(character.escape_unicode());
+        }
+    }
+    rendered.push('"');
+    rendered
+}
+
+fn render_settings_save_diagnostic(diagnostic: &SettingsSaveDiagnostic) -> String {
+    let raw_os_error = diagnostic
+        .raw_os_error
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let json_line = diagnostic
+        .json_line
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let json_column = diagnostic
+        .json_column
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "settings_save_failure code={} stage={} reason={} pid={} target_path={} temp_path={} source_kind={} io_kind={} raw_os_error={} json_category={} json_line={} json_column={}",
+        diagnostic.code,
+        diagnostic.stage,
+        diagnostic.reason,
+        diagnostic.pid,
+        diagnostic.target_path,
+        diagnostic.temp_path.as_deref().unwrap_or("none"),
+        diagnostic.source_kind,
+        diagnostic.io_kind.unwrap_or("none"),
+        raw_os_error,
+        diagnostic.json_category.unwrap_or("none"),
+        json_line,
+        json_column,
+    )
+}
+
+#[cfg(test)]
+type SettingsSaveDiagnosticCapture = Box<dyn Fn(&str)>;
+
+#[cfg(test)]
+thread_local! {
+    static SETTINGS_SAVE_DIAGNOSTIC_CAPTURE: std::cell::RefCell<Option<SettingsSaveDiagnosticCapture>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn capture_settings_save_diagnostic(payload: &str) {
+    SETTINGS_SAVE_DIAGNOSTIC_CAPTURE.with(|slot| {
+        if let Some(capture) = slot.borrow().as_ref() {
+            capture(payload);
+        }
+    });
+}
+
+fn report_settings_save_error(
+    error: SettingsSaveError,
+    surface: SettingsSaveReportSurface,
+) -> String {
+    let payload = render_settings_save_diagnostic(&error.safe_diagnostic(surface));
+    #[cfg(test)]
+    capture_settings_save_diagnostic(&payload);
+    log::error!("{}", payload);
+    surface.into_outward_string(error)
+}
+
 fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate).map_err(
+        |error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings),
+    )
+}
+
+/// case the caller must NOT write (§4.1). A valid object is returned for reuse.
+fn read_disk_object_for_write_typed(
+    path: &Path,
+    stage: SettingsSaveStage,
+) -> Result<Option<Map<String, Value>>, SettingsSaveError> {
     match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {e}",
-            path.display()
-        )),
+        Err(source) => {
+            let outward = format!(
+                "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {source}",
+                path.display()
+            );
+            Err(SettingsSaveError::io(
+                stage,
+                path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::DiskRead(outward),
+            ))
+        }
         Ok(contents) => {
-            let value: Value = serde_json::from_str(&contents).map_err(|e| {
-                format!(
-                    "Refusing to overwrite {}: the existing settings file is not valid JSON ({e})",
+            let value: Value = serde_json::from_str(&contents).map_err(|source| {
+                let outward = format!(
+                    "Refusing to overwrite {}: the existing settings file is not valid JSON ({source})",
                     path.display()
+                );
+                SettingsSaveError::json(
+                    stage,
+                    path,
+                    None,
+                    source,
+                    SettingsSaveLegacyOutward::DiskJson(outward),
                 )
             })?;
             match value {
                 Value::Object(map) => {
-                    validate_non_project_settings(&map)?;
+                    if let Err(outward) = validate_non_project_settings(&map) {
+                        return Err(SettingsSaveError::semantic(
+                            stage,
+                            path,
+                            None,
+                            SettingsSaveReason::DiskSettingsValidationRejected,
+                            SettingsSaveLegacyOutward::DiskValidation(outward),
+                        ));
+                    }
                     Ok(Some(map))
                 }
-                _ => Err(format!(
-                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
-                    path.display()
-                )),
+                _ => {
+                    let outward = format!(
+                        "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                        path.display()
+                    );
+                    Err(SettingsSaveError::semantic(
+                        stage,
+                        path,
+                        None,
+                        SettingsSaveReason::DiskJsonNotObject,
+                        SettingsSaveLegacyOutward::DiskJsonNotObject(outward),
+                    ))
+                }
             }
         }
     }
@@ -2807,6 +3304,7 @@ pub(crate) fn reconcile_project_state_to_path(
         path,
         ProjectWriteMode::Reconcile { active, archived },
     )
+    .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
 }
 
 struct SettingsFileLock {
@@ -2814,14 +3312,38 @@ struct SettingsFileLock {
 }
 
 impl SettingsFileLock {
-    fn acquire(settings_path: &Path, timeout: std::time::Duration) -> Result<Self, String> {
-        let parent = settings_path
-            .parent()
-            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
-        std::fs::create_dir_all(parent).map_err(|_| "settings_lock_unavailable".to_string())?;
-        crate::path_identity::verify_component_chain(parent)
-            .map_err(|_| "settings_lock_unavailable".to_string())?;
-        let lock_path = parent.join("settings.json.lock");
+    fn acquire(
+        settings_path: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<Self, SettingsSaveError> {
+        let parent = settings_path.parent().ok_or_else(|| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::MissingParentDirectory,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
+        std::fs::create_dir_all(parent).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
+        crate::path_identity::verify_component_chain(parent).map_err(|_| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::LockIdentityRejected,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
+        let lock_path = parent.join(SETTINGS_LOCK_FILE_NAME);
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]
@@ -2839,37 +3361,111 @@ impl SettingsFileLock {
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         }
-        let file = options
-            .open(&lock_path)
-            .map_err(|_| "settings_lock_unavailable".to_string())?;
-        let metadata = file
-            .metadata()
-            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        let file = options.open(&lock_path).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
+        let metadata = file.metadata().map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
         if !metadata.is_file() {
-            return Err("settings_lock_unavailable".to_string());
+            return Err(SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::LockFileNotRegular,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            ));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
             if metadata.nlink() != 1 {
-                return Err("settings_lock_unavailable".to_string());
+                return Err(SettingsSaveError::semantic(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    SettingsSaveReason::LockLinkCountRejected,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                ));
             }
-            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|_| "settings_lock_unavailable".to_string())?;
+            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |source| {
+                    SettingsSaveError::io(
+                        SettingsSaveStage::LockAcquire,
+                        settings_path,
+                        None,
+                        source,
+                        SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                    )
+                },
+            )?;
         }
         #[cfg(windows)]
-        crate::path_identity::verify_regular_file(&lock_path)
-            .map_err(|_| "settings_lock_unavailable".to_string())?;
+        crate::path_identity::verify_regular_file(&lock_path).map_err(|_| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::LockIdentityRejected,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
 
         let deadline = std::time::Instant::now()
             .checked_add(timeout)
-            .ok_or_else(|| "settings_lock_unavailable".to_string())?;
+            .ok_or_else(|| {
+                SettingsSaveError::semantic(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    SettingsSaveReason::LockDeadlineOverflow,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                )
+            })?;
         loop {
-            if try_lock_settings_file(&file)? {
+            #[cfg(any(unix, windows))]
+            let locked = try_lock_settings_file(&file).map_err(|source| {
+                SettingsSaveError::io(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    source,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                )
+            })?;
+            #[cfg(not(any(unix, windows)))]
+            let locked = try_lock_settings_file(&file).map_err(|reason| {
+                SettingsSaveError::semantic(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    reason,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                )
+            })?;
+            if locked {
                 return Ok(Self { file });
             }
             if std::time::Instant::now() >= deadline {
-                return Err("settings_lock_unavailable".to_string());
+                return Err(SettingsSaveError::semantic(
+                    SettingsSaveStage::LockAcquire,
+                    settings_path,
+                    None,
+                    SettingsSaveReason::LockTimedOut,
+                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
+                ));
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -2883,9 +3479,10 @@ impl Drop for SettingsFileLock {
 }
 
 #[cfg(unix)]
-fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
     use std::os::fd::AsRawFd;
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    let source = std::io::Error::last_os_error();
     if result == 0 {
         return Ok(true);
     }
@@ -2896,7 +3493,7 @@ fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
     if raw == Some(libc::EWOULDBLOCK) || raw == Some(libc::EAGAIN) {
         Ok(false)
     } else {
-        Err("settings_lock_unavailable".to_string())
+        Err(source)
     }
 }
 
@@ -2907,7 +3504,7 @@ fn unlock_settings_file(file: &std::fs::File) {
 }
 
 #[cfg(windows)]
-fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
+fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
@@ -2927,10 +3524,11 @@ fn try_lock_settings_file(file: &std::fs::File) -> Result<bool, String> {
         return Ok(true);
     }
     const ERROR_LOCK_VIOLATION: i32 = 33;
-    if std::io::Error::last_os_error().raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
+    let source = std::io::Error::last_os_error();
+    if source.raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
         Ok(false)
     } else {
-        Err("settings_lock_unavailable".to_string())
+        Err(source)
     }
 }
 
@@ -2943,8 +3541,8 @@ fn unlock_settings_file(file: &std::fs::File) {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, String> {
-    Err("settings_lock_unavailable".to_string())
+fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, SettingsSaveReason> {
+    Err(SettingsSaveReason::LockPlatformUnsupported)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2958,7 +3556,7 @@ fn save_settings_value(
     settings: &AppSettings,
     path: &Path,
     mode: ProjectWriteMode,
-) -> Result<AppSettings, String> {
+) -> Result<AppSettings, SettingsSaveError> {
     let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
     save_settings_value_locked(
         settings,
@@ -2973,17 +3571,36 @@ fn save_settings_value_locked(
     path: &Path,
     mode: ProjectWriteMode,
     terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
-) -> Result<AppSettings, String> {
+) -> Result<AppSettings, SettingsSaveError> {
     let base = production_instance_base();
-    let disk = read_disk_object_for_write(path)?;
+    let disk_gate_stage = match &mode {
+        ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+        ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
+    };
+    let disk = read_disk_object_for_write_typed(path, disk_gate_stage)?;
     let state = hidden_state_for_write(settings);
 
-    let serialize_object = || -> Result<Map<String, Value>, String> {
-        match serde_json::to_value(settings)
-            .map_err(|e| format!("Failed to serialize settings: {e}"))?
-        {
+    let serialize_object = || -> Result<Map<String, Value>, SettingsSaveError> {
+        match serde_json::to_value(settings).map_err(|source| {
+            let outward = format!("Failed to serialize settings: {source}");
+            SettingsSaveError::json(
+                SettingsSaveStage::Serialize,
+                path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::Serialize(outward),
+            )
+        })? {
             Value::Object(m) => Ok(m),
-            _ => Err("settings did not serialize to a JSON object".to_string()),
+            _ => Err(SettingsSaveError::semantic(
+                SettingsSaveStage::Serialize,
+                path,
+                None,
+                SettingsSaveReason::SerializedJsonNotObject,
+                SettingsSaveLegacyOutward::SerializedJsonNotObject(
+                    "settings did not serialize to a JSON object".to_string(),
+                ),
+            )),
         }
     };
 
@@ -3066,7 +3683,15 @@ fn save_settings_value_locked(
                 Some(Value::Bool(enabled)) => *enabled,
                 None => false,
                 Some(_) => {
-                    return Err("terminal_snapshot_setting_invalid".to_string());
+                    return Err(SettingsSaveError::semantic(
+                        disk_gate_stage,
+                        path,
+                        None,
+                        SettingsSaveReason::TerminalSnapshotSettingInvalid,
+                        SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
+                            "terminal_snapshot_setting_invalid".to_string(),
+                        ),
+                    ));
                 }
             },
             None => false,
@@ -3089,8 +3714,16 @@ fn save_settings_value_locked(
         base.as_deref(),
         &projects::FsCandidateResolver,
     );
-    let mut written: AppSettings = serde_json::from_value(written_value)
-        .map_err(|e| format!("Failed to re-decode written settings: {e}"))?;
+    let mut written: AppSettings = serde_json::from_value(written_value).map_err(|source| {
+        let outward = format!("Failed to re-decode written settings: {source}");
+        SettingsSaveError::json(
+            SettingsSaveStage::ReDecode,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::ReDecode(outward),
+        )
+    })?;
     written.project_path_state = Arc::new(fresh_state);
     Ok(written)
 }
@@ -3312,10 +3945,23 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
     expected: bool,
     enabled: bool,
 ) -> Result<AppSettings, String> {
-    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
-        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
-    let disk = read_disk_object_for_write(path)
-        .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    let report_typed_persistence_failure = |error| {
+        report_settings_save_error(
+            error,
+            SettingsSaveReportSurface::TerminalSnapshotCompareAndSet,
+        )
+    };
+    let lock_guard = match SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)) {
+        Ok(lock_guard) => lock_guard,
+        Err(error) => return Err(report_typed_persistence_failure(error)),
+    };
+    let disk = match read_disk_object_for_write_typed(path, SettingsSaveStage::PreserveDiskGate) {
+        Ok(disk) => disk,
+        Err(error) => {
+            drop(lock_guard);
+            return Err(report_typed_persistence_failure(error));
+        }
+    };
     let disk_gate = match disk
         .as_ref()
         .and_then(|object| object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED))
@@ -3338,13 +3984,18 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
         return Ok(candidate);
     }
 
-    let written = save_settings_value_locked(
+    let written = match save_settings_value_locked(
         &candidate,
         path,
         ProjectWriteMode::Preserve,
         TerminalSnapshotGateWriteMode::Explicit(enabled),
-    )
-    .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            drop(lock_guard);
+            return Err(report_typed_persistence_failure(error));
+        }
+    };
     let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
         .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?;
     let value = crate::path_identity::parse_json_no_duplicates(&bytes)
@@ -3551,30 +4202,86 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
 /// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
 /// `rename_with_retry` behavior; still not fsynced.
-fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
+fn write_value_atomic(value: &Value, path: &Path) -> Result<(), SettingsSaveError> {
     use std::io::Write as _;
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| "settings_save_failed".to_string())?;
-    std::fs::create_dir_all(dir).map_err(|_| "settings_save_failed".to_string())?;
-    crate::path_identity::verify_component_chain(dir)
-        .map_err(|_| "settings_save_failed".to_string())?;
+    let dir = path.parent().ok_or_else(|| {
+        SettingsSaveError::semantic(
+            SettingsSaveStage::PrepareTarget,
+            path,
+            None,
+            SettingsSaveReason::MissingParentDirectory,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    std::fs::create_dir_all(dir).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::PrepareTarget,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    crate::path_identity::verify_component_chain(dir).map_err(|_| {
+        SettingsSaveError::semantic(
+            SettingsSaveStage::PrepareTarget,
+            path,
+            None,
+            SettingsSaveReason::TargetIdentityRejected,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.is_file() {
-                return Err("settings_save_failed".to_string());
+                return Err(SettingsSaveError::semantic(
+                    SettingsSaveStage::PrepareTarget,
+                    path,
+                    None,
+                    SettingsSaveReason::TargetNotRegularFile,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                ));
             }
-            crate::path_identity::verify_regular_file(path)
-                .map_err(|_| "settings_save_failed".to_string())?;
+            crate::path_identity::verify_regular_file(path).map_err(|_| {
+                SettingsSaveError::semantic(
+                    SettingsSaveStage::PrepareTarget,
+                    path,
+                    None,
+                    SettingsSaveReason::TargetIdentityRejected,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            })?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("settings_save_failed".to_string()),
+        Err(source) => {
+            return Err(SettingsSaveError::io(
+                SettingsSaveStage::PrepareTarget,
+                path,
+                None,
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            ));
+        }
     }
 
-    let json = serde_json::to_vec_pretty(value).map_err(|_| "settings_save_failed".to_string())?;
+    let json = serde_json::to_vec_pretty(value).map_err(|source| {
+        SettingsSaveError::json(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
     if json.len() > 16 * 1024 * 1024 {
-        return Err("settings_save_failed".to_string());
+        return Err(SettingsSaveError::semantic(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            SettingsSaveReason::SerializedPayloadTooLarge,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        ));
     }
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
@@ -3594,33 +4301,109 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
 
-    let result = (|| {
-        let mut temporary = options
-            .open(&tmp_path)
-            .map_err(|_| "settings_save_failed".to_string())?;
-        temporary
-            .write_all(&json)
-            .and_then(|_| temporary.flush())
-            .and_then(|_| temporary.sync_all())
-            .map_err(|_| "settings_save_failed".to_string())?;
-        crate::path_identity::verify_opened_regular_file(&tmp_path, &temporary, false)
-            .map_err(|_| "settings_save_failed".to_string())?;
+    let result: Result<(), SettingsSaveError> = (|| {
+        let mut temporary = options.open(&tmp_path).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::TempCreate,
+                path,
+                Some(&tmp_path),
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
+        temporary.write_all(&json).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::TempWrite,
+                path,
+                Some(&tmp_path),
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
+        temporary.flush().map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::TempFlush,
+                path,
+                Some(&tmp_path),
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
+        temporary.sync_all().map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::TempSync,
+                path,
+                Some(&tmp_path),
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
+        crate::path_identity::verify_opened_regular_file(&tmp_path, &temporary, false).map_err(
+            |_| {
+                SettingsSaveError::semantic(
+                    SettingsSaveStage::TempVerify,
+                    path,
+                    Some(&tmp_path),
+                    SettingsSaveReason::TempIdentityRejected,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            },
+        )?;
         drop(temporary);
 
-        replace_settings_file_atomic(&tmp_path, path)?;
+        replace_settings_file_atomic(&tmp_path, path).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::AtomicReplace,
+                path,
+                Some(&tmp_path),
+                source,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|_| "settings_save_failed".to_string())?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |source| {
+                    SettingsSaveError::io(
+                        SettingsSaveStage::TargetPermissions,
+                        path,
+                        Some(&tmp_path),
+                        source,
+                        SettingsSaveLegacyOutward::SettingsSaveFailed,
+                    )
+                },
+            )?;
             std::fs::File::open(dir)
                 .and_then(|directory| directory.sync_all())
-                .map_err(|_| "settings_save_failed".to_string())?;
+                .map_err(|source| {
+                    SettingsSaveError::io(
+                        SettingsSaveStage::ParentDirectorySync,
+                        path,
+                        Some(&tmp_path),
+                        source,
+                        SettingsSaveLegacyOutward::SettingsSaveFailed,
+                    )
+                })?;
         }
         let (written, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
-            .map_err(|_| "settings_save_failed".to_string())?;
+            .map_err(|_| {
+                SettingsSaveError::semantic(
+                    SettingsSaveStage::PostWriteRead,
+                    path,
+                    Some(&tmp_path),
+                    SettingsSaveReason::PostWriteReadRejected,
+                    SettingsSaveLegacyOutward::SettingsSaveFailed,
+                )
+            })?;
         if written != json {
-            return Err("settings_save_failed".to_string());
+            return Err(SettingsSaveError::semantic(
+                SettingsSaveStage::PostWriteVerify,
+                path,
+                Some(&tmp_path),
+                SettingsSaveReason::WrittenBytesMismatch,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            ));
         }
         Ok(())
     })();
@@ -3634,7 +4417,7 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
@@ -3657,15 +4440,15 @@ fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(),
         )
     };
     if result == 0 {
-        Err("settings_save_failed".to_string())
+        Err(std::io::Error::last_os_error())
     } else {
         Ok(())
     }
 }
 
 #[cfg(not(windows))]
-fn replace_settings_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
-    std::fs::rename(source, destination).map_err(|_| "settings_save_failed".to_string())
+fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
 }
 
 /// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
@@ -3697,6 +4480,7 @@ pub(crate) fn save_settings_with_project_paths_to_path(
         },
     )
     .map(|_| ())
+    .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
 }
 
 /// #778/#881 + #1077: the preserve-disk wrapper behind the default
@@ -3707,6 +4491,15 @@ pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
     path: &Path,
 ) -> Result<AppSettings, String> {
+    save_settings_to_path_preserving_project_paths_typed(settings, path).map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })
+}
+
+fn save_settings_to_path_preserving_project_paths_typed(
+    settings: &AppSettings,
+    path: &Path,
+) -> Result<AppSettings, SettingsSaveError> {
     save_settings_value(settings, path, ProjectWriteMode::Preserve)
 }
 
@@ -3715,9 +4508,17 @@ pub(crate) fn save_settings_to_path_preserving_project_paths(
 /// Used only for test seeding; production writes go through the preserve/
 /// reconcile modes so companions are materialized.
 #[cfg(test)]
-fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), String> {
-    let value = serde_json::to_value(settings)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), SettingsSaveError> {
+    let value = serde_json::to_value(settings).map_err(|source| {
+        let outward = format!("Failed to serialize settings: {}", source);
+        SettingsSaveError::json(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::Serialize(outward),
+        )
+    })?;
     write_value_atomic(&value, path)
 }
 
@@ -3725,6 +4526,1122 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    fn assert_no_issue_1330_temp_files(directory: &std::path::Path) {
+        let entries = std::fs::read_dir(directory).unwrap();
+        for entry in entries {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !(name.starts_with("settings.json.") && name.ends_with(".tmp")),
+                "unexpected settings temp file: {name}"
+            );
+        }
+    }
+
+    struct SettingsSaveDiagnosticCaptureGuard {
+        previous: Option<super::SettingsSaveDiagnosticCapture>,
+    }
+
+    impl SettingsSaveDiagnosticCaptureGuard {
+        fn install(capture: impl Fn(&str) + 'static) -> Self {
+            let previous = super::SETTINGS_SAVE_DIAGNOSTIC_CAPTURE
+                .with(|slot| slot.replace(Some(Box::new(capture))));
+            Self { previous }
+        }
+    }
+
+    impl Drop for SettingsSaveDiagnosticCaptureGuard {
+        fn drop(&mut self) {
+            let previous = self.previous.take();
+            super::SETTINGS_SAVE_DIAGNOSTIC_CAPTURE.with(|slot| {
+                slot.replace(previous);
+            });
+        }
+    }
+
+    fn capture_settings_save_diagnostics() -> (
+        std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        SettingsSaveDiagnosticCaptureGuard,
+    ) {
+        let records = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&records);
+        let guard = SettingsSaveDiagnosticCaptureGuard::install(move |payload| {
+            captured.borrow_mut().push(payload.to_string());
+        });
+        (records, guard)
+    }
+
+    trait CapturedRecordsSnapshot {
+        fn snapshot(&self) -> Vec<String>;
+    }
+
+    impl CapturedRecordsSnapshot for std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+        fn snapshot(&self) -> Vec<String> {
+            self.borrow().clone()
+        }
+    }
+
+    impl CapturedRecordsSnapshot for std::cell::Ref<'_, Vec<String>> {
+        fn snapshot(&self) -> Vec<String> {
+            self.to_vec()
+        }
+    }
+
+    impl CapturedRecordsSnapshot for Vec<String> {
+        fn snapshot(&self) -> Vec<String> {
+            self.clone()
+        }
+    }
+
+    fn parse_settings_save_diagnostic(payload: &str) -> std::collections::BTreeMap<String, String> {
+        payload
+            .split_whitespace()
+            .skip(1)
+            .map(|field| {
+                let (key, value) = field.split_once('=').unwrap();
+                (key.to_string(), value.to_string())
+            })
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn expected_rendered_diagnostic_path(path: &std::path::Path) -> String {
+        let path = path.to_string_lossy();
+        let mut rendered = String::with_capacity(path.len() + 2);
+        rendered.push('"');
+        for character in path.chars() {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '/' | ':')
+            {
+                rendered.push(character);
+            } else {
+                rendered.extend(character.escape_unicode());
+            }
+        }
+        rendered.push('"');
+        rendered
+    }
+
+    fn expected_io_kind_from_literal_table(kind: std::io::ErrorKind) -> &'static str {
+        match kind {
+            std::io::ErrorKind::NotFound => "not_found",
+            std::io::ErrorKind::PermissionDenied => "permission_denied",
+            std::io::ErrorKind::ConnectionRefused => "connection_refused",
+            std::io::ErrorKind::ConnectionReset => "connection_reset",
+            std::io::ErrorKind::HostUnreachable => "host_unreachable",
+            std::io::ErrorKind::NetworkUnreachable => "network_unreachable",
+            std::io::ErrorKind::ConnectionAborted => "connection_aborted",
+            std::io::ErrorKind::NotConnected => "not_connected",
+            std::io::ErrorKind::AddrInUse => "addr_in_use",
+            std::io::ErrorKind::AddrNotAvailable => "addr_not_available",
+            std::io::ErrorKind::NetworkDown => "network_down",
+            std::io::ErrorKind::BrokenPipe => "broken_pipe",
+            std::io::ErrorKind::AlreadyExists => "already_exists",
+            std::io::ErrorKind::WouldBlock => "would_block",
+            std::io::ErrorKind::NotADirectory => "not_a_directory",
+            std::io::ErrorKind::IsADirectory => "is_a_directory",
+            std::io::ErrorKind::DirectoryNotEmpty => "directory_not_empty",
+            std::io::ErrorKind::ReadOnlyFilesystem => "read_only_filesystem",
+            std::io::ErrorKind::StaleNetworkFileHandle => "stale_network_file_handle",
+            std::io::ErrorKind::InvalidInput => "invalid_input",
+            std::io::ErrorKind::InvalidData => "invalid_data",
+            std::io::ErrorKind::TimedOut => "timed_out",
+            std::io::ErrorKind::WriteZero => "write_zero",
+            std::io::ErrorKind::StorageFull => "storage_full",
+            std::io::ErrorKind::NotSeekable => "not_seekable",
+            std::io::ErrorKind::QuotaExceeded => "quota_exceeded",
+            std::io::ErrorKind::FileTooLarge => "file_too_large",
+            std::io::ErrorKind::ResourceBusy => "resource_busy",
+            std::io::ErrorKind::ExecutableFileBusy => "executable_file_busy",
+            std::io::ErrorKind::Deadlock => "deadlock",
+            std::io::ErrorKind::CrossesDevices => "crosses_devices",
+            std::io::ErrorKind::TooManyLinks => "too_many_links",
+            std::io::ErrorKind::InvalidFilename => "invalid_filename",
+            std::io::ErrorKind::ArgumentListTooLong => "argument_list_too_long",
+            std::io::ErrorKind::Interrupted => "interrupted",
+            std::io::ErrorKind::Unsupported => "unsupported",
+            std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+            std::io::ErrorKind::OutOfMemory => "out_of_memory",
+            std::io::ErrorKind::Other => "other",
+            _ => "other",
+        }
+    }
+
+    #[test]
+    fn settings_save_error_preserves_sources_and_separates_diagnostic_from_outward() {
+        for raw in [5, 32] {
+            let target = std::path::PathBuf::from("C:/issue-1330/target.json");
+            let temporary = std::path::PathBuf::from("C:/issue-1330/settings.json.1.2.tmp");
+            let legacy = format!("legacy-only-sentinel-{raw}");
+            let error = super::SettingsSaveError::io(
+                super::SettingsSaveStage::PreserveDiskGate,
+                &target,
+                Some(&temporary),
+                std::io::Error::from_raw_os_error(raw),
+                super::SettingsSaveLegacyOutward::DiskRead(legacy.clone()),
+            );
+            let (source_raw, source_kind, source_display) = match &error.cause {
+                super::SettingsSaveCause::Io(source) => {
+                    (source.raw_os_error(), source.kind(), source.to_string())
+                }
+                _ => panic!("expected retained I/O source"),
+            };
+            assert_eq!(source_raw, Some(raw));
+            if let super::SettingsSaveCause::Io(retained_source) = &error.cause {
+                let exposed_source = std::error::Error::source(&error).unwrap();
+                let exposed_io = exposed_source.downcast_ref::<std::io::Error>().unwrap();
+                assert!(std::ptr::eq(exposed_io, retained_source));
+            }
+            assert_eq!(error.stage, super::SettingsSaveStage::PreserveDiskGate);
+            assert_eq!(error.target_path, target);
+            assert_eq!(error.temp_path.as_deref(), Some(temporary.as_path()));
+            assert_eq!(error.pid, std::process::id());
+            assert_eq!(
+                error.general_settings_diagnostic_code(),
+                "settings_save_failed"
+            );
+            assert_eq!(error.to_string(), "settings_save_failed");
+
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let outward = super::report_settings_save_error(
+                error,
+                super::SettingsSaveReportSurface::GeneralSettings,
+            );
+            assert_eq!(outward, legacy);
+            let records = CapturedRecordsSnapshot::snapshot(&records);
+            assert_eq!(records.len(), 1);
+            assert!(!records[0].contains("legacy-only-sentinel"));
+            assert!(!records[0].contains(&source_display));
+            let fields = parse_settings_save_diagnostic(&records[0]);
+            assert_eq!(fields["code"], "settings_save_failed");
+            assert_eq!(fields["source_kind"], "io");
+            assert_eq!(fields["reason"], "none");
+            assert_eq!(fields["raw_os_error"], raw.to_string());
+            assert_eq!(
+                fields["io_kind"],
+                expected_io_kind_from_literal_table(source_kind)
+            );
+            assert_eq!(fields["pid"], std::process::id().to_string());
+            assert_eq!(fields["target_path"], "\"C:/issue-1330/target.json\"");
+            assert_eq!(
+                fields["temp_path"],
+                "\"C:/issue-1330/settings.json.1.2.tmp\""
+            );
+        }
+
+        let lock_error = super::SettingsSaveError::io(
+            super::SettingsSaveStage::LockAcquire,
+            std::path::Path::new("C:/issue-1330/lock.json"),
+            None,
+            std::io::Error::from_raw_os_error(5),
+            super::SettingsSaveLegacyOutward::SettingsLockUnavailable,
+        );
+        assert!(std::error::Error::source(&lock_error).is_some());
+        assert_eq!(lock_error.to_string(), "settings_lock_unavailable");
+        let (records, _capture_guard) = capture_settings_save_diagnostics();
+        let outward = super::report_settings_save_error(
+            lock_error,
+            super::SettingsSaveReportSurface::GeneralSettings,
+        );
+        assert_eq!(outward, "settings_lock_unavailable");
+        assert_eq!(
+            parse_settings_save_diagnostic(&records.borrow()[0])["code"],
+            "settings_lock_unavailable"
+        );
+
+        for stage in [
+            super::SettingsSaveStage::LockAcquire,
+            super::SettingsSaveStage::AtomicReplace,
+        ] {
+            let error = super::SettingsSaveError::semantic(
+                stage,
+                std::path::Path::new("C:/issue-1330/terminal.json"),
+                None,
+                super::SettingsSaveReason::LockTimedOut,
+                super::SettingsSaveLegacyOutward::DiskValidation(
+                    "general-legacy-sentinel".to_string(),
+                ),
+            );
+            let expected_display = if stage == super::SettingsSaveStage::LockAcquire {
+                "settings_lock_unavailable"
+            } else {
+                "settings_save_failed"
+            };
+            assert_eq!(error.to_string(), expected_display);
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let outward = super::report_settings_save_error(
+                error,
+                super::SettingsSaveReportSurface::TerminalSnapshotCompareAndSet,
+            );
+            assert_eq!(outward, "terminal_snapshot_setting_save_failed");
+            let fields = parse_settings_save_diagnostic(&records.borrow()[0]);
+            assert_eq!(fields["code"], "terminal_snapshot_setting_save_failed");
+            assert!(!records.borrow()[0].contains("general-legacy-sentinel"));
+        }
+
+        let json_source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let json_error = super::SettingsSaveError::json(
+            super::SettingsSaveStage::Serialize,
+            std::path::Path::new("C:/issue-1330/json.json"),
+            None,
+            json_source,
+            super::SettingsSaveLegacyOutward::Serialize("json legacy".to_string()),
+        );
+        assert!(std::error::Error::source(&json_error).is_some());
+        let semantic_error = super::SettingsSaveError::semantic(
+            super::SettingsSaveStage::Serialize,
+            std::path::Path::new("C:/issue-1330/semantic.json"),
+            None,
+            super::SettingsSaveReason::SerializedJsonNotObject,
+            super::SettingsSaveLegacyOutward::SerializedJsonNotObject(
+                "semantic legacy".to_string(),
+            ),
+        );
+        assert!(std::error::Error::source(&semantic_error).is_none());
+    }
+
+    #[test]
+    fn settings_save_io_kind_allowlist_matches_stable_1_97_1() {
+        let rows = [
+            (std::io::ErrorKind::NotFound, "not_found"),
+            (std::io::ErrorKind::PermissionDenied, "permission_denied"),
+            (std::io::ErrorKind::ConnectionRefused, "connection_refused"),
+            (std::io::ErrorKind::ConnectionReset, "connection_reset"),
+            (std::io::ErrorKind::HostUnreachable, "host_unreachable"),
+            (
+                std::io::ErrorKind::NetworkUnreachable,
+                "network_unreachable",
+            ),
+            (std::io::ErrorKind::ConnectionAborted, "connection_aborted"),
+            (std::io::ErrorKind::NotConnected, "not_connected"),
+            (std::io::ErrorKind::AddrInUse, "addr_in_use"),
+            (std::io::ErrorKind::AddrNotAvailable, "addr_not_available"),
+            (std::io::ErrorKind::NetworkDown, "network_down"),
+            (std::io::ErrorKind::BrokenPipe, "broken_pipe"),
+            (std::io::ErrorKind::AlreadyExists, "already_exists"),
+            (std::io::ErrorKind::WouldBlock, "would_block"),
+            (std::io::ErrorKind::NotADirectory, "not_a_directory"),
+            (std::io::ErrorKind::IsADirectory, "is_a_directory"),
+            (std::io::ErrorKind::DirectoryNotEmpty, "directory_not_empty"),
+            (
+                std::io::ErrorKind::ReadOnlyFilesystem,
+                "read_only_filesystem",
+            ),
+            (
+                std::io::ErrorKind::StaleNetworkFileHandle,
+                "stale_network_file_handle",
+            ),
+            (std::io::ErrorKind::InvalidInput, "invalid_input"),
+            (std::io::ErrorKind::InvalidData, "invalid_data"),
+            (std::io::ErrorKind::TimedOut, "timed_out"),
+            (std::io::ErrorKind::WriteZero, "write_zero"),
+            (std::io::ErrorKind::StorageFull, "storage_full"),
+            (std::io::ErrorKind::NotSeekable, "not_seekable"),
+            (std::io::ErrorKind::QuotaExceeded, "quota_exceeded"),
+            (std::io::ErrorKind::FileTooLarge, "file_too_large"),
+            (std::io::ErrorKind::ResourceBusy, "resource_busy"),
+            (
+                std::io::ErrorKind::ExecutableFileBusy,
+                "executable_file_busy",
+            ),
+            (std::io::ErrorKind::Deadlock, "deadlock"),
+            (std::io::ErrorKind::CrossesDevices, "crosses_devices"),
+            (std::io::ErrorKind::TooManyLinks, "too_many_links"),
+            (std::io::ErrorKind::InvalidFilename, "invalid_filename"),
+            (
+                std::io::ErrorKind::ArgumentListTooLong,
+                "argument_list_too_long",
+            ),
+            (std::io::ErrorKind::Interrupted, "interrupted"),
+            (std::io::ErrorKind::Unsupported, "unsupported"),
+            (std::io::ErrorKind::UnexpectedEof, "unexpected_eof"),
+            (std::io::ErrorKind::OutOfMemory, "out_of_memory"),
+            (std::io::ErrorKind::Other, "other"),
+        ];
+        assert_eq!(rows.len(), 39);
+        for (kind, expected) in rows {
+            assert_eq!(super::io_error_kind_as_str(kind), expected);
+            assert_eq!(expected_io_kind_from_literal_table(kind), expected);
+        }
+    }
+
+    #[test]
+    fn terminal_snapshot_setting_invalid_defensive_projection_is_closed() {
+        for stage in [
+            super::SettingsSaveStage::PreserveDiskGate,
+            super::SettingsSaveStage::ReconcileDiskGate,
+        ] {
+            let error = super::SettingsSaveError::semantic(
+                stage,
+                std::path::Path::new("C:/issue-1330/settings.json"),
+                None,
+                super::SettingsSaveReason::TerminalSnapshotSettingInvalid,
+                super::SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
+                    "terminal_snapshot_setting_invalid".to_string(),
+                ),
+            );
+            let diagnostic =
+                error.safe_diagnostic(super::SettingsSaveReportSurface::GeneralSettings);
+            assert_eq!(diagnostic.reason, "terminal_snapshot_setting_invalid");
+            assert_eq!(diagnostic.code, "settings_save_failed");
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let outward = super::report_settings_save_error(
+                error,
+                super::SettingsSaveReportSurface::GeneralSettings,
+            );
+            assert_eq!(outward, "terminal_snapshot_setting_invalid");
+            assert_eq!(records.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn general_settings_outward_compatibility_matrix() {
+        fn assert_general_outward(error: super::SettingsSaveError, expected: &str) {
+            let diagnostic_code = error.general_settings_diagnostic_code();
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let outward = super::report_settings_save_error(
+                error,
+                super::SettingsSaveReportSurface::GeneralSettings,
+            );
+            assert_eq!(outward, expected);
+            let records = records.borrow();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                parse_settings_save_diagnostic(&records[0])["code"],
+                diagnostic_code,
+            );
+        }
+
+        let path = std::path::Path::new("C:/issue-1330/settings.json");
+        assert_general_outward(
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::LockAcquire,
+                path,
+                None,
+                super::SettingsSaveReason::LockTimedOut,
+                super::SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            ),
+            "settings_lock_unavailable",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::PrepareTarget,
+                path,
+                None,
+                super::SettingsSaveReason::TargetNotRegularFile,
+                super::SettingsSaveLegacyOutward::SettingsSaveFailed,
+            ),
+            "settings_save_failed",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::io(
+                super::SettingsSaveStage::PreserveDiskGate,
+                path,
+                None,
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader source"),
+                super::SettingsSaveLegacyOutward::DiskRead(
+                    "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to avoid dropping a project): reader source".to_string(),
+                ),
+            ),
+            "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to avoid dropping a project): reader source",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::json(
+                super::SettingsSaveStage::PreserveDiskGate,
+                path,
+                None,
+                serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                super::SettingsSaveLegacyOutward::DiskJson(
+                    "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not valid JSON (EOF while parsing an object at line 1 column 1)".to_string(),
+                ),
+            ),
+            "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not valid JSON (EOF while parsing an object at line 1 column 1)",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::PreserveDiskGate,
+                path,
+                None,
+                super::SettingsSaveReason::DiskJsonNotObject,
+                super::SettingsSaveLegacyOutward::DiskJsonNotObject(
+                    "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not a JSON object".to_string(),
+                ),
+            ),
+            "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not a JSON object",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::ReconcileDiskGate,
+                path,
+                None,
+                super::SettingsSaveReason::DiskSettingsValidationRejected,
+                super::SettingsSaveLegacyOutward::DiskValidation(
+                    "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
+                ),
+            ),
+            "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean",
+        );
+        let serialize_source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert_general_outward(
+            super::SettingsSaveError::json(
+                super::SettingsSaveStage::Serialize,
+                path,
+                None,
+                serialize_source,
+                super::SettingsSaveLegacyOutward::Serialize(
+                    "Failed to serialize settings: independent source".to_string(),
+                ),
+            ),
+            "Failed to serialize settings: independent source",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::Serialize,
+                path,
+                None,
+                super::SettingsSaveReason::SerializedJsonNotObject,
+                super::SettingsSaveLegacyOutward::SerializedJsonNotObject(
+                    "settings did not serialize to a JSON object".to_string(),
+                ),
+            ),
+            "settings did not serialize to a JSON object",
+        );
+        assert_general_outward(
+            super::SettingsSaveError::json(
+                super::SettingsSaveStage::ReDecode,
+                path,
+                None,
+                serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                super::SettingsSaveLegacyOutward::ReDecode(
+                    "Failed to re-decode written settings: independent source".to_string(),
+                ),
+            ),
+            "Failed to re-decode written settings: independent source",
+        );
+    }
+
+    #[test]
+    fn settings_save_diagnostic_redacts_values_and_encodes_untrusted_paths() {
+        let target =
+            std::path::PathBuf::from("C:\\target path\t\r\n\0\"=source_kind=json injected=true-ñ");
+        let temporary = std::path::PathBuf::from("C:\\temp path\t\r\n\0\"=code=injected");
+        let error = super::SettingsSaveError::io(
+            super::SettingsSaveStage::TempWrite,
+            &target,
+            Some(&temporary),
+            std::io::Error::other(
+                "source-root-secret api-secret provider-secret serialized-settings-secret",
+            ),
+            super::SettingsSaveLegacyOutward::DiskRead(
+                "legacy-root-secret api-secret provider-secret rootToken apiKey providerCredential"
+                    .to_string(),
+            ),
+        );
+        let payload = super::render_settings_save_diagnostic(
+            &error.safe_diagnostic(super::SettingsSaveReportSurface::GeneralSettings),
+        );
+        assert_eq!(payload.matches("target_path=").count(), 1);
+        assert_eq!(payload.matches("temp_path=").count(), 1);
+        for forbidden in [
+            "source-root-secret",
+            "api-secret",
+            "provider-secret",
+            "serialized-settings-secret",
+            "legacy-root-secret",
+            "rootToken",
+            "apiKey",
+            "providerCredential",
+            "injected=true",
+            "code=injected",
+        ] {
+            assert!(
+                !payload.contains(forbidden),
+                "leaked {forbidden}: {payload}"
+            );
+        }
+        for required in [
+            r"\u{20}", r"\u{9}", r"\u{d}", r"\u{a}", r"\u{0}", r"\u{22}", r"\u{3d}", r"\u{5c}",
+            r"\u{f1}",
+        ] {
+            assert!(payload.contains(required), "missing {required}: {payload}");
+        }
+        let fields = parse_settings_save_diagnostic(&payload);
+        for key in ["target_path", "temp_path"] {
+            let value = &fields[key];
+            assert!(!value.chars().any(char::is_whitespace));
+            assert!(!value[1..value.len() - 1].contains('='));
+            assert!(!value[1..value.len() - 1].contains('"'));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
+            assert!(super::render_diagnostic_path(&path).contains(r"\u{fffd}"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_atomic_replace_failure_retains_os_metadata() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        let baseline = super::AppSettings::default();
+        super::save_settings_to_path(&baseline, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        let lock_guard =
+            super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+        let retained_handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+
+        let mut candidate_value = serde_json::to_value(&baseline).unwrap();
+        candidate_value.as_object_mut().unwrap().insert(
+            "rootToken".to_string(),
+            serde_json::Value::String("issue-1330-candidate-root".to_string()),
+        );
+        let candidate: super::AppSettings = serde_json::from_value(candidate_value).unwrap();
+        let error = super::save_settings_value_locked(
+            &candidate,
+            &path,
+            super::ProjectWriteMode::Preserve,
+            super::TerminalSnapshotGateWriteMode::Preserve,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.stage, super::SettingsSaveStage::AtomicReplace);
+        assert!(matches!(
+            &error.legacy_outward,
+            super::SettingsSaveLegacyOutward::SettingsSaveFailed
+        ));
+        let recorded_target = error.target_path.clone();
+        let recorded_temp = error.temp_path.clone().unwrap();
+        let recorded_pid = error.pid;
+        let (source_raw, source_kind) = match &error.cause {
+            super::SettingsSaveCause::Io(source) => (source.raw_os_error(), source.kind()),
+            _ => panic!("expected retained atomic replacement I/O source"),
+        };
+        assert!(source_raw.is_some());
+        assert_eq!(recorded_target, path);
+        assert_eq!(recorded_pid, std::process::id());
+        assert_eq!(recorded_temp.parent(), Some(temp.path()));
+        let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
+        assert!(temp_name.starts_with(&format!("settings.json.{}.", recorded_pid)));
+        assert!(temp_name.ends_with(".tmp"));
+
+        let (records, _capture_guard) = capture_settings_save_diagnostics();
+        let outward = super::report_settings_save_error(
+            error,
+            super::SettingsSaveReportSurface::GeneralSettings,
+        );
+        assert_eq!(outward, "settings_save_failed");
+        let records = CapturedRecordsSnapshot::snapshot(&records);
+        assert_eq!(records.len(), 1);
+        let fields = parse_settings_save_diagnostic(&records[0]);
+        assert_eq!(fields["code"], "settings_save_failed");
+        assert_eq!(fields["stage"], "atomic_replace");
+        assert_eq!(fields["reason"], "none");
+        assert_eq!(fields["source_kind"], "io");
+        assert_eq!(fields["raw_os_error"], source_raw.unwrap().to_string(),);
+        assert_eq!(
+            fields["io_kind"],
+            expected_io_kind_from_literal_table(source_kind),
+        );
+        assert_eq!(fields["pid"], recorded_pid.to_string());
+        assert_eq!(
+            fields["target_path"],
+            expected_rendered_diagnostic_path(&recorded_target),
+        );
+        assert_eq!(
+            fields["temp_path"],
+            expected_rendered_diagnostic_path(&recorded_temp),
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!recorded_temp.exists());
+        drop(retained_handle);
+        drop(lock_guard);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn startup_preserve_failure_diagnostics_cover_all_save_triggers() {
+        for case in [
+            "missing_root_token",
+            "issue_248_migration",
+            "coding_agent_profile_v1_to_v2",
+            "profile_repair",
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("settings.json");
+            let mut value = serde_json::to_value(super::AppSettings::default()).unwrap();
+            let object = value.as_object_mut().unwrap();
+            if case != "missing_root_token" {
+                object.insert(
+                    "rootToken".to_string(),
+                    serde_json::Value::String(format!("issue-1330-root-{case}")),
+                );
+            }
+            match case {
+                "missing_root_token" => {
+                    object.remove("rootToken");
+                }
+                "issue_248_migration" => {
+                    object.remove("restoreCoordinatorWakeState");
+                    object.insert(
+                        "startOnlyCoordinators".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                "coding_agent_profile_v1_to_v2" => {
+                    object["codingAgentProfiles"]
+                        .as_object_mut()
+                        .unwrap()
+                        .insert(
+                            "schemaVersion".to_string(),
+                            serde_json::Value::Number(1.into()),
+                        );
+                }
+                "profile_repair" => {
+                    object["codingAgentProfiles"]
+                        .as_object_mut()
+                        .unwrap()
+                        .insert(
+                            "profileSlots".to_string(),
+                            serde_json::Value::Object(serde_json::Map::new()),
+                        );
+                }
+                _ => unreachable!(),
+            }
+            let original = serde_json::to_vec_pretty(&value).unwrap();
+            std::fs::write(&path, &original).unwrap();
+            let held_lock =
+                super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+
+            let loaded = super::load_settings_from_path(&path);
+
+            assert_eq!(std::fs::read(&path).unwrap(), original, "case {case}");
+            let records = records.borrow();
+            assert_eq!(records.len(), 1, "case {case}");
+            let fields = parse_settings_save_diagnostic(&records[0]);
+            assert_eq!(fields["code"], "settings_lock_unavailable", "case {case}");
+            assert_eq!(fields["stage"], "lock_acquire", "case {case}");
+            assert_eq!(fields["reason"], "lock_timed_out", "case {case}");
+            assert_eq!(fields["temp_path"], "none", "case {case}");
+            assert!(!records[0].contains(&format!("issue-1330-root-{case}")));
+            let loaded_value = serde_json::to_value(&loaded).unwrap();
+            match case {
+                "missing_root_token" => {
+                    assert!(loaded_value
+                        .get("rootToken")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty()));
+                }
+                "issue_248_migration" => {
+                    assert_eq!(loaded_value["restoreCoordinatorWakeState"], true);
+                }
+                "coding_agent_profile_v1_to_v2" => {
+                    assert_eq!(loaded_value["codingAgentProfiles"]["schemaVersion"], 2);
+                }
+                "profile_repair" => {
+                    assert!(loaded_value["codingAgentProfiles"]["profileSlots"]
+                        .get("A")
+                        .is_some());
+                }
+                _ => unreachable!(),
+            }
+            drop(held_lock);
+        }
+    }
+
+    #[test]
+    fn preserve_disk_gate_failures_are_typed_and_do_not_overwrite() {
+        let rows = [
+            ("{not json", "malformed"),
+            ("[]", "non_object"),
+            (
+                r#"{"terminalSnapshotsEnabled":"invalid"}"#,
+                "invalid_terminal_snapshot_setting",
+            ),
+        ];
+
+        for (contents, case) in rows {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::write(&path, contents).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let expected = match case {
+                "malformed" => {
+                    let source =
+                        serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
+                    format!(
+                        "Refusing to overwrite {}: the existing settings file is not valid JSON ({})",
+                        path.display(),
+                        source
+                    )
+                }
+                "non_object" => format!(
+                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                    path.display()
+                ),
+                "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
+                _ => unreachable!(),
+            };
+
+            let error = super::save_settings_value(
+                &super::AppSettings::default(),
+                &path,
+                super::ProjectWriteMode::Preserve,
+            )
+            .unwrap_err();
+
+            assert_eq!(error.stage, super::SettingsSaveStage::PreserveDiskGate);
+            match case {
+                "malformed" => {
+                    assert!(matches!(&error.cause, super::SettingsSaveCause::Json(_)));
+                    assert!(matches!(
+                        &error.legacy_outward,
+                        super::SettingsSaveLegacyOutward::DiskJson(_)
+                    ));
+                }
+                "non_object" => {
+                    assert!(matches!(
+                        &error.cause,
+                        super::SettingsSaveCause::Semantic(
+                            super::SettingsSaveReason::DiskJsonNotObject
+                        )
+                    ));
+                    assert!(matches!(
+                        &error.legacy_outward,
+                        super::SettingsSaveLegacyOutward::DiskJsonNotObject(_)
+                    ));
+                }
+                "invalid_terminal_snapshot_setting" => {
+                    assert!(matches!(
+                        &error.cause,
+                        super::SettingsSaveCause::Semantic(
+                            super::SettingsSaveReason::DiskSettingsValidationRejected
+                        )
+                    ));
+                    assert!(matches!(
+                        &error.legacy_outward,
+                        super::SettingsSaveLegacyOutward::DiskValidation(_)
+                    ));
+                    assert_ne!(expected, "terminal_snapshot_setting_invalid",);
+                }
+                _ => unreachable!(),
+            }
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let outward = super::report_settings_save_error(
+                error,
+                super::SettingsSaveReportSurface::GeneralSettings,
+            );
+            assert_eq!(outward, expected);
+            let captured_records = records.borrow();
+            assert_eq!(captured_records.len(), 1);
+            let fields = parse_settings_save_diagnostic(&captured_records[0]);
+            assert_eq!(fields["code"], "settings_save_failed");
+            assert_eq!(fields["stage"], "preserve_disk_gate");
+            let expected_reason = match case {
+                "malformed" => "none",
+                "non_object" => "disk_json_not_object",
+                "invalid_terminal_snapshot_setting" => "disk_settings_validation_rejected",
+                _ => unreachable!(),
+            };
+            assert_eq!(fields["reason"], expected_reason);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_no_issue_1330_temp_files(temp.path());
+        }
+    }
+
+    #[test]
+    fn reconcile_disk_gate_failure_uses_reconcile_stage_and_legacy_outward() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, r#"{"terminalSnapshotsEnabled":"invalid"}"#).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let error = super::save_settings_value(
+            &super::AppSettings::default(),
+            &path,
+            super::ProjectWriteMode::Reconcile {
+                active: false,
+                archived: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.stage, super::SettingsSaveStage::ReconcileDiskGate);
+        assert!(matches!(
+            &error.cause,
+            super::SettingsSaveCause::Semantic(
+                super::SettingsSaveReason::DiskSettingsValidationRejected
+            )
+        ));
+        assert!(matches!(
+            &error.legacy_outward,
+            super::SettingsSaveLegacyOutward::DiskValidation(_)
+        ));
+        let (records, _capture_guard) = capture_settings_save_diagnostics();
+        let outward = super::report_settings_save_error(
+            error,
+            super::SettingsSaveReportSurface::GeneralSettings,
+        );
+        assert_eq!(
+            outward,
+            "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean"
+        );
+        assert_ne!(outward, "terminal_snapshot_setting_invalid");
+        let records = CapturedRecordsSnapshot::snapshot(&records);
+        assert_eq!(records.len(), 1);
+        let fields = parse_settings_save_diagnostic(&records[0]);
+        assert_eq!(fields["code"], "settings_save_failed");
+        assert_eq!(fields["stage"], "reconcile_disk_gate");
+        assert_eq!(fields["reason"], "disk_settings_validation_rejected");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_no_issue_1330_temp_files(temp.path());
+    }
+
+    #[test]
+    fn project_refresh_compatibility_adapter_maps_typed_failures_once() {
+        let rows = [
+            ("{not json", "malformed"),
+            ("[]", "non_object"),
+            (
+                r#"{"terminalSnapshotsEnabled":"invalid"}"#,
+                "invalid_terminal_snapshot_setting",
+            ),
+        ];
+
+        for (contents, case) in rows {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::write(&path, contents).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let expected = match case {
+                "malformed" => {
+                    let source =
+                        serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
+                    format!(
+                        "Refusing to overwrite {}: the existing settings file is not valid JSON ({})",
+                        path.display(),
+                        source
+                    )
+                }
+                "non_object" => format!(
+                    "Refusing to overwrite {}: the existing settings root is not a JSON object",
+                    path.display()
+                ),
+                "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings whose non-project fields are invalid: invalid type: string \"invalid\", expected a boolean".to_string(),
+                _ => unreachable!(),
+            };
+            let mut settings = super::AppSettings::default();
+            let before = serde_json::to_value(&settings).unwrap();
+
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+            let error = super::refresh_and_decode_project_paths_from_path(&mut settings, &path)
+                .unwrap_err();
+
+            assert_eq!(error, expected);
+            let records = CapturedRecordsSnapshot::snapshot(&records);
+            assert_eq!(records.len(), 1);
+            let fields = parse_settings_save_diagnostic(&records[0]);
+            assert_eq!(fields["code"], "settings_save_failed");
+            assert_eq!(fields["stage"], "project_paths_refresh_disk_gate");
+            let records = CapturedRecordsSnapshot::snapshot(&records);
+            assert_eq!(records.len(), 1);
+            let fields = parse_settings_save_diagnostic(&records[0]);
+            assert_eq!(fields["code"], "settings_save_failed");
+            assert_eq!(fields["stage"], "project_paths_refresh_disk_gate");
+            assert_eq!(serde_json::to_value(&settings).unwrap(), before);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_no_issue_1330_temp_files(temp.path());
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::create_dir(&path).unwrap();
+        let source = std::fs::read_to_string(&path).unwrap_err();
+        let expected = format!(
+            "Failed to read {} for a project-preserving save (aborting to avoid dropping a project): {}",
+            path.display(),
+            source
+        );
+        let mut settings = super::AppSettings::default();
+        let before = serde_json::to_value(&settings).unwrap();
+
+        let error =
+            super::refresh_and_decode_project_paths_from_path(&mut settings, &path).unwrap_err();
+
+        assert_eq!(error, expected);
+        assert_eq!(serde_json::to_value(&settings).unwrap(), before);
+    }
+
+    #[test]
+    fn lock_and_writer_failures_keep_static_legacy_outward_strings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let first_lock =
+            super::SettingsFileLock::acquire(&settings_path, std::time::Duration::from_secs(1))
+                .unwrap();
+        let second = super::SettingsFileLock::acquire(&settings_path, std::time::Duration::ZERO);
+        let lock_error = match second {
+            Ok(_) => panic!("second lock unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(lock_error.stage, super::SettingsSaveStage::LockAcquire);
+        assert!(matches!(
+            &lock_error.cause,
+            super::SettingsSaveCause::Semantic(super::SettingsSaveReason::LockTimedOut)
+        ));
+        assert!(matches!(
+            &lock_error.legacy_outward,
+            super::SettingsSaveLegacyOutward::SettingsLockUnavailable
+        ));
+        let (lock_records, _lock_capture_guard) = capture_settings_save_diagnostics();
+        let lock_outward = super::report_settings_save_error(
+            lock_error,
+            super::SettingsSaveReportSurface::GeneralSettings,
+        );
+        assert_eq!(lock_outward, "settings_lock_unavailable");
+        let lock_records = lock_records.borrow();
+        assert_eq!(lock_records.len(), 1);
+        let lock_fields = parse_settings_save_diagnostic(&lock_records[0]);
+        assert_eq!(lock_fields["code"], "settings_lock_unavailable");
+        assert_eq!(lock_fields["stage"], "lock_acquire");
+        assert_eq!(lock_fields["reason"], "lock_timed_out");
+        drop(first_lock);
+
+        let writer_temp = tempfile::TempDir::new().unwrap();
+        let writer_path = writer_temp.path().join("settings.json");
+        std::fs::create_dir(&writer_path).unwrap();
+        let writer_error =
+            super::save_settings_to_path(&super::AppSettings::default(), &writer_path).unwrap_err();
+        assert_eq!(writer_error.stage, super::SettingsSaveStage::PrepareTarget);
+        assert!(matches!(
+            &writer_error.cause,
+            super::SettingsSaveCause::Semantic(super::SettingsSaveReason::TargetNotRegularFile)
+        ));
+        assert!(matches!(
+            &writer_error.legacy_outward,
+            super::SettingsSaveLegacyOutward::SettingsSaveFailed
+        ));
+        let (writer_records, _writer_capture_guard) = capture_settings_save_diagnostics();
+        let writer_outward = super::report_settings_save_error(
+            writer_error,
+            super::SettingsSaveReportSurface::GeneralSettings,
+        );
+        assert_eq!(writer_outward, "settings_save_failed");
+        let writer_records = writer_records.borrow();
+        assert_eq!(writer_records.len(), 1);
+        let writer_fields = parse_settings_save_diagnostic(&writer_records[0]);
+        assert_eq!(writer_fields["code"], "settings_save_failed");
+        assert_eq!(writer_fields["stage"], "prepare_target");
+        assert_eq!(writer_fields["reason"], "target_not_regular_file");
+        assert_no_issue_1330_temp_files(writer_temp.path());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn terminal_compare_and_set_reports_typed_reader_failure_after_dropping_lock() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let records = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let reacquired = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let captured_records = std::rc::Rc::clone(&records);
+        let captured_reacquired = std::rc::Rc::clone(&reacquired);
+        let probe_path = path.clone();
+        let _capture_guard = SettingsSaveDiagnosticCaptureGuard::install(move |payload| {
+            captured_records.borrow_mut().push(payload.to_string());
+            let probe = super::SettingsFileLock::acquire(&probe_path, std::time::Duration::ZERO);
+            let succeeded = probe.is_ok();
+            if let Ok(probe_guard) = probe {
+                drop(probe_guard);
+            }
+            *captured_reacquired.borrow_mut() = Some(succeeded);
+        });
+
+        let outward = super::compare_and_set_terminal_snapshots_enabled_at_path(
+            &super::AppSettings::default(),
+            &path,
+            false,
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(outward, "terminal_snapshot_setting_save_failed");
+        assert_eq!(*reacquired.borrow(), Some(true));
+        let records = CapturedRecordsSnapshot::snapshot(&records);
+        assert_eq!(records.len(), 1);
+        let fields = parse_settings_save_diagnostic(&records[0]);
+        assert_eq!(fields["code"], "terminal_snapshot_setting_save_failed");
+        assert_eq!(fields["stage"], "preserve_disk_gate");
+        assert_eq!(fields["source_kind"], "json");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn string_facades_and_compatibility_adapters_map_typed_failures_once() {
+        fn assert_held_lock_mapping(
+            call: impl FnOnce(&super::AppSettings, &std::path::Path) -> Result<(), String>,
+            expected_code: &str,
+        ) {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("settings.json");
+            let settings = super::AppSettings::default();
+            super::save_settings_to_path(&settings, &path).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let held_lock =
+                super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+            let (records, _capture_guard) = capture_settings_save_diagnostics();
+
+            let outward = call(&settings, &path).unwrap_err();
+
+            assert_eq!(outward, expected_code);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let records = records.borrow();
+            assert_eq!(records.len(), 1);
+            let fields = parse_settings_save_diagnostic(&records[0]);
+            assert_eq!(fields["code"], expected_code);
+            assert_eq!(fields["stage"], "lock_acquire");
+            assert_eq!(fields["reason"], "lock_timed_out");
+            drop(held_lock);
+        }
+
+        assert_held_lock_mapping(
+            |settings, path| {
+                super::reconcile_project_state_to_path(settings, path, false, false).map(|_| ())
+            },
+            "settings_lock_unavailable",
+        );
+        assert_held_lock_mapping(
+            super::save_settings_with_project_paths_to_path,
+            "settings_lock_unavailable",
+        );
+        assert_held_lock_mapping(
+            |settings, path| {
+                super::save_settings_to_path_preserving_project_paths(settings, path).map(|_| ())
+            },
+            "settings_lock_unavailable",
+        );
+        assert_held_lock_mapping(
+            |settings, path| {
+                super::compare_and_set_terminal_snapshots_enabled_at_path(
+                    settings, path, false, true,
+                )
+                .map(|_| ())
+            },
+            "terminal_snapshot_setting_save_failed",
+        );
+    }
 
     #[test]
     fn terminal_snapshot_gate_defaults_false_and_strict_reader_fails_closed() {
@@ -5102,11 +7019,12 @@ mod tests {
         assert!(defaults.agent_auto_update_by_command.is_empty());
 
         let mut s = AppSettings::default();
-        s.agent_auto_update_by_command.insert("claude".to_string(), true);
-        s.agent_auto_update_by_command.insert("codex".to_string(), false);
+        s.agent_auto_update_by_command
+            .insert("claude".to_string(), true);
+        s.agent_auto_update_by_command
+            .insert("codex".to_string(), false);
         let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json
-            .contains("\"agentAutoUpdateByCommand\":{\"claude\":true,\"codex\":false}"));
+        assert!(json.contains("\"agentAutoUpdateByCommand\":{\"claude\":true,\"codex\":false}"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.agent_auto_update_by_command.get("claude"), Some(&true));
         assert_eq!(back.agent_auto_update_by_command.get("codex"), Some(&false));

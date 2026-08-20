@@ -7,6 +7,44 @@ use crate::phone::types::OutboxMessage;
 
 use super::send::agent_name_from_root;
 
+/// §1440: colchon fijo de la espera de response, sumado a `--timeout`.
+/// Cubre pickup (p90 10.1s observado), el probe de restore (5s), el
+/// overshoot del handler sobre `--timeout` (max +3.5s observado) y la
+/// escritura del response. Default total: 30 + 60 = 90s, igual que el
+/// default de `send --confirm-timeout`. No escala con la cantidad de
+/// sesiones del target: el CLI no la conoce (el daemon resuelve el target
+/// recien en handle_close_session y cierra secuencialmente, ~`--timeout`
+/// por sesion); expirar reporta "outcome unknown" (exit 2), no fallo.
+const RESPONSE_WAIT_OVERHEAD_SECS: u64 = 60;
+
+fn response_wait_budget(timeout_secs: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::from(timeout_secs) + RESPONSE_WAIT_OVERHEAD_SECS)
+}
+
+/// §1440: mensaje de expiracion de la espera unica. `delivered_seen` decide
+/// el sabor: el daemon termino y el response no aparecio donde el CLI
+/// pollea, o no hay todavia rastro terminal del mensaje. Ambos ids van
+/// etiquetados con su artefacto: `request` = responses/<request_id>.json,
+/// `message` = outbox|delivered/<msg_id>.json y las lineas de app.log.
+fn format_no_response_error(
+    budget_secs: u64,
+    request_id: &str,
+    msg_id: &str,
+    delivered_seen: bool,
+) -> String {
+    if delivered_seen {
+        format!(
+            "close-session delivered but daemon did not write a response within {}s; outcome unknown (request {}, message {})",
+            budget_secs, request_id, msg_id
+        )
+    } else {
+        format!(
+            "close-session: no confirmation within {}s; outcome unknown (request {}, message {} still queued or in progress). The daemon may still be closing sessions in the background: closing several sessions takes about sessions x --timeout seconds and this wait budgets one. Verify with list-peers-lean before retrying.",
+            budget_secs, request_id, msg_id
+        )
+    }
+}
+
 /// Pure: decide CLI exit code from the daemon's response body.
 /// §224 G2 — exit codes:
 ///   0  — known status (closed | already_closed | no_match | restore_in_progress).
@@ -16,14 +54,15 @@ use super::send::agent_name_from_root;
 ///        from "daemon refused".
 ///
 /// Note: this contract applies only when the daemon successfully wrote a
-/// response file the CLI could read. The orthogonal "delivered but response
-/// timed out" path at the end of `execute()` is NOT routed through this
-/// helper — see the response-poll loop. That fallback ALSO returns exit 2
-/// (§224 G-IMPL-3): if delivery succeeded but no response appeared in the
-/// poll window, the session's state is unknown (daemon crashed mid-handle,
-/// response landed at an undeliverable path, or in-flight). "Outcome
-/// unknown" belongs in the exit-2 class — exit 0 here would re-create the
-/// silent-success surface #224 was filed to eliminate.
+/// response file the CLI could read. The orthogonal no-response path at the
+/// end of `execute()` is NOT routed through this helper; see the single
+/// response-poll loop (§1440). That fallback ALSO returns exit 2 (§224
+/// G-IMPL-3): if no response appeared within the wait budget, whether or not
+/// the message reached delivered/, the session's state is unknown (daemon
+/// crashed mid-handle, response landed at an undeliverable path, still in
+/// flight, or still queued). "Outcome unknown" belongs in the exit-2 class;
+/// exit 0 or a fabricated failure here would re-create the silent-success /
+/// false-timeout surfaces #224 and #1440 were filed to eliminate.
 fn interpret_close_response_exit_code(content: &str) -> i32 {
     let resp: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
@@ -75,7 +114,11 @@ The master/root token bypasses this check.\n\n\
 BEHAVIOR: By default, graceful shutdown is used — an exit command is injected into \
 the agent's PTY (e.g., /exit for Claude Code) and the system waits for clean exit. \
 If the agent doesn't exit within --timeout seconds, it falls back to force-kill. \
-Use --force to skip graceful shutdown and kill immediately.\n\n\
+Use --force to skip graceful shutdown and kill immediately. \
+The CLI waits --timeout + 60 seconds for the daemon's response. A target with several \
+sessions is closed sequentially (about --timeout each) and can outlast the wait: exit 2 \
+then means outcome unknown, the close keeps running server-side and is not cancelled; \
+verify with list-peers-lean.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names. The `name` field of \
 each entry is the canonical FQN to pass to --target.")]
 pub struct CloseSessionArgs {
@@ -100,7 +143,8 @@ pub struct CloseSessionArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Graceful shutdown timeout in seconds per session (default: 30)
+    /// Graceful shutdown timeout in seconds per session (default: 30). The CLI also waits
+    /// this plus 60 seconds for the daemon's response.
     #[arg(long, default_value = "30")]
     pub timeout: u32,
 }
@@ -240,7 +284,14 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         return 1;
     }
 
-    // Poll for delivery confirmation
+    // §1440: espera unica del veredicto terminal del daemon. El daemon escribe
+    // rejected/<msg_id>.reason.txt al rechazar (antes de tocar sesiones),
+    // responses/<request_id>.json al terminar, y mueve el mensaje a delivered/
+    // SOLO DESPUES de escribir el response (ultima linea de
+    // handle_close_session). Pollear el response subsume la vieja espera de
+    // "delivery confirmation", cuyo presupuesto fijo de 30s expiraba durante
+    // cierres graceful normales de ~30s y reportaba un timeout falso (97.9%
+    // de los graceful, #1440).
     let delivered_path = outbox_dir
         .join("delivered")
         .join(format!("{}.json", msg_id));
@@ -248,13 +299,39 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         .join("rejected")
         .join(format!("{}.reason.txt", msg_id));
 
-    let confirm_timeout = std::time::Duration::from_secs(30);
-    let confirm_poll = std::time::Duration::from_millis(250);
+    let responses_dir = ac_dir.join("responses");
+    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let budget = response_wait_budget(args.timeout);
+    let poll = std::time::Duration::from_millis(250);
     let start = std::time::Instant::now();
 
     loop {
-        if delivered_path.exists() {
-            break;
+        if response_path.exists() {
+            // §1440 F1: the daemon writes this file with std::fs::write (no
+            // atomic rename) and, in the common case, TWICE (mailbox.rs
+            // handle_close_session, §224 A.6 dual-write: the outbox-derived
+            // write and the resolved-sender write land on the same file,
+            // with an .await in between), so a poll tick can observe it
+            // empty or truncated. An artifact that does not parse yet is
+            // NOT a terminal verdict: keep polling; the next tick reads the
+            // completed file. A genuinely malformed response (daemon bug)
+            // or a persistent read failure therefore reports exit 2 at the
+            // deadline instead of an immediate 2 (or a fabricated 1).
+            if let Ok(content) = std::fs::read_to_string(&response_path) {
+                if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
+                    crate::cli_println!("{}", content);
+                    // §224 G7 — print a human-readable prose line for no_match
+                    // / already_closed / restore_in_progress so AC #2's
+                    // "stdout message such as `No sessions matched ...`" lands
+                    // even when callers don't parse the JSON.
+                    print_status_prose(&content);
+                    // §224 G2 — validate the daemon's contract: known status
+                    // → exit 0; missing / unknown status → exit 2. (Content
+                    // that does not parse never reaches this call: the §1440
+                    // F1 gate above keeps polling instead.)
+                    return interpret_close_response_exit_code(&content);
+                }
+            }
         }
         if rejected_reason_path.exists() {
             let reason = std::fs::read_to_string(&rejected_reason_path)
@@ -264,69 +341,25 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             eprintln!("Error: close-session rejected — {}", trimmed);
             return 1;
         }
-        if start.elapsed() >= confirm_timeout {
-            log::error!(
-                "delivery confirmation timeout after 30s (request {} may still be pending)",
-                msg_id
+        if start.elapsed() >= budget {
+            // §1440 / §224 G-IMPL-3: no response within the budget. The
+            // session's terminal state is UNKNOWN: the daemon may still be
+            // closing sessions, may have crashed mid-handle, or the response
+            // may have landed at an undeliverable path (G-IMPL-2 + a non-
+            // enumerable --root). Exit 2 ("outcome unknown"), never a
+            // fabricated failure. Prose to stderr, not stdout, so script
+            // consumers don't mistake it for the happy-path JSON.
+            let m = format_no_response_error(
+                budget.as_secs(),
+                &request_id,
+                &msg_id,
+                delivered_path.exists(),
             );
-            eprintln!(
-                "Error: delivery confirmation timeout after 30s (request {} may still be pending)",
-                msg_id
-            );
-            return 1;
-        }
-        std::thread::sleep(confirm_poll);
-    }
-
-    // Wait for response with session details.
-    // Timeout must exceed graceful shutdown timeout + processing overhead.
-    let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
-    let resp_timeout = std::time::Duration::from_secs((args.timeout + 15) as u64);
-    let resp_poll = std::time::Duration::from_millis(500);
-    let resp_start = std::time::Instant::now();
-
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    crate::cli_println!("{}", content);
-                    // §224 G7 — print a human-readable prose line for no_match
-                    // / already_closed / restore_in_progress so AC #2's
-                    // "stdout message such as `No sessions matched ...`" lands
-                    // even when callers don't parse the JSON.
-                    print_status_prose(&content);
-                    // §224 G2 — validate the daemon's contract: known status
-                    // → exit 0; unparseable / missing / unknown status → exit 2.
-                    return interpret_close_response_exit_code(&content);
-                }
-                Err(e) => {
-                    log::error!("failed to read response: {}", e);
-                    eprintln!("Error: failed to read response: {}", e);
-                    return 1;
-                }
-            }
-        }
-        if resp_start.elapsed() >= resp_timeout {
-            // §224 G-IMPL-3 — Delivery confirmed but no response in
-            // `resp_timeout`. The session's terminal state is UNKNOWN:
-            // the daemon may have crashed mid-handle, the response may
-            // have landed at an undeliverable path (G-IMPL-2 + a non-
-            // enumerable --root), or it may simply be in flight.
-            //
-            // Exit 2 ("outcome unknown") per the truth table in
-            // `interpret_close_response_exit_code` — exit 0 here would
-            // be a silent-success regression of #224. Prose to stderr,
-            // not stdout, so script consumers don't mistake it for the
-            // happy-path JSON.
-            eprintln!(
-                "Error: close-session delivered but daemon did not write a response within {}s — outcome unknown (request {})",
-                resp_timeout.as_secs(),
-                request_id
-            );
+            log::error!("{}", m);
+            eprintln!("Error: {}", m);
             return 2;
         }
-        std::thread::sleep(resp_poll);
+        std::thread::sleep(poll);
     }
 }
 
@@ -420,5 +453,27 @@ mod tests {
         print_status_prose(r#"{"status":"unknown"}"#);
         print_status_prose(r#"{"no_status_at_all":true}"#);
         print_status_prose(r#"{"status":42}"#);
+    }
+    // ── §1440 ──
+
+    // §1440 D.1: presupuesto derivado de --timeout
+    #[test]
+    fn response_wait_budget_adds_fixed_overhead() {
+        assert_eq!(response_wait_budget(30).as_secs(), 90);
+        assert_eq!(response_wait_budget(120).as_secs(), 180);
+        assert_eq!(response_wait_budget(0).as_secs(), 60);
+    }
+
+    // §1440 D.2: los ids van etiquetados con su artefacto en ambos sabores
+    #[test]
+    fn no_response_error_labels_both_ids_in_both_flavors() {
+        let m = format_no_response_error(90, "rid-1", "mid-1", false);
+        assert!(m.contains("no confirmation within 90s"));
+        assert!(m.contains("request rid-1"));
+        assert!(m.contains("message mid-1"));
+        let m = format_no_response_error(90, "rid-1", "mid-1", true);
+        assert!(m.contains("did not write a response within 90s"));
+        assert!(m.contains("request rid-1"));
+        assert!(m.contains("message mid-1"));
     }
 }

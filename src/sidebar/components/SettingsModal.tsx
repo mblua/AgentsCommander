@@ -2115,8 +2115,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     await SettingsAPI.stopWebServer();
                     setWebServerRunning(false);
                   } else {
-                    await SettingsAPI.startWebServer();
-                    setWebServerRunning(true);
+                    // #1453 - start_web_server returns false when the bind
+                    // fails, so ignoring it reported a running server that
+                    // never bound.
+                    const ok = await SettingsAPI.startWebServer();
+                    setWebServerRunning(ok);
                   }
                 } catch (err) {
                   console.error("Web server toggle failed:", err);

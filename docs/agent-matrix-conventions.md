@@ -64,7 +64,7 @@ The global template must preserve these mandatory runtime tokens for matrix agen
 | `{{WRITE_RESTRICTIONS}}` | Runtime write restrictions and allowed scopes |
 | `{{DELEGATED_TASK_REPORTING}}` | Required completion/blocker reporting instructions |
 | `{{SKILLS_SECTION}}` | Runtime skill index |
-| `{{WORKSPACE_REPOS}}` | Repo list rendered from the replica config `repos` field |
+| `{{AGENT_REPOS}}` | Repo list rendered from the replica config `repos` field |
 | `{{CLI_CONTEXT}}` | CLI binary and help usage rules |
 | `{{SESSION_CREDENTIALS}}` | Environment-variable credential rules |
 | `{{INTER_AGENT_MESSAGING}}` | Peer discovery and file-based messaging instructions |
@@ -83,6 +83,7 @@ Legacy custom templates also support these older runtime tokens:
 | `{{PEER_NAME_FORMAT}}` | Peer-name format for the current session type |
 | `{{SEND_MESSAGE_INSTRUCTIONS}}` | File-based send instructions for the current session type |
 | `{{SKILLS_SECTION}}` | Runtime skill index and warnings |
+| `{{WORKSPACE_REPOS}}` | Pre-#1369 spelling of `{{AGENT_REPOS}}`; still rendered in place, with no duplicate block |
 
 Removing a token is allowed if you intentionally do not want that dynamic section included in generated contexts.
 
@@ -286,7 +287,7 @@ Workgroups are isolated working environments created when a team needs to work o
 
 | Field | Description |
 |---|---|
-| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{WORKSPACE_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
+| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{AGENT_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
 | `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
 | `repos` | Relative paths to the repo clones inside this workgroup. |
 
@@ -329,9 +330,9 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 ## 5. Profile Path Placeholders
 
-> These tokens are used **inside** a profile cell's command or env. For the profile matrix itself (the lettered A/B/C launch variants per coding agent), see [Coding Agent Profiles](features/coding-agent-profiles.md).
+> These tokens are used **inside** a coding agent's own ENVIRONMENT rows, inside a profile cell's command or env, or inside the effective launch command. For the profile matrix itself (the lettered A/B/C launch variants per coding agent), see [Coding Agent Profiles](features/coding-agent-profiles.md).
 
-Coding-agent profile command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
+Coding-agent command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Three command and env value surfaces are expanded: the effective launch command tokens, the coding agent's own ENVIRONMENT rows (`agents[].envs` in `settings.json`, edited in Settings → Coding Agents), and a profile cell's `env` map. The same three tokens are also substituted inside the **content** of seeded files, under different rules; see [Config seed](features/config-seed.md#token-substitution). Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
 
 The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `wg-*` workgroup, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
 
@@ -388,6 +389,8 @@ CLAUDE_CONFIG_DIR   = %AC_REPLICA_ROOT%\.claude
 `CODEX_HOME` is validated more strictly than other keys: its value must **start** with a token as a complete leading path segment (or be a literal absolute path). A value like `prefix%AC_MATRIX_ROOT%\x`, where the token is not the leading segment, is rejected at save-time with a "must start with … as a complete path segment" error. `CLAUDE_CONFIG_DIR` and other env keys accept the tokens wherever a path is expected, with no special leading-segment rule.
 
 The backend is the single authority for real expansion and absolute-path validation at launch; the sidebar's profile preview only mirrors these tokens for display.
+
+For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's ENVIRONMENT row, see [RTK usage and per-agent statistics](integrations/rtk.md).
 
 ---
 
@@ -549,3 +552,44 @@ Messaging is file-based. Write your message to `<workgroup-root>/messaging/YYYYM
 ```
 
 The peer name comes from `list-peers` output. Use `--mode wake` for fire-and-forget.
+
+---
+
+## 11. Agent memory rotation at spawn
+
+Every agent starts a fresh session with an empty `memory/`. AC does that for you: when it spawns a session for an agent, it rotates that agent's `memory/` directory in the **origin Agent Matrix** to `memory_YYYYMMDD_hhmmss/` and recreates an empty `memory/` next to it. The timestamp is local time.
+
+Rotation always happens in the origin Agent Matrix, never in a workgroup replica. If you launch the session from a replica (`wg-*/__agent_<name>/`), AC reads the replica's own configuration to find the matrix it came from and rotates there. If that lookup lands on anything that is not a canonical Agent Matrix directory, AC rotates nothing and the session still launches.
+
+### What happens in each case
+
+| State of `memory/` | What AC does |
+|---|---|
+| Present and non-empty | Renames it to `memory_YYYYMMDD_hhmmss/`, then recreates an empty `memory/` |
+| Present and empty | Nothing. An empty directory has no history to archive |
+| Absent | Recreates it empty. Nothing is rotated, because there was nothing to move |
+| A junction, a symlink, or any other reparse point | Refuses, with `memory is not a real directory`. Renaming the link would move the link entry itself and hand you a real directory in place of your link |
+| Not a directory at all (a file named `memory`) | Refuses, with the same `memory is not a real directory` |
+| A `memory_<timestamp>/` of the same name already exists | Refuses, with `memory rotation target already exists`. AC never overwrites an archive |
+
+A refusal is not fatal. The session launches either way, and AC records the reason:
+
+```text
+[memory] #1172: memory rotation failed for <matrix root> (non-fatal; the session still launches): <error>
+```
+
+A successful rotation records:
+
+```text
+[memory] #1172: rotated <matrix>/memory -> <matrix>/memory_YYYYMMDD_hhmmss at fresh session spawn
+```
+
+The no-op cases (empty and absent) log nothing at this level, so silence in the log means "there was nothing to rotate", not "rotation broke".
+
+### What this means for you as an agent
+
+The `memory_YYYYMMDD_hhmmss/` directories are **read-only history**. Read them whenever you need what a previous session knew. Never edit one, never delete one, and never move files back out of one into `memory/`: your current `memory/` is the only directory you write to, and the archives are the record of how you got here.
+
+If you find your `memory/` still holding the previous session's files, rotation refused. Check the log for the `[memory] #1172` line, and check whether `memory/` is a junction rather than a real directory.
+
+See [Directory layout](reference/directory-layout.md) for where the Agent Matrix and its archives sit on disk.

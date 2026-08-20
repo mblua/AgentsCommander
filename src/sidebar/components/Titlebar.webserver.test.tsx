@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component, JSX } from "solid-js";
-import type { AppSettings, WebServerOwnedStatus } from "../../shared/types";
+import type {
+  AppSettings,
+  WebServerInterfaceInfo,
+  WebServerOwnedStatus,
+} from "../../shared/types";
 import type { FakeTransport } from "../../shared/testing/fake-transport";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -42,6 +46,7 @@ interface TransportControl {
 interface MountOptions {
   settings?: Partial<AppSettings>;
   status?: StatusSource;
+  interfaces?: WebServerInterfaceInfo[];
   startWebServer?: (control: TransportControl) => boolean | Promise<boolean>;
   stopWebServer?: (control: TransportControl) => boolean | Promise<boolean>;
   openWebRemote?: () => void | Promise<void>;
@@ -69,8 +74,16 @@ const status = (overrides: Partial<WebServerOwnedStatus> = {}): WebServerOwnedSt
     state:
       overrides.state ??
       (owned ? "ownedRunning" : externalListening ? "externalListening" : "stopped"),
+    bindFailure: overrides.bindFailure ?? null,
   };
 };
+
+// #1453 - the machine of the issue, trimmed to one physical and one virtual
+// adapter: enough to exercise both chooser groups.
+const DEFAULT_INTERFACES: WebServerInterfaceInfo[] = [
+  { address: "192.168.1.9", interfaceName: "Ethernet", isVirtual: false },
+  { address: "100.121.138.61", interfaceName: "Tailscale", isVirtual: true },
+];
 
 const ownedStatus = (overrides: Partial<WebServerOwnedStatus> = {}) =>
   status({ listening: true, owned: true, openAllowed: true, state: "ownedRunning", ...overrides });
@@ -152,6 +165,7 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
   fake.onInvoke("start_web_server", () => options.startWebServer?.(control) ?? true);
   fake.onInvoke("stop_web_server", () => options.stopWebServer?.(control) ?? true);
   fake.onInvoke("open_web_remote", () => options.openWebRemote?.());
+  fake.onInvoke("list_web_server_interfaces", () => options.interfaces ?? DEFAULT_INTERFACES);
 
   const rendered = modules.renderWithFakeTransport(() => <modules.Titlebar />, fake);
   cleanups.push(rendered.cleanup);
@@ -167,6 +181,28 @@ function byTestId<T extends Element = Element>(testId: string): T {
 
 function maybeByTestId<T extends Element = Element>(testId: string): T | null {
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
+}
+
+// #1453 - chooser rows all share one testid and are told apart by their address.
+const ADDR_SELECTOR = '[data-ac-testid="titlebar.webserver.addrOption"]';
+
+function maybeByAddr(address: string): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(`${ADDR_SELECTOR}[data-addr="${address}"]`);
+}
+
+function byAddr(address: string): HTMLButtonElement {
+  const element = maybeByAddr(address);
+  if (!element) throw new Error(`missing bind option ${address}`);
+  return element;
+}
+
+// #1453 - the popover binds Escape with `on:keydown` (a real element listener)
+// rather than the delegated `onKeyDown`, so this has to bubble from the element
+// the user is actually focused on.
+function pressEscape(el: Element): void {
+  el.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+  );
 }
 
 async function openWebServerMenu(mounted: MountedTitlebar): Promise<void> {
@@ -479,12 +515,15 @@ describe("Titlebar webserver menu", () => {
     mounted.modules.click(toggle);
 
     await mounted.modules.waitFor(() => {
-      expect(mounted.fake.callsFor("save_settings_draft")).toHaveLength(1);
       expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
     });
+    // #1453 - the intent flag is now written only once the start converged, so
+    // while the first start is still pending nothing has been persisted yet.
+    expect(mounted.fake.callsFor("save_settings_draft")).toHaveLength(0);
 
     start.resolve(true);
     await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("save_settings_draft")).toHaveLength(1);
       expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
     });
   });
@@ -543,5 +582,222 @@ describe("Titlebar webserver menu", () => {
       expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
     });
     expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // #1453 - bind address chooser and bind-failure surfacing.
+  // ---------------------------------------------------------------------------
+
+  const BIND_FAILURE = {
+    bind: "192.168.1.12",
+    port: 8888,
+    detail: "The requested address is not valid in its context. (os error 10049)",
+  };
+
+  it("bind failure renders failed status, alert and runtime toggle", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerBind: "192.168.1.12", webServerPort: 8888 },
+      status: stoppedStatus({ bind: "192.168.1.12", port: 8888, bindFailure: BIND_FAILURE }),
+    });
+
+    await openWebServerMenu(mounted);
+
+    expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped · bind failed");
+    expect(byTestId("titlebar.webserver.button").getAttribute("data-ac-state")).toBe("ambiguous");
+
+    const alert = byTestId("titlebar.webserver.bindAlert");
+    expect(alert.textContent).toContain("Address no longer on this machine");
+    expect(alert.textContent).toContain(BIND_FAILURE.detail);
+
+    const toggle = byTestId("titlebar.webserver.toggle");
+    expect(toggle.textContent).toContain("Start Server");
+
+    // The behavioural half of the gate: the JSX label and the handleToggle
+    // guard are two separate expressions, so only invoking the toggle proves a
+    // half-applied fix did not ship.
+    mounted.modules.click(toggle);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+    });
+    expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(0);
+  });
+
+  it("picking an address while enabled and stopped saves bind and starts", async () => {
+    const enabled = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerBind: "192.168.1.12", webServerPort: 8888 },
+      status: stoppedStatus({ bind: "192.168.1.12", port: 8888, bindFailure: BIND_FAILURE }),
+      startWebServer: (control) => {
+        control.setStatus(ownedStatus({ bind: control.getSettings().webServerBind, port: 8888 }));
+        return true;
+      },
+    });
+
+    await openWebServerMenu(enabled);
+    enabled.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await enabled.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+    enabled.modules.click(byAddr("0.0.0.0"));
+
+    await enabled.modules.waitFor(() => {
+      expect(enabled.fake.lastCall("save_settings_draft")?.args.draft).toMatchObject({
+        webServerBind: "0.0.0.0",
+      });
+      expect(enabled.fake.callsFor("start_web_server")).toHaveLength(1);
+    });
+    cleanups.pop()?.();
+    document.body.innerHTML = "";
+
+    // Same click with the intent flag off only saves: changing the address of a
+    // server that is meant to stay off must not turn it on.
+    const disabled = await mountTitlebar({
+      settings: { webServerEnabled: false, webServerBind: "192.168.1.12", webServerPort: 8888 },
+      status: stoppedStatus({ bind: "192.168.1.12", port: 8888 }),
+    });
+
+    await openWebServerMenu(disabled);
+    disabled.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await disabled.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+    disabled.modules.click(byAddr("0.0.0.0"));
+
+    await disabled.modules.waitFor(() => {
+      expect(disabled.fake.lastCall("save_settings_draft")?.args.draft).toMatchObject({
+        webServerBind: "0.0.0.0",
+      });
+    });
+    expect(disabled.fake.callsFor("start_web_server")).toHaveLength(0);
+  });
+
+  it("manual entry validates IPv4 shape and warns on undetected", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false, webServerBind: "127.0.0.1" },
+      status: stoppedStatus(),
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+
+    mounted.modules.input(byTestId("titlebar.webserver.addrInput"), "192.168.1.300");
+    await mounted.modules.waitFor(() => {
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.addrUse").disabled).toBe(true);
+      expect(byTestId("titlebar.webserver.bindPanel").textContent).toContain(
+        "Not a valid IPv4 address.",
+      );
+    });
+
+    mounted.modules.input(byTestId("titlebar.webserver.addrInput"), "192.168.1.50");
+    await mounted.modules.waitFor(() => {
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.addrUse").disabled).toBe(false);
+      expect(byTestId("titlebar.webserver.bindPanel").textContent).toContain(
+        "Not detected on this machine. The bind may fail.",
+      );
+    });
+  });
+
+  it("stored missing address renders disabled unavailable row", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerBind: "192.168.1.12", webServerPort: 8888 },
+      status: stoppedStatus({ bind: "192.168.1.12", port: 8888, bindFailure: BIND_FAILURE }),
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.storedRow")).toBeTruthy();
+    });
+
+    const stored = byTestId<HTMLButtonElement>("titlebar.webserver.storedRow");
+    expect(stored.disabled).toBe(true);
+    expect(stored.textContent).toContain("Unavailable · not on this machine");
+
+    // Virtual adapters start collapsed here, because the stored bind is not one
+    // of them, and the count is the affordance that says what is hidden.
+    const virtualToggle = byTestId("titlebar.webserver.virtualToggle");
+    expect(virtualToggle.textContent).toContain("Virtual & tunnel");
+    expect(virtualToggle.textContent).toContain("(1)");
+    expect(maybeByAddr("100.121.138.61")).toBeNull();
+
+    mounted.modules.click(virtualToggle);
+    await mounted.modules.waitFor(() => {
+      expect(maybeByAddr("100.121.138.61")).toBeTruthy();
+    });
+  });
+
+  it("toggle label follows runtime state, not the persisted enable flag", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: stoppedStatus(),
+    });
+
+    await openWebServerMenu(mounted);
+
+    expect(maybeByTestId("titlebar.webserver.bindAlert")).toBeNull();
+    expect(byTestId("titlebar.webserver.toggle").textContent).toContain("Start Server");
+  });
+
+  it("empty interface list makes no availability claim", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerBind: "192.168.1.12", webServerPort: 8888 },
+      status: stoppedStatus({ bind: "192.168.1.12", port: 8888, bindFailure: BIND_FAILURE }),
+      interfaces: [],
+    });
+
+    await openWebServerMenu(mounted);
+
+    // Fetch succeeded with zero rows: that is absence of evidence, so the
+    // headline falls back to the generic flavour and nothing claims the address
+    // is missing.
+    const alert = byTestId("titlebar.webserver.bindAlert");
+    expect(alert.textContent).toContain("Could not start the web server");
+    expect(alert.textContent).not.toContain("Address no longer on this machine");
+
+    mounted.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+    expect(byTestId("titlebar.webserver.bindPanel").textContent).not.toContain(
+      "Unavailable · not on this machine",
+    );
+
+    mounted.modules.input(byTestId("titlebar.webserver.addrInput"), "192.168.1.50");
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.bindPanel").textContent).toContain(
+        "Valid IPv4 address.",
+      );
+    });
+    expect(byTestId("titlebar.webserver.bindPanel").textContent).not.toContain(
+      "Not detected on this machine.",
+    );
+  });
+
+  it("escape collapses the chooser first and only then closes the popover", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false, webServerBind: "127.0.0.1" },
+      status: stoppedStatus(),
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+
+    // From inside the manual input, which is the furthest a Tab walk gets and
+    // the reason D13 asked for this handler at all.
+    pressEscape(byTestId("titlebar.webserver.addrInput"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeNull();
+      expect(maybeByTestId("titlebar.webserver.menu")).toBeTruthy();
+    });
+
+    pressEscape(byTestId("titlebar.webserver.menu"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.menu")).toBeNull();
+    });
   });
 });

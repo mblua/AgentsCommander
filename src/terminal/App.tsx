@@ -109,6 +109,9 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     if (selection.mode !== "live") return true;
 
     try {
+      // #1455 - captured BEFORE the await: it is the ordering token the bind
+      // compares a later local write against.
+      const expectedTaskSeq = terminalStore.taskWriteSeq;
       const sessions = await SessionAPI.list();
       if (disposed || !terminalStore.matchesSelection(selection, generation)) return true;
       const session = sessions.find((candidate) => candidate.id === selection.id);
@@ -117,7 +120,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         terminalStore.markUnavailable(selection, generation);
         return true;
       }
-      terminalStore.bindLive(selection, generation, session);
+      terminalStore.bindLive(selection, generation, session, expectedTaskSeq);
     } catch (error) {
       if (!disposed && terminalStore.matchesSelection(selection, generation)) {
         console.error("[selection] Failed to resolve live session metadata:", error);
@@ -215,11 +218,13 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
 
   const loadLockedSession = async (): Promise<void> => {
     try {
+      // #1455 - see reconcileSelection.
+      const expectedTaskSeq = terminalStore.taskWriteSeq;
       const sessions = await SessionAPI.list();
       if (disposed) return;
       const session = sessions.find((candidate) => candidate.id === props.lockedSessionId);
       if (session && typeof session.status === "string") {
-        terminalStore.bindLockedSession(session);
+        terminalStore.bindLockedSession(session, expectedTaskSeq);
       } else {
         terminalStore.clearLockedSession();
       }

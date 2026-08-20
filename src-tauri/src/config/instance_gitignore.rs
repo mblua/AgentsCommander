@@ -1,26 +1,43 @@
+//! Maintains the running instance's root `.gitignore`.
+//!
+//! The rules are not written here. `config::instance_artifacts` is the single
+//! source: every static rule this module emits is derived from that registry's
+//! table, one `# AgentsCommander: ...` comment line above each pattern, and the
+//! two rules that depend on the running agent's local directory name are
+//! composed at runtime because they cannot be static. Rows the registry marks
+//! `Track` are deliberately never emitted.
+//!
+//! Coverage is the enumerated registry set, not blanket completeness. That set
+//! includes the atomic-write temporary scheme and the off-shape temporary
+//! schemes the registry enumerates, and a new artifact needs a new registry row
+//! in the same change that introduces it.
+//!
+//! Reconciliation is append-only and byte-exact: an existing file keeps its
+//! bytes and receives only the pairs whose pattern line is absent, so every
+//! installation repairs itself on the next start with no migration. Comments
+//! are transparent to that detection, so a user-authored pattern counts as
+//! present and never has a comment retrofitted onto it.
+
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-const FIXED_RULES: [&str; 12] = [
-    "/.agentscommander-injected-messages.json",
-    "/app-outbox-path.txt",
-    "/app.log",
-    "/daemon.pid",
-    "/injected-messages.default.toml",
-    "/injected-messages.toml",
-    "/injected-messages.toml.bak-*",
-    "/master-token.txt",
-    "/sessions.json",
-    "/settings.json",
-    "/update-check.json",
-    "/web-token.txt",
-];
+use super::instance_artifacts::{ArtifactKind, Disposition, InstanceArtifact};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptResult {
     Done,
     RetryClassification,
+}
+
+/// One emitted entry: the exact `.gitignore` line, and the comment line the
+/// generator writes above it.
+///
+/// Only `pattern` participates in detection. A comment can never equal a
+/// pattern, so comments stay transparent to the append-only reconciliation.
+pub(crate) struct RenderedRule {
+    pattern: String,
+    comment: &'static str,
 }
 
 /// Ensure the running instance's root `.gitignore` contains the complete
@@ -96,32 +113,53 @@ fn escape_gitignore_path_segment(segment: &str) -> Result<String, String> {
     Ok(escaped)
 }
 
-fn required_rules(agent_local_dir: &str) -> Result<[String; 14], String> {
-    let escaped_agent_local_dir = escape_gitignore_path_segment(agent_local_dir)?;
-
-    Ok([
-        format!(
-            "/{}/{}/config.json",
-            super::ROOT_AGENT_DIR_NAME,
-            escaped_agent_local_dir
-        ),
-        format!("/{}/config.json", super::ROOT_AGENT_DIR_NAME),
-        FIXED_RULES[0].to_string(),
-        FIXED_RULES[1].to_string(),
-        FIXED_RULES[2].to_string(),
-        FIXED_RULES[3].to_string(),
-        FIXED_RULES[4].to_string(),
-        FIXED_RULES[5].to_string(),
-        FIXED_RULES[6].to_string(),
-        FIXED_RULES[7].to_string(),
-        FIXED_RULES[8].to_string(),
-        FIXED_RULES[9].to_string(),
-        FIXED_RULES[10].to_string(),
-        FIXED_RULES[11].to_string(),
-    ])
+/// Render one registry row into the line git will read.
+///
+/// `Dir` rows carry a trailing slash so a plain file of the same name is not
+/// silently ignored, and `GlobAnyDepth` rows are emitted unanchored so git
+/// applies them at every depth under the instance directory. Everything else is
+/// anchored to the instance root. The leading slash is added here and nowhere
+/// else, which is what a registry test relies on when it refuses a name that
+/// tries to decide its own anchoring.
+fn render(artifact: &InstanceArtifact) -> RenderedRule {
+    let pattern = match artifact.kind {
+        ArtifactKind::File | ArtifactKind::Glob => format!("/{}", artifact.name),
+        ArtifactKind::Dir => format!("/{}/", artifact.name),
+        ArtifactKind::GlobAnyDepth => artifact.name.to_string(),
+    };
+    RenderedRule {
+        pattern,
+        comment: artifact.comment,
+    }
 }
 
-fn create_fresh_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResult, String> {
+fn required_rules(agent_local_dir: &str) -> Result<Vec<RenderedRule>, String> {
+    let escaped_agent_local_dir = escape_gitignore_path_segment(agent_local_dir)?;
+
+    let mut rules = vec![
+        RenderedRule {
+            pattern: format!(
+                "/{}/{}/config.json",
+                super::ROOT_AGENT_DIR_NAME,
+                escaped_agent_local_dir
+            ),
+            comment: "# AgentsCommander: per-instance override of the root agent's config.",
+        },
+        RenderedRule {
+            pattern: format!("/{}/config.json", super::ROOT_AGENT_DIR_NAME),
+            comment: "# AgentsCommander: runtime config of the managed root agent.",
+        },
+    ];
+    rules.extend(
+        super::instance_artifacts::INSTANCE_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.disposition == Disposition::Ignore)
+            .map(render),
+    );
+    Ok(rules)
+}
+
+fn create_fresh_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptResult, String> {
     let mut file = match open_new_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -149,7 +187,7 @@ fn create_fresh_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResult,
     Ok(AttemptResult::Done)
 }
 
-fn ensure_existing_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResult, String> {
+fn ensure_existing_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptResult, String> {
     let mut read_file = match open_read_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -203,21 +241,32 @@ fn ensure_existing_file(path: &Path, rules: &[String; 14]) -> Result<AttemptResu
     Ok(AttemptResult::Done)
 }
 
-fn fresh_file_bytes(rules: &[String; 14]) -> Vec<u8> {
-    let capacity = rules.iter().map(|rule| rule.len() + 1).sum();
+fn fresh_file_bytes(rules: &[RenderedRule]) -> Vec<u8> {
+    let capacity = rules
+        .iter()
+        .map(|rule| rule.comment.len() + rule.pattern.len() + 2)
+        .sum();
     let mut bytes = Vec::with_capacity(capacity);
     for rule in rules {
-        bytes.extend_from_slice(rule.as_bytes());
-        bytes.push(b'\n');
+        push_rule(&mut bytes, rule);
     }
     bytes
 }
 
-fn missing_rule_indexes(bytes: &[u8], rules: &[String; 14]) -> Vec<usize> {
+fn push_rule(bytes: &mut Vec<u8>, rule: &RenderedRule) {
+    bytes.extend_from_slice(rule.comment.as_bytes());
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rule.pattern.as_bytes());
+    bytes.push(b'\n');
+}
+
+fn missing_rule_indexes(bytes: &[u8], rules: &[RenderedRule]) -> Vec<usize> {
     rules
         .iter()
         .enumerate()
-        .filter_map(|(index, rule)| (!contains_exact_line(bytes, rule.as_bytes())).then_some(index))
+        .filter_map(|(index, rule)| {
+            (!contains_exact_line(bytes, rule.pattern.as_bytes())).then_some(index)
+        })
         .collect()
 }
 
@@ -232,10 +281,10 @@ fn contains_exact_line(bytes: &[u8], rule: &[u8]) -> bool {
     })
 }
 
-fn append_buffer(existing: &[u8], rules: &[String; 14], missing: &[usize]) -> Vec<u8> {
+fn append_buffer(existing: &[u8], rules: &[RenderedRule], missing: &[usize]) -> Vec<u8> {
     let capacity = missing
         .iter()
-        .map(|index| rules[*index].len() + 1)
+        .map(|index| rules[*index].comment.len() + rules[*index].pattern.len() + 2)
         .sum::<usize>()
         + usize::from(!existing.is_empty() && !existing.ends_with(b"\n"));
     let mut suffix = Vec::with_capacity(capacity);
@@ -243,8 +292,7 @@ fn append_buffer(existing: &[u8], rules: &[String; 14], missing: &[usize]) -> Ve
         suffix.push(b'\n');
     }
     for index in missing {
-        suffix.extend_from_slice(rules[*index].as_bytes());
-        suffix.push(b'\n');
+        push_rule(&mut suffix, &rules[*index]);
     }
     suffix
 }
@@ -454,41 +502,256 @@ mod tests {
         );
     }
 
+    /// The 12 rules this policy emitted before the registry existed, frozen as
+    /// bytes because they leave the production code in this change.
+    ///
+    /// They are what an existing installation's complete `.gitignore` contains,
+    /// so they are the seed of the compatibility tests and the definition of
+    /// which registry rows are new.
+    const HISTORICAL_FIXED_RULES: [&str; 12] = [
+        "/.agentscommander-injected-messages.json",
+        "/app-outbox-path.txt",
+        "/app.log",
+        "/daemon.pid",
+        "/injected-messages.default.toml",
+        "/injected-messages.toml",
+        "/injected-messages.toml.bak-*",
+        "/master-token.txt",
+        "/sessions.json",
+        "/settings.json",
+        "/update-check.json",
+        "/web-token.txt",
+    ];
+
+    fn ignore_rows() -> Vec<&'static InstanceArtifact> {
+        super::super::instance_artifacts::INSTANCE_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.disposition == Disposition::Ignore)
+            .collect()
+    }
+
+    fn track_rows() -> Vec<&'static InstanceArtifact> {
+        super::super::instance_artifacts::INSTANCE_ARTIFACTS
+            .iter()
+            .filter(|artifact| artifact.disposition == Disposition::Track)
+            .collect()
+    }
+
+    fn push_pair(bytes: &mut Vec<u8>, comment: &str, pattern: &str) {
+        bytes.extend_from_slice(comment.as_bytes());
+        bytes.push(b'\n');
+        bytes.extend_from_slice(pattern.as_bytes());
+        bytes.push(b'\n');
+    }
+
+    /// The exact bytes a fresh file must contain, derived from the registry
+    /// table.
+    ///
+    /// This is the single place any expected count comes from: the two dynamic
+    /// pairs are spelled out here because they are code, every other pair comes
+    /// from the table, and no test retypes a total.
+    fn expected_fresh_bytes(agent_local_dir: &str) -> Vec<u8> {
+        let escaped =
+            escape_gitignore_path_segment(agent_local_dir).expect("escape agent local dir");
+        let mut bytes = Vec::new();
+        push_pair(
+            &mut bytes,
+            "# AgentsCommander: per-instance override of the root agent's config.",
+            &format!(
+                "/{}/{escaped}/config.json",
+                super::super::ROOT_AGENT_DIR_NAME
+            ),
+        );
+        push_pair(
+            &mut bytes,
+            "# AgentsCommander: runtime config of the managed root agent.",
+            &format!("/{}/config.json", super::super::ROOT_AGENT_DIR_NAME),
+        );
+        for artifact in ignore_rows() {
+            let rendered = render(artifact);
+            push_pair(&mut bytes, rendered.comment, &rendered.pattern);
+        }
+        bytes
+    }
+
+    /// The byte-exact content of a pre-#1446 complete file: the two dynamic
+    /// rules composed from the constant, then the 12 historical rules.
+    ///
+    /// The dynamic lines are built rather than frozen on purpose. Freezing them
+    /// would couple this seed to the value of `ROOT_AGENT_DIR_NAME`, so a change
+    /// to that constant would surface as a wrong appended count instead of
+    /// naming its own cause.
+    fn legacy_complete_bytes(agent_local_dir: &str) -> Vec<u8> {
+        let escaped =
+            escape_gitignore_path_segment(agent_local_dir).expect("escape agent local dir");
+        let mut bytes = Vec::new();
+        for line in [
+            format!(
+                "/{}/{escaped}/config.json",
+                super::super::ROOT_AGENT_DIR_NAME
+            ),
+            format!("/{}/config.json", super::super::ROOT_AGENT_DIR_NAME),
+        ] {
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        for line in HISTORICAL_FIXED_RULES {
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        bytes
+    }
+
     #[test]
-    fn fresh_file_has_exact_fourteen_rules_and_dynamic_name() {
+    fn fresh_file_matches_the_registry_and_dynamic_name() {
         let temp = tempfile::tempdir().expect("tempdir");
         ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR).expect("ensure fresh file");
 
         let actual = std::fs::read(temp.path().join(".gitignore")).expect("read .gitignore");
-        let expected = concat!(
-            "/ac-root-agent/.agentscommander_amp-office/config.json\n",
-            "/ac-root-agent/config.json\n",
-            "/.agentscommander-injected-messages.json\n",
-            "/app-outbox-path.txt\n",
-            "/app.log\n",
-            "/daemon.pid\n",
-            "/injected-messages.default.toml\n",
-            "/injected-messages.toml\n",
-            "/injected-messages.toml.bak-*\n",
-            "/master-token.txt\n",
-            "/sessions.json\n",
-            "/settings.json\n",
-            "/update-check.json\n",
-            "/web-token.txt\n",
-        );
-        assert_eq!(actual, expected.as_bytes());
+        assert_eq!(actual, expected_fresh_bytes(TEST_AGENT_LOCAL_DIR));
         assert!(actual.ends_with(b"\n"));
 
+        let rules = required_rules(TEST_AGENT_LOCAL_DIR).expect("rules");
+        assert_eq!(rules.len(), 2 + ignore_rows().len());
         let lines: Vec<&[u8]> = actual[..actual.len() - 1]
             .split(|byte| *byte == b'\n')
             .collect();
-        assert_eq!(lines.len(), 14);
-        assert_eq!(lines.iter().copied().collect::<HashSet<_>>().len(), 14);
+        assert_eq!(lines.len(), rules.len() * 2);
+        assert_eq!(
+            rules
+                .iter()
+                .map(|rule| rule.pattern.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            rules.len()
+        );
+
+        assert_eq!(
+            rules
+                .iter()
+                .filter(|rule| rule.pattern.contains(TEST_AGENT_LOCAL_DIR))
+                .count(),
+            1,
+            "the running agent's local directory name belongs to the first rule only"
+        );
         assert!(!actual
             .windows(b"<agent-local-dir>".len())
             .any(|window| window == b"<agent-local-dir>"));
+
+        for artifact in ignore_rows() {
+            let pattern = render(artifact).pattern;
+            if matches!(artifact.kind, ArtifactKind::GlobAnyDepth) {
+                assert!(
+                    !pattern.starts_with('/'),
+                    "{pattern} is depth-independent by design and must not be anchored"
+                );
+            } else {
+                assert!(
+                    pattern.starts_with('/'),
+                    "{pattern} must be anchored to the instance root"
+                );
+            }
+        }
         assert!(lines.iter().all(|line| !line.starts_with(b"!")));
         assert!(lines.iter().all(|line| *line != b"/*"));
+    }
+
+    #[test]
+    fn legacy_fourteen_rule_file_gains_exactly_the_new_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".gitignore");
+        let legacy = legacy_complete_bytes(TEST_AGENT_LOCAL_DIR);
+        std::fs::write(&path, &legacy).expect("seed legacy complete file");
+
+        ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR)
+            .expect("repair legacy file");
+        let repaired = std::fs::read(&path).expect("read repaired legacy file");
+        assert!(
+            repaired.starts_with(&legacy),
+            "reconciliation must never rewrite what the file already had"
+        );
+
+        let mut expected_appended = Vec::new();
+        for artifact in ignore_rows() {
+            let rendered = render(artifact);
+            if HISTORICAL_FIXED_RULES.contains(&rendered.pattern.as_str()) {
+                continue;
+            }
+            push_pair(&mut expected_appended, rendered.comment, &rendered.pattern);
+        }
+        assert!(
+            !expected_appended.is_empty(),
+            "this change adds rules, so the appended block cannot be empty"
+        );
+        assert_eq!(&repaired[legacy.len()..], expected_appended.as_slice());
+
+        ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR).expect("second ensure");
+        assert_eq!(
+            std::fs::read(&path).expect("read after second ensure"),
+            repaired
+        );
+    }
+
+    #[test]
+    fn read_only_legacy_complete_file_fails_without_modification() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".gitignore");
+        let legacy = legacy_complete_bytes(TEST_AGENT_LOCAL_DIR);
+        std::fs::write(&path, &legacy).expect("seed legacy complete file");
+
+        let original_permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        let mut read_only = original_permissions.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&path, read_only).expect("make legacy file read-only");
+        let can_bypass_read_only = OpenOptions::new().append(true).open(&path).is_ok();
+        let result = ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR);
+        let after = std::fs::read(&path).expect("read read-only legacy file");
+        std::fs::set_permissions(&path, original_permissions).expect("restore permissions");
+
+        if can_bypass_read_only {
+            eprintln!(
+                "skipping permission-denial assertion because this process can write a read-only file"
+            );
+            return;
+        }
+        assert!(
+            result.is_err(),
+            "this change makes every pre-existing complete file partial, so a read-only \
+             one takes the failing branch instead of the silent-OK one"
+        );
+        assert_eq!(after, legacy);
+    }
+
+    #[test]
+    fn root_agent_track_row_matches_the_root_agent_dir_constant() {
+        let row = track_rows()
+            .into_iter()
+            .find(|artifact| artifact.name == super::super::ROOT_AGENT_DIR_NAME)
+            .expect("root-agent Track row");
+        assert!(matches!(row.kind, ArtifactKind::Dir));
+    }
+
+    #[test]
+    fn track_rows_are_exactly_the_declared_track_set() {
+        let mut names: Vec<&str> = track_rows()
+            .into_iter()
+            .map(|artifact| artifact.name)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "Context.AgentsCommander.md",
+                "Context.AgentsCommander.md.retired-*.bak",
+                "Context.root-agent.md",
+                "ac-root-agent",
+                "agency-agents_templates",
+                "agent-templates",
+                "coding-agents",
+            ],
+            "the tracked set is a product decision; a row leaving or joining it changes \
+             what the generated file ignores and has to be argued, not edited"
+        );
     }
 
     #[test]
@@ -506,7 +769,7 @@ mod tests {
         let rules = required_rules(TEST_AGENT_LOCAL_DIR).expect("rules");
         let seed = format!(
             "# user comment\r\n/custom/**\r\n{}\r\n{}\r\n{}\r\n# /daemon.pid\r\n!/sessions.json\r\n{}\r\n!/update-check.json\r\n/web-token.txt # note\r\nlast-user-rule",
-            rules[0], rules[3], rules[3], rules[8]
+            rules[0].pattern, rules[3].pattern, rules[3].pattern, rules[8].pattern
         )
         .into_bytes();
         std::fs::write(&path, &seed).expect("seed partial file");
@@ -520,8 +783,7 @@ mod tests {
         expected.push(b'\n');
         for (index, rule) in rules.iter().enumerate() {
             if !matches!(index, 0 | 3 | 8) {
-                expected.extend_from_slice(rule.as_bytes());
-                expected.push(b'\n');
+                push_pair(&mut expected, rule.comment, &rule.pattern);
             }
         }
         assert_eq!(actual, expected);
@@ -548,7 +810,7 @@ mod tests {
         let rules = required_rules(TEST_AGENT_LOCAL_DIR).expect("rules");
         let mut seed = b"\xff\xfe user bytes\r\n".to_vec();
         for rule in &rules {
-            seed.extend_from_slice(rule.as_bytes());
+            seed.extend_from_slice(rule.pattern.as_bytes());
             seed.extend_from_slice(b"\r\n");
         }
         std::fs::write(&path, &seed).expect("seed invalid UTF-8 file");
@@ -696,17 +958,79 @@ mod tests {
         let required_paths = [
             "ac-root-agent/.agentscommander_amp-office/config.json",
             "ac-root-agent/config.json",
+            ".settings.json.12345.tmp",
+            // Depth independence of the atomic-write glob, inside a directory
+            // this policy deliberately tracks: exactly the leftover class an
+            // anchored rule would leave visible in `git status`.
+            "coding-agents/.agents.json.4242.0.tmp",
+            ".agentscommander-context-templates.json",
             ".agentscommander-injected-messages.json",
+            ".api-clients-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed.tmp",
+            "activity.jsonl",
+            "activity.jsonl.1",
+            // The four agency template cache siblings, one sample per shape the
+            // writers can produce. The three staging shapes are whole directory
+            // trees and their rule carries no trailing slash, so the nested
+            // samples are what prove a matched directory still ignores its
+            // contents.
+            "agency-agents_templates.lock",
+            "agency-agents_templates.next-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed/engineering/role.md",
+            "agency-agents_templates.download-2c8e7dda-ccae-5c3e-ac6e-bc9eacce5df1/.git-clone-marker",
+            "agency-agents_templates.prev-3d9f8eeb-ddbf-6d4f-bd7f-cdafbddf6ea2/design/role.md",
+            "api-audit.log",
+            "api-audit.log.1",
+            "api-clients.json",
+            "api-clients.lock",
+            "api-message-bus.sqlite3",
+            "api-message-bus.sqlite3-shm",
+            "api-message-bus.sqlite3-wal",
+            // The sample that makes the glob's reason for existing testable:
+            // rollback-journal mode produces this sidecar and three literals
+            // would not have covered it.
+            "api-message-bus.sqlite3-journal",
             "app-outbox-path.txt",
             "app.log",
+            // Both ends of the rotation range (`APP_LOG_KEEP = 5`), so the
+            // sample set proves the glob spans every generation rather than only
+            // its first. `app.log.1` used to be a control asserting it must NOT
+            // be ignored; covering it is a declared reversal of that #1164
+            // narrowness control, because it is a live rotated generation.
+            "app.log.1",
+            "app.log.5",
+            "codex-home/agent-1/config.toml",
+            // The nested sample proves the Dir row covers the `results/` subtree
+            // in one rule.
+            "coding-agent-requests/req-1.json",
+            "coding-agent-requests/results/res-1.json",
+            "context-cache/ac-context-1.md",
+            "coordinator_clocks.json",
+            "coordinator_clocks.json.4242.7.tmp",
             "daemon.pid",
+            "debug-logs.txt",
+            "diag-raw.log",
+            "diag-sent.log",
+            "git-guard/git.cmd",
             "injected-messages.default.toml",
             "injected-messages.toml",
             "injected-messages.toml.bak-20260801T221533Z",
+            "instances/0f0e/instance.json",
+            "logs/harness.log",
             "master-token.txt",
+            "orphaned-sessions.archive.json",
+            // The `ORPHAN_ARCHIVE_KEEP` edge.
+            "orphaned-sessions.archive.json.3",
+            "project-refresh-requests/req-1.json",
+            "pty-input-locks/operation-1.lock",
+            "session-requests/create-1.json",
             "sessions.json",
             "settings.json",
+            "settings.json.lock",
+            "settings.pre-384-v1.json",
+            "settings.pre-999-v9.json",
+            "telegram-bridge.log",
+            "ui-automation/session.json",
             "update-check.json",
+            "update-check.json.tmp",
             "web-token.txt",
         ];
         for relative in required_paths {
@@ -716,14 +1040,17 @@ mod tests {
             std::fs::write(path, b"fixture").expect("write required fixture");
         }
 
-        assert_git_success(repo, &["add", "--", "instance/app.log"]);
-        assert_git_success(
-            repo,
-            &["ls-files", "--error-unmatch", "--", "instance/app.log"],
-        );
+        // `app.log` was already covered before this change; the database is a
+        // newly covered artifact, which is the population a new rule actually
+        // affects. Neither may be untracked by adding a rule.
+        for tracked in ["instance/app.log", "instance/api-message-bus.sqlite3"] {
+            assert_git_success(repo, &["add", "--", tracked]);
+            assert_git_success(repo, &["ls-files", "--error-unmatch", "--", tracked]);
+        }
 
         ensure_instance_gitignore_at(&config_dir, TEST_AGENT_LOCAL_DIR)
             .expect("ensure fixture .gitignore");
+        let generated = std::fs::read(config_dir.join(".gitignore")).expect("read generated file");
 
         for relative in required_paths {
             let repo_relative = format!("instance/{relative}");
@@ -745,9 +1072,6 @@ mod tests {
         }
 
         let control_paths = [
-            "app.log.1",
-            "update-check.json.tmp",
-            "api-audit.log",
             "cache/entry.bin",
             "state.sqlite",
             "ac-root-agent/unrelated/config.json",
@@ -755,6 +1079,34 @@ mod tests {
             "injected-messages.json",
             "agentscommander-injected-messages.json",
             "sub/injected-messages.toml",
+            // The Track set of product decision 6: these are user-editable and
+            // must stay visible to git.
+            "agent-templates/default-role.md",
+            // Load-bearing: this is what proves the `agency-agents_templates.*`
+            // glob does not reach the suffix-less tracked directory. The literal
+            // dot is the whole mechanism.
+            "agency-agents_templates/engineering/role.md",
+            // Load-bearing: this is what proves the `coding-agent-requests/` row
+            // does not reach its byte-order neighbour.
+            "coding-agents/agents.json",
+            "Context.root-agent.md",
+            // The standalone global context and both retirement-backup shapes:
+            // all three hold the user's own bytes.
+            "Context.AgentsCommander.md",
+            "Context.AgentsCommander.md.retired-20260820-101112Z.bak",
+            "Context.AgentsCommander.md.retired-20260820-101112Z.3.bak",
+            "ac-root-agent/CLAUDE.md",
+            // The atomic-write glob stays narrow, at the root and at depth.
+            "foo.tmp",
+            ".foo.tmp",
+            "sub/foo.tmp",
+            // The rotation rows are anchored globs, not a second any-depth rule:
+            // they must not reach a subdirectory.
+            "sub/app.log.1",
+            "sub/activity.jsonl.1",
+            // The literal dot in each rotation glob is load-bearing, not
+            // decorative.
+            "applog.1",
         ];
         for relative in control_paths {
             let path = config_dir.join(relative);
@@ -781,10 +1133,21 @@ mod tests {
             );
         }
 
-        assert_git_success(
-            repo,
-            &["ls-files", "--error-unmatch", "--", "instance/app.log"],
+        // The generated file is asserted here, OUTSIDE the control loop above.
+        // That loop writes `b"control"` into every path it checks, so a
+        // `.gitignore` control would have overwritten the ruleset and left every
+        // later control passing against an empty file. The byte comparison is
+        // the assertion that would have caught that class.
+        assert_git_ignore_status(repo, "instance/.gitignore", 1);
+        assert_eq!(
+            std::fs::read(config_dir.join(".gitignore")).expect("re-read generated file"),
+            generated,
+            "the fixture's own writes must not have touched the generated file"
         );
+
+        for tracked in ["instance/app.log", "instance/api-message-bus.sqlite3"] {
+            assert_git_success(repo, &["ls-files", "--error-unmatch", "--", tracked]);
+        }
         assert_eq!(
             std::fs::read(repo.join(".gitignore")).expect("read parent .gitignore"),
             parent_gitignore
@@ -793,6 +1156,43 @@ mod tests {
             std::fs::read(repo.join(".git/info/exclude")).expect("read info exclude"),
             info_exclude
         );
+    }
+
+    #[test]
+    fn dir_rows_require_a_real_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path();
+        assert_git_success(repo, &["init", "--quiet"]);
+        let config_dir = repo.join("instance");
+        std::fs::create_dir(&config_dir).expect("create config dir");
+        ensure_instance_gitignore_at(&config_dir, TEST_AGENT_LOCAL_DIR)
+            .expect("ensure dir-semantics fixture");
+
+        let dir_rows: Vec<&str> = ignore_rows()
+            .into_iter()
+            .filter(|artifact| matches!(artifact.kind, ArtifactKind::Dir))
+            .map(|artifact| artifact.name)
+            .collect();
+        assert!(
+            !dir_rows.is_empty(),
+            "the table has Dir rows to prove this on"
+        );
+
+        for name in dir_rows {
+            // A plain file bearing the row's name is NOT ignored: that is the
+            // whole reason `Dir` renders a trailing slash.
+            let plain = config_dir.join(name);
+            std::fs::write(&plain, b"fixture").expect("write plain-file sample");
+            assert_git_ignore_status(repo, &format!("instance/{name}"), 1);
+            std::fs::remove_file(&plain).expect("remove plain-file sample");
+
+            // A file under a real directory of that name IS ignored.
+            let nested = config_dir.join(name).join("nested-sample.txt");
+            std::fs::create_dir_all(nested.parent().expect("nested parent"))
+                .expect("create real directory");
+            std::fs::write(&nested, b"fixture").expect("write nested sample");
+            assert_git_ignore_status(repo, &format!("instance/{name}/nested-sample.txt"), 0);
+        }
     }
 
     #[test]
@@ -828,36 +1228,22 @@ mod tests {
         let escaped_agent_local_dir =
             escape_gitignore_path_segment(agent_local_dir).expect("encode agent local dir");
         let rules = required_rules(agent_local_dir).expect("construct canonical rules");
-        assert_eq!(rules.len(), 14);
+        assert_eq!(rules.len(), 2 + ignore_rows().len());
         assert_eq!(
-            rules[0],
+            rules[0].pattern,
             format!(
                 "/{}/{escaped_agent_local_dir}/config.json",
                 super::super::ROOT_AGENT_DIR_NAME
             )
         );
         assert_eq!(
-            &rules[1..],
-            &[
-                "/ac-root-agent/config.json",
-                "/.agentscommander-injected-messages.json",
-                "/app-outbox-path.txt",
-                "/app.log",
-                "/daemon.pid",
-                "/injected-messages.default.toml",
-                "/injected-messages.toml",
-                "/injected-messages.toml.bak-*",
-                "/master-token.txt",
-                "/sessions.json",
-                "/settings.json",
-                "/update-check.json",
-                "/web-token.txt",
-            ]
+            rules[1].pattern,
+            format!("/{}/config.json", super::super::ROOT_AGENT_DIR_NAME)
         );
         assert_eq!(
             rules
                 .iter()
-                .filter(|rule| rule.contains(&escaped_agent_local_dir))
+                .filter(|rule| rule.pattern.contains(&escaped_agent_local_dir))
                 .count(),
             1
         );
@@ -865,7 +1251,7 @@ mod tests {
             "/{}/{agent_local_dir}/config.json",
             super::super::ROOT_AGENT_DIR_NAME
         );
-        assert!(!rules.contains(&raw_companion));
+        assert!(!rules.iter().any(|rule| rule.pattern == raw_companion));
     }
 
     #[test]
@@ -880,7 +1266,7 @@ mod tests {
         ensure_instance_gitignore_at(&config_dir, agent_local_dir)
             .expect("ensure bracketed fixture");
         let rules = required_rules(agent_local_dir).expect("canonical bracketed rules");
-        assert_eq!(rules[0], r"/ac-root-agent/.agents\[1]/config.json");
+        assert_eq!(rules[0].pattern, r"/ac-root-agent/.agents\[1]/config.json");
         let generated = std::fs::read(config_dir.join(".gitignore")).expect("read .gitignore");
         assert_eq!(generated, fresh_file_bytes(&rules));
         assert_eq!(
@@ -888,7 +1274,7 @@ mod tests {
                 .split(|byte| *byte == b'\n')
                 .filter(|line| !line.is_empty())
                 .count(),
-            14
+            rules.len() * 2
         );
 
         let literal = "instance/ac-root-agent/.agents[1]/config.json";
@@ -929,13 +1315,13 @@ mod tests {
                     .split(|byte| *byte == b'\n')
                     .filter(|line| !line.is_empty())
                     .count(),
-                14
+                rules.len() * 2
             );
             let raw_companion = format!(
                 "/{}/{agent_local_dir}/config.json",
                 super::super::ROOT_AGENT_DIR_NAME
             );
-            assert!(!rules.contains(&raw_companion));
+            assert!(!rules.iter().any(|rule| rule.pattern == raw_companion));
 
             let literal = format!(
                 "instance/{}/{agent_local_dir}/config.json",
@@ -962,7 +1348,7 @@ mod tests {
         let path = temp.path().join(".gitignore");
         let agent_local_dir = ".agents[1]";
         let rules = required_rules(agent_local_dir).expect("canonical rules");
-        let canonical_first = &rules[0];
+        let canonical_first = &rules[0].pattern;
         let raw_first = format!(
             "/{}/{agent_local_dir}/config.json",
             super::super::ROOT_AGENT_DIR_NAME
@@ -981,7 +1367,7 @@ mod tests {
         seed.extend_from_slice(raw_first.as_bytes());
         seed.push(b'\n');
         for rule in &rules[1..] {
-            seed.extend_from_slice(rule.as_bytes());
+            seed.extend_from_slice(rule.pattern.as_bytes());
             seed.push(b'\n');
         }
         assert_eq!(missing_rule_indexes(&seed, &rules), vec![0]);
@@ -990,8 +1376,7 @@ mod tests {
         ensure_instance_gitignore_at(temp.path(), agent_local_dir).expect("repair raw predecessor");
         let repaired = std::fs::read(&path).expect("read repaired file");
         let mut expected = seed.clone();
-        expected.extend_from_slice(canonical_first.as_bytes());
-        expected.push(b'\n');
+        push_pair(&mut expected, rules[0].comment, canonical_first);
         assert_eq!(repaired, expected);
         assert_eq!(missing_rule_indexes(&repaired, &rules), Vec::<usize>::new());
 
@@ -1014,7 +1399,7 @@ mod tests {
             format!("/{INJECTED_MESSAGES_FILENAME}.bak-*"),
         ] {
             assert!(
-                rules.contains(&expected),
+                rules.iter().any(|rule| rule.pattern == expected),
                 "injected-messages artifact is not covered by the instance policy: {expected}"
             );
         }

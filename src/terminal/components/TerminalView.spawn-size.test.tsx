@@ -187,10 +187,10 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
 
-  // #1283: the selection path drives the activation protocol instead of the
-  // legacy getScreenSnapshot fetch. The snapshot reports the PTY size the
-  // terminal was created at (backend truth), so no snapshot resize fires and
-  // the resize/viewport behavior under test is untouched.
+  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // resolves to. The snapshot reports the PTY size the terminal was created at
+  // (backend truth) and carries no data, so no snapshot resize fires and the
+  // resize/viewport behavior under test is untouched.
   fake.onInvoke("activate_terminal_output", (args) => {
     const sessionId = String(args.sessionId);
     const instance = xterm.instances.find(
@@ -198,35 +198,14 @@ function setupTerminalTransport(fake: FakeTransport): void {
         candidate.element?.getAttribute("data-ac-session-id") === sessionId,
     );
     return {
-      kind: "activated",
-      activation: {
-        sessionId,
-        generation: "1",
-        snapshot: {
-          data: [],
-          rows: instance?.rows ?? 24,
-          cols: instance?.cols ?? 80,
-          sequence: "0",
-        },
-      },
+      sessionId,
+      data: [],
+      rows: instance?.rows ?? 24,
+      cols: instance?.cols ?? 80,
+      sequence: 0,
     };
   });
-  fake.onInvoke("ready_terminal_output", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.onInvoke("deactivate_terminal_output", (args) => ({
-    kind: "inactive",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
-  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
-  fake.onInvoke("report_terminal_renderer_metrics", (args) => ({
-    kind: "active",
-    sessionId: String(args.sessionId),
-    generation: String(args.generation),
-  }));
+  fake.resolve("detach_terminal_output", undefined);
 }
 
 function resizesFor(fake: FakeTransport, sessionId: string) {
@@ -331,7 +310,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
-  it("issues no resize at all when the fitted size already equals the spawn size", async () => {
+  it("sends exactly one same-size resize at the attach settle, and the backend dedup keeps it from the starting child", async () => {
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -345,14 +324,27 @@ describe("TerminalView PTY spawn size (#973)", () => {
       await frames.flush();
       await attachSpawnedSession();
 
-      // Let every resize path have its turn: the double requestAnimationFrame in
-      // scheduleViewportSync and xterm's own onResize. (The ResizeObserver never
-      // fires here: jsdom does not implement it.)
-      await frames.flush();
+      // #1439 (R1): the attach settle invalidates the viewport dedup key, so
+      // the settle sync sends exactly one resize even though the size never
+      // changed. The #973 guarantee moved with it: the frontend no longer
+      // suppresses the settle send; the backend `resize_instance` dedup answers
+      // this same-size resize with `sent = false`, so no resize reaches the
+      // child while it is starting up.
+      await driveFramesUntil(
+        frames,
+        "the settle sync sent",
+        () => resizesFor(fake, SPAWNED).length > 0
+      );
+      expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 23 },
+      ]);
 
-      // The session that was opened at the fitted size is never resized. This is
-      // the whole fix: no resize reaches the child while it is starting up.
-      expect(resizesFor(fake, SPAWNED)).toHaveLength(0);
+      // The second rAF frame and any other queued sync dedup against the
+      // freshly written key: one send per settle, no more.
+      await frames.flush();
+      expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 23 },
+      ]);
 
       // ...and the resize path is not simply gone. The session already on screen
       // was created with no size (it predates this view), so it still fits and
@@ -382,7 +374,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
-  it("resizes exactly once, and says so, when the fit drifts from the spawn size", async () => {
+  it("resizes once for the drift and once more at the settle, and reports the drift exactly once", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
@@ -398,18 +390,34 @@ describe("TerminalView PTY spawn size (#973)", () => {
       fitViewport.rows = 24;
 
       await attachSpawnedSession();
+
+      // Correctness first: the PTY is told the truth. The drift fires one
+      // resize from xterm's onResize, and since #1439 (R1) the attach settle
+      // re-imposes the identical size once more (the settle invalidates the
+      // dedup key; the backend `resize_instance` dedup absorbs the repeat).
+      // Exactly these two named senders: any identical-resize burst beyond
+      // them is still gone, which is what #973 pinned.
+      await driveFramesUntil(
+        frames,
+        "drift send and settle re-send landed",
+        () => resizesFor(fake, SPAWNED).length >= 2
+      );
+      expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
+      ]);
       await frames.flush();
+      expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
+      ]);
 
-      // Correctness first: the PTY is told the truth. But exactly once — the
-      // burst of identical resizes is gone.
-      const resizes = resizesFor(fake, SPAWNED);
-      expect(resizes).toHaveLength(1);
-      expect(resizes[0].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
-
-      // And it is reported, because a silent drift is a silent 6/10 blank.
+      // And the drift is reported exactly once (the `spawnDriftReported`
+      // latch; the settle re-send carries no drift of its own), because a
+      // silent drift is a silent 6/10 blank.
       expect(
-        warn.mock.calls.some((call) => String(call[0]).includes("spawn-size drift"))
-      ).toBe(true);
+        warn.mock.calls.filter((call) => String(call[0]).includes("spawn-size drift"))
+      ).toHaveLength(1);
     } finally {
       rendered.cleanup();
     }
@@ -494,23 +502,28 @@ describe("TerminalView PTY spawn size (#973)", () => {
   // one. The burst collapses to a single call, and when that one is the one that
   // failed, the PTY just stays at the wrong size.
   //
-  // So this test gives the failure nothing to hide behind. The terminal is fully
-  // settled — no pending rAF, no pending fit, no burst left — and then ONE resize is
-  // driven through xterm's onResize, exactly as a user dragging the window would.
-  // That one fails. Nothing else in this system will ever call `sendPtyResize` for
-  // this session again. A rollback that is not a real retry leaves it at one call.
+  // So this test gives the failure nothing to hide behind. Since #1439 (R1) the
+  // attach settle sends one same-size resize (rows 23 here), which succeeds and
+  // settles the system: no pending rAF, no pending fit, no timer armed. Then ONE
+  // resize is driven through xterm's onResize, exactly as a user dragging the
+  // window would. That one fails, aimed at by its dims (the drag's rows 24, so
+  // the settle send cannot consume the failure). Nothing else in this system
+  // will ever call `sendPtyResize` for this session again. A rollback that is
+  // not a real retry leaves the drag at one call.
   it("re-sends a failed resize that is the only one of its burst", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
 
-    let spawnedAttempts = 0;
+    let dragSendFailed = false;
     fake.onInvoke("pty_resize", (args) => {
       if (args.sessionId !== SPAWNED) {
         return undefined;
       }
-      spawnedAttempts += 1;
-      if (spawnedAttempts === 1) {
+      // One-shot, aimed by dims: the FIRST send carrying the drag's rows 24
+      // fails; the #1439 settle send (rows 23) must succeed.
+      if (!dragSendFailed && args.rows === 24) {
+        dragSendFailed = true;
         throw new Error("pty_resize failed");
       }
       return undefined;
@@ -521,26 +534,35 @@ describe("TerminalView PTY spawn size (#973)", () => {
     try {
       await createWhileOnScreen(fake);
       const spawned = await attachSpawnedSession();
-      await frames.flush();
 
-      // Opened at the size the tile was already fitted to, so the attach sent
-      // nothing at all. There is no burst.
-      expect(resizesFor(fake, SPAWNED)).toHaveLength(0);
+      // The #1439 (R1) settle send lands and succeeds: exactly one same-size
+      // resize, after which nothing is armed and nothing else in the system
+      // will send for this session until the drag.
+      await driveFramesUntil(
+        frames,
+        "the settle send landed",
+        () => resizesFor(fake, SPAWNED).length > 0
+      );
+      expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 23 },
+      ]);
+      await frames.flush();
+      expect(resizesFor(fake, SPAWNED)).toHaveLength(1);
 
       // The user drags the window. xterm reflows and fires onResize: one resize,
       // long after every scheduled fit has run. It fails.
       spawned.emitResize(74, 24);
 
       await waitFor(
-        () => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(2),
+        () => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(3),
         2000
       );
 
       // The attempt and the re-send both carry the size the terminal is actually at.
-      // Nothing but the retry could have produced that second call.
+      // Nothing but the retry could have produced that third call.
       const resizes = resizesFor(fake, SPAWNED);
-      expect(resizes[0].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
       expect(resizes[1].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
+      expect(resizes[2].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
     } finally {
       rendered.cleanup();
     }
@@ -566,10 +588,11 @@ describe("TerminalView PTY spawn size (#973)", () => {
       const spawned = await attachSpawnedSession();
       await frames.flush();
 
-      spawned.emitResize(74, 24);
-
-      // A PTY stranded at a size the terminal is not must never be mistaken for a
-      // PTY that was resized. When the budget runs out, it says so.
+      // A PTY stranded at a size the terminal is not must never be mistaken for
+      // a PTY that was resized. When the budget runs out, it says so. In an
+      // all-fail world the #1439 (R1) settle burst alone consumes the whole
+      // budget: one frame-driven send, at most one second-frame repeat, then
+      // PTY_RESIZE_MAX_RETRIES timer re-sends, then this loud line.
       await waitFor(
         () =>
           expect(
@@ -578,9 +601,27 @@ describe("TerminalView PTY spawn size (#973)", () => {
         3000
       );
 
-      // And the budget is a budget: the first attempt plus a fixed number of
-      // re-sends, not an endless loop against a backend that is gone.
-      expect(resizesFor(fake, SPAWNED).length).toBeLessThanOrEqual(4);
+      // And the budget is a budget, all of it spent by the settle burst here,
+      // not an endless loop against a backend that is gone.
+      const settleSends = resizesFor(fake, SPAWNED).length;
+      expect(settleSends).toBeLessThanOrEqual(5);
+
+      // The user drags the window. First attempts are never budget-gated, so
+      // the drag's own send still goes out (and says "giving up" once more),
+      // but it arms no retry: the attempt counter resets only on a success
+      // (#1439 round-2 residual, plan section 7). Bounded either way.
+      spawned.emitResize(74, 24);
+
+      await waitFor(() =>
+        expect(resizesFor(fake, SPAWNED).length).toBe(settleSends + 1)
+      );
+      const resizes = resizesFor(fake, SPAWNED);
+      expect(resizes[resizes.length - 1].args).toEqual({
+        sessionId: SPAWNED,
+        cols: 74,
+        rows: 24,
+      });
+      expect(resizes.length).toBeLessThanOrEqual(6);
     } finally {
       rendered.cleanup();
     }

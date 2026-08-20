@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::config::coding_agent_profiles::{
     resolve_profile, ProfileResolution, ProfileResolutionRequest,
 };
+use crate::config::instance_artifacts::CODEX_HOME_DIR_NAME;
 use crate::config::placeholders::{
     ac_placeholder_error, expand_placeholders, expand_placeholders_in_args,
     placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_placeholder,
@@ -496,7 +497,7 @@ fn compute_codex_home(
         let config_dir = crate::config::config_dir()
             .ok_or_else(|| "Could not determine config directory for CODEX_HOME".to_string())?;
         let home = config_dir
-            .join("codex-home")
+            .join(CODEX_HOME_DIR_NAME)
             .join(sanitize_codex_home_id(&agent.id));
         generated_env.insert("CODEX_HOME".to_string(), home.to_string_lossy().to_string());
         return Ok(ComputedCodexHome {
@@ -2043,7 +2044,7 @@ mod tests {
         };
         let expected = crate::config::config_dir()
             .unwrap()
-            .join("codex-home")
+            .join(crate::config::instance_artifacts::CODEX_HOME_DIR_NAME)
             .join(super::sanitize_codex_home_id(&id));
         let _ = std::fs::remove_dir_all(&expected);
 

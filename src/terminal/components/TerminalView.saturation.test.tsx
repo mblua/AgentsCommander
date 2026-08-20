@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 //
-// #1283 - TerminalView saturation/admission suite (plan 9.3, 9.4, 14.2-14.5).
+// #1283's two VERIFIED frontend defects, and only those. The delivery contract
+// that PR #1312 built on top of them is gone (#1363); what remains here is the
+// pair of fixes that attacked real bugs and that F keeps untouched:
 //
-// Drives the real TerminalApp with mocked typed IPC (FakeTransport), Tauri
-// events, and Xterm. Deterministic: fake timers drive the health deadline,
-// frame scheduling (rAF shimmed to setTimeout(0)), and the sustained load.
+//   1. unbounded Xterm/WebGL retention  -> the four-entry LRU registry,
+//   2. writes reaching a hidden session -> the visibility filter at the single
+//      writer.
+//
+// Plus the one attachment property this level can certify: a console switch
+// costs exactly one detach and one attach, never a churn cycle.
+//
+// Deterministic: fake timers drive frame scheduling (rAF shimmed to
+// setTimeout(0)) and the sustained load. No wall-clock waiting.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TerminalApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
-import type {
-  TerminalOutputActivationResult,
-  TerminalOutputControlState,
-  TerminalRendererMetrics,
-} from "../../shared/types";
 import {
   baseSettings,
   installBrowserDomStubs,
@@ -23,10 +26,10 @@ import {
 } from "../../shared/testing/ui-harness";
 import { terminalStore } from "../stores/terminal";
 import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
+import { TERMINAL_RETENTION_LIMIT } from "./terminal-session-registry";
 
 interface RecordedWrite {
   bytes: number[];
-  callback: (() => void) | null;
 }
 
 interface FakeTerminalInstance {
@@ -37,11 +40,8 @@ interface FakeTerminalInstance {
   screen: number[][];
   resets: number;
   disposed: boolean;
-  holdNextWrites: number;
-  heldWrites: RecordedWrite[];
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
-  releaseHeld(index?: number): void;
 }
 
 const xterm = vi.hoisted(() => ({
@@ -59,8 +59,6 @@ vi.mock("@xterm/xterm", () => ({
     screen: number[][] = [];
     resets = 0;
     disposed = false;
-    holdNextWrites = 0;
-    heldWrites: RecordedWrite[] = [];
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     constructor() {
@@ -80,21 +78,10 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
 
-    write(data: unknown, callback?: () => void): void {
+    write(data: unknown): void {
       const bytes = Array.from(data as Uint8Array);
-      const record: RecordedWrite = { bytes, callback: callback ?? null };
-      this.writes.push(record);
+      this.writes.push({ bytes });
       this.screen.push(bytes);
-      if (this.holdNextWrites > 0) {
-        this.holdNextWrites -= 1;
-        this.heldWrites.push(record);
-        return;
-      }
-      callback?.();
-    }
-
-    releaseHeld(index = 0): void {
-      this.heldWrites[index]?.callback?.();
     }
 
     reset(): void {
@@ -160,69 +147,17 @@ vi.mock("../../shared/platform", () => ({
   isBrowser: false,
 }));
 
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
-}
-
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
 
-function activated(
-  sessionId: string,
-  generation: string,
-  snapshotSequence: string,
-  data: number[] = [83, 78, 65, 80]
-): TerminalOutputActivationResult {
-  return {
-    kind: "activated",
-    activation: {
-      sessionId,
-      generation,
-      snapshot: {
-        data,
-        rows: 24,
-        cols: 80,
-        sequence: snapshotSequence,
-      },
-    },
-  };
-}
-
-const active = (sessionId: string, generation: string): TerminalOutputControlState => ({
-  kind: "active",
-  sessionId,
-  generation,
-});
-
-const inactive = (sessionId: string, generation: string): TerminalOutputControlState => ({
-  kind: "inactive",
-  sessionId,
-  generation,
-});
-
-interface ProtocolHandles {
-  /** Current backend generation per session (read after an activation settles). */
-  generations: Map<string, string>;
-}
-
-/** Standard protocol backend: activate -> activated(generation N, S=N*10-5),
- *  ready -> active, deactivate -> inactive, ack -> stale, report -> active.
- *  The legacy snapshot provider returns a NEWER snapshot containing S+1; the
- *  activated path must never call it. */
-function installProtocol(fake: FakeTransport, sessions: string[]): ProtocolHandles {
+/** Standard backend: every attach seeds a 4-byte screen at sequence 0, so the
+ *  seed write is the deterministic "this attach settled" signal, and every
+ *  live event after it (sequence >= 1) is past the watermark. The legacy
+ *  snapshot provider answers, so a stray call to it would be visible. */
+function installBackend(fake: FakeTransport, sessions: string[]): void {
   fake.resolve("get_settings", baseSettings());
   fake.resolve("get_active_session", liveSelection(sessions[0] ?? SESSION_A));
   fake.onInvoke("list_sessions", () => sessions.map((id) => session({ id })));
@@ -236,41 +171,19 @@ function installProtocol(fake: FakeTransport, sessions: string[]): ProtocolHandl
     cols: null,
     sequence: 999,
   }));
-
-  const generations = new Map<string, string>();
-  fake.onInvoke("activate_terminal_output", (args) => {
-    const sessionId = String(args.sessionId);
-    const next = (parseInt(generations.get(sessionId) ?? "0", 10) || 0) + 1;
-    const generation = String(next);
-    generations.set(sessionId, generation);
-    return activated(sessionId, generation, String(next * 10 - 5));
-  });
-  fake.onInvoke("ready_terminal_output", (args) =>
-    active(String(args.sessionId), String(args.generation)),
-  );
-  fake.onInvoke("deactivate_terminal_output", (args) =>
-    inactive(String(args.sessionId), String(args.generation)),
-  );
-  fake.resolve("ack_terminal_output_delivery", { kind: "stale" });
-  fake.onInvoke("report_terminal_renderer_metrics", (args) =>
-    active(String(args.sessionId), String(args.generation)),
-  );
-  return { generations };
+  fake.onInvoke("activate_terminal_output", (args) => ({
+    sessionId: String(args.sessionId),
+    data: [83, 78, 65, 80],
+    rows: 24,
+    cols: 80,
+    sequence: 0,
+  }));
+  fake.resolve("detach_terminal_output", undefined);
 }
 
 let currentFake: FakeTransport | null = null;
-function emitPtyOutput(
-  payload:
-    | { kind: "data"; sessionId: string; generation: string; firstSequence: string; sequence: string; data: number[] }
-    | { kind: "resyncRequired"; sessionId: string; generation: string; sequence: string }
-): void {
-  currentFake?.emitFromBackend("pty_output", payload);
-}
-
-function metricsReports(fake: FakeTransport): TerminalRendererMetrics[] {
-  return fake
-    .callsFor("report_terminal_renderer_metrics")
-    .map((call) => call.args.metrics as TerminalRendererMetrics);
+function emitPtyOutput(sessionId: string, sequence: number, data: number[]): void {
+  currentFake?.emitFromBackend("pty_output", { sessionId, data, sequence });
 }
 
 function instanceFor(sessionId: string): FakeTerminalInstance {
@@ -283,6 +196,10 @@ function instanceFor(sessionId: string): FakeTerminalInstance {
     throw new Error(`no live xterm instance for ${sessionId}; have ${xterm.instances.length}`);
   }
   return instance;
+}
+
+function liveInstanceCount(): number {
+  return xterm.instances.filter((instance) => !instance.disposed).length;
 }
 
 /** Real-timer settling: wait for the initial terminal instance. */
@@ -335,7 +252,7 @@ async function waitForFake(condition: () => boolean): Promise<void> {
   throw new Error("condition not reached within fake time");
 }
 
-describe("TerminalView saturation/admission (#1283)", () => {
+describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -353,541 +270,35 @@ describe("TerminalView saturation/admission (#1283)", () => {
     vi.useRealTimers();
   });
 
-  it("barriers output behind the activation commit and readiness (pre-promise readiness gate)", async () => {
+  // A console switch is the most frequent operation in this app. It must cost
+  // exactly one detach of the old session and one attach of the new one — no
+  // churn cycle, and no second attach of the same session.
+  it("issues exactly one detach and one attach per console switch", async () => {
     const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    const activationGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", () => activationGate.promise);
-
-    currentFake = fake;
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-
-      // While Activating: current-generation data and a marker are parsed but
-      // must NOT reach xterm, ready, or ack (the backend barrier guarantees
-      // they are not emitted; the frontend must reject them anyway).
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      emitPtyOutput({
-        kind: "resyncRequired",
-        sessionId: SESSION_A,
-        generation: "1",
-        sequence: "0",
-      });
-      expect(terminal.writes).toHaveLength(0);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(0);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-
-      // Resolve activation; the ReplayPending commit happens BEFORE ready.
-      activationGate.resolve(activated(SESSION_A, "1", "5"));
-      await flushMicrotasks();
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(1);
-      expect(fake.lastCall("ready_terminal_output")?.args).toEqual({
-        sessionId: SESSION_A,
-        generation: "1",
-        snapshotSequence: "5",
-      });
-
-      // Ready resolves active: the exact activation payload is rendered, then
-      // retained post-snapshot data drains once.
-      await flushMicrotasks();
-      expect(terminal.writes.map((write) => write.bytes)).toEqual([[83, 78, 65, 80]]);
-
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      await waitFor(() =>
-        expect(terminal.writes.map((write) => write.bytes)).toEqual([
-          [83, 78, 65, 80],
-          [66],
-        ]),
-      );
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(1);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("renders only the exact activation snapshot; S+1 writes exactly once, zero legacy fetches", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    const activationGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", () => activationGate.promise);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      terminal.holdNextWrites = 1; // hold the snapshot write: ReplayPending
-
-      // The legacy provider would claim S+1 is already rendered: it must never
-      // be consulted, and S+1 must still be written exactly once after replay.
-      activationGate.resolve(activated(SESSION_A, "1", "5"));
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
-      expect(terminal.heldWrites).toHaveLength(1);
-      expect(terminal.heldWrites[0].bytes).toEqual([83, 78, 65, 80]);
-
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      // S+1 is retained but NEVER written while ReplayPending.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(terminal.writes).toHaveLength(1);
-
-      terminal.releaseHeld(0); // snapshot callback completes
-      await waitFor(() =>
-        expect(terminal.writes.map((write) => write.bytes)).toEqual([
-          [83, 78, 65, 80],
-          [66],
-        ]),
-      );
-      // Exactly one acknowledgement for the retained range.
-      const acks = fake.callsFor("ack_terminal_output_delivery");
-      expect(acks).toHaveLength(1);
-      expect(acks[0].args).toEqual({
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-      });
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("owns exactly one write gate during a held live write and releases it on settlement", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      // Live: queue one batch and hold the frame write.
-      terminal.holdNextWrites = 1;
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      await waitFor(() => expect(terminal.heldWrites).toHaveLength(1));
-
-      // While held, a second delivery queues but no second write starts.
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "7",
-        sequence: "7",
-        data: [67],
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(terminal.writes).toHaveLength(2); // snapshot + held live write
-
-      terminal.releaseHeld(0);
-      await waitFor(() => expect(terminal.writes).toHaveLength(3));
-      expect(terminal.writes[2].bytes).toEqual([67]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("reaches one recovery through the health deadline when the replay callback is permanently held", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-    installFakeTimersRaf();
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    const activationGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", () => activationGate.promise);
-    fake.onInvoke("report_terminal_renderer_metrics", () => ({
-      kind: "resyncRequired",
-      sessionId: SESSION_A,
-      generation: "1",
-      sequence: "0",
-    }));
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleFake();
-      const terminal = instanceFor(SESSION_A);
-      terminal.holdNextWrites = 1; // the replay callback will never settle
-      activationGate.resolve(activated(SESSION_A, "1", "5"));
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(terminal.heldWrites).toHaveLength(1);
-      expect(terminal.writes).toHaveLength(1);
-
-      // No further PTY output: the marker could not be emitted either. At the
-      // generation health deadline, one metrics poll observes resyncRequired.
-      await vi.advanceTimersByTimeAsync(5_000);
-      await flushMicrotasks();
-      expect(fake.callsFor("report_terminal_renderer_metrics")).toHaveLength(1);
-
-      // ...seals once and enters exactly one recovery lane.
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(1);
-      expect(fake.lastCall("deactivate_terminal_output")?.args).toEqual({
-        sessionId: SESSION_A,
-        generation: "1",
-      });
-
-      // The replacement activation is a fresh generation; the held replay
-      // callback is inert: no write, no ack, no extra poll.
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(2);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(2);
-      const writesBefore = terminal.writes.length;
-      terminal.releaseHeld(0);
-      await flushMicrotasks();
-      expect(terminal.writes).toHaveLength(writesBefore);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-      expect(fake.callsFor("report_terminal_renderer_metrics")).toHaveLength(1);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("preserves B when gB > gA in the A-first/outstanding-B ordering", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A, SESSION_B]);
-    const aGate = deferred<TerminalOutputActivationResult>();
-    const bGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", (args) =>
-      String(args.sessionId) === SESSION_A ? aGate.promise : bGate.promise,
-    );
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      expect(instanceFor(SESSION_A).writes).toHaveLength(0);
-
-      // Switch to B while A is still outstanding.
-      terminalStore.setActiveSessionForTests(SESSION_B);
-      await flushMicrotasks();
-      expect(instanceFor(SESSION_B).writes).toHaveLength(0);
-
-      // A response arrives FIRST: creates the ReconcilePending record and
-      // serializes deactivate(A, gA=1).
-      aGate.resolve(activated(SESSION_A, "1", "5"));
-      await flushMicrotasks();
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(1);
-
-      // B settles with gB=2 > gA=1: exactly one B commit, no b2.
-      bGate.resolve(activated(SESSION_B, "2", "15"));
-      await flushMicrotasks();
-      await flushMicrotasks();
-      const readyCalls = fake.callsFor("ready_terminal_output");
-      expect(readyCalls).toHaveLength(1);
-      expect(readyCalls[0].args).toEqual({
-        sessionId: SESSION_B,
-        generation: "2",
-        snapshotSequence: "15",
-      });
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(2);
-      const bTerminal = instanceFor(SESSION_B);
-      await waitFor(() => expect(bTerminal.writes).toHaveLength(1));
-      expect(bTerminal.writes[0].bytes).toEqual([83, 78, 65, 80]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("preserves an already-active B (gB > gA) when a late A success arrives", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A, SESSION_B]);
-    const aGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", (args) =>
-      String(args.sessionId) === SESSION_A ? aGate.promise : activated(SESSION_B, "2", "15"),
-    );
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      terminalStore.setActiveSessionForTests(SESSION_B);
-      await waitFor(() => expect(instanceFor(SESSION_B).writes).toHaveLength(1));
-
-      // Late A success (gA=1) while B is Active(gB=2): B untouched, A
-      // deactivation is stale, and NO B reissue occurs.
-      const activateCalls = fake.callsFor("activate_terminal_output").length;
-      aGate.resolve(activated(SESSION_A, "1", "5"));
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(1);
-      expect(fake.callsFor("deactivate_terminal_output")[0].args).toEqual({
-        sessionId: SESSION_A,
-        generation: "1",
-      });
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(activateCalls);
-      expect(fake.callsFor("ready_terminal_output")).toHaveLength(1);
-      expect(instanceFor(SESSION_B).writes).toHaveLength(1);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("seals disposed B and issues exactly one b2 when a late A displaced it (gA > gB)", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A, SESSION_B]);
-    const aGate = deferred<TerminalOutputActivationResult>();
-    fake.onInvoke("activate_terminal_output", (args) =>
-      String(args.sessionId) === SESSION_A ? aGate.promise : activated(SESSION_B, "1", "5"),
-    );
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      terminalStore.setActiveSessionForTests(SESSION_B);
-      await waitFor(() => expect(instanceFor(SESSION_B).writes).toHaveLength(1));
-      const firstB = instanceFor(SESSION_B);
-
-      // Late A success with gA=2 > gB=1: A displaced B. B/gB is synchronously
-      // sealed/disposed before A teardown, then exactly one b2 runs.
-      aGate.resolve(activated(SESSION_A, "2", "15"));
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(firstB.disposed).toBe(true);
-      expect(fake.callsFor("deactivate_terminal_output").length).toBeGreaterThanOrEqual(2);
-
-      await flushMicrotasks();
-      const activateCalls = fake.callsFor("activate_terminal_output");
-      expect(activateCalls).toHaveLength(3); // A, B, then exactly one b2
-      // b2 runs on a rebuilt entry, so it may replay history again (#1355).
-      expect(activateCalls[2].args).toEqual({
-        sessionId: SESSION_B,
-        includeHistory: true,
-      });
-
-      await flushMicrotasks();
-      const b2 = instanceFor(SESSION_B);
-      expect(b2).not.toBe(firstB);
-      await waitFor(() => expect(b2.writes).toHaveLength(1));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("seals and recovers exactly once on a sequence gap; stale old-generation events are rejected", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      await waitFor(() => expect(terminal.writes).toHaveLength(1)); // snapshot live
-
-      // Gap: firstSequence 8 != next 6.
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "8",
-        sequence: "8",
-        data: [72],
-      });
-      await flushMicrotasks();
-      await flushMicrotasks();
-
-      // Exactly one recovery lane: deactivate(generation 1), then replacement.
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(1);
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(2);
-      await waitFor(() =>
-        expect(instanceFor(SESSION_A).writes).toHaveLength(2),
-      );
-
-      // Old-generation events are rejected without allocation or ack.
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
-      expect(instanceFor(SESSION_A).writes).toHaveLength(2);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  // #1355 (plan 9.2 test 5) - the retained output ring may only be replayed
-  // into a terminal with nothing rendered yet; replaying it over an entry that
-  // already has content duplicates history cumulatively (plan 12.1). This ties
-  // `includeHistory` to `!entry.hasRenderedOutput` and would also catch an
-  // argument-name mismatch between ipc.ts and the Rust parameter (plan 15.4).
-  it("requests history only for a fresh terminal, never for a retained one", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      await waitFor(() => expect(terminal.writes).toHaveLength(1)); // snapshot rendered
-
-      // Gap (firstSequence 8 != next 6): one recovery lane reactivates the SAME
-      // retained entry, which now has rendered output.
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "8",
-        sequence: "8",
-        data: [72],
-      });
-      await flushMicrotasks();
-      await flushMicrotasks();
-
-      const activateCalls = fake.callsFor("activate_terminal_output");
-      expect(activateCalls).toHaveLength(2);
-      expect(instanceFor(SESSION_A)).toBe(terminal); // same instance, not rebuilt
-      expect(activateCalls[0].args).toMatchObject({ includeHistory: true });
-      expect(activateCalls[1].args).toMatchObject({ includeHistory: false });
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  // #1355 (plan 9.2 test 6) - a 64 KiB replay lengthens the activation window,
-  // so a console switch must still cost exactly one activation and never feed
-  // an activate -> resync -> activate cycle.
-  it("issues exactly one activation per console switch", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A, SESSION_B]);
+    installBackend(fake, [SESSION_A, SESSION_B]);
     currentFake = fake;
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
       await settleReal();
       await waitFor(() => expect(instanceFor(SESSION_A).writes).toHaveLength(1));
-      const activationsBefore = fake.callsFor("activate_terminal_output").length;
+      const attachesBefore = fake.callsFor("activate_terminal_output").length;
+      const detachesBefore = fake.callsFor("detach_terminal_output").length;
 
       terminalStore.setActiveSessionForTests(SESSION_B);
       await waitFor(() => expect(instanceFor(SESSION_B).writes).toHaveLength(1));
       await flushMicrotasks();
       await flushMicrotasks();
 
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(
-        activationsBefore + 1,
-      );
+      expect(fake.callsFor("activate_terminal_output")).toHaveLength(attachesBefore + 1);
+      expect(fake.callsFor("detach_terminal_output")).toHaveLength(detachesBefore + 1);
       expect(fake.lastCall("activate_terminal_output")?.args).toEqual({
         sessionId: SESSION_B,
         includeHistory: true,
       });
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("leaves zero retired state after destroy with a permanently held write callback", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A]);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      terminal.holdNextWrites = 1;
-      emitPtyOutput({
-        kind: "data",
+      expect(fake.lastCall("detach_terminal_output")?.args).toEqual({
         sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
       });
-      await waitFor(() => expect(terminal.heldWrites).toHaveLength(1));
-
-      // Destroy while the write callback is permanently held.
-      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
-      await flushMicrotasks();
-      expect(terminal.disposed).toBe(true);
-      const acksBefore = fake.callsFor("ack_terminal_output_delivery").length;
-      const reportsBefore = fake.callsFor("report_terminal_renderer_metrics").length;
-
-      // Forcing the late callback is a harmless no-op: no write/ack/metrics.
-      terminal.releaseHeld(0);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(acksBefore);
-      expect(fake.callsFor("report_terminal_renderer_metrics")).toHaveLength(reportsBefore);
-      expect(terminal.writes).toHaveLength(2); // snapshot + held live write
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("records detach without creating a hidden terminal and rejects its events", async () => {
-    const fake = new FakeTransport();
-    installProtocol(fake, [SESSION_A, SESSION_B]);
-    currentFake = fake;
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await settleReal();
-      const terminal = instanceFor(SESSION_A);
-      const instancesBefore = xterm.instances.length;
-
-      // Plan 5.5.3: onTerminalDetached records detached state only; it must
-      // not create a hidden Xterm/WebGL terminal merely because the event
-      // arrived.
-      fake.emitFromBackend("terminal_detached", {
-        sessionId: SESSION_B,
-        windowLabel: "terminal-B",
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(xterm.instances).toHaveLength(instancesBefore);
-
-      // A detached active session rejects every delivery: no write, no ack.
-      fake.emitFromBackend("terminal_detached", {
-        sessionId: SESSION_A,
-        windowLabel: "terminal-A",
-      });
-      emitPtyOutput({
-        kind: "data",
-        sessionId: SESSION_A,
-        generation: "1",
-        firstSequence: "6",
-        sequence: "6",
-        data: [66],
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(terminal.writes).toHaveLength(1); // snapshot only
-      expect(fake.callsFor("ack_terminal_output_delivery")).toHaveLength(0);
     } finally {
       rendered.cleanup();
     }
@@ -900,7 +311,7 @@ describe("TerminalView saturation/admission (#1283)", () => {
       `55555555-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     );
     const fake = new FakeTransport();
-    const protocol = installProtocol(fake, sessions);
+    installBackend(fake, sessions);
     currentFake = fake;
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -908,14 +319,12 @@ describe("TerminalView saturation/admission (#1283)", () => {
       await settleFake();
       const chunk = new Array<number>(8 * 1024).fill(65);
 
-      // 10 seconds of fake time, switching every 500 ms. Each session's
-      // admission anchors at its own S = generation*10-5, so its wave must
-      // start at S+1 = generation*10-4.
+      // 10 seconds of fake time, switching every 500 ms.
       for (let switchIndex = 0; switchIndex < 20; switchIndex += 1) {
         const sessionId = sessions[switchIndex % sessions.length];
         terminalStore.setActiveSessionForTests(sessionId);
-        // Settle the activation deterministically: the snapshot write landing
-        // on the visible instance means the generation is Live.
+        // Settle the attach deterministically: its seed write landing on the
+        // visible instance means the seed was applied.
         await waitForFake(() => {
           const visible = xterm.instances.find(
             (instance) =>
@@ -929,24 +338,16 @@ describe("TerminalView saturation/admission (#1283)", () => {
         const writesBefore = new Map(
           xterm.instances.map((instance) => [instance, instance.writes.length]),
         );
-        const generation = protocol.generations.get(sessionId)!;
-        const base = parseInt(generation, 10) * 10 - 4; // S + 1
 
-        // 16 chunks of 8 KiB per switch wave (bounded below the 131,072 cap).
+        // 16 chunks of 8 KiB per switch wave, every one past the seed's
+        // sequence 0 so none is dropped by the watermark.
         for (let wave = 0; wave < 16; wave += 1) {
-          const sequence = base + wave;
-          emitPtyOutput({
-            kind: "data",
-            sessionId,
-            generation,
-            firstSequence: String(sequence),
-            sequence: String(sequence),
-            data: chunk,
-          });
+          emitPtyOutput(sessionId, wave + 1, chunk);
         }
         await vi.advanceTimersByTimeAsync(1);
 
-        // Only the visible terminal received writes for this wave.
+        // Only the visible terminal received writes for this wave: no hidden
+        // terminal ever reaches Terminal.write (criterion G).
         for (const [instance, count] of writesBefore) {
           if (instance === visible) {
             expect(instance.writes.length).toBeGreaterThan(count);
@@ -954,61 +355,17 @@ describe("TerminalView saturation/admission (#1283)", () => {
             expect(instance.writes.length).toBe(count);
           }
         }
+
+        // The registry never retains more than four live Xterm/WebGL pairs,
+        // however many sessions the load cycles through.
+        expect(liveInstanceCount()).toBeLessThanOrEqual(TERMINAL_RETENTION_LIMIT);
+
         await vi.advanceTimersByTimeAsync(500);
       }
 
-      // Registry stayed at or below four retained terminals; gauges bounded.
-      const reports = metricsReports(fake);
-      expect(reports.length).toBeGreaterThan(0);
-      for (const report of reports) {
-        expect(report.retainedTerminalCount).toBeLessThanOrEqual(4);
-        expect(report.visibleTerminalCount).toBeLessThanOrEqual(1);
-        expect(report.livePendingBytes + report.writeInFlightBytes).toBeLessThanOrEqual(
-          131_072,
-        );
-        expect(report.combinedAdmissionHighWaterBytes).toBeLessThanOrEqual(131_072);
-      }
-
-      // A forced cap breach emits exactly one recovery for its generation.
-      const breachSession = sessions[0];
-      const breachGenBefore = protocol.generations.get(breachSession);
-      const breachInstance = instanceFor(breachSession);
-      const breachWritesBefore = breachInstance.writes.length;
-      terminalStore.setActiveSessionForTests(breachSession);
-      await waitForFake(() => {
-        // The re-selection must have committed: its generation advanced AND a
-        // new snapshot write landed (old writes alone are not enough).
-        const generation = protocol.generations.get(breachSession);
-        return (
-          generation !== undefined &&
-          generation !== breachGenBefore &&
-          instanceFor(breachSession).writes.length > breachWritesBefore
-        );
-      });
-      const breachGeneration = protocol.generations.get(breachSession)!;
-      const breachBase = parseInt(breachGeneration, 10) * 10 - 4;
-      const deactivationsBefore = fake.callsFor("deactivate_terminal_output").length;
-      emitPtyOutput({
-        kind: "data",
-        sessionId: breachSession,
-        generation: breachGeneration,
-        firstSequence: String(breachBase),
-        sequence: String(breachBase),
-        data: new Array<number>(131_073).fill(66),
-      });
-      await flushMicrotasks();
-      await flushMicrotasks();
-      expect(fake.callsFor("deactivate_terminal_output")).toHaveLength(
-        deactivationsBefore + 1,
-      );
-      await flushMicrotasks();
-
       // Unmount: nothing scheduled remains; every instance disposed.
-      console.log("TIMER-DEBUG before cleanup:", vi.getTimerCount());
       rendered.cleanup();
-      console.log("TIMER-DEBUG after cleanup:", vi.getTimerCount());
       await vi.advanceTimersByTimeAsync(20_000);
-      console.log("TIMER-DEBUG after 20s:", vi.getTimerCount());
       expect(xterm.instances.every((instance) => instance.disposed)).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
     } finally {

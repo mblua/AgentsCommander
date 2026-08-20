@@ -27,6 +27,8 @@ When you launch a session, the coding agent inherits:
 - The environment variables of the AC process (including `PATH`, `HOME`, and any keys you may have exported).
 - The user-level filesystem and network permissions you yourself have.
 
+Two opt-in listeners widen who can reach that surface from outside the machine: the [control-plane API](features/control-plane-api.md) and the [remote web UI](features/remote-web-ui.md). Both are off by default and both are described on their own pages.
+
 This is the same surface area the coding agent has when you launch it from your own terminal. AC adds visibility and coordination; it does **not** add a sandbox. If the underlying agent can `rm -rf ~/`, AC will let it.
 
 Pi auto-resume does not add a state-reading boundary. AC does not inspect or copy `~/.pi/agent/`, `PI_CODING_AGENT_SESSION_DIR`, or `--session-dir` paths, and a Pi option that names Claude does not trigger AC's Claude projects-directory probe. AC does not provision Pi credentials or map Pi state into containers. It only adds `--continue` to an eligible configured known-state launch; [Pi remains responsible for session lookup and errors](integrations/coding-agents.md#no-ac-side-pi-state-probe-or-fallback).

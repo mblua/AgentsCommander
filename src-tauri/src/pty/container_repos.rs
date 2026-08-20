@@ -108,7 +108,7 @@ fn read_repos_array(replica_root: &Path) -> Vec<String> {
 /// which is already per-agent: plan Sec 2) into container mounts.
 ///
 /// Entries are resolved as `canonicalize(replica_root.join(entry))` - the SAME
-/// base and join `render_workspace_repos_string` uses (`session_context.rs:1275`).
+/// base and join `render_agent_repos_string` uses (in `config::session_context`).
 /// Do NOT change the base: a different one reintroduces D2 (the mount and the
 /// injected context disagreeing).
 ///

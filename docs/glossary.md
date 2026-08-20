@@ -2,6 +2,10 @@
 
 Quick alphabetical reference. For richer explanations of how the pieces fit together, see [Concepts](concepts.md).
 
+## Activity log
+
+An append-only JSONL file recording when each session started working and when it went idle, plus app start, heartbeat and stop records. Off by default, and it holds no terminal content. See [Activity log](features/activity-log.md).
+
 ## Agent
 
 A directory with a role-prompt file at its root (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`). The directory IS the agent's identity.
@@ -9,6 +13,10 @@ A directory with a role-prompt file at its root (`CLAUDE.md`, `AGENTS.md`, or `G
 ## Agents Agency
 
 A community library of agent role templates at [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). AC can download a validated cache of the catalog for offline use in the role-template picker.
+
+## Archived project
+
+A project AC still has registered but hides from the sidebar. Archiving moves the path between two lists in `settings.json` and touches no files. See [Project archiving](features/project-archiving.md).
 
 ## Brief
 
@@ -25,6 +33,18 @@ A per-coding-agent option that copies a template config folder (for example `.cl
 ## ConPTY
 
 Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/wez/wezterm/tree/main/pty) on Windows; Unix PTYs on Linux/macOS.
+
+## Context alert
+
+A notice AC injects into a workgroup's coordinator when a member's context usage crosses a threshold the team configured. It fires once per crossing and takes no action on the session. See [Context tracking](features/context-tracking.md).
+
+## Context badge
+
+The `CTX <n>%` badge on a session row, showing how much of that agent's context window is used. It appears only when the session's coding agent has a context pattern configured. See [Context tracking](features/context-tracking.md).
+
+## Control-plane API
+
+A local, opt-in HTTP server inside the daemon that lets a machine client speak the inter-agent control plane over a scoped token instead of the filesystem outbox. See [Control-plane API](features/control-plane-api.md).
 
 ## Coordinator
 
@@ -46,9 +66,17 @@ The PTY component that flags a session as idle after a configurable silence thre
 
 Per-replica directories where an agent receives (`inbox/`) and stages outbound (`outbox/`) messages before the CLI delivers them.
 
+## Loop (Project Loop)
+
+A scheduled prompt delivered to a workgroup's coordinator on a cron expression. See [Concepts](concepts.md#project-loop).
+
 ## Messaging directory
 
 `<workgroup>/messaging/`. Every inter-agent message in a workgroup lives here as a UTC-timestamped markdown file. Never auto-purged.
+
+## Non-stop mode
+
+A per-project group of workgroups AC watches, alerting you when one stops working. See [Concepts](concepts.md#non-stop-mode).
 
 ## Portable instance
 
@@ -74,9 +102,17 @@ The `.ac/` container folder at the project root holding origin agent state, conf
 
 Pseudo-terminal. Each AC session runs in a real PTY (ConPTY on Windows, Unix PTY elsewhere) — not a command runner. Full vt100, interactive prompts, color, the lot.
 
+## Raise hand
+
+A coordinator's request for your attention, raised by the agent itself through the `raise-hand` CLI verb and shown on its rail entry and replica row. It survives restarts and is cleared only by real user input to that session. See [Sidebar guide](features/sidebar-guide.md#raise-hand).
+
 ## Replica
 
 A working copy of an agent inside a workgroup at `wg-<N>-<team>/__agent_<name>/`. Replicas share the canonical agent matrix's `memory/`, `plans/`, `skills/`, and `Role.md`, but have their own scratch space, inbox, outbox, and session artifacts.
+
+## Resource watchdog
+
+The part of the resource monitor that compares each agent group against the configured memory thresholds. It either surfaces the state or terminates the offending session's process group, depending on `resourceWatchdogAction`. See [Resource monitor](features/resource-monitor.md).
 
 ## Role template
 
@@ -98,6 +134,10 @@ Automatic shutdown of an idle team (coordinator plus agent-owned sessions) after
 
 The five tabs in the Settings modal: **General**, **Coding Agents**, **Resources**, **Watchers**, **Integrations**.
 
+## Spec Board
+
+A window holding one Mermaid file, with a live diagram beside its source. See [Concepts](concepts.md#spec-board).
+
 ## Team
 
 A coordinator + worker agents working toward shared goals. Defined in `.ac/_team_<name>/config.json`.
@@ -114,9 +154,21 @@ A UUID issued per session. The CLI shape-validates it; the daemon mailbox identi
 
 Push-to-talk transcription via the Google Gemini API. Dictate a prompt; AC writes the transcription into the session's PTY. See [Voice-to-text](features/voice-to-text.md).
 
+## Watcher
+
+A root-level pattern AC matches against agent terminal output, reaching every configured agent unless a selector narrows it. See [Concepts](concepts.md#watcher).
+
 ## Workspace (Deprecated)
 
 *Deprecated alias.* See **Project AC Root**.
+
+## Workspace (kept exceptions)
+
+Three "workspace" spellings survive the rename to **Project AC Root** on purpose. Each belongs to someone else's vocabulary (the Rust toolchain, the Codex CLI, the container ecosystem) rather than to AC's product vocabulary, so renaming one would break a build, a flag, or an image instead of clarifying anything. **Do not rename these three.** Any other `workspace` occurrence is not a fourth exception: it is legacy pending rename under epic #1366, not vocabulary to imitate.
+
+- **`[workspace]` and `--workspace`, Cargo's vocabulary** (#1372). The root `Cargo.toml` declares the Rust workspace with this key, and `--workspace` is how a Cargo command targets every member crate: AC's CI gates every pull request on `cargo clippy --workspace --all-targets`. Cargo has no alternative spelling; changing the key breaks the build.
+- **`workspace-write`, the Codex CLI's vocabulary** (#1373). A value of Codex's `--sandbox` flag, as in `codex --sandbox workspace-write`. AC only passes it through: it arrives in a coding agent's profile command, and AC's own UI shows it just as an example placeholder in Settings. Renaming the value breaks the flag.
+- **`/workspace`, the container ecosystem's convention** (#1371). The path inside AC's Docker container where the replica root is bind-mounted, defined as `DEFAULT_CONTAINER_WORKDIR` in `src-tauri/src/pty/container_runtime.rs`. Docker does not impose the path, but Cloud Build and GitPod both mount the checkout at `/workspace`, and tools running inside a container expect to find it there. Kept by user decision of 2026-08-19.
 
 ## Workgroup
 

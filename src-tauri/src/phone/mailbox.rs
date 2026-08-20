@@ -14,6 +14,9 @@ use crate::config::injected_messages::{
     render, CONTEXT_ALERT_MESSAGE_ID, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_THRESHOLDS,
     TOKEN_WORKGROUP,
 };
+use crate::config::instance_artifacts::{
+    PROJECT_REFRESH_REQUESTS_DIR_NAME, SESSION_REQUESTS_DIR_NAME,
+};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
@@ -2229,7 +2232,7 @@ fn raw_privileged_probe(bytes: &[u8]) -> bool {
 
     for little_endian in [true, false] {
         let mut ascii = Vec::with_capacity(bytes.len() / 2);
-        for chunk in bytes.chunks_exact(2) {
+        for chunk in bytes.as_chunks::<2>().0 {
             let unit = if little_endian {
                 u16::from_le_bytes([chunk[0], chunk[1]])
             } else {
@@ -2426,7 +2429,9 @@ fn decode_outbox_snapshot(bytes: &[u8]) -> Result<String, ()> {
             return Err(());
         }
         let units: Vec<u16> = body
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         String::from_utf16(&units).map_err(|_| ())
@@ -2436,7 +2441,9 @@ fn decode_outbox_snapshot(bytes: &[u8]) -> Result<String, ()> {
             return Err(());
         }
         let units: Vec<u16> = body
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
             .collect();
         String::from_utf16(&units).map_err(|_| ())
@@ -11356,7 +11363,7 @@ impl MailboxPoller {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join("project-refresh-requests");
+        let requests_dir = config_dir.join(PROJECT_REFRESH_REQUESTS_DIR_NAME);
         let batch = collect_project_refresh_requests(&requests_dir);
 
         for payload in &batch.payloads {
@@ -11380,7 +11387,7 @@ impl MailboxPoller {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join("session-requests");
+        let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
         if !requests_dir.is_dir() {
             return;
         }
@@ -11606,7 +11613,9 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
             path
         );
         let u16_data: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         Ok(String::from_utf16_lossy(&u16_data))
@@ -11616,7 +11625,9 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
             path
         );
         let u16_data: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect();
         Ok(String::from_utf16_lossy(&u16_data))

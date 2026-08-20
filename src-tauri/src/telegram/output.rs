@@ -3,6 +3,10 @@ use std::io::Write as IoWrite;
 use tauri::Emitter;
 use tokio::time::Duration;
 
+use crate::config::instance_artifacts::{
+    TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
+    TELEGRAM_DIAG_SENT_LOG_FILE_NAME,
+};
 use crate::network::OutboundNetwork;
 use crate::telegram::api;
 
@@ -61,7 +65,7 @@ impl BridgeLogger {
     pub(crate) fn new(session_id: &str) -> Self {
         let file = crate::config::config_dir().and_then(|dir| {
             std::fs::create_dir_all(&dir).ok()?;
-            let path = dir.join("telegram-bridge.log");
+            let path = dir.join(TELEGRAM_BRIDGE_LOG_FILE_NAME);
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -138,8 +142,8 @@ impl DiagLogger {
                 .ok()
         };
 
-        let raw_file = open("diag-raw.log");
-        let sent_file = open("diag-sent.log");
+        let raw_file = open(TELEGRAM_DIAG_RAW_LOG_FILE_NAME);
+        let sent_file = open(TELEGRAM_DIAG_SENT_LOG_FILE_NAME);
 
         if raw_file.is_some() && sent_file.is_some() {
             log::info!("Diagnostic logger active: diag-raw.log + diag-sent.log");
