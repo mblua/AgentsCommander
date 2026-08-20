@@ -32,6 +32,31 @@ struct AppState {
     ws_state: WsState,
 }
 
+/// §1453: error tipado del arranque. Reemplaza el String opaco para que los
+/// call sites registren bind/port/causa sin parsear texto. `Display`
+/// reproduce byte a byte los dos mensajes historicos que app.log ya conoce
+/// (los dashboards/greps existentes no cambian).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StartServerError {
+    /// El valor de settings no parsea como SocketAddr.
+    #[error("Invalid web server bind address {bind}:{port}: {detail}")]
+    InvalidAddr {
+        bind: String,
+        port: u16,
+        detail: String,
+    },
+    /// TcpListener::bind fallo sobre una direccion parseada.
+    /// `bind` es el string CRUDO de settings y existe solo para la guardia de
+    /// obsolescencia y el payload (contrato de D2); `addr` es el SocketAddr
+    /// parseado y existe solo para que Display sea byte-exacto.
+    #[error("Failed to bind web server on {addr}: {detail}")]
+    BindFailed {
+        bind: String,
+        addr: std::net::SocketAddr,
+        detail: String,
+    },
+}
+
 /// Start the embedded HTTP/WebSocket server.
 /// Called from Tauri's setup(), runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
@@ -47,7 +72,7 @@ pub async fn start_server(
     broadcaster: WsBroadcaster,
     app_handle: tauri::AppHandle,
     shutdown: crate::shutdown::ShutdownSignal,
-) -> Result<tauri::async_runtime::JoinHandle<()>, String> {
+) -> Result<tauri::async_runtime::JoinHandle<()>, StartServerError> {
     // Resolve dist path BEFORE moving app_handle into WsState
     let dist_path = resolve_dist_path(&app_handle);
 
@@ -92,13 +117,25 @@ pub async fn start_server(
         }
     }
 
-    let addr: SocketAddr = format!("{}:{}", bind, port)
-        .parse()
-        .map_err(|e| format!("Invalid web server bind address {}:{}: {}", bind, port, e))?;
+    // El turbofish es OBLIGATORIO: map_err se interpone entre parse() y el `?`,
+    // asi que anotar el `let` no alcanza para inferir el target del parse y
+    // rustc emite E0282 (plan 5.2.2 afirmaba lo contrario).
+    let addr = format!("{}:{}", bind, port)
+        .parse::<SocketAddr>()
+        .map_err(|e| StartServerError::InvalidAddr {
+            bind: bind.clone(),
+            port,
+            detail: e.to_string(),
+        })?;
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("Failed to bind web server on {}: {}", addr, e))?;
+    let listener =
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| StartServerError::BindFailed {
+                bind: bind.clone(),
+                addr,
+                detail: e.to_string(),
+            })?;
 
     log::info!("[web-server] Listening on http://{}", addr);
     println!("[web-server] Listening on http://{}", addr);
@@ -426,6 +463,43 @@ fn resolve_dist_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf
 mod tests {
     use super::*;
     use crate::errors::AppError;
+
+    // §1453 D2: Display preserva byte a byte los strings historicos de app.log,
+    // incluida la forma IPv6 bracketed que solo el SocketAddr produce bien.
+    #[test]
+    fn start_server_error_display_matches_legacy_log_format() {
+        let invalid = StartServerError::InvalidAddr {
+            bind: "notanip".to_string(),
+            port: 8888,
+            detail: "invalid socket address syntax".to_string(),
+        };
+        assert_eq!(
+            invalid.to_string(),
+            "Invalid web server bind address notanip:8888: invalid socket address syntax"
+        );
+
+        let bindfail = StartServerError::BindFailed {
+            bind: "192.168.1.12".to_string(),
+            addr: "192.168.1.12:8888".parse().unwrap(),
+            detail: "The requested address is not valid in its context. (os error 10049)"
+                .to_string(),
+        };
+        assert_eq!(
+            bindfail.to_string(),
+            "Failed to bind web server on 192.168.1.12:8888: The requested address is not valid in its context. (os error 10049)"
+        );
+
+        // El crudo bracketed se conserva para la guardia, y Display usa el addr.
+        let v6 = StartServerError::BindFailed {
+            bind: "[::1]".to_string(),
+            addr: "[::1]:8888".parse().unwrap(),
+            detail: "os error 10049".to_string(),
+        };
+        assert_eq!(
+            v6.to_string(),
+            "Failed to bind web server on [::1]:8888: os error 10049"
+        );
+    }
 
     #[test]
     fn binary_pty_write_success_allows_user_message_note() {

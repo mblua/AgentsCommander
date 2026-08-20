@@ -185,6 +185,7 @@ const stoppedStatus = (port = 8765): WebServerOwnedStatus => ({
   bind: "127.0.0.1",
   port,
   state: "stopped",
+  bindFailure: null,
 });
 
 async function loadModules(): Promise<HarnessModules> {

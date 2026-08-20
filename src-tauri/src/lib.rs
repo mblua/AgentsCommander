@@ -170,6 +170,9 @@ struct OwnedWebServer {
 #[derive(Default)]
 pub struct WebServerHandle {
     inner: Arc<Mutex<Option<OwnedWebServer>>>,
+    /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
+    /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
+    bind_failure: std::sync::Mutex<Option<crate::web::StartServerError>>,
 }
 
 impl WebServerHandle {
@@ -209,6 +212,18 @@ impl WebServerHandle {
         } else {
             false
         }
+    }
+
+    pub fn record_bind_failure(&self, failure: crate::web::StartServerError) {
+        *self.bind_failure.lock().unwrap() = Some(failure);
+    }
+
+    pub fn clear_bind_failure(&self) {
+        *self.bind_failure.lock().unwrap() = None;
+    }
+
+    pub fn last_bind_failure(&self) -> Option<crate::web::StartServerError> {
+        self.bind_failure.lock().unwrap().clone()
     }
 }
 
@@ -2313,6 +2328,8 @@ pub fn run(
                         }
                         Err(err) => {
                             log::warn!("[web-server] startup failed: {}", err);
+                            let ws_handle = app.state::<WebServerHandle>();
+                            ws_handle.record_bind_failure(err);
                         }
                     }
                 }
@@ -2976,6 +2993,7 @@ pub fn run(
             commands::config::stop_web_server,
             commands::config::get_web_server_status,
             commands::config::get_web_server_owned_status,
+            commands::config::list_web_server_interfaces,
             commands::config::get_instance_label,
             commands::config::fetch_home_markdown,
             commands::agent_creator::pick_folder,
@@ -3773,6 +3791,28 @@ mod tests {
 
         assert!(handle.abort_running());
         assert!(!handle.is_owned_running("127.0.0.1", 8765));
+    }
+
+    #[test]
+    fn web_server_handle_bind_failure_roundtrip() {
+        let handle = WebServerHandle::default();
+        assert!(handle.last_bind_failure().is_none());
+
+        let failure = crate::web::StartServerError::BindFailed {
+            bind: "192.168.1.12".to_string(),
+            addr: "192.168.1.12:8888".parse().unwrap(),
+            detail: "os error 10049".to_string(),
+        };
+        handle.record_bind_failure(failure.clone());
+        assert_eq!(
+            handle
+                .last_bind_failure()
+                .expect("failure must be recorded"),
+            failure
+        );
+
+        handle.clear_bind_failure();
+        assert!(handle.last_bind_failure().is_none());
     }
 
     #[tokio::test]
