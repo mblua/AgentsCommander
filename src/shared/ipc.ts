@@ -78,6 +78,7 @@ import type {
   WorkgroupGroupsConfig,
   NonStopReport,
   WebServerOwnedStatus,
+  WebServerInterfaceInfo,
   ApiClientMintRequest,
   ApiClientMintResponse,
   SessionSelection,
@@ -346,6 +347,8 @@ export const SettingsAPI = {
     }),
   getWebServerOwnedStatus: () =>
     transport.invoke<WebServerOwnedStatus>("get_web_server_owned_status"),
+  listWebServerInterfaces: () =>
+    transport.invoke<WebServerInterfaceInfo[]>("list_web_server_interfaces"),
   setSoundsEnabled: (value: boolean) =>
     transport.invoke<void>("set_sounds_enabled", { value }),
   setTerminalSnapshotsEnabled: (expected: boolean, enabled: boolean) =>

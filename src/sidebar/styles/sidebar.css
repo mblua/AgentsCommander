@@ -446,6 +446,233 @@ html, body, #root {
   line-height: 1.35;
 }
 
+/* Web server bind failure surface (#1453) */
+.webserver-alert {
+  margin: 4px 12px 8px;
+  padding: 8px;
+  border-radius: 4px;
+  background: rgba(255, 170, 0, 0.07);
+  border-left: 2px solid #ffaa00;
+}
+
+.webserver-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #ffaa00;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.webserver-alert-body {
+  margin-top: 4px;
+  color: var(--titlebar-fg);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.webserver-alert-body b {
+  color: var(--sidebar-fg);
+  font-weight: 600;
+}
+
+.webserver-alert-detail {
+  margin-top: 6px;
+  color: var(--titlebar-fg);
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.55;
+}
+
+.webserver-alert-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.webserver-inline-btn.primary {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(0, 212, 255, 0.12);
+  color: var(--sidebar-accent);
+}
+
+/* Bind section (address + port merged) */
+.webserver-bind-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  color: var(--titlebar-fg);
+  font-size: 12px;
+}
+
+.webserver-bind-row .webserver-bind-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webserver-bind-value.invalid {
+  color: #ffaa00;
+}
+
+.webserver-bind-hint {
+  padding: 0 12px 6px;
+  color: var(--titlebar-fg);
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.55;
+}
+
+/* max-height/overflow-y are the one deliberate deviation from the approved
+   prototype: they bound the part that grows so the Actions block, which
+   carries Start Server, stays anchored and reachable at 160% zoom. */
+.webserver-bind-panel {
+  margin: 2px 8px 6px;
+  padding: 6px 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  animation: dropdown-in 150ms ease-out;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.webserver-bind-group {
+  padding: 4px 8px 2px;
+  color: var(--titlebar-fg-muted, var(--titlebar-fg));
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.webserver-bind-option {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  font-family: var(--font-ui);
+}
+
+.webserver-bind-option:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--sidebar-accent);
+}
+
+.webserver-bind-option.selected {
+  color: var(--sidebar-accent);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.webserver-bind-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.webserver-bind-radio {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.webserver-bind-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.webserver-bind-addr {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webserver-bind-iface {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webserver-bind-note {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--titlebar-fg);
+  opacity: 0.6;
+}
+
+.webserver-bind-note.good { color: #10b981; opacity: 0.85; }
+.webserver-bind-note.bad { color: #ffaa00; opacity: 0.9; }
+
+.webserver-bind-manual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 2px;
+}
+
+.webserver-port-input.invalid { border-color: rgba(255, 170, 0, 0.55); }
+.webserver-port-input.valid { border-color: rgba(16, 185, 129, 0.45); }
+
+.webserver-validation {
+  padding: 2px 8px 4px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #ffaa00;
+}
+
+.webserver-validation.ok { color: #10b981; }
+
+.webserver-divider {
+  height: 1px;
+  margin: 4px 12px;
+  background: var(--sidebar-border);
+}
+
+/* Collapsible virtual group header: the row the panel already has, with a
+   chevron where the radio goes. No new vocabulary and no new tokens. */
+.webserver-bind-group-toggle {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  font-family: var(--font-ui);
+}
+
+.webserver-bind-group-toggle:hover {
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--sidebar-accent);
+}
+
+.webserver-bind-option.nested { padding-left: 28px; }
+
 /* Team Filter */
 .team-filter {
   display: flex;
