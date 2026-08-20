@@ -971,6 +971,7 @@ agentscommander_lib::telegram::manager -> agentscommander_lib::pty::manager
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::bridge
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::types
 agentscommander_lib::telegram::output -> agentscommander_lib::config
+agentscommander_lib::telegram::output -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::telegram::output -> agentscommander_lib::network
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::output -> agentscommander_lib::telegram::redact
