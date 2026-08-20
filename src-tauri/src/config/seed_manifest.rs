@@ -797,7 +797,9 @@ fn parse_lower_hex_bytes(serialized: &str) -> Result<Vec<u8>, SeedManifestError>
     }
     serialized
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|digits| {
             let text = std::str::from_utf8(digits).map_err(|error| {
                 SeedManifestError::Validation(format!("invalid unix_bytes_hex: {error}"))
@@ -849,7 +851,9 @@ fn parse_windows_hex_components(serialized: &str) -> Result<Vec<Vec<u16>>, SeedM
     }
     let units = serialized
         .as_bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|digits| {
             let text = std::str::from_utf8(digits).map_err(|error| {
                 SeedManifestError::Validation(format!("invalid windows_utf16_hex: {error}"))
