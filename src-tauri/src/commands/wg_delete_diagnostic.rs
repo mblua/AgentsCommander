@@ -1444,7 +1444,9 @@ fn read_remote_utf16_path(
 
     let bytes = read_remote_bytes(handle, buffer, length)?;
     let wide: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
         .collect();
     let cwd = strip_long_prefix_str(String::from_utf16_lossy(&wide).trim_end_matches('\0'));

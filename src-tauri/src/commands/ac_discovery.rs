@@ -1540,6 +1540,34 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
             "/.team-config-write.lock",
             "# AgentsCommander: exclude team-config coordination files.",
         ),
+        (
+            "_agent_*/rtk-matrix-history*.db",
+            "# AgentsCommander: exclude RTK matrix-history databases.",
+        ),
+        (
+            "_agent_*/rtk-matrix-history*.db-shm",
+            "# AgentsCommander: exclude RTK matrix-history database sidecars.",
+        ),
+        (
+            "_agent_*/rtk-matrix-history*.db-wal",
+            "# AgentsCommander: exclude RTK matrix-history database sidecars.",
+        ),
+        (
+            "_agent_*/rtk_ignored_tools*.md",
+            "# AgentsCommander: exclude RTK ignored-tools runtime records.",
+        ),
+        (
+            "_agent_*/rtk-ignored-tools-*.md",
+            "# AgentsCommander: exclude RTK ignored-tools runtime records.",
+        ),
+        (
+            "_agent_*/**/__pycache__/",
+            "# AgentsCommander: exclude Python bytecode caches inside agent folders.",
+        ),
+        (
+            "_agent_*/**/*.pyc",
+            "# AgentsCommander: exclude Python bytecode inside agent folders.",
+        ),
     ];
 
     if gitignore_path.exists() {
@@ -5259,5 +5287,161 @@ mod tests {
         assert_eq!(before.repo_branches, swapped.repo_branches);
         assert_ne!(before, swapped, "a swapped repo must re-emit");
         assert_ne!(before, reordered, "a reordered repo list must re-emit");
+    }
+
+    /// #1472 - the RTK runtime-artifact rules must be narrow: they ignore the
+    /// three artifact families under `_agent_*` roots, and nothing else.
+    #[test]
+    fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
+        // Part A: fresh-file path plus real git semantics.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let fixtures = [
+            ".ac/_agent_probe/rtk-matrix-history.db",
+            ".ac/_agent_probe/rtk-matrix-history-claude.db",
+            ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
+            ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
+            ".ac/_agent_probe/rtk_ignored_tools.md",
+            ".ac/_agent_probe/rtk-ignored-tools-pi.md",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/rtk_patterns.cpython-314.pyc",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
+            ".ac/_agent_probe/rtk-matrix-history.sqbpro",
+            ".ac/_agent_probe/rtk-ignored-tools.md",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
+            ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
+            ".ac/__agent_replica/rtk_ignored_tools.md",
+        ];
+        for relative in fixtures {
+            let path = project.join(relative);
+            std::fs::create_dir_all(path.parent().expect("fixture has a parent"))
+                .expect("create fixture dir");
+            std::fs::write(&path, b"fixture").expect("write Git fixture");
+        }
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        let ignored = |relative: &str| {
+            std::process::Command::new("git")
+                .args(["check-ignore", "--quiet", "--no-index", "--", relative])
+                .current_dir(&project)
+                .status()
+                .expect("git check-ignore")
+                .success()
+        };
+        for relative in [
+            ".ac/_agent_probe/rtk-matrix-history.db",
+            ".ac/_agent_probe/rtk-matrix-history-claude.db",
+            ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
+            ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
+            ".ac/_agent_probe/rtk_ignored_tools.md",
+            ".ac/_agent_probe/rtk-ignored-tools-pi.md",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/rtk_patterns.cpython-314.pyc",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
+            // This path is ignored only because the pre-existing `wg-*/` first
+            // entry excludes the whole `wg-1/` subtree, not because any new
+            // pattern matches it.
+            ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
+        ] {
+            assert!(ignored(relative), "{relative} must be ignored");
+        }
+        for relative in [
+            ".ac/_agent_probe/rtk-matrix-history.sqbpro",
+            ".ac/_agent_probe/rtk-ignored-tools.md",
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
+            // Replica-folder shape directly under `.ac/`, outside `wg-*`: pins
+            // that no new pattern matches `__agent_*` folder names.
+            ".ac/__agent_replica/rtk_ignored_tools.md",
+        ] {
+            assert!(!ignored(relative), "{relative} must not be ignored");
+        }
+
+        // Part B: append path keeps the prefix and appends each new pattern once.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        std::fs::write(ac_root.join(".gitignore"), "wg-*/
+").expect("write .gitignore");
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let content =
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        assert_eq!(
+            content.lines().filter(|line| line.trim() == "wg-*/").count(),
+            1,
+            "the pre-existing wg-*/ line must survive exactly once"
+        );
+        for pattern in [
+            "_agent_*/rtk-matrix-history*.db",
+            "_agent_*/rtk-matrix-history*.db-shm",
+            "_agent_*/rtk-matrix-history*.db-wal",
+            "_agent_*/rtk_ignored_tools*.md",
+            "_agent_*/rtk-ignored-tools-*.md",
+            "_agent_*/**/__pycache__/",
+            "_agent_*/**/*.pyc",
+        ] {
+            assert_eq!(
+                content.lines().filter(|line| line.trim() == pattern).count(),
+                1,
+                "pattern {pattern} must be appended exactly once"
+            );
+        }
+
+        // Part C: 7-pattern-only fixture, replicating the Section 4.2 probe.
+        // None of the 7 patterns alone matches replica-shaped content, so a
+        // path under `wg-1/__agent_replica/` must stay not ignored.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        let seven_patterns = [
+            "_agent_*/rtk-matrix-history*.db",
+            "_agent_*/rtk-matrix-history*.db-shm",
+            "_agent_*/rtk-matrix-history*.db-wal",
+            "_agent_*/rtk_ignored_tools*.md",
+            "_agent_*/rtk-ignored-tools-*.md",
+            "_agent_*/**/__pycache__/",
+            "_agent_*/**/*.pyc",
+        ];
+        std::fs::write(
+            ac_root.join(".gitignore"),
+            seven_patterns.join("\n") + "\n",
+        )
+        .expect("write .gitignore");
+        let replica = ".ac/wg-1/__agent_replica/rtk_ignored_tools.md";
+        let path = project.join(replica);
+        std::fs::create_dir_all(path.parent().expect("fixture has a parent"))
+            .expect("create fixture dir");
+        std::fs::write(&path, b"fixture").expect("write Git fixture");
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .output()
+            .expect("git init");
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        let ignored = std::process::Command::new("git")
+            .args(["check-ignore", "--quiet", "--no-index", "--", replica])
+            .current_dir(&project)
+            .status()
+            .expect("git check-ignore")
+            .success();
+        assert!(!ignored, "{replica} must not be ignored by the 7 patterns alone");
     }
 }
