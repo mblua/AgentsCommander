@@ -3058,86 +3058,10 @@ impl MailboxPoller {
                     }
                     OutboxClassification::Standard(content) => content,
                 };
-                match self
+                let outcome = self
                     .process_message_content(app, &path, is_app_outbox, &standard_content)
-                    .await
-                {
-                    Ok(()) => {
-                        self.retry_tracker.remove(&path);
-                    }
-                    Err(e) => {
-                        let is_permanent = is_permanent_delivery_error(&e);
-                        let should_reject = is_permanent || {
-                            let state =
-                                self.retry_tracker
-                                    .entry(path.clone())
-                                    .or_insert(RetryState {
-                                        attempt_count: 0,
-                                        logged: false,
-                                    });
-                            state.attempt_count += 1;
-
-                            if !state.logged {
-                                log::warn!(
-                                    "Failed to process outbox message {:?} (attempt {}): {}",
-                                    path,
-                                    state.attempt_count,
-                                    e
-                                );
-                                state.logged = true;
-                            } else {
-                                log::debug!(
-                                    "Retry {} for outbox message {:?}: {}",
-                                    state.attempt_count,
-                                    path,
-                                    e
-                                );
-                            }
-
-                            state.attempt_count >= MAX_DELIVERY_ATTEMPTS
-                        };
-
-                        if should_reject {
-                            let reason = if is_permanent {
-                                e.clone()
-                            } else {
-                                let attempts = self
-                                    .retry_tracker
-                                    .get(&path)
-                                    .map(|s| s.attempt_count)
-                                    .unwrap_or(0);
-                                format!(
-                                    "Undeliverable after {} attempts. Last error: {}",
-                                    attempts, e
-                                )
-                            };
-
-                            // §130-stuck-file: on read failure (e.g. non-UTF-8 non-BOM file),
-                            // fall back to `reject_raw_file` so the file is moved to `rejected/`
-                            // instead of looping forever with `attempt_count >= MAX`.
-                            let rejected = match read_text_bom_tolerant(&path) {
-                                Ok(content) => {
-                                    if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content)
-                                    {
-                                        self.reject_message(&path, &msg, &reason).await.is_ok()
-                                    } else {
-                                        Self::reject_raw_file(&path, &reason).is_ok()
-                                    }
-                                }
-                                Err(_) => Self::reject_raw_file(&path, &reason).is_ok(),
-                            };
-
-                            if rejected {
-                                self.retry_tracker.remove(&path);
-                            } else {
-                                log::error!(
-                                    "Failed to reject outbox message {:?}; will retry",
-                                    path
-                                );
-                            }
-                        }
-                    }
-                }
+                    .await;
+                self.record_message_outcome(path, outcome).await;
             }
         }
 
@@ -3156,6 +3080,89 @@ impl MailboxPoller {
         self.poll_coding_agent_requests(app).await;
 
         Ok(())
+    }
+
+    /// (#1399) Today's `Ok`/`Err` bookkeeping for one outbox message, unchanged.
+    /// Called inline for a message the scanner settled itself, and from the
+    /// outcome drain for a message a worker settled. Takes `path` owned so
+    /// every expression in the relocated block stays textually identical.
+    async fn record_message_outcome(&mut self, path: PathBuf, outcome: Result<(), String>) {
+        match outcome {
+            Ok(()) => {
+                self.retry_tracker.remove(&path);
+            }
+            Err(e) => {
+                let is_permanent = is_permanent_delivery_error(&e);
+                let should_reject = is_permanent || {
+                    let state = self
+                        .retry_tracker
+                        .entry(path.clone())
+                        .or_insert(RetryState {
+                            attempt_count: 0,
+                            logged: false,
+                        });
+                    state.attempt_count += 1;
+
+                    if !state.logged {
+                        log::warn!(
+                            "Failed to process outbox message {:?} (attempt {}): {}",
+                            path,
+                            state.attempt_count,
+                            e
+                        );
+                        state.logged = true;
+                    } else {
+                        log::debug!(
+                            "Retry {} for outbox message {:?}: {}",
+                            state.attempt_count,
+                            path,
+                            e
+                        );
+                    }
+
+                    state.attempt_count >= MAX_DELIVERY_ATTEMPTS
+                };
+
+                if should_reject {
+                    let reason = if is_permanent {
+                        e.clone()
+                    } else {
+                        let attempts = self
+                            .retry_tracker
+                            .get(&path)
+                            .map(|s| s.attempt_count)
+                            .unwrap_or(0);
+                        format!(
+                            "Undeliverable after {} attempts. Last error: {}",
+                            attempts, e
+                        )
+                    };
+
+                    // §130-stuck-file: on read failure (e.g. non-UTF-8 non-BOM file),
+                    // fall back to `reject_raw_file` so the file is moved to `rejected/`
+                    // instead of looping forever with `attempt_count >= MAX`.
+                    let rejected = match read_text_bom_tolerant(&path) {
+                        Ok(content) => {
+                            if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content) {
+                                self.reject_message(&path, &msg, &reason).await.is_ok()
+                            } else {
+                                Self::reject_raw_file(&path, &reason).is_ok()
+                            }
+                        }
+                        Err(_) => Self::reject_raw_file(&path, &reason).is_ok(),
+                    };
+
+                    if rejected {
+                        self.retry_tracker.remove(&path);
+                    } else {
+                        log::error!(
+                            "Failed to reject outbox message {:?}; will retry",
+                            path
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn reject_malformed_pty_candidate(&self, path: &Path) {
