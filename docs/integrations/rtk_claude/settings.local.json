@@ -25,7 +25,31 @@
             "command": "node .claude/hooks/ac_rtk_claude_PowerShell.js"
           }
         ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/ac_rtk_claude_Tools.js"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Grep|Glob|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/ac_rtk_claude_Tools.js"
+          }
+        ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/statusline.sh\""
   }
 }
