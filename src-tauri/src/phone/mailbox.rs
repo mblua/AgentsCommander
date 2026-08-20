@@ -886,6 +886,31 @@ fn release_wake_claim(claim: &Path, origin: &Path) {
     }
 }
 
+/// (#1399) Send time for outbox ordering, or `None` when it cannot be read.
+/// Never a filter: `None` sorts first so an unreadable or malformed document
+/// still reaches the existing rejection path promptly.
+///
+/// Reads through `path_identity::read_bounded_regular` with the scan's own
+/// byte cap, never a bare `std::fs::read`: the sort runs before classification
+/// on every `*.json` in every outbox every cycle, so it must reach the same
+/// verdict the hardened scan reader would (bounded, no-follow, regular files
+/// only). Parsed as `serde_json::Value` because privileged PTY-input documents
+/// share the outbox with `OutboxMessage` and both schemas carry a top-level
+/// `timestamp`; parsed as RFC3339 rather than compared as bytes because
+/// producers emit variable-width fractions and offsets.
+fn outbox_message_send_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (bytes, _identity) = crate::path_identity::read_bounded_regular(
+        path,
+        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+    )
+    .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let raw = value.get("timestamp")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|sent| sent.with_timezone(&chrono::Utc))
+}
+
 /// #617 - sustained-idle window before a deferred provider-resolved logical
 /// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
@@ -3030,7 +3055,7 @@ impl MailboxPoller {
                 }
             }
 
-            let entries: Vec<PathBuf> = match std::fs::read_dir(outbox_dir) {
+            let mut entries: Vec<PathBuf> = match std::fs::read_dir(outbox_dir) {
                 Ok(rd) => rd
                     .filter_map(|e| e.ok())
                     .map(|e| e.path())
@@ -3042,6 +3067,21 @@ impl MailboxPoller {
                     .collect(),
                 Err(_) => continue,
             };
+
+            // (#1399) Process a batch in send order. `read_dir` yields NTFS
+            // filename order over random UUID names, so today's order is
+            // arbitrary; once the per-target lane defers the rest of a
+            // target's queue, that arbitrary order becomes the ADMISSION
+            // decision, re-rolled every cycle, and an already-queued message
+            // could be passed over indefinitely by newer arrivals whose names
+            // sort lower. `sort_by_cached_key` reads each file at most once;
+            // `None` sorts first so an unreadable document still reaches the
+            // existing rejection path promptly; the path tie-breaker makes
+            // equal timestamps deterministic. The length guard keeps the
+            // steady state (zero or one message) at exactly zero extra reads.
+            if entries.len() > 1 {
+                entries.sort_by_cached_key(|path| (outbox_message_send_time(path), path.clone()));
+            }
 
             for path in entries {
                 let standard_content = match classify_outbox_document(&path) {
@@ -21099,6 +21139,52 @@ mod tests {
         // Live: untouched (the G3 regression assertion).
         assert!(live.exists());
         assert!(!outbox.join("m-live.json").exists());
+    }
+
+    /// (#1399 T4) The sort key is send time, not filename: an earlier timestamp
+    /// in `zzzz.json` sorts before a later one in `aaaa.json`; malformed,
+    /// absent, and unreadable timestamps all yield `None`, which sorts first.
+    #[test]
+    fn outbox_send_time_orders_by_timestamp_not_filename() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path();
+
+        let earlier_in_zzzz = dir.join("zzzz.json");
+        let mut early = wake_message_to_target();
+        early.timestamp = "2026-07-15T00:00:01+00:00".into();
+        std::fs::write(
+            &earlier_in_zzzz,
+            serde_json::to_string_pretty(&early).unwrap(),
+        )
+        .unwrap();
+
+        let later_in_aaaa = dir.join("aaaa.json");
+        let mut late = wake_message_to_target();
+        // A different RFC3339 spelling (Z suffix, fractional part) must still
+        // compare correctly, which is why the key is parsed, not byte-ordered.
+        late.timestamp = "2026-07-15T00:00:02.500Z".into();
+        std::fs::write(&later_in_aaaa, serde_json::to_string_pretty(&late).unwrap()).unwrap();
+
+        let early_key = outbox_message_send_time(&earlier_in_zzzz).unwrap();
+        let late_key = outbox_message_send_time(&later_in_aaaa).unwrap();
+        assert!(early_key < late_key);
+
+        let malformed = dir.join("malformed.json");
+        let mut bad = wake_message_to_target();
+        bad.timestamp = "not-a-timestamp".into();
+        std::fs::write(&malformed, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
+        assert_eq!(outbox_message_send_time(&malformed), None);
+
+        let absent = dir.join("absent.json");
+        std::fs::write(&absent, "{\"id\":\"x\"}").unwrap();
+        assert_eq!(outbox_message_send_time(&absent), None);
+
+        // Not a regular file: the hardened reader refuses it, the key is None.
+        assert_eq!(outbox_message_send_time(dir), None);
+
+        // `None` sorts first under `Option::cmp`, so an unreadable document is
+        // never delayed behind valid traffic.
+        assert!(outbox_message_send_time(&malformed) < Some(early_key));
     }
 
     #[tokio::test]
