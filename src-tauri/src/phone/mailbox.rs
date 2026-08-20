@@ -14,6 +14,9 @@ use crate::config::injected_messages::{
     render, CONTEXT_ALERT_MESSAGE_ID, TOKEN_MEMBER, TOKEN_OBSERVED, TOKEN_THRESHOLDS,
     TOKEN_WORKGROUP,
 };
+use crate::config::instance_artifacts::{
+    PROJECT_REFRESH_REQUESTS_DIR_NAME, SESSION_REQUESTS_DIR_NAME,
+};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::config::teams;
@@ -10804,7 +10807,7 @@ impl MailboxPoller {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join("project-refresh-requests");
+        let requests_dir = config_dir.join(PROJECT_REFRESH_REQUESTS_DIR_NAME);
         let batch = collect_project_refresh_requests(&requests_dir);
 
         for payload in &batch.payloads {
@@ -10828,7 +10831,7 @@ impl MailboxPoller {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join("session-requests");
+        let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
         if !requests_dir.is_dir() {
             return;
         }

@@ -1266,9 +1266,23 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
     .collect()
 }
 
+// The `config::instance_artifacts` row is the #1446 artifact registry: a
+// pure-constants leaf with zero outgoing arcs in `src-tauri/module-arcs.txt`,
+// so an arc into it can neither create, grow, nor join any SCC (the same
+// argument `instance_gitignore_layering` records for its own row). It grants
+// the output seam no new capability: no I/O, no transport, no telegram
+// surface. It only lets the module name its three log artifacts
+// (`telegram-bridge.log`, `diag-raw.log`, `diag-sent.log`) through the
+// registry, so a rename breaks the build instead of silently reopening the
+// instance `.gitignore` coverage gap. The set stays equality-pinned: any
+// sixth dependency still turns this guard red.
 fn expected_output_dependencies() -> BTreeSet<DependencyObservation> {
     [
         (OUTPUT_SOURCE, "agentscommander_lib::config"),
+        (
+            OUTPUT_SOURCE,
+            "agentscommander_lib::config::instance_artifacts",
+        ),
         (OUTPUT_SOURCE, "agentscommander_lib::network"),
         (OUTPUT_SOURCE, "agentscommander_lib::telegram::api"),
         (OUTPUT_SOURCE, "agentscommander_lib::telegram::redact"),

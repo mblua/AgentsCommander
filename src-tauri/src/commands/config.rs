@@ -11,6 +11,7 @@ use uuid::Uuid;
 use sha2::{Digest, Sha256};
 
 use crate::api::auth;
+use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
 use crate::config::projects::{
     display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
     RawStringField, ResolvedPair, SideStatus, StructuralIssue,
@@ -77,7 +78,7 @@ pub(crate) struct SettingsDraftUpdateEvents {
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
     let path = crate::config::config_dir()
         .ok_or("No config dir")?
-        .join("debug-logs.txt");
+        .join(DEBUG_LOGS_FILE_NAME);
     tokio::fs::write(&path, &content)
         .await
         .map_err(|e| format!("Failed to write logs: {}", e))?;

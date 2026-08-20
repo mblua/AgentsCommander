@@ -1833,7 +1833,7 @@ pub fn run(
 
     // Create instance-private outbox directory and clean up stale ones
     let config_dir = config::config_dir().expect("Cannot determine home directory");
-    let instances_dir = config_dir.join("instances");
+    let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
 
     // Clean up old instance dirs (from previous runs)
     if let Ok(entries) = std::fs::read_dir(&instances_dir) {

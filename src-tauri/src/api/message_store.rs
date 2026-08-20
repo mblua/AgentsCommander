@@ -12,7 +12,9 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const DB_FILENAME: &str = "api-message-bus.sqlite3";
+use crate::config::instance_artifacts::PTY_INPUT_LOCKS_DIR_NAME;
+
+pub const DB_FILENAME: &str = crate::config::instance_artifacts::MESSAGE_BUS_DB_FILENAME;
 pub const INLINE_BODY_MAX_BYTES: usize = 256 * 1024;
 pub const DEFAULT_CONTENT_TYPE: &str = "text/markdown";
 pub const STATUS_QUEUED: &str = "queued";
@@ -645,7 +647,7 @@ fn try_stripe_lock_at(
 ) -> Result<Option<PtyInputStripeGuard>, MessageStoreError> {
     let parent_identity = crate::path_identity::verify_directory(parent)
         .map_err(|_| MessageStoreError::UnsafePath)?;
-    let lock_dir = parent.join("pty-input-locks");
+    let lock_dir = parent.join(PTY_INPUT_LOCKS_DIR_NAME);
     if !lock_dir.exists() {
         match std::fs::create_dir(&lock_dir) {
             Ok(()) => {}

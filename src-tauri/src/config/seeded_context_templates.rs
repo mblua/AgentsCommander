@@ -4,7 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME: &str = ".agentscommander-context-templates.json";
+pub const SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME: &str =
+    crate::config::instance_artifacts::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);

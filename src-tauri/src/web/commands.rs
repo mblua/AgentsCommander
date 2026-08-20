@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tauri::Manager;
 use uuid::Uuid;
 
+use crate::config::instance_artifacts::DEBUG_LOGS_FILE_NAME;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -720,7 +721,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let content = require_str(args, "content")?;
             let path = crate::config::config_dir()
                 .ok_or("No config dir")?
-                .join("debug-logs.txt");
+                .join(DEBUG_LOGS_FILE_NAME);
             tokio::fs::write(&path, &content)
                 .await
                 .map_err(|e| format!("Failed to write logs: {}", e))?;

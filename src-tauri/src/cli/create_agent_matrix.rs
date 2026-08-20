@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::create_agent;
 use crate::commands::entity_creation::{create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs};
+use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::projects::resolve_project_reference;
 
 #[derive(Args)]
@@ -208,7 +209,7 @@ pub(crate) fn execute_matrix_project_create(
 pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> Result<(), String> {
     let config_dir =
         crate::config::config_dir().ok_or("Cannot determine config directory".to_string())?;
-    let requests_dir = config_dir.join("project-refresh-requests");
+    let requests_dir = config_dir.join(PROJECT_REFRESH_REQUESTS_DIR_NAME);
     std::fs::create_dir_all(&requests_dir)
         .map_err(|e| format!("Failed to create project-refresh-requests dir: {}", e))?;
 
