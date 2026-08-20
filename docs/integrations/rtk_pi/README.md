@@ -4,7 +4,7 @@ For operators who want to know what a pi agent actually ran, not what it reporte
 
 The two seeded files are copied into this directory so you can review them without opening a replica:
 
-- [`extensions/tool-hook.ts`](extensions/tool-hook.ts), 293 lines, the pi extension (`tool_call` event)
+- [`extensions/tool-hook.ts`](extensions/tool-hook.ts), 294 lines, the pi extension (`tool_call` event)
 - [`rtk/ac-rtk.sh`](rtk/ac-rtk.sh), 317 bytes, the RTK launcher that strips the banner at the source
 
 Both are faithful copies of `<workspace>/.ac/default.pi/`, the seed AC installs from. Do not edit them here: this directory is a mirror, not the source.
@@ -58,7 +58,7 @@ RTK's own extension is a thin delegator: it asks `rtk rewrite`, mutates the comm
 
 ## What they cover: the four pi tools, and nothing else
 
-pi exposes exactly four tools, verified in the pi README: `read`, `write`, `edit` and `bash`. The extension's handler (`tool-hook.ts:267-293`) covers all four, and every other tool name returns early:
+pi exposes exactly four tools, verified in the pi README: `read`, `write`, `edit` and `bash`. The extension's handler (`tool-hook.ts:268-294`) covers all four, and every other tool name returns early:
 
 - `bash` is wrapped or rewritten (the routing rules below).
 - `read` is registered alongside the native read: the extension spawns `rtk read <path>` as a side effect and pi's own read proceeds untouched (see [The read rule](#the-read-rule)).
@@ -74,7 +74,7 @@ Take the timing seriously before you read either file as a record of the agent's
 
 ## The routing rules
 
-There is one rule per shell, chosen at load time by `configuredShell` (`tool-hook.ts:244-262`), which reads `shellPath` from the project `.pi/settings.json` and then `~/.pi/agent/settings.json`. The default is the `bash` rule; the `powershell` rule applies only when a settings file points `shellPath` at `pwsh`/`powershell`. Read the one for the shell your session runs.
+There is one rule per shell, chosen at load time by `configuredShell` (`tool-hook.ts:245-263`), which reads `shellPath` from the project `.pi/settings.json` and then `~/.pi/agent/settings.json`. The default is the `bash` rule; the `powershell` rule applies only when a settings file points `shellPath` at `pwsh`/`powershell`. Read the one for the shell your session runs.
 
 ### The `bash` rule
 
@@ -135,7 +135,7 @@ The first pair carries a parenthesis to both outcomes, which is why no list of s
 
 ### The `PowerShell` rule (dormant on the default shell)
 
-The rule used when `shellPath` points at `pwsh`/`powershell` is the Claude Code PowerShell hook ported: it asks the safety question **first**, then asks RTK (`decidePwsh`, `tool-hook.ts:232`). The order is inverted on purpose, and the reason is the same as on the Claude page: under PowerShell `ls`, `ps` and `diff` are aliases, so a rewrite swaps an object stream for a text stream, and a wrong rewrite silently breaks the agent's command where a missed rewrite costs one statistic. Nothing is prepended under this rule, so `$?` and redirected bytes behave natively.
+The rule used when `shellPath` points at `pwsh`/`powershell` is the Claude Code PowerShell hook ported: it asks the safety question **first**, then asks RTK (`decidePwsh`, `tool-hook.ts:233`). The order is inverted on purpose, and the reason is the same as on the Claude page: under PowerShell `ls`, `ps` and `diff` are aliases, so a rewrite swaps an object stream for a text stream, and a wrong rewrite silently breaks the agent's command where a missed rewrite costs one statistic. Nothing is prepended under this rule, so `$?` and redirected bytes behave natively.
 
 The safety question is asked of the PowerShell parser and of `Get-Command` through a probe (`headIsExternal`), never of a character class kept in the extension. The command clears the gate when it is a single statement, that statement is a single pipeline, the pipeline's first element is a plain command invocation with no call operator, its name is a bare name containing no `=`, and that name resolves to `Application` or does not resolve at all. Anything that goes wrong reads as false: fail closed, the cost is one statistic.
 
@@ -189,7 +189,7 @@ The warning comes from pi's startup migration check: what pi used to call hooks 
 
 ## The read rule
 
-pi's native `read` tool is not a shell tool, so rtk cannot wrap it. The extension registers the usage instead (`registerRead`, `tool-hook.ts:175-185`): on every `read` tool call it spawns `rtk read <path>` asynchronously with `stdio: "ignore"` and `unref()`, purely for the record, and pi's own read proceeds untouched. The spawn never blocks the read, never emits output, and never fails the call.
+pi's native `read` tool is not a shell tool, so rtk cannot wrap it. The extension registers the usage instead (`registerRead`, `tool-hook.ts:175-186`): on every `read` tool call it spawns `rtk read <path>` asynchronously with `stdio: "ignore"`, an `'error'` listener and `unref()`, purely for the record, and pi's own read proceeds untouched. The spawn never blocks the read, never emits output, and never fails the call.
 
 Two things to know about the record it leaves:
 
@@ -198,7 +198,7 @@ Two things to know about the record it leaves:
 
 ## The write and edit rule
 
-`write` and `edit` calls append one line to the ignored log (`tool-hook.ts:274-280`), with the tool field `Write:` or `Edit:` and the target path, timestamped in the same local-time format as bash entries. Path only, no content. Verified lines from the live tech-lead log:
+`write` and `edit` calls append one line to the ignored log (`tool-hook.ts:275-281`), with the tool field `Write:` or `Edit:` and the target path, timestamped in the same local-time format as bash entries. Path only, no content. Verified lines from the live tech-lead log:
 
 ```text
 20260820_034823 Write: D:\0_repos\AgentsCommander_iac\.ac\wg-19-dev-v5-team\__agent_tech-lead\scratch-verify.txt
@@ -213,7 +213,7 @@ These are the pi port's answer to the gap the Claude page describes: under Claud
 
 The extension derives the target from its own location (`LOG_FILE`, `tool-hook.ts:56-64`): two levels up from `.pi/extensions/` is the replica root, and the Matrix folder is the replica's name with one leading `_` dropped, so `__agent_foo` writes to `_agent_foo`. Verified end to end: an extension run from a scratch `__pi-replica/.pi/extensions/` wrote its lines to the derived `_pi-replica/rtk-ignored-tools-pi.md`.
 
-The derivation is mechanical, with no shape check, and that has one consequence worth measuring rather than assuming: from a root that does not start with `__`, the formula still points somewhere and the append still happens. `mkdirSync` on the parent (`tool-hook.ts:131`) creates the directory before the append, so the line lands wherever the formula points. In the real layout an agent running from its Matrix root `_agent_foo` derives a target one level above the workspace (a stray `__agent_foo` directory that `mkdirSync` creates silently), not the Matrix. Only a `__agent_*` replica root lands in the Matrix, which is what the `__` requirement means in practice. An empty or missing `rtk-ignored-tools-pi.md` therefore means either "nothing was ignored and nothing was written or edited" or "this agent never writes here", and the file cannot tell you which.
+The derivation is mechanical, with no shape check, and that has one consequence worth measuring rather than assuming: from a root that does not start with `__`, the formula still points somewhere and the append still happens. `mkdirSync` on the parent (`tool-hook.ts:131`) creates the directory before the append, so the line lands wherever the formula points. In the real layout an agent running from its Matrix root `_agent_foo` derives a target at the top level of the workspace, as a sibling of `.ac`: `<workspace>/__agent_foo/rtk-ignored-tools-pi.md` (a stray `__agent_foo` directory that `mkdirSync` creates silently). Verified from a scratch `.ac/_matrix-root/`: the line landed in the stray `<workspace>/__matrix-root/rtk-ignored-tools-pi.md`, right next to `.ac`, not in the Matrix. Only a `__agent_*` replica root lands in the Matrix, which is what the `__` requirement means in practice. An empty or missing `rtk-ignored-tools-pi.md` therefore means either "nothing was ignored and nothing was written or edited" or "this agent never writes here", and the file cannot tell you which.
 
 ### Format
 
@@ -233,7 +233,7 @@ The extension appends to the file. One line per entry, no header:
 
 ### The timestamps do not line up with the database
 
-`rtk-ignored-tools-pi.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../rtk.md#the-commands-table). Measured side by side for one event: the same `rtk ls -la .` invocation that wrote the log line `20260820_040320` (local time on the verifying machine, which is UTC+3) landed in `commands` with `timestamp` `2026-08-20T07:03:20.480969700+00:00`. The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
+`rtk-ignored-tools-pi.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../rtk.md#the-commands-table). Measured at the same instant, two separate invocations: the passed-through `echo hi` wrote the log line `20260820_204317` (local time; the measuring machine is UTC-3), and the routed `ls -la .` landed in `commands` with `timestamp` `2026-08-20T23:43:17.828209500+00:00`. One invocation can never produce both: a command is either routed (database row) or handed back untouched (log line), never both. The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
 
 ### An entry does not prove the command ran
 
@@ -262,7 +262,9 @@ The last two rows are the exceptions, and they are RTK's behaviour rather than t
 
 ### RTK missing from PATH breaks simple commands
 
-This is the one to watch. The extension calls `rtk rewrite` through `spawnSync`, which does not throw when the binary is absent, it returns empty stdout. Empty stdout is the fallback path, so a plain command still comes back rewritten. Measured with `rtk` off PATH: `ls -la` still mutated to the routed form, and the routed form dies with exit 127 when it runs. Commands carrying shell syntax keep working, because they take the passthrough path. So losing RTK does not degrade tracking quietly, it breaks the agent's simple shell commands while the complicated ones keep running. The `rtk read` registration spawn fails the same way, silently, because it is best-effort.
+This is the one to watch. The extension calls `rtk rewrite` through `spawnSync`, which does not throw when the binary is absent, it returns empty stdout. Empty stdout is the fallback path, so a plain command still comes back rewritten. Measured with `rtk` off PATH: `ls -la` still mutated to the routed form, and the routed form dies with exit 127 when it runs: the wrapper's own `exec rtk` reports `rtk: not found`, and 127 is exactly what a missing wrapper path gives too (see below). The seed ships `ac-rtk.sh` executable (755); with a wrapper that is not executable the shell reports its permission-denied exit 126 instead, so treat the precise code as environment-dependent. Commands carrying shell syntax keep working, because they take the passthrough path. So losing RTK does not degrade tracking quietly, it breaks the agent's simple shell commands while the complicated ones keep running.
+
+The `rtk read` registration spawn fails without breaking the session. `registerRead` attaches an `'error'` listener to the spawn (`tool-hook.ts:179`), so with `rtk` off PATH the ENOENT error event is consumed: the `read` tool call proceeds untouched, no record is written, nothing crashes, nothing prints. Best effort stays silent. An earlier seed without that listener died on the first `read` call (unhandled spawn `'error'` event); that crash is fixed in the current seed and is no longer reproducible.
 
 ### The wrapper moved mid-session
 
@@ -278,7 +280,7 @@ The extension is loaded once per session. Editing `.pi/extensions/tool-hook.ts` 
 
 ### An invalid `RTK_DB_PATH` loses the record silently
 
-The extension ignores the variable entirely. The routed command runs, prints its normal output and exits 0, and the row is never written (measured: `RTK_DB_PATH` pointing at a nonexistent directory, `rtk ls -la .` exits 0 with no error and no record). Nothing on this side reports it. [RTK usage and per-agent statistics](../rtk.md#failure-modes) covers how that surfaces when you read the statistics.
+The extension ignores the variable entirely. The routed command runs, prints its normal output and exits 0, and what happens to the row is rtk's business: a nonexistent directory is created silently, database included, and the row is recorded (measured with `RTK_DB_PATH` pointing at a missing directory: `rtk ls -la .` exits 0 and the row lands in the freshly created database). The record is lost silently only when the path cannot be created: a plain file blocking the directory, or an existing non-SQLite file at the database path (both measured: exit 0, no row, no message). Nothing on this side reports either outcome. [RTK usage and per-agent statistics](../rtk.md#failure-modes) covers how that surfaces when you read the statistics.
 
 ### The extension never blocks a tool
 

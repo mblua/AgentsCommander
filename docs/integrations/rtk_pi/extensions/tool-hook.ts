@@ -176,6 +176,7 @@ function registerRead(filePath: string): void {
   if (!filePath) return;
   try {
     const p = spawn("rtk", ["read", filePath], { stdio: "ignore", shell: false });
+    p.on("error", () => {}); // ENOENT etc.: best effort must stay silent
     p.unref();
   } catch {
     // best effort
