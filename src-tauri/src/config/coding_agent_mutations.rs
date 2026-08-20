@@ -32,7 +32,8 @@ use crate::config::settings::{
 use crate::pty::backend::SessionBackendKind;
 
 /// Subdirectory of the config dir holding pending coding-agent mutation requests.
-pub const CODING_AGENT_REQUESTS_DIR: &str = "coding-agent-requests";
+pub const CODING_AGENT_REQUESTS_DIR: &str =
+    crate::config::instance_artifacts::CODING_AGENT_REQUESTS_DIR_NAME;
 /// Results subdirectory (under the requests dir) the CLI polls for outcomes.
 pub const RESULTS_SUBDIR: &str = "results";
 /// A request older than this (poller `now` minus the CLI `createdAtMs`) is

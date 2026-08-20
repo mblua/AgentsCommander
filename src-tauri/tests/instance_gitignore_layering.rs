@@ -1940,9 +1940,9 @@ fn the_constant_home_names_nothing_at_all() {
          WHY THIS MATTERS MORE THAN IT LOOKS: #1273 is only correct while this \
          module cannot reach the cyclic SCC. Measured over the arcs of \
          `src-tauri/module-arcs.txt`, `agentscommander_lib::config` appears on \
-         the left of the separator zero times and on the right 49 times: it is a \
-         pure sink, and that is the entire non-absorption argument. A module with \
-         no way out cannot reach a knot member, so it cannot share an SCC with \
+         the left of the separator zero times and on the right many times: it is \
+         a pure sink, and that is the entire non-absorption argument. A module \
+         with no way out cannot reach a knot member, so it cannot share an SCC with \
          one, so `config::instance_gitignore`, which depends on it, cannot \
          either.\n\
          \n\

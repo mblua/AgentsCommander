@@ -27,6 +27,25 @@
 //!    introduces it. Nothing detects an omission mechanically, which is why the
 //!    rule is written down: "not in the registry" must never again mean "nobody
 //!    looked".
+//!
+//!    That claim rests entirely on the enumeration recipe of the #1446 plan
+//!    (`plans/1446-instance-gitignore-artifact-registry.md`, Section 7), which
+//!    is the procedure that produced this inventory and the only way to keep it
+//!    true. Its four legs exist because narrower sweeps missed real writers: leg
+//!    1 collects every way production obtains the instance directory, including
+//!    wrapper functions and parameters, not only literal `config_dir()` calls;
+//!    leg 2 finds publications file-scoped over that set, with no line window,
+//!    because a join can sit far below its root binding; leg 3 finds sibling
+//!    naming (`with_extension`, `with_file_name`, `parent.join`), which no
+//!    root-anchored sweep can see and which is how the rotated generations
+//!    stayed hidden through three inventories; leg 4 lists the real children of
+//!    at least two live instance directories as ground truth. Its stop-the-line
+//!    criterion is the other half: every candidate must be either matched by a
+//!    row, nested under a row that covers its subtree or rooted outside the
+//!    instance directory, or recorded in the plan as a deliberate exclusion. A
+//!    candidate in none of the three halts the change and becomes a product
+//!    question. Re-run the recipe when adding an artifact, and repair this claim
+//!    by adding rows, never by softening the sentence.
 
 /// What the policy does with an artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +96,20 @@ pub(crate) const ATOMIC_WRITE_TMP_GLOB: &str = ".*.*.tmp";
 pub(crate) const SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME: &str =
     ".agentscommander-context-templates.json";
 pub(crate) const ACTIVITY_LOG_FILE_NAME: &str = "activity.jsonl";
+/// Rotated generations of the activity log. The rotation writer composes the
+/// numeric suffix at runtime, so no constant can express a concrete generation;
+/// a registry test derives this glob from `ACTIVITY_LOG_FILE_NAME`.
+pub(crate) const ACTIVITY_LOG_ROTATION_GLOB: &str = "activity.jsonl.*";
+/// Transient siblings of the agency template cache: its lock and the three
+/// staging trees (`.next-`, `.download-`, `.prev-`). The literal dot is the
+/// whole mechanism keeping this rule off the suffix-less cache directory, which
+/// is a `Track` row; a registry test derives the glob from `AGENCY_TEMPLATES_DIR`
+/// so it can never be widened into the row it must not touch.
+pub(crate) const AGENCY_TEMPLATES_SIBLING_GLOB: &str = "agency-agents_templates.*";
 pub(crate) const API_AUDIT_LOG_FILE_NAME: &str = "api-audit.log";
+/// Rotated generations of the API audit log; same shape and same reason as
+/// `ACTIVITY_LOG_ROTATION_GLOB`.
+pub(crate) const API_AUDIT_LOG_ROTATION_GLOB: &str = "api-audit.log.*";
 pub(crate) const API_CLIENTS_REGISTRY_FILENAME: &str = "api-clients.json";
 pub(crate) const API_CLIENTS_LOCK_FILENAME: &str = "api-clients.lock";
 // No table row carries this name on its own: the glob below covers the database
@@ -89,6 +121,10 @@ pub(crate) const MESSAGE_BUS_DB_FILENAME: &str = "api-message-bus.sqlite3";
 /// test derives it from `MESSAGE_BUS_DB_FILENAME`.
 pub(crate) const MESSAGE_BUS_DB_GLOB: &str = "api-message-bus.sqlite3*";
 pub(crate) const CODEX_HOME_DIR_NAME: &str = "codex-home";
+/// The CLI-to-app coding-agent mutation request queue. Its `results/`
+/// subdirectory stays owner-side: the `Dir` row covers the whole subtree in one
+/// rule, the same stance `harness.log` gets under the `logs` row.
+pub(crate) const CODING_AGENT_REQUESTS_DIR_NAME: &str = "coding-agent-requests";
 pub(crate) const CONTEXT_CACHE_DIR_NAME: &str = "context-cache";
 pub(crate) const COORDINATOR_CLOCKS_FILE_NAME: &str = "coordinator_clocks.json";
 /// The clocks writer names its temporary by replacing the extension with
@@ -103,6 +139,9 @@ pub(crate) const GIT_GUARD_DIR_NAME: &str = "git-guard";
 pub(crate) const INSTANCES_DIR_NAME: &str = "instances";
 pub(crate) const LOGS_DIR_NAME: &str = "logs";
 pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str = "orphaned-sessions.archive.json";
+/// Rotated generations of the orphaned-session archive; same shape and same
+/// reason as `ACTIVITY_LOG_ROTATION_GLOB`.
+pub(crate) const ORPHAN_ARCHIVE_ROTATION_GLOB: &str = "orphaned-sessions.archive.json.*";
 pub(crate) const PROJECT_REFRESH_REQUESTS_DIR_NAME: &str = "project-refresh-requests";
 pub(crate) const PTY_INPUT_LOCKS_DIR_NAME: &str = "pty-input-locks";
 pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
@@ -114,6 +153,15 @@ pub(crate) const SETTINGS_MIGRATION_BACKUP_GLOB: &str = "settings.pre-*.json";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
 pub(crate) const UI_AUTOMATION_DIR_NAME: &str = "ui-automation";
 pub(crate) const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
+/// The live standalone global context template. Production retires it in place
+/// and never recreates it, and the entry holds the user's own bytes.
+pub(crate) const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
+/// Retirement backups of the standalone global context. The writer composes the
+/// timestamp (and a disambiguating index) at runtime from the live entry's own
+/// `file_name()`, so no constant can produce a concrete name; a registry test
+/// derives this glob from `GLOBAL_CONTEXT_TEMPLATE_FILENAME`.
+pub(crate) const GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB: &str =
+    "Context.AgentsCommander.md.retired-*.bak";
 pub(crate) const AGENCY_TEMPLATES_DIR: &str = "agency-agents_templates";
 pub(crate) const AGENT_TEMPLATES_DIR_NAME: &str = "agent-templates";
 pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
@@ -163,10 +211,28 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: append-only working-state activity log",
     },
     InstanceArtifact {
+        name: ACTIVITY_LOG_ROTATION_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: rotated generations of the activity log; the same runtime artifact under a numeric suffix",
+    },
+    InstanceArtifact {
+        name: AGENCY_TEMPLATES_SIBLING_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient agency template cache lock and staging trees (.lock, .next-, .download-, .prev-); the tracked cache directory itself carries no dot and is not matched",
+    },
+    InstanceArtifact {
         name: API_AUDIT_LOG_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: append-only API audit log",
+    },
+    InstanceArtifact {
+        name: API_AUDIT_LOG_ROTATION_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: rotated generations of the API audit log; the same runtime artifact under a numeric suffix",
     },
     InstanceArtifact {
         name: API_CLIENTS_REGISTRY_FILENAME,
@@ -199,10 +265,26 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: application log",
     },
     InstanceArtifact {
+        // Table literal: `app.log` itself is a pre-registry rule whose writer
+        // this change deliberately leaves alone, so there is no constant to
+        // derive this glob from and inventing one no writer imports would add a
+        // third list rather than a tie.
+        name: "app.log.*",
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: rotated generations of the application log; the same runtime artifact under a numeric suffix",
+    },
+    InstanceArtifact {
         name: CODEX_HOME_DIR_NAME,
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: per-agent isolated coding-agent home trees",
+    },
+    InstanceArtifact {
+        name: CODING_AGENT_REQUESTS_DIR_NAME,
+        kind: ArtifactKind::Dir,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
     },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
@@ -295,6 +377,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: archived orphaned-session records",
     },
     InstanceArtifact {
+        name: ORPHAN_ARCHIVE_ROTATION_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: rotated generations of the archived orphaned-session records; the same runtime artifact under a numeric suffix",
+    },
+    InstanceArtifact {
         name: PROJECT_REFRESH_REQUESTS_DIR_NAME,
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
@@ -365,6 +453,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: local web token",
+    },
+    InstanceArtifact {
+        name: GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Track,
+        comment: "# AgentsCommander: legacy standalone global context template; production retires it in place and never recreates it, and the entry holds user bytes; tracked on purpose",
+    },
+    InstanceArtifact {
+        name: GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Track,
+        comment: "# AgentsCommander: retirement backups of the standalone global context; user bytes, tracked on purpose",
     },
     InstanceArtifact {
         name: ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
@@ -538,6 +638,47 @@ mod tests {
                 "{negative:?} is outside the glob and must not match"
             );
         }
+    }
+
+    #[test]
+    fn agency_templates_sibling_glob_derives_from_the_templates_dir() {
+        // This is what keeps the sibling rule and the tracked cache directory
+        // from drifting apart: the glob is provably the tracked name plus a
+        // literal dot, so it cannot be widened into the row it must not touch.
+        assert_eq!(
+            AGENCY_TEMPLATES_SIBLING_GLOB,
+            format!("{AGENCY_TEMPLATES_DIR}.*")
+        );
+    }
+
+    #[test]
+    fn rotation_globs_derive_from_their_live_artifact_names() {
+        // A table rather than three near-identical tests, so a fifth rotating
+        // artifact adds a row instead of a test. `app.log.*` is deliberately
+        // absent: its live row is a table literal whose writer this change
+        // leaves alone, so there is no constant to derive it from.
+        for (rotation_glob, live_name) in [
+            (ACTIVITY_LOG_ROTATION_GLOB, ACTIVITY_LOG_FILE_NAME),
+            (API_AUDIT_LOG_ROTATION_GLOB, API_AUDIT_LOG_FILE_NAME),
+            (ORPHAN_ARCHIVE_ROTATION_GLOB, ORPHAN_ARCHIVE_FILENAME),
+        ] {
+            assert_eq!(
+                rotation_glob,
+                format!("{live_name}.*"),
+                "the rotation glob of {live_name:?} must be its live name plus a \
+                 suffix wildcard: the writer composes the generation number at \
+                 runtime, so this derivation is the only tie between the rule and \
+                 the artifact it covers"
+            );
+        }
+    }
+
+    #[test]
+    fn global_context_retired_backup_glob_derives_from_the_context_filename() {
+        assert_eq!(
+            GLOBAL_CONTEXT_RETIRED_BACKUP_GLOB,
+            format!("{GLOBAL_CONTEXT_TEMPLATE_FILENAME}.retired-*.bak")
+        );
     }
 
     #[test]

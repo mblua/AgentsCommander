@@ -7,7 +7,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
 
-pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
+pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str =
+    crate::config::instance_artifacts::GLOBAL_CONTEXT_TEMPLATE_FILENAME;
 const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =

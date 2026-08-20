@@ -548,6 +548,7 @@ agentscommander_lib::config::archive_gate -> agentscommander_lib::config::ac_roo
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::projects
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::config::archive_gate -> agentscommander_lib::config::settings
+agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::config::settings
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::pty::backend
 agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::ac_root

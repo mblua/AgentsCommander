@@ -741,6 +741,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "Context.AgentsCommander.md",
+                "Context.AgentsCommander.md.retired-*.bak",
                 "Context.root-agent.md",
                 "ac-root-agent",
                 "agency-agents_templates",
@@ -965,7 +967,18 @@ mod tests {
             ".agentscommander-injected-messages.json",
             ".api-clients-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed.tmp",
             "activity.jsonl",
+            "activity.jsonl.1",
+            // The four agency template cache siblings, one sample per shape the
+            // writers can produce. The three staging shapes are whole directory
+            // trees and their rule carries no trailing slash, so the nested
+            // samples are what prove a matched directory still ignores its
+            // contents.
+            "agency-agents_templates.lock",
+            "agency-agents_templates.next-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed/engineering/role.md",
+            "agency-agents_templates.download-2c8e7dda-ccae-5c3e-ac6e-bc9eacce5df1/.git-clone-marker",
+            "agency-agents_templates.prev-3d9f8eeb-ddbf-6d4f-bd7f-cdafbddf6ea2/design/role.md",
             "api-audit.log",
+            "api-audit.log.1",
             "api-clients.json",
             "api-clients.lock",
             "api-message-bus.sqlite3",
@@ -977,7 +990,18 @@ mod tests {
             "api-message-bus.sqlite3-journal",
             "app-outbox-path.txt",
             "app.log",
+            // Both ends of the rotation range (`APP_LOG_KEEP = 5`), so the
+            // sample set proves the glob spans every generation rather than only
+            // its first. `app.log.1` used to be a control asserting it must NOT
+            // be ignored; covering it is a declared reversal of that #1164
+            // narrowness control, because it is a live rotated generation.
+            "app.log.1",
+            "app.log.5",
             "codex-home/agent-1/config.toml",
+            // The nested sample proves the Dir row covers the `results/` subtree
+            // in one rule.
+            "coding-agent-requests/req-1.json",
+            "coding-agent-requests/results/res-1.json",
             "context-cache/ac-context-1.md",
             "coordinator_clocks.json",
             "coordinator_clocks.json.4242.7.tmp",
@@ -993,6 +1017,8 @@ mod tests {
             "logs/harness.log",
             "master-token.txt",
             "orphaned-sessions.archive.json",
+            // The `ORPHAN_ARCHIVE_KEEP` edge.
+            "orphaned-sessions.archive.json.3",
             "project-refresh-requests/req-1.json",
             "pty-input-locks/operation-1.lock",
             "session-requests/create-1.json",
@@ -1046,7 +1072,6 @@ mod tests {
         }
 
         let control_paths = [
-            "app.log.1",
             "cache/entry.bin",
             "state.sqlite",
             "ac-root-agent/unrelated/config.json",
@@ -1057,14 +1082,31 @@ mod tests {
             // The Track set of product decision 6: these are user-editable and
             // must stay visible to git.
             "agent-templates/default-role.md",
+            // Load-bearing: this is what proves the `agency-agents_templates.*`
+            // glob does not reach the suffix-less tracked directory. The literal
+            // dot is the whole mechanism.
             "agency-agents_templates/engineering/role.md",
+            // Load-bearing: this is what proves the `coding-agent-requests/` row
+            // does not reach its byte-order neighbour.
             "coding-agents/agents.json",
             "Context.root-agent.md",
+            // The standalone global context and both retirement-backup shapes:
+            // all three hold the user's own bytes.
+            "Context.AgentsCommander.md",
+            "Context.AgentsCommander.md.retired-20260820-101112Z.bak",
+            "Context.AgentsCommander.md.retired-20260820-101112Z.3.bak",
             "ac-root-agent/CLAUDE.md",
             // The atomic-write glob stays narrow, at the root and at depth.
             "foo.tmp",
             ".foo.tmp",
             "sub/foo.tmp",
+            // The rotation rows are anchored globs, not a second any-depth rule:
+            // they must not reach a subdirectory.
+            "sub/app.log.1",
+            "sub/activity.jsonl.1",
+            // The literal dot in each rotation glob is load-bearing, not
+            // decorative.
+            "applog.1",
         ];
         for relative in control_paths {
             let path = config_dir.join(relative);
