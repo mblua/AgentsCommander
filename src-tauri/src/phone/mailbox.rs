@@ -911,6 +911,29 @@ fn outbox_message_send_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>
         .map(|sent| sent.with_timezone(&chrono::Utc))
 }
 
+/// (#1399) Collapse spellings of one physical outbox to a single entry, keyed
+/// by file-object identity. Two spellings of one directory (case, separator,
+/// 8.3 short name) would otherwise both be scanned, keep two independent
+/// `retry_tracker` counters, and let reclamation under the second spelling
+/// resurrect a claim owned under the first.
+///
+/// `is_dir()` FIRST. `verify_directory` is expensive (one `symlink_metadata`
+/// per path component plus its own handle work, roughly 14 syscalls for a WG
+/// replica outbox), the component walk stats every ancestor before the leaf
+/// fails, and the large majority of registered projects have no outbox. The
+/// cheap `is_dir()` is already the outbox loop's own first test, so filtering
+/// on it here costs nothing and keeps thousands of stat calls off the 3 s
+/// cycle this issue exists to make fast.
+fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
+    outbox_dirs.retain(|dir| dir.is_dir());
+    let mut seen = std::collections::HashSet::new();
+    outbox_dirs.retain(|dir| match crate::path_identity::verify_directory(dir) {
+        Ok(identity) => seen.insert(identity.object_id),
+        // Unverifiable: keep it, and let the existing `is_dir()` guard decide.
+        Err(_) => true,
+    });
+}
+
 /// #617 - sustained-idle window before a deferred provider-resolved logical
 /// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
@@ -3042,6 +3065,12 @@ impl MailboxPoller {
                     .join("outbox")
             })
             .collect();
+        // (#1399 R9) Dedup BEFORE the app outbox is pushed: `retain` keeps the
+        // first occurrence, so running it over the full list could drop the
+        // app entry in favour of an aliasing project spelling and silently
+        // turn `is_app_outbox` false. This ordering makes that structurally
+        // impossible.
+        dedup_outbox_dirs_by_object_id(&mut outbox_dirs);
         outbox_dirs.push(PathBuf::from(&app_outbox_path));
 
         for outbox_dir in &outbox_dirs {
@@ -21185,6 +21214,40 @@ mod tests {
         // `None` sorts first under `Option::cmp`, so an unreadable document is
         // never delayed behind valid traffic.
         assert!(outbox_message_send_time(&malformed) < Some(early_key));
+    }
+
+    /// (#1399 T8) Two spellings of one physical outbox collapse to one entry,
+    /// so one directory can never be scanned (or reclaimed) twice.
+    #[test]
+    fn outbox_dir_spellings_collapse_to_one_physical_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().join("outbox");
+        std::fs::create_dir_all(&dir).unwrap();
+        let alternate = PathBuf::from(dir.to_string_lossy().replace('\\', "/"));
+
+        // Not `#[ignore]`: skip at runtime where the platform cannot express
+        // the aliasing under test (the two spellings resolve to different
+        // objects or one of them does not verify).
+        let same_object = match (
+            crate::path_identity::verify_directory(&dir),
+            crate::path_identity::verify_directory(&alternate),
+        ) {
+            (Ok(a), Ok(b)) => a.object_id == b.object_id,
+            _ => false,
+        };
+        if !same_object {
+            return;
+        }
+
+        let mut dirs = vec![dir.clone(), alternate];
+        dedup_outbox_dirs_by_object_id(&mut dirs);
+        assert_eq!(dirs, vec![dir.clone()]);
+
+        // A nonexistent path is unverifiable and must be dropped by the
+        // `is_dir()` prefilter, not passed to `verify_directory`.
+        let mut with_missing = vec![dir.clone(), temp.path().join("no-such-outbox")];
+        dedup_outbox_dirs_by_object_id(&mut with_missing);
+        assert_eq!(with_missing, vec![dir]);
     }
 
     #[tokio::test]
