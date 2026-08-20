@@ -243,6 +243,31 @@ describe("Titlebar webserver menu", () => {
     expect(byTestId("titlebar.webserver.menu").textContent).toContain("9000");
   });
 
+  it("displays local browser destinations without changing the configured bind", async () => {
+    const cases = [
+      ["0.0.0.0", "http://127.0.0.1:8888"],
+      ["::", "http://[::1]:8888"],
+      ["127.0.0.1", "http://127.0.0.1:8888"],
+      ["192.168.1.50", "http://192.168.1.50:8888"],
+      ["::1", "http://[::1]:8888"],
+      ["2001:db8::25", "http://[2001:db8::25]:8888"],
+    ] as const;
+
+    for (const [bind, browserUrl] of cases) {
+      const mounted = await mountTitlebar({
+        settings: { webServerBind: bind, webServerPort: 8888 },
+      });
+
+      await openWebServerMenu(mounted);
+
+      expect(document.querySelector(".webserver-url")?.textContent).toBe(browserUrl);
+      expect(document.querySelector(".webserver-bind-value[title]")?.textContent).toBe(bind);
+
+      cleanups.pop()?.();
+      document.body.innerHTML = "";
+    }
+  });
+
   it("keeps the globe and layout dropdowns mutually exclusive", async () => {
     const mounted = await mountTitlebar();
 
