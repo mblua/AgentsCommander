@@ -832,6 +832,60 @@ fn is_permanent_delivery_error(error: &str) -> bool {
         || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
 }
 
+/// (#1399) Claim marker for a message handed to a wake worker. Suffix, not a
+/// subdirectory, so `move_to_delivered` / `reject_message` / the outbox-project
+/// walk-up keep deriving from the same parent directory.
+// (#1399) allow(dead_code): referenced only by tests until the Step 6 wiring
+// in `poll()` lands; the allows are removed there.
+#[allow(dead_code)]
+const WAKE_CLAIM_SUFFIX: &str = ".in-flight";
+#[allow(dead_code)]
+const WAKE_CLAIM_EXTENSION: &str = "in-flight";
+
+/// (#1399) `<dir>/<id>.json` -> `<dir>/<id>.json.in-flight`. Appends to the
+/// `OsString` of `file_name()` and uses `with_file_name`, never
+/// `Path::with_extension`, so an id containing a dot cannot lose a component.
+#[allow(dead_code)]
+fn wake_claim_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    name.push(WAKE_CLAIM_SUFFIX);
+    path.with_file_name(name)
+}
+
+/// (#1399) Inverse of `wake_claim_path`. `Some` only when the file name ends
+/// with exactly `.json.in-flight`: reclamation must never resurrect a file this
+/// poller could not have claimed. Strips from `file_name()`, never via
+/// `with_extension`, so an id containing a dot survives; a non-UTF-8 name
+/// yields `None`, the right answer for a file this poller did not write.
+#[allow(dead_code)]
+fn wake_claim_origin(claim: &Path) -> Option<PathBuf> {
+    let name = claim.file_name()?.to_str()?;
+    let origin = name.strip_suffix(WAKE_CLAIM_SUFFIX)?;
+    if !origin.ends_with(".json") {
+        return None;
+    }
+    Some(claim.with_file_name(origin))
+}
+
+/// (#1399) Return a claim to its outbox path after a failed delivery. On
+/// failure the claim stays on disk and unowned once its outcome drains, so
+/// every-cycle reclamation retries the rename until it succeeds; the message is
+/// never invisible and unowned at the same time.
+#[allow(dead_code)]
+fn release_wake_claim(claim: &Path, origin: &Path) {
+    if let Err(error) = std::fs::rename(claim, origin) {
+        log::error!(
+            "[mailbox] #1399 failed to return claim {:?} to {:?}: {}",
+            claim,
+            origin,
+            error
+        );
+    }
+}
+
 /// #617 - sustained-idle window before a deferred provider-resolved logical
 /// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
@@ -2490,6 +2544,11 @@ pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
     snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
+    /// (#1399) Claim paths this process has handed to a worker whose outcome
+    /// has not yet been drained. Membership is the EXACT definition of "a live
+    /// delivery owns this claim"; anything else on disk is unowned and must be
+    /// returned to its outbox.
+    live_claims: std::collections::HashSet<PathBuf>,
     #[cfg(test)]
     test_hooks: Option<MailboxTestHooks>,
 }
@@ -2660,6 +2719,7 @@ impl MailboxPoller {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
+            live_claims: std::collections::HashSet::new(),
             #[cfg(test)]
             test_hooks: None,
         }
@@ -2671,6 +2731,7 @@ impl MailboxPoller {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
+            live_claims: std::collections::HashSet::new(),
             test_hooks: Some(test_hooks),
         }
     }
@@ -2743,6 +2804,71 @@ impl MailboxPoller {
                         error.kind()
                     );
                 }
+            }
+        }
+    }
+
+    /// (#1399) Return every claim with no live owner to the outbox. A claim is
+    /// unowned iff it is absent from `self.live_claims`, which is exact rather
+    /// than temporal: at the first cycle the set is empty, so every claim left
+    /// by a previous process is returned; afterwards a claim is skipped
+    /// precisely while its worker is running and its outcome is undrained.
+    /// Assumes one daemon per outbox (different builds never share one, because
+    /// `config::agent_local_dir_name()` derives the outbox from the binary
+    /// stem).
+    #[allow(dead_code)]
+    fn reclaim_unowned_wake_claims(&self, outbox_dir: &Path, claims: &[PathBuf]) {
+        for claim in claims {
+            if self.live_claims.contains(claim) {
+                continue;
+            }
+            let Some(origin) = wake_claim_origin(claim) else {
+                continue;
+            };
+            // Sound because every outbox writer names the file `<msg.id>.json`
+            // (cli send / close_session / self_switch / self_clear / purge_wg /
+            // raise_hand); a writer breaking that convention breaks this
+            // receipt check.
+            let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            // The receipt is the proof the delivery already completed. Deleting
+            // the claim in that case is what makes reclamation unable to
+            // deliver twice.
+            let settled = outbox_dir
+                .join("delivered")
+                .join(format!("{}.json", id))
+                .exists()
+                || outbox_dir
+                    .join("rejected")
+                    .join(format!("{}.json", id))
+                    .exists();
+            if settled {
+                // (#1399 R6) Keep the Result: `remove_file` fails under exactly
+                // the locked-handle condition that is ordinary on Windows, and
+                // a log line reporting an action that did not happen costs an
+                // hour in an incident. Self-heals on a later cycle either way.
+                match std::fs::remove_file(claim) {
+                    Ok(()) => log::warn!(
+                        "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
+                        id
+                    ),
+                    Err(error) => log::warn!(
+                        "[mailbox] #1399 could not drop unowned claim {}: {}",
+                        id,
+                        error
+                    ),
+                }
+            } else if let Err(error) = std::fs::rename(claim, &origin) {
+                // Retried on the next cycle. This is the only reason a locked
+                // file cannot wedge the message.
+                log::warn!(
+                    "[mailbox] #1399 could not return unowned claim {}: {}",
+                    id,
+                    error
+                );
+            } else {
+                log::warn!("[mailbox] #1399 returned unowned claim {} to the outbox", id);
             }
         }
     }
@@ -20896,6 +21022,76 @@ mod tests {
             .join("poll-pi-busy-clear.reason.txt")
             .exists());
         assert!(mock_pty_writes_for(&app, session_id).is_empty());
+    }
+
+    /// (#1399 T2) The claim is a same-directory suffix: invisible to the
+    /// `extension() == "json"` scan filter, same archive parent, exact inverse.
+    #[test]
+    fn wake_claim_is_a_same_directory_suffix_with_an_exact_inverse() {
+        let origin = Path::new("outbox-dir/abc.json");
+        let claim = wake_claim_path(origin);
+        assert_eq!(claim, PathBuf::from("outbox-dir/abc.json.in-flight"));
+        assert_eq!(claim.extension().and_then(|s| s.to_str()), Some("in-flight"));
+        assert_eq!(claim.parent(), origin.parent());
+        assert_eq!(wake_claim_origin(&claim), Some(origin.to_path_buf()));
+        // An id containing a dot survives the round trip (with_extension would
+        // truncate it).
+        let dotted = Path::new("outbox-dir/a.b.json");
+        assert_eq!(
+            wake_claim_origin(&wake_claim_path(dotted)),
+            Some(dotted.to_path_buf())
+        );
+        // Never a claim this poller wrote: no suffix, or not a `.json` origin.
+        assert_eq!(wake_claim_origin(Path::new("outbox-dir/abc.json")), None);
+        assert_eq!(
+            wake_claim_origin(Path::new("outbox-dir/abc.txt.in-flight")),
+            None
+        );
+    }
+
+    /// (#1399 T3) Reclamation, all four branches: an unowned claim with no
+    /// receipt is returned; a claim whose receipt exists is deleted without
+    /// recreating the message (the no-double-delivery assertion, for both
+    /// `delivered/` and `rejected/`); a claim in `live_claims` is untouched.
+    #[test]
+    fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let outbox = temp.path().join("outbox");
+        std::fs::create_dir_all(outbox.join("delivered")).unwrap();
+        std::fs::create_dir_all(outbox.join("rejected")).unwrap();
+
+        let unowned = outbox.join("m-unowned.json.in-flight");
+        let delivered = outbox.join("m-delivered.json.in-flight");
+        let rejected = outbox.join("m-rejected.json.in-flight");
+        let live = outbox.join("m-live.json.in-flight");
+        for claim in [&unowned, &delivered, &rejected, &live] {
+            std::fs::write(claim, "{}").unwrap();
+        }
+        std::fs::write(outbox.join("delivered").join("m-delivered.json"), "{}").unwrap();
+        std::fs::write(outbox.join("rejected").join("m-rejected.json"), "{}").unwrap();
+
+        let mut poller = MailboxPoller::new();
+        poller.live_claims.insert(live.clone());
+        let claims = vec![
+            unowned.clone(),
+            delivered.clone(),
+            rejected.clone(),
+            live.clone(),
+        ];
+
+        poller.reclaim_unowned_wake_claims(&outbox, &claims);
+
+        // Unowned, no receipt: renamed back to the outbox.
+        assert!(!unowned.exists());
+        assert!(outbox.join("m-unowned.json").exists());
+        // Receipt present: claim deleted, message NOT recreated.
+        assert!(!delivered.exists());
+        assert!(!outbox.join("m-delivered.json").exists());
+        assert!(!rejected.exists());
+        assert!(!outbox.join("m-rejected.json").exists());
+        // Live: untouched (the G3 regression assertion).
+        assert!(live.exists());
+        assert!(!outbox.join("m-live.json").exists());
     }
 
     #[tokio::test]
