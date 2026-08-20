@@ -1,7 +1,11 @@
 //! #1273 layering guard: `crate::config::instance_gitignore` may not name
 //! `crate::config::root_agent`, nor anything else that can reach the crate's
 //! cyclic SCC, and the module that now holds `ROOT_AGENT_DIR_NAME`,
-//! `crate::config`, may not name anything at all.
+//! `crate::config`, may not name anything at all. #1446 added a third scanned
+//! unit on the same argument: `crate::config::instance_artifacts`, the artifact
+//! registry the guarded module now derives its rules from, may not name anything
+//! either, because a module with zero outgoing arcs is the only kind that is
+//! safe for knot members to depend on.
 //!
 //! WHAT THIS GUARD IS, AND WHAT IT IS NOT.
 //!
@@ -11,7 +15,8 @@
 //! so a spelling it does not know about passes it. The authoritative check is
 //! the cycle detector run over the module graph, whose
 //! `coverage.graphShape.cyclicSccs` must stay at 1 with
-//! `sccSize(agentscommander_lib::config::instance_gitignore) = 1`. A green
+//! `sccSize(agentscommander_lib::config::instance_gitignore) = 1` and
+//! `sccSize(agentscommander_lib::config::instance_artifacts) = 1`. A green
 //! result here means "no known spelling is present", never "the cycle is
 //! impossible".
 //!
@@ -31,8 +36,8 @@
 //! WHY THE CONSTANT'S NEW HOME IS GUARDED TOO. #1273 took
 //! `config::instance_gitignore` out of the knot by moving one `pub const` down
 //! into `crate::config`, and the argument that the knot cannot absorb it rests
-//! on `crate::config` having **zero outgoing arcs**, measured over the 976 of
-//! `src-tauri/module-arcs.txt`. **That premise fails on an outgoing arc, not an
+//! on `crate::config` having **zero outgoing arcs**, measured over the record
+//! in `src-tauri/module-arcs.txt`. **That premise fails on an outgoing arc, not an
 //! incoming one.** One `use crate::<any knot member>::...;` in `src/config/mod.rs`
 //! puts `config` into the knot and drags this module straight back in with it,
 //! and the assertions about `instance_gitignore` stay green throughout, because
@@ -126,7 +131,7 @@
 //!   8. **The fully unanchored path, and it is the important one.** The detector
 //!      shares this blind spot and it is measured on production code:
 //!      `src/lib.rs:1178` constructs `loops::scheduler::LoopScheduler::new()` and
-//!      **no `lib -> loops` arc exists** among the 976. A path that begins with
+//!      **no `lib -> loops` arc exists** in the record. A path that begins with
 //!      neither `crate::` nor `super::` is invisible to the record AND to both
 //!      equalities here. Inside this module such a path needs a name in scope,
 //!      which needs an import this guard does see, with one exception: the single
@@ -495,7 +500,7 @@ use std::path::{Path, PathBuf};
 /// needs is one level up and is written `super::`. An empty equality therefore
 /// refuses **every** `crate::`-anchored reference, not merely a reference to
 /// `config::root_agent`, and that breadth is the point. The module's exposure is
-/// that it may name any of the 87 remaining knot members and fall straight back
+/// that it may name any other knot member and fall straight back
 /// in; `root_agent` is only today's spelling.
 ///
 /// Adding the first row here is a decision about the crate's shape and must be
@@ -506,7 +511,7 @@ const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// `super::`, sorted.
 ///
 /// This is where this module actually lives, so this is the table that has to be
-/// right. Six pairs, one file:
+/// right. Seven pairs, one file:
 ///
 /// - `*` is the single `use super::*;` inside `#[cfg(test)] mod tests`, where
 ///   `super` is this module itself. See entry 9 of the uncovered list for why
@@ -529,6 +534,14 @@ const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 0] = [];
 ///   config::injected_messages` and this module is back in the knot. This guard
 ///   cannot tell the two positions apart; the detector can, and is the check
 ///   that decides.
+/// - `instance_artifacts` is the artifact registry #1446 added, and unlike
+///   `injected_messages` it is allowed in **production** code. The reason is a
+///   property of the target, not of the position: that module has zero outgoing
+///   arcs, so it is a trivial SCC whatever points at it, and an arc into it can
+///   neither join nor create a cycle. `the_registry_names_nothing_at_all` below
+///   is what holds that property, which is why this row and that test have to be
+///   read together. The registry is where `required_rules` gets the artifact
+///   table it derives every static rule from.
 /// - `super` is the leading segment of every `super::super::...` path, reported by
 ///   the matcher as itself rather than dropped.
 ///
@@ -536,19 +549,20 @@ const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// would make the observed set a union over every scanned file, so a reference
 /// added to a future submodule of this module would leave the set unmoved and
 /// pass.
-const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 6] = [
+const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 7] = [
     ("src/config/instance_gitignore.rs", "*"),
     ("src/config/instance_gitignore.rs", "ROOT_AGENT_DIR_NAME"),
     ("src/config/instance_gitignore.rs", "agent_local_dir_name"),
     ("src/config/instance_gitignore.rs", "config_dir"),
     ("src/config/instance_gitignore.rs", "injected_messages"),
+    ("src/config/instance_gitignore.rs", "instance_artifacts"),
     ("src/config/instance_gitignore.rs", "super"),
 ];
 
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `crate::`, sorted.
 ///
-/// **Empty.** `src/config/mod.rs` measures zero outgoing arcs over the 976, and
+/// **Empty.** `src/config/mod.rs` measures zero outgoing arcs over the record, and
 /// that measurement is the whole non-absorption argument of #1273: a module with
 /// no way out cannot reach a knot member, so it cannot share an SCC with one, so
 /// nothing that depends only on it can either.
@@ -590,6 +604,40 @@ const ALLOWED_GUARDED_SELF_REFERENCES: [(&str, &str); 0] = [];
 /// detector is **not** blind to it: `self::` resolves and the arc is recorded.
 const ALLOWED_HOST_SELF_REFERENCES: [(&str, &str); 0] = [];
 
+/// Every `(file, child)` reference the artifact registry is allowed to make
+/// under `crate::`, sorted.
+///
+/// **Empty, and the emptiness is the whole reason the registry is safe to
+/// depend on.** #1446 inverted the natural direction on purpose: the registry
+/// declares the artifact names and the modules that write them alias it, rather
+/// than the registry importing each owner's constant. The inverse would have
+/// needed an arc in both directions with `api::message_store`, which is a
+/// two-node cycle by construction. As written, every arc into this module
+/// terminates in a node with out-degree zero, which is a trivial SCC no matter
+/// its in-degree, so no arc into it can join, grow or create a cycle.
+const ALLOWED_REGISTRY_CRATE_REFERENCES: [(&str, &str); 0] = [];
+
+/// Every `(file, child)` reference the artifact registry is allowed to make
+/// under `super::`, sorted.
+///
+/// One row, and it is the same shape as the constant home's: the `use super::*;`
+/// inside this file's own `#[cfg(test)] mod tests`, where `super` is the
+/// registry itself. That glob resolves to the module under test and contributes
+/// no arc to the record, which is emitted without test code, so it does not cost
+/// the zero-outgoing-arc property. Any other row here is the registry reaching
+/// into `crate::config`, which ends that property and with it the reason
+/// `config::instance_gitignore` may name this module from production code.
+const ALLOWED_REGISTRY_SUPER_REFERENCES: [(&str, &str); 1] =
+    [("src/config/instance_artifacts.rs", "*")];
+
+/// Every `(file, child)` reference the artifact registry is allowed to make
+/// under `self::`, sorted.
+///
+/// **Empty, for the reason the guarded module's table is empty.** `self::x` and
+/// `x` name the same item, so this anchor is only a second spelling, and leaving
+/// it unasserted would leave that spelling free.
+const ALLOWED_REGISTRY_SELF_REFERENCES: [(&str, &str); 0] = [];
+
 /// The module #1273 cut this one away from, matched as a bare identifier under
 /// every anchor and under none.
 ///
@@ -617,6 +665,9 @@ const GUARDED_MODULE: [&str; 2] = ["config", "instance_gitignore"];
 
 /// The module #1273 moved the constant into, as path segments below `crate`.
 const HOST_MODULE: [&str; 1] = ["config"];
+
+/// The artifact registry #1446 added, as path segments below `crate`.
+const REGISTRY_MODULE: [&str; 2] = ["config", "instance_artifacts"];
 
 /// The constant #1273 moved, and the one file that may define it.
 ///
@@ -655,9 +706,10 @@ enum Literals {
 /// Whether a module's submodules are read with it.
 ///
 /// `WithSubmodules` for the guarded module, so a reference cannot be parked in a
-/// future child of it. `OwnFilesOnly` for the constant's home, because every
-/// child of `config` is a separate module in the graph with its own arcs and
-/// most of them are knot members.
+/// future child of it, and for the artifact registry, which has no children and
+/// is meant never to have any. `OwnFilesOnly` for the constant's home, because
+/// every child of `config` is a separate module in the graph with its own arcs
+/// and most of them are knot members.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reach {
     OwnFilesOnly,
@@ -859,7 +911,7 @@ fn normalized(body: &str) -> String {
 /// **`extern crate self as <name>;` is the strongest member of the family and was
 /// the last one missing.** It compiles inside the guarded module, it is
 /// rustfmt-stable, and it renames the **crate root** rather than one module
-/// group, so the alias reaches every one of the 87 knot members and not only
+/// group, so the alias reaches every knot member and not only
 /// `config::root_agent`. Measured during the #1273 review as one line plus one
 /// production reference: guard green, `cargo fmt --check` exit 0, and the
 /// detector does not resolve it either, so nothing in the repository noticed.
@@ -1611,7 +1663,7 @@ fn expected(table: &[(&str, &str)]) -> Vec<(String, String)> {
 
 /// #1273: `config::instance_gitignore` used to name
 /// `super::root_agent::ROOT_AGENT_DIR_NAME`, which made a 413-line filesystem
-/// utility depend on a 3711-line module inside the crate's 88-member cyclic SCC
+/// utility depend on a 3711-line module inside the crate's cyclic SCC
 /// and held it inside that SCC. The constant moved down into `crate::config`, so
 /// both sides depend downward on a module that depends on nothing.
 ///
@@ -1632,7 +1684,7 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
          WHY: this module writes the running instance's `.gitignore`. It is a \
          413 line filesystem utility that needs exactly one fact from \
          `config::root_agent`, the directory name `ac-root-agent`, and \
-         `config::root_agent` is a 3711 line module inside the crate's 88 member \
+         `config::root_agent` is a 3711 line module inside the crate's \
          cyclic SCC. Naming it from here put this module inside that SCC too. \
          Issue #1273 moved the constant down into `crate::config`, which both \
          modules already depend on and which depends on nothing, so this module \
@@ -1646,7 +1698,7 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
          `root_agent` anywhere in the module's code, because the arc record \
          cannot see a path that begins with neither `crate::` nor `super::` \
          (measured: `src/lib.rs:1178` constructs `loops::scheduler::LoopScheduler` \
-         and no `lib -> loops` arc exists among the 976). Comments and the bodies \
+         and no `lib -> loops` arc exists in the record). Comments and the bodies \
          of literals are removed first, so the string `\"ac-root-agent\"` and the \
          `.gitignore` fixtures in this module's own tests do not match.\n\
          \n\
@@ -1718,7 +1770,7 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
          written `super::`. An empty equality therefore refuses EVERY \
          `crate::`-anchored reference rather than only a reference to \
          `config::root_agent`, and that breadth is the point: this module's \
-         exposure is that it may name any of the 87 remaining members of the knot \
+         exposure is that it may name any other member of the knot \
          and fall straight back into it. `root_agent` is only today's spelling.\n\
          \n\
          THIS IS THE ASSERTION #1268 IS ABOUT. `project_settings_layering.rs` \
@@ -1793,7 +1845,7 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
 
 /// #1273 Section 4.3: the knot cannot absorb `config::instance_gitignore`
 /// because, after the cut, everything it depends on is `crate::config`, and
-/// `crate::config` has **zero outgoing arcs** over the 976 of
+/// `crate::config` has **zero outgoing arcs** over the record in
 /// `src-tauri/module-arcs.txt`.
 ///
 /// **That is a claim about outgoing arcs from `src/config/mod.rs`, and this test
@@ -1886,7 +1938,7 @@ fn the_constant_home_names_nothing_at_all() {
         "the set of crate modules named from {CONSTANT_HOME} moved.\n\
          \n\
          WHY THIS MATTERS MORE THAN IT LOOKS: #1273 is only correct while this \
-         module cannot reach the cyclic SCC. Measured over the 976 arcs of \
+         module cannot reach the cyclic SCC. Measured over the arcs of \
          `src-tauri/module-arcs.txt`, `agentscommander_lib::config` appears on \
          the left of the separator zero times and on the right 49 times: it is a \
          pure sink, and that is the entire non-absorption argument. A module with \
@@ -1946,6 +1998,126 @@ fn the_constant_home_names_nothing_at_all() {
          under its own anchor. The class this closes is every knot member, not \
          `root_agent` alone, which is why widening the anchorless check would not \
          have been enough."
+    );
+}
+
+/// #1446: `config::instance_artifacts` is the artifact registry that
+/// `config::instance_gitignore` derives every static rule from, and the reason
+/// that reference is allowed in production code is that this module has **zero
+/// outgoing arcs**. A node with no way out is a trivial SCC however many modules
+/// point at it, so every arc into the registry is safe regardless of whether its
+/// source is inside the knot, and #1446 puts arcs into it from more than twenty
+/// modules, many of them knot members.
+///
+/// **This test is what holds that property.** It is the same argument #1273 made
+/// for `crate::config`, applied one level down, and it fails the same way: one
+/// `use crate::<any knot member>::...;` in the registry and the registry joins
+/// the knot, `config::instance_gitignore` follows it through a reference the
+/// row in `ALLOWED_GUARDED_SUPER_REFERENCES` now permits, and nothing else in
+/// this repository goes red.
+///
+/// It is read `WithSubmodules`, unlike the constant's home. The registry has no
+/// children and is meant never to have any, so the deeper reach costs nothing
+/// today and refuses a future child that parks a reference out of sight.
+#[test]
+fn the_registry_names_nothing_at_all() {
+    let seen = observe(&REGISTRY_MODULE, Reach::WithSubmodules);
+
+    assert!(
+        seen.aliases.is_empty(),
+        "the artifact registry must not rename the crate root or a module group; \
+         see the same assertion for config::instance_gitignore.\n\
+         \n\
+         OFFENDING FILES: {}",
+        seen.aliases.join(", ")
+    );
+
+    assert!(
+        seen.forbidden.is_empty(),
+        "the artifact registry must not name config::root_agent.\n\
+         \n\
+         WHY: this module is a table of names with no outgoing arcs, and that is \
+         the entire reason production code inside `config::instance_gitignore` is \
+         allowed to reach it. A path from here into a knot member ends it.\n\
+         \n\
+         THIS CHECK IS DELIBERATELY ANCHORLESS, for the reason it is in the other \
+         two tests: the arc record cannot see a path that begins with neither \
+         `crate::` nor `super::`. Comments and literal bodies are removed first, \
+         so the registry's own `\"ac-root-agent\"` row does not match.\n\
+         \n\
+         OFFENDING FILES: {}",
+        seen.forbidden.join(", ")
+    );
+
+    assert_eq!(
+        seen.globs, 1,
+        "src/config/instance_artifacts.rs must contain exactly one glob import.\n\
+         \n\
+         WHY: the one that exists is the `use super::*;` inside this file's own \
+         `#[cfg(test)] mod tests`, where `super` is the registry itself, so it \
+         reaches nothing and costs no arc. A SECOND test module, or a nested one, \
+         would add a second glob that the deduplicated set below cannot see, which \
+         is the hole this count exists to close. Written at the top level of the \
+         file instead, the same three words mean `use crate::config::*;` and pull \
+         every child of `config` into scope, `root_agent` among them.\n\
+         \n\
+         THE COUNT IS STRUCTURAL, NOT TEXTUAL: `use super::super::*;` and \
+         `use super::{{*}};` are counted too. Entries 14 and 15.\n\
+         \n\
+         OBSERVED: {} `super::`-anchored glob imports",
+        seen.globs
+    );
+
+    assert_eq!(
+        seen.anchored,
+        expected(&ALLOWED_REGISTRY_CRATE_REFERENCES),
+        "the set of crate modules named from config::instance_artifacts moved.\n\
+         \n\
+         WHY THIS TABLE IS EMPTY: #1446 chose the direction deliberately. The \
+         registry declares the artifact names; the modules that write those \
+         artifacts alias it. The inverse, a registry that imports each owner's \
+         constant, needs arcs in both directions with `api::message_store` and is \
+         a two-node cycle by construction.\n\
+         \n\
+         An arc INTO this module is always safe because it terminates in a node \
+         with out-degree zero. An arc OUT of it is what makes every one of those \
+         incoming arcs dangerous at once, because more than twenty modules point \
+         here after #1446 and many of them are knot members.\n\
+         \n\
+         INSTEAD: the registry is names and pure string logic. Anything it seems \
+         to need from elsewhere in the crate belongs at the call site, not here. \
+         Adding the first row is a decision about the crate's shape and has to be \
+         argued in the commit."
+    );
+
+    assert_eq!(
+        seen.relative_up,
+        expected(&ALLOWED_REGISTRY_SUPER_REFERENCES),
+        "the set of names reached by `super::` from config::instance_artifacts \
+         moved.\n\
+         \n\
+         The one allowed row is this file's own `#[cfg(test)] mod tests` glob, \
+         where `super` is the registry itself. It contributes no arc because the \
+         record is emitted without test code, which is why the spelling contract \
+         and the arc contract legitimately differ on this one row.\n\
+         \n\
+         Any other row is the registry reaching up into `crate::config`, whose \
+         children are mostly knot members. That is an outgoing arc and it ends the \
+         property this whole test exists to hold.\n\
+         \n\
+         A SMALLER SET is a failure too: it means the scan stopped seeing the test \
+         module, and a scan that observes nothing passes everything."
+    );
+
+    assert_eq!(
+        seen.own_module,
+        expected(&ALLOWED_REGISTRY_SELF_REFERENCES),
+        "the set of names reached by `self::` from config::instance_artifacts \
+         moved.\n\
+         \n\
+         THE TABLE IS EMPTY ON PURPOSE. `self::x` and `x` name the same item, so \
+         this anchor is only a second spelling of a path that begins at this \
+         module, and leaving it unasserted leaves that spelling free. Entry 17."
     );
 }
 
