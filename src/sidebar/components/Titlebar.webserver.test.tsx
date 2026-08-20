@@ -196,6 +196,15 @@ function byAddr(address: string): HTMLButtonElement {
   return element;
 }
 
+// #1453 - the popover binds Escape with `on:keydown` (a real element listener)
+// rather than the delegated `onKeyDown`, so this has to bubble from the element
+// the user is actually focused on.
+function pressEscape(el: Element): void {
+  el.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+  );
+}
+
 async function openWebServerMenu(mounted: MountedTitlebar): Promise<void> {
   mounted.modules.click(byTestId("titlebar.webserver.button"));
   await mounted.modules.waitFor(() => {
@@ -764,5 +773,31 @@ describe("Titlebar webserver menu", () => {
     expect(byTestId("titlebar.webserver.bindPanel").textContent).not.toContain(
       "Not detected on this machine.",
     );
+  });
+
+  it("escape collapses the chooser first and only then closes the popover", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false, webServerBind: "127.0.0.1" },
+      status: stoppedStatus(),
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.editAddr"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+
+    // From inside the manual input, which is the furthest a Tab walk gets and
+    // the reason D13 asked for this handler at all.
+    pressEscape(byTestId("titlebar.webserver.addrInput"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeNull();
+      expect(maybeByTestId("titlebar.webserver.menu")).toBeTruthy();
+    });
+
+    pressEscape(byTestId("titlebar.webserver.menu"));
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.menu")).toBeNull();
+    });
   });
 });
