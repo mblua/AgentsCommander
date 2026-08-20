@@ -965,7 +965,7 @@ impl Drop for WakeOutcomeReport {
         };
         // The synthesised error is deliberately transient: it matches none of
         // the `is_permanent_delivery_error` markers, so it counts an attempt
-        // and retries, and only rejects after MAX_DELIVERY_ATTEMPTS. Do not
+        // and retries, and only rejects after the attempt ceiling (10). Do not
         // edit the string casually in either direction.
         let outcome = self
             .outcome
@@ -2943,11 +2943,11 @@ impl MailboxPoller {
                             "[MailboxPoller] Shutdown signal received, stopping (detaching {} wake workers)",
                             self.wake_workers.len()
                         );
-                        // (#1399) Detach, never abort: dropping a JoinSet
-                        // aborts its tasks, which would cut a wake mid-inject;
-                        // detached workers run to completion best-effort, and
-                        // any claim cut off by process exit is returned by
-                        // reclamation at the next start.
+                        // (#1399) Detach instead of cancelling: dropping a
+                        // JoinSet cancels its tasks, which would cut a wake
+                        // mid-inject; detached workers run to completion
+                        // best-effort, and any claim cut off by process exit
+                        // is returned by reclamation at the next start.
                         self.wake_workers.detach_all();
                         break;
                     }
@@ -3472,7 +3472,7 @@ impl MailboxPoller {
         // (#1399) A claimed message no longer exists at its outbox path; its
         // claim marker does. Prune only when the message is genuinely gone
         // (delivered/, rejected/), otherwise the attempt count restarts on
-        // every cycle and MAX_DELIVERY_ATTEMPTS is never reached.
+        // every cycle and the attempt ceiling is never reached.
         self.retry_tracker
             .retain(|path, _| path.exists() || wake_claim_path(path).exists());
 
