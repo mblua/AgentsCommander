@@ -529,7 +529,7 @@ fn init_for_project_path(
     }
 
     let ac_root = resolve_ac_root(project_path)?;
-    reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
+    reject_link_or_reparse(&ac_root, "ac_root_link_or_reparse", None)?;
 
     let source_ref = map_err(
         resolve_agent_ref(&ac_root, &args.source_agent),
@@ -1832,11 +1832,11 @@ fn resolve_project(project: &str) -> Result<PathBuf, Vec<CliError>> {
 
 fn resolve_ac_root(project_path: &Path) -> Result<PathBuf, Vec<CliError>> {
     let ac_root = workgroup::resolve_cli_ac_root(project_path)
-        .map_err(|e| vec![err("workspace_not_found", e, None)])?;
-    reject_link_or_reparse(&ac_root, "workspace_link_or_reparse", None)?;
+        .map_err(|e| vec![err("ac_root_not_found", e, None)])?;
+    reject_link_or_reparse(&ac_root, "ac_root_link_or_reparse", None)?;
     std::fs::canonicalize(&ac_root).map_err(|e| {
         vec![err(
-            "workspace_not_found",
+            "ac_root_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
             None,
         )]
@@ -2200,7 +2200,7 @@ fn create_run_workgroup_dirs(
     run_id: &str,
     variants: &[VariantMetadata],
 ) -> Result<RunWorkgroupArtifact, Vec<CliError>> {
-    reject_link_or_reparse(ac_root, "workspace_link_or_reparse", None)?;
+    reject_link_or_reparse(ac_root, "ac_root_link_or_reparse", None)?;
     let sanitized_experiment = sanitize_name(experiment).map_err(|e| {
         vec![err(
             "experiment_name_invalid",
@@ -2285,14 +2285,14 @@ fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
     let mut max = 0;
     for entry in fs::read_dir(ac_root).map_err(|e| {
         vec![err_at_path(
-            "workspace_not_found",
+            "ac_root_not_found",
             format!("Failed to read {}: {}", ac_root.display(), e),
             ac_root,
         )]
     })? {
         let entry = entry.map_err(|e| {
             vec![err(
-                "workspace_not_found",
+                "ac_root_not_found",
                 format!("Failed to read Project AC Root entry: {}", e),
                 None,
             )]
@@ -2314,7 +2314,7 @@ fn validate_workgroup_under_ac_root(
 ) -> Result<(), Vec<CliError>> {
     let ac_root = fs::canonicalize(ac_root).map_err(|e| {
         vec![err_at_path(
-            "workspace_not_found",
+            "ac_root_not_found",
             format!("Failed to canonicalize Project AC Root: {}", e),
             ac_root,
         )]
