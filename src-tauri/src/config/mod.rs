@@ -12,6 +12,7 @@ pub mod config_seed;
 pub mod coordinator_clocks;
 pub mod daemon_pid;
 pub mod injected_messages;
+pub(crate) mod instance_artifacts;
 pub(crate) mod instance_gitignore;
 pub mod local_config_io;
 pub mod loops;

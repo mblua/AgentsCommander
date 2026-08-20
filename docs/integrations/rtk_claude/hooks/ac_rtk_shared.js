@@ -55,7 +55,7 @@ function ignoredLogPath(hookDir) {
   const replicaRoot = path.resolve(hookDir, "..", "..");
   const replicaName = path.basename(replicaRoot);
   if (!replicaName.startsWith("__")) return null; // not a WG replica: no Matrix above us
-  return path.join(path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk_ignored_tools.md");
+  return path.join(path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk-ignored-tools-claude.md");
 }
 
 // One `YYYYMMDD_HHMMSS <Tool>: <command>` line per skip, local time. The tool field
@@ -106,7 +106,7 @@ function runHook(hookDir, tool, decide) {
     if (final === null) {
       // Commands we hand back untouched leave no trace anywhere, which makes it
       // impossible to tell "rtk covered it" from "rtk never saw it". So every skip
-      // is appended to `rtk_ignored_tools.md` before we bow out.
+      // is appended to `rtk-ignored-tools-claude.md` before we bow out.
       logIgnored(hookDir, tool, body);
       process.exit(0);
     }

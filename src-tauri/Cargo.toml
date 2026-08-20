@@ -40,6 +40,7 @@ rfd = "0.15"
 tauri-plugin-dialog = "2.6.0"
 which = "7"
 rusqlite = { version = "0.32", features = ["bundled"] }
+if-addrs = "0.15"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

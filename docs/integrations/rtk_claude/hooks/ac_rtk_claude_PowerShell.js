@@ -46,7 +46,7 @@
 //
 // Commands we hand back untouched leave no trace anywhere, which makes it impossible
 // to tell "rtk covered it" from "rtk never saw it". So every skip is appended to
-// `rtk_ignored_tools.md` in the origin Agent Matrix before we bow out.
+// `rtk-ignored-tools-claude.md` in the origin Agent Matrix before we bow out.
 
 const { spawnSync } = require("node:child_process");
 const { ALREADY_RTK, rtkRewrite, runHook } = require("./ac_rtk_shared.js");
