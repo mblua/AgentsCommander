@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicU64;
 #[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 use crate::config::instance_artifacts::GIT_GUARD_DIR_NAME;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, ResolvedAgentHostShell};
