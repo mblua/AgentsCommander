@@ -58,6 +58,8 @@ What is not there:
 
 The credential is the per-instance `web-token.txt` file, which AC writes next to the binary. It is **separate** from the CLI `master-token.txt` and separate again from control-plane API client tokens; the three are not interchangeable.
 
+**Development builds skip token validation entirely.** Both `/ws` and `/api/sessions` check the token only in release builds, so a debug build reachable on the network has no credential in front of it.
+
 Treat that token, and any URL or browser state carrying it, as a password: use it only with a trusted client, and never commit it or paste it into tickets, chat, logs or screenshots.
 
 Obtain and use it through the existing local Web Remote Access flow. **Do not invent a URL parameter or a token-rotation procedure**; the settings reference says this in as many words, and this page will not describe one it cannot point to.
