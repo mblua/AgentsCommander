@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
+use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+
 pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str = "Context.AgentsCommander.md";
 const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
-pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
+pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =
+    crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME;
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +105,7 @@ fn ensure_session_context_with_config(
 ) -> Result<String, String> {
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -1410,7 +1413,7 @@ fn write_combined_context_file(
 
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let context_dir = config_dir.join("context-cache");
+    let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
 
@@ -2388,7 +2391,7 @@ const CONTEXT_CACHE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// removed workgroups (their cache ages out) AND the cap for the unbounded-growth
 /// secondary finding.
 pub fn sweep_context_cache_at_startup() {
-    let Some(context_dir) = super::config_dir().map(|d| d.join("context-cache")) else {
+    let Some(context_dir) = super::config_dir().map(|d| d.join(CONTEXT_CACHE_DIR_NAME)) else {
         log::warn!("[context-cache] no config dir; skipping startup sweep");
         return;
     };

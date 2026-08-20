@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::config::instance_artifacts::SETTINGS_LOCK_FILE_NAME;
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::CodingAgentKind;
@@ -3342,7 +3343,7 @@ impl SettingsFileLock {
                 SettingsSaveLegacyOutward::SettingsLockUnavailable,
             )
         })?;
-        let lock_path = parent.join("settings.json.lock");
+        let lock_path = parent.join(SETTINGS_LOCK_FILE_NAME);
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]

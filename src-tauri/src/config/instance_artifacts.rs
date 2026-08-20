@@ -81,9 +81,8 @@ pub(crate) const API_AUDIT_LOG_FILE_NAME: &str = "api-audit.log";
 pub(crate) const API_CLIENTS_REGISTRY_FILENAME: &str = "api-clients.json";
 pub(crate) const API_CLIENTS_LOCK_FILENAME: &str = "api-clients.lock";
 // No table row carries this name on its own: the glob below covers the database
-// and its sidecars in one rule. Until the message store aliases it, the only
-// readers are the derivation test and that alias.
-#[allow(dead_code)]
+// and its sidecars in one rule. Its readers are the message store's own
+// `DB_FILENAME` alias and the derivation test.
 pub(crate) const MESSAGE_BUS_DB_FILENAME: &str = "api-message-bus.sqlite3";
 /// Covers the database and every sidecar SQLite can produce (`-shm`, `-wal`,
 /// `-journal`), which is why it is a glob and not three literals. A registry

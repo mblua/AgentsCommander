@@ -116,7 +116,7 @@ const TAIL_READ_BYTES: u64 = 256 * 1024;
 /// recorded busy time, which is summed from raw pairs.
 const BLOCK_WINDOW: Duration = Duration::from_secs(30);
 
-const FILE_NAME: &str = "activity.jsonl";
+const FILE_NAME: &str = crate::config::instance_artifacts::ACTIVITY_LOG_FILE_NAME;
 const EVENT_APP_START: &str = "app_start";
 const EVENT_APP_STOP: &str = "app_stop";
 
