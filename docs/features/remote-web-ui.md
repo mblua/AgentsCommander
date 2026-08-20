@@ -70,7 +70,7 @@ For the wider picture of what an agent and a remote caller can reach, see [Secur
 
 | Key | What it controls |
 |---|---|
-| `webServerEnabled` | Whether AC runs the embedded HTTP and WebSocket server. `false` by default. Set it directly from the `Enable web server` checkbox in Settings; the menu toggle also writes it when a start or stop converges. |
+| `webServerEnabled` | Whether AC runs the embedded HTTP and WebSocket server. `false` by default. Set it directly from the `Enable web server` checkbox in Settings; the menu toggle also writes it, `true` once a start has converged and `false` whenever you stop. |
 | `webServerPort` | The listening port. The default is platform-specific per binary suffix. Editable from the web server menu. |
 | `webServerBind` | The bind address. `"127.0.0.1"` by default. Editable from the web server menu (see below). |
 
@@ -99,9 +99,12 @@ The titlebar Web Server popover exposes the bind address next to the port
 Applying an address restarts the server if it is running, starts it if it is
 enabled but stopped (for example after a failed bind), and otherwise only saves.
 
-Web server control is desktop-only: in a browser the chooser cannot enumerate
-adapters, so the `Detected on this machine` group is absent, no row claims an
-address is or is not available, and the status reads `Unknown`.
+Web server control is desktop-only. The menu lives in the titlebar, which the
+served page does not render at all (see
+[What the browser UI can do](#what-the-browser-ui-can-do)), and the globe button
+is gated on the desktop webview besides. A browser therefore shows no globe
+button, no status line and no bind chooser: change the bind address from the
+desktop app.
 
 If the configured address is no longer assigned to any adapter (a common
 consequence of a DHCP lease change), the server cannot bind: the popover then
