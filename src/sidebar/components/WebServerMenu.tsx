@@ -207,8 +207,14 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     }
   };
 
-  // #1453 - the browser bridge does not route web server commands, so this
-  // fails there and degrades to null: no group, and no availability claim.
+  // #1453 - defensive only; production cannot reach the failing branch. This
+  // menu renders solely in the desktop titlebar (Titlebar.tsx, under `isTauri`,
+  // and the served page passes `embedded` so it gets no titlebar at all), so a
+  // browser never calls this. The catch stays because the WS bridge routes no
+  // web server commands, so any future non-Tauri render site would throw here.
+  // It is NOT observable browser behaviour: there is no chooser in a browser to
+  // degrade, and documenting it as one is exactly the false claim #1453 removed
+  // from docs/features/remote-web-ui.md.
   const loadInterfaces = async () => {
     try {
       setInterfaces(await SettingsAPI.listWebServerInterfaces());
