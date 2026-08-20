@@ -2936,7 +2936,13 @@ impl MailboxPoller {
                 tokio::select! {
                     biased;
                     _ = shutdown.token().cancelled() => {
-                        log::info!("[MailboxPoller] Shutdown signal received, stopping");
+                        // (#1399) The count makes a delivery cut by process
+                        // exit visible and reconcilable with the reclamation
+                        // lines at the next start.
+                        log::info!(
+                            "[MailboxPoller] Shutdown signal received, stopping (detaching {} wake workers)",
+                            self.wake_workers.len()
+                        );
                         // (#1399) Detach, never abort: dropping a JoinSet
                         // aborts its tasks, which would cut a wake mid-inject;
                         // detached workers run to completion best-effort, and
@@ -3181,6 +3187,10 @@ impl MailboxPoller {
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<(), String> {
         self.snapshot_scanner.begin_cycle();
+        // (#1399) The only instrument that can confirm the pickup-latency win
+        // on a live instance: per-cycle service time and handoff count.
+        let cycle_started = std::time::Instant::now();
+        let mut handed_off = 0usize;
         // (#1399) Reap, then drain, before any outbox work: joined workers
         // free cap slots, and an outcome's path can belong to any outbox, so
         // the drain is per-cycle, not per-outbox. Draining before the scans
@@ -3435,7 +3445,8 @@ impl MailboxPoller {
                         // retry state for `path` must survive until the worker
                         // reports.
                         Some(msg) => match self.claim_and_spawn_wake(app, &path, msg) {
-                            WakeHandoff::Spawned | WakeHandoff::LaneBusy => {}
+                            WakeHandoff::Spawned => handed_off += 1,
+                            WakeHandoff::LaneBusy => {}
                             WakeHandoff::ClaimFailed(e) => {
                                 self.record_message_outcome(path, Err(e)).await
                             }
@@ -3448,6 +3459,13 @@ impl MailboxPoller {
                 }
             }
         }
+
+        log::info!(
+            "[mailbox] poll cycle done elapsed_ms={} outboxes={} handed_off={}",
+            cycle_started.elapsed().as_millis(),
+            outbox_dirs.len(),
+            handed_off
+        );
 
         self.snapshot_scanner.finish_cycle();
 
