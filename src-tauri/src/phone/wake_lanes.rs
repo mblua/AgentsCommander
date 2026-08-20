@@ -2,10 +2,6 @@
 //! `api::dispatcher::PtyWorkerTargets`, which has held this invariant for
 //! per-target PTY work in production.
 
-// (#1399) Referenced only by tests until the Step 6 wiring in `phone::mailbox`
-// lands; removed there.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 

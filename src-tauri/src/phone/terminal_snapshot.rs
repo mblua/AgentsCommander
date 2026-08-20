@@ -274,6 +274,15 @@ impl SnapshotScannerShutdownOwner {
         }
     }
 
+    /// (#1399) An owner that does NOT claim `ACTIVE_SCANNER_SHUTDOWN_OWNER`.
+    /// For scanners that will never run a task and must never displace the
+    /// long-lived poller's owner on the shutdown path.
+    pub(crate) fn unregistered() -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(ScannerShutdownState::default())),
+        }
+    }
+
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ScannerShutdownState> {
         match self.inner.lock() {
             Ok(state) => state,
@@ -597,6 +606,37 @@ pub(crate) fn verified_requester_root_from_discovered_path(path: &Path) -> Optio
 }
 
 impl SnapshotMailboxScanner {
+    /// (#1399) For a delivery-only poller. Reuses whatever owner is currently
+    /// registered, so no second owner is created, and falls back to a
+    /// non-registering owner rather than to `Default`, whose hand-written impl
+    /// writes itself into the process-global `ACTIVE_SCANNER_SHUTDOWN_OWNER`
+    /// slot and would leave the long-lived poller's real owner unreachable on
+    /// the shutdown drain.
+    ///
+    /// (R8) Deliberately "whatever is currently registered" and not "the live
+    /// owner": `active()` returns whatever registered LAST, and while #1403 is
+    /// open that is an `api::dispatcher` throwaway roughly twice a second, not
+    /// the long-lived poller's owner. Harmless, because a delivery poller never
+    /// spawns a scanner task and so never uses the owner it holds.
+    ///
+    /// Fields are spelled out, never `..Default::default()`: struct-update
+    /// syntax would evaluate the registering `Default` for `shutdown_owner`
+    /// and hijack the global before the explicit field overwrote it. The
+    /// `unwrap_or_else(unregistered)` arm exists on the structural argument
+    /// (registration must be impossible on every path), not because it is
+    /// commonly reached.
+    pub(crate) fn delivery_only() -> Self {
+        Self {
+            shutdown_owner: SnapshotScannerShutdownOwner::active()
+                .unwrap_or_else(SnapshotScannerShutdownOwner::unregistered),
+            cursors: HashMap::new(),
+            observed: std::collections::HashSet::new(),
+            startup_sweep_complete: false,
+            #[cfg(test)]
+            pending_tasks: Vec::new(),
+        }
+    }
+
     pub(crate) fn begin_cycle(&mut self) {
         self.observed.clear();
     }
