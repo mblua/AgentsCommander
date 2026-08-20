@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 use super::error::ApiError;
 
+use crate::config::instance_artifacts::API_CLIENTS_LOCK_FILENAME;
+
 /// The `send` scope (POST /api/v1/send).
 pub const SCOPE_SEND: &str = "send";
 /// The `list-peers-lean` scope (GET /api/v1/peers).
@@ -42,7 +44,8 @@ pub const VALID_SCOPES: &[&str] = &[
 ];
 
 /// Registry file basename in `config_dir()`.
-pub const REGISTRY_FILENAME: &str = "api-clients.json";
+pub const REGISTRY_FILENAME: &str =
+    crate::config::instance_artifacts::API_CLIENTS_REGISTRY_FILENAME;
 
 /// One registered API client. `boundRoot` is the identity source (the `from` is
 /// derived from it at request time); `boundFqn` is an audit hint only (§0.5 G5).
@@ -634,7 +637,7 @@ const REGISTRY_MAX_CLIENTS: usize = 4_096;
 
 fn open_registry_lock(parent: &Path) -> Result<std::fs::File, String> {
     crate::path_identity::verify_directory(parent)?;
-    let path = parent.join("api-clients.lock");
+    let path = parent.join(API_CLIENTS_LOCK_FILENAME);
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -675,9 +678,13 @@ pub(crate) fn hold_registry_lock_for_test(parent: &Path) -> std::fs::File {
 fn revalidate_registry_lock(parent: &Path, file: &std::fs::File) -> Result<(), String> {
     crate::path_identity::verify_directory(parent)
         .map_err(|_| "api_registry_lock_failed".to_string())?;
-    crate::path_identity::verify_opened_regular_file(&parent.join("api-clients.lock"), file, true)
-        .map(|_| ())
-        .map_err(|_| "api_registry_lock_failed".to_string())
+    crate::path_identity::verify_opened_regular_file(
+        &parent.join(API_CLIENTS_LOCK_FILENAME),
+        file,
+        true,
+    )
+    .map(|_| ())
+    .map_err(|_| "api_registry_lock_failed".to_string())
 }
 
 fn validate_registry_strict(registry: &ApiClientRegistry) -> Result<(), String> {

@@ -12,11 +12,13 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use crate::config::instance_artifacts::API_AUDIT_LOG_FILE_NAME;
+
 /// Max audit-log size before rotation (10 MB).
 const AUDIT_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 fn audit_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join("api-audit.log"))
+    crate::config::config_dir().map(|d| d.join(API_AUDIT_LOG_FILE_NAME))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

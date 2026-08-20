@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::instance_artifacts::COORDINATOR_CLOCKS_FILE_NAME;
+
 /// Minimum gap between two recorded user-message timestamps for the same
 /// coordinator. Keystroke bursts inside this window are coalesced to one
 /// update so we do not emit/persist per keystroke.
@@ -311,7 +313,7 @@ pub type CoordinatorClocksState = std::sync::Arc<Mutex<CoordinatorClocks>>;
 /// `None` when no config dir resolves (no home dir). Callers degrade: load ->
 /// empty default, save -> skip with a warn.
 fn clocks_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join("coordinator_clocks.json"))
+    crate::config::config_dir().map(|d| d.join(COORDINATOR_CLOCKS_FILE_NAME))
 }
 
 pub fn load() -> CoordinatorClocks {

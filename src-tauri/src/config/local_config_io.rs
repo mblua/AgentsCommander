@@ -661,4 +661,58 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         let closes = line.chars().filter(|ch| *ch == '}').count() as i32;
         opens - closes
     }
+
+    fn non_utf8_file_name() -> std::ffi::OsString {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // An unpaired surrogate: a legal OsString, never a legal `&str`.
+            std::ffi::OsString::from_wide(&[0xD800])
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xff, 0xfe])
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            std::ffi::OsString::from("config.json")
+        }
+    }
+
+    /// #1209, instance-dir half: every temporary name this module can publish is
+    /// inside the pattern the instance `.gitignore` emits for atomic-write
+    /// temporaries.
+    ///
+    /// The assertion calls the registry's own predicate instead of restating the
+    /// glob. A restatement does not follow the pattern when the pattern changes,
+    /// which would leave the tie this test is named for untied; the predicate
+    /// lives next to the pattern and a registry test pins their agreement.
+    ///
+    /// `temp_config_path` stays private and `write_file_atomic` is untouched:
+    /// this reads what the writer would produce, it does not widen anything.
+    #[test]
+    fn atomic_temp_names_stay_inside_the_ignored_glob() {
+        use crate::config::instance_artifacts::matches_atomic_write_tmp_glob;
+
+        let mut targets: Vec<PathBuf> = ["settings.json", "sessions", "a.b.c.json"]
+            .iter()
+            .map(|name| Path::new("instance").join(name))
+            .collect();
+        // The `config.json` fallback branch of `temp_config_path`.
+        targets.push(Path::new("instance").join(non_utf8_file_name()));
+
+        for target in targets {
+            let temp = super::temp_config_path(&target);
+            let produced = temp
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("the temp name is composed by this module and is always UTF-8");
+            assert!(
+                matches_atomic_write_tmp_glob(produced),
+                "temp_config_path produced {produced:?} for {target:?}, and the instance \
+                 policy would leave it visible in git status"
+            );
+        }
+    }
 }

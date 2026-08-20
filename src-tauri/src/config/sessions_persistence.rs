@@ -53,7 +53,8 @@ static SAVE_OP_ID: AtomicU64 = AtomicU64::new(0);
 /// NDJSON (one JSON object per line), append-only, never parsed back by any
 /// version (old AC versions ignore it). The EXISTS probe at drop time decides
 /// the disposition label, never whether the recipe is kept.
-pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str = "orphaned-sessions.archive.json";
+pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str =
+    crate::config::instance_artifacts::ORPHAN_ARCHIVE_FILENAME;
 
 /// §1295 — soft cap on the ACTIVE archive file before best-effort rotation.
 const ORPHAN_ARCHIVE_MAX_BYTES: u64 = 5 * 1024 * 1024;
