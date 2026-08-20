@@ -11,6 +11,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::config::instance_artifacts::AGENT_TEMPLATES_DIR_NAME;
+
 // ---------------------------------------------------------------------------
 // IPC type — metadata only (no prompt body)
 // ---------------------------------------------------------------------------
@@ -44,7 +46,7 @@ pub struct RoleTemplateMeta {
 // Agency runtime cache
 // ---------------------------------------------------------------------------
 
-pub const AGENCY_TEMPLATES_DIR: &str = "agency-agents_templates";
+pub const AGENCY_TEMPLATES_DIR: &str = crate::config::instance_artifacts::AGENCY_TEMPLATES_DIR;
 pub const AGENCY_MANIFEST_FILE: &str = "manifest.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -132,7 +134,7 @@ pub fn resolve_local_templates_dir(
     settings: &crate::config::settings::AppSettings,
     config_dir: &Path,
 ) -> LocalTemplatesDir {
-    let default = config_dir.join("agent-templates");
+    let default = config_dir.join(AGENT_TEMPLATES_DIR_NAME);
     let configured = settings
         .agent_templates_path
         .as_deref()
@@ -214,7 +216,7 @@ the template is selected.
 /// Idempotent: an existing dir is left alone; an existing README is NEVER
 /// overwritten. `config_dir` is a parameter for testability.
 pub fn ensure_default_templates_dir(config_dir: &Path) -> Result<(), String> {
-    let dir = config_dir.join("agent-templates");
+    let dir = config_dir.join(AGENT_TEMPLATES_DIR_NAME);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create agent-templates dir: {}", e))?;
     let readme = dir.join("README.md");

@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicU64;
 #[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
+use crate::config::instance_artifacts::GIT_GUARD_DIR_NAME;
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, ResolvedAgentHostShell};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
@@ -331,7 +333,7 @@ fn resolve_real_git_path() -> Option<String> {
 fn ensure_git_guard_wrapper() -> Result<std::path::PathBuf, AppError> {
     let config_dir = crate::config::config_dir()
         .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
-    let guard_dir = config_dir.join("git-guard");
+    let guard_dir = config_dir.join(GIT_GUARD_DIR_NAME);
     std::fs::create_dir_all(&guard_dir)
         .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {}", e)))?;
 
@@ -434,7 +436,7 @@ fn write_git_guard_file_atomic(path: &Path, content: &[u8]) -> Result<(), String
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("git-guard");
+        .unwrap_or(GIT_GUARD_DIR_NAME);
     let counter = GIT_GUARD_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
 

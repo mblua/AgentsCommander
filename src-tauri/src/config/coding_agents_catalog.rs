@@ -44,7 +44,7 @@ use crate::config::settings::{
 };
 
 /// Subdirectory of the config dir holding the catalog artifacts.
-const CATALOG_DIR_NAME: &str = "coding-agents";
+const CATALOG_DIR_NAME: &str = crate::config::instance_artifacts::CODING_AGENTS_CATALOG_DIR_NAME;
 /// The catalog manifest filename.
 const CATALOG_MANIFEST_FILENAME: &str = "agents.json";
 /// Current manifest schema version.
