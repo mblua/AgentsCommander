@@ -40,6 +40,7 @@ agentscommander_lib -> agentscommander_lib::testability::ui_automation
 agentscommander_lib -> agentscommander_lib::testability::window_placement
 agentscommander_lib -> agentscommander_lib::update_check
 agentscommander_lib -> agentscommander_lib::voice::tracker
+agentscommander_lib -> agentscommander_lib::web
 agentscommander_lib -> agentscommander_lib::web::auth
 agentscommander_lib -> agentscommander_lib::web::broadcast
 agentscommander_lib::agent_update -> agentscommander_lib::config
