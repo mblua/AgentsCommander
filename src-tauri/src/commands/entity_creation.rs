@@ -6065,7 +6065,7 @@ mod tests {
             ];
             let batch = PublishedScopeBatch::new(
                 "config:.ac/wg-1-team/__agent_x/.claude".to_string(),
-                ManifestSource::WorkspaceBase,
+                ManifestSource::AcRootBase,
                 files,
                 chrono::Utc::now(),
             )
@@ -6111,7 +6111,7 @@ mod tests {
             ];
             let batch = PublishedScopeBatch::new(
                 "config:.ac/wg-2-team/__agent_y/.claude".to_string(),
-                ManifestSource::WorkspaceBase,
+                ManifestSource::AcRootBase,
                 files,
                 chrono::Utc::now(),
             )

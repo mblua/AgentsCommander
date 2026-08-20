@@ -394,8 +394,12 @@ impl ManifestFileKind {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ManifestSource {
     Builtin,
-    WorkspaceProfile,
-    WorkspaceBase,
+    /// LEGACY-ALIAS(#1451): manifests written before #1451 say `workspace_profile`.
+    #[serde(alias = "workspace_profile")]
+    AcRootProfile,
+    /// LEGACY-ALIAS(#1451): manifests written before #1451 say `workspace_base`.
+    #[serde(alias = "workspace_base")]
+    AcRootBase,
     MatrixProfile,
     MatrixBase,
     CatalogDefault,
@@ -405,8 +409,8 @@ impl ManifestSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::Builtin => "builtin",
-            Self::WorkspaceProfile => "workspace_profile",
-            Self::WorkspaceBase => "workspace_base",
+            Self::AcRootProfile => "ac_root_profile",
+            Self::AcRootBase => "ac_root_base",
             Self::MatrixProfile => "matrix_profile",
             Self::MatrixBase => "matrix_base",
             Self::CatalogDefault => "catalog_default",
@@ -4196,7 +4200,7 @@ mod tests {
         let config = PublishedManifestRow::replica_config(
             config_path("wg-14-dev-team", "architect", ".claude", "settings.json"),
             config_scope("wg-14-dev-team", "architect", ".claude"),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             timestamp("2026-07-16T19:41:12.456Z"),
         )
         .expect("config row");
@@ -4246,7 +4250,7 @@ mod tests {
             "path_encoding = \"utf8\"\n",
             "kind = \"replica_config_file\"\n",
             "scope = \"config:.ac/wg-14-dev-team/__agent_architect/.claude\"\n",
-            "source = \"workspace_base\"\n",
+            "source = \"ac_root_base\"\n",
             "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
         );
         assert_eq!(bytes, expected.as_bytes());
@@ -4255,6 +4259,62 @@ mod tests {
             bytes.len()
         );
         assert_eq!(parse_manifest_bytes(&bytes).unwrap(), populated_state());
+    }
+
+    /// AC-8 (#1451). `as_str()` and the serde variant name are two hand-written
+    /// spellings of the same wire value and nothing couples them: a divergence
+    /// compiles, passes clippy and is invisible to the census, then fails at
+    /// runtime on every manifest write as `SerializedSizeMismatch`. Compare
+    /// against what serde actually emits, not against a third literal.
+    #[test]
+    fn manifest_source_as_str_matches_serde_name() {
+        for source in [
+            ManifestSource::Builtin,
+            ManifestSource::AcRootProfile,
+            ManifestSource::AcRootBase,
+            ManifestSource::MatrixProfile,
+            ManifestSource::MatrixBase,
+            ManifestSource::CatalogDefault,
+        ] {
+            let emitted = serde_json::to_string(&source).expect("serialize variant");
+            assert_eq!(
+                emitted.trim_matches('"'),
+                source.as_str(),
+                "as_str disagrees with the serde name for {source:?}"
+            );
+        }
+    }
+
+    /// AC-7 (#1451). LEGACY-ALIAS(#1451): a `.ac/seed-manifest.toml` written by a
+    /// pre-#1451 build carries the old source spellings. Both must still parse,
+    /// and the next write must emit the new ones, which is the whole migration:
+    /// no upgrade code path, no prompt, no schema bump.
+    #[test]
+    fn legacy_manifest_source_values_round_trip() {
+        let canonical = String::from_utf8(serialize_state(&populated_state()).unwrap()).unwrap();
+        for (legacy_value, expected) in [
+            ("workspace_base", ManifestSource::AcRootBase),
+            ("workspace_profile", ManifestSource::AcRootProfile),
+        ] {
+            let legacy = canonical.replace(
+                "source = \"ac_root_base\"",
+                &format!("source = \"{legacy_value}\""),
+            );
+            assert!(legacy.contains(legacy_value), "legacy: {legacy}");
+
+            let state = parse_manifest_bytes(legacy.as_bytes()).expect("legacy manifest parses");
+            assert!(
+                state.rows.values().any(|row| row.source == expected),
+                "legacy {legacy_value} did not parse to {expected:?}"
+            );
+
+            let rewritten = String::from_utf8(serialize_state(&state).unwrap()).unwrap();
+            assert!(
+                rewritten.contains(&format!("source = \"{}\"", expected.as_str())),
+                "rewritten: {rewritten}"
+            );
+            assert!(!rewritten.contains("workspace_"), "rewritten: {rewritten}");
+        }
     }
 
     #[test]
@@ -4322,7 +4382,7 @@ mod tests {
         let row = PublishedManifestRow::replica_config(
             config_path("wg-1-team", "alpha", ".claude", "settings.json"),
             config_scope("wg-1-team", "alpha", ".claude"),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             timestamp("2026-07-16T19:41:12.456Z"),
         )
         .unwrap()
@@ -4349,7 +4409,7 @@ mod tests {
                 PublishedManifestRow::replica_config(
                     config_path("wg-1-team", "alpha", ".claude", "settings.json"),
                     config_scope("wg-1-team", "alpha", ".claude"),
-                    ManifestSource::WorkspaceBase,
+                    ManifestSource::AcRootBase,
                     timestamp("2026-07-16T19:41:12.456Z"),
                 )
                 .unwrap()
@@ -4491,7 +4551,7 @@ mod tests {
         assert!(matches!(
             PublishedScopeBatch::new(
                 oversized_scope,
-                ManifestSource::WorkspaceBase,
+                ManifestSource::AcRootBase,
                 Vec::new(),
                 timestamp("2026-07-16T19:41:12.456Z"),
             ),
@@ -4676,7 +4736,7 @@ mod tests {
             "Context.AgentsCommander.md",
             "settings.json",
             "context:agentscommander",
-            "workspace_base",
+            "ac_root_base",
         ] {
             assert!(!debug.contains(content), "debug leaked {content}");
         }
@@ -4884,7 +4944,7 @@ mod tests {
             "path_encoding = \"utf8\"\n",
             "kind = \"replica_config_file\"\n",
             "scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n",
-            "source = \"workspace_base\"\n",
+            "source = \"ac_root_base\"\n",
             "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
         )
         .to_string()
@@ -5309,7 +5369,7 @@ mod tests {
         let scope = config_scope("wg-1-team", "alpha", ".claude");
         let first = PublishedScopeBatch::new(
             scope.clone(),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             vec![
                 config_path("wg-1-team", "alpha", ".claude", "a"),
                 config_path("wg-1-team", "alpha", ".claude", "b"),
@@ -5374,7 +5434,7 @@ mod tests {
         let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
         let batch = PublishedScopeBatch::new(
             config_scope("wg-1-team", "alpha", ".claude"),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             Vec::new(),
             timestamp("2026-07-16T19:41:12.456Z"),
         )
@@ -5396,7 +5456,7 @@ mod tests {
         let scope = config_scope("wg-1-team", "alpha", ".claude");
         let batch = PublishedScopeBatch::new(
             scope.clone(),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             vec![config_path(
                 "wg-1-team",
                 "alpha",
@@ -5432,7 +5492,7 @@ mod tests {
         let scope = config_scope("wg-1-team", "alpha", ".claude");
         let batch = PublishedScopeBatch::new(
             scope.clone(),
-            ManifestSource::WorkspaceBase,
+            ManifestSource::AcRootBase,
             vec![config_path(
                 "wg-1-team",
                 "alpha",
@@ -5488,7 +5548,7 @@ mod tests {
             PublishedManifestRow::replica_config(
                 foreign,
                 config_scope("wg-1-team", "alpha", ".claude"),
-                ManifestSource::WorkspaceBase,
+                ManifestSource::AcRootBase,
                 timestamp("2026-07-16T19:41:12.456Z"),
             )
             .unwrap(),
@@ -5497,7 +5557,7 @@ mod tests {
             PublishedManifestRow::replica_config(
                 config_path("wg-2-team", "beta", ".claude", "keep"),
                 config_scope("wg-2-team", "beta", ".claude"),
-                ManifestSource::WorkspaceBase,
+                ManifestSource::AcRootBase,
                 timestamp("2026-07-16T19:41:12.456Z"),
             )
             .unwrap(),
@@ -7564,7 +7624,7 @@ mod stage_e_conformance {
                 let row = PublishedManifestRow::replica_config(
                     config_file(&agent, ".claude", &format!("file-{i:05}")),
                     scope.clone(),
-                    ManifestSource::WorkspaceBase,
+                    ManifestSource::AcRootBase,
                     timestamp("2026-07-16T19:41:12.456Z"),
                 )
                 .expect("config row");
@@ -7672,7 +7732,7 @@ mod stage_e_conformance {
                 let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
                 let batch = PublishedScopeBatch::new(
                     scope.clone(),
-                    ManifestSource::WorkspaceBase,
+                    ManifestSource::AcRootBase,
                     scope_files("alpha", ".claude", n),
                     timestamp("2026-07-16T19:41:12.456Z"),
                 )
@@ -7920,7 +7980,7 @@ mod stage_e_conformance {
             out.push_str("path_encoding = \"utf8\"\n");
             out.push_str("kind = \"replica_config_file\"\n");
             out.push_str("scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n");
-            out.push_str("source = \"workspace_base\"\n");
+            out.push_str("source = \"ac_root_base\"\n");
             out.push_str("last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n");
             if out.len() >= target {
                 break;
@@ -7938,7 +7998,7 @@ mod stage_e_conformance {
             out.push_str("path_encoding = \"utf8\"\n");
             out.push_str("kind = \"replica_config_file\"\n");
             out.push_str("scope = \"config:.ac/wg-1-dev-team/__agent_alpha/.claude\"\n");
-            out.push_str("source = \"workspace_base\"\n");
+            out.push_str("source = \"ac_root_base\"\n");
             out.push_str("last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n");
         }
         out

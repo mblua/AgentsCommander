@@ -42,8 +42,8 @@ const MAX_SEED_DEPTH: u32 = 64;
 /// config and clobber it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSeedTier {
-    WorkspaceProfile,
-    WorkspaceBase,
+    AcRootProfile,
+    AcRootBase,
     MatrixProfile,
     MatrixBase,
     /// #769 Phase 2 - the shipped default config-folder master at
@@ -180,11 +180,11 @@ pub fn resolve_config_seed(
     let mut candidates: Vec<(ConfigSeedTier, PathBuf)> = Vec::new();
     if let Some(ws) = context.ac_root.as_ref() {
         candidates.push((
-            ConfigSeedTier::WorkspaceProfile,
+            ConfigSeedTier::AcRootProfile,
             ws.join(format!("default_profile_{}{}", letter, dest_name)),
         ));
         candidates.push((
-            ConfigSeedTier::WorkspaceBase,
+            ConfigSeedTier::AcRootBase,
             ws.join(format!("default{}", dest_name)),
         ));
     }
@@ -765,8 +765,8 @@ fn metadata_is_reparse(_metadata: &std::fs::Metadata) -> bool {
 
 fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {
     match tier {
-        ConfigSeedTier::WorkspaceProfile => ManifestSource::WorkspaceProfile,
-        ConfigSeedTier::WorkspaceBase => ManifestSource::WorkspaceBase,
+        ConfigSeedTier::AcRootProfile => ManifestSource::AcRootProfile,
+        ConfigSeedTier::AcRootBase => ManifestSource::AcRootBase,
         ConfigSeedTier::MatrixProfile => ManifestSource::MatrixProfile,
         ConfigSeedTier::MatrixBase => ManifestSource::MatrixBase,
         ConfigSeedTier::CatalogDefault => ManifestSource::CatalogDefault,
@@ -1332,7 +1332,7 @@ mod tests {
     // ---- resolve_config_seed (pure path math, fail-soft) -------------------
 
     #[test]
-    fn resolve_orders_workspace_then_matrix_each_profile_then_base_lowercased() {
+    fn resolve_orders_ac_root_then_matrix_each_profile_then_base_lowercased() {
         let ac_root = abs(r"C:\ws", "/ws");
         let replica = ac_root.join("wg-1-team").join("__agent_x");
         let matrix = ac_root.join("_agent_x");
@@ -1341,12 +1341,12 @@ mod tests {
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).expect("some");
         // All workspace tiers outrank all matrix tiers; profile beats base in each.
         assert_eq!(resolved.candidates.len(), 4);
-        assert_eq!(resolved.candidates[0].0, ConfigSeedTier::WorkspaceProfile);
+        assert_eq!(resolved.candidates[0].0, ConfigSeedTier::AcRootProfile);
         assert_eq!(
             resolved.candidates[0].1,
             ac_root.join("default_profile_c.claude")
         );
-        assert_eq!(resolved.candidates[1].0, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(resolved.candidates[1].0, ConfigSeedTier::AcRootBase);
         assert_eq!(resolved.candidates[1].1, ac_root.join("default.claude"));
         assert_eq!(resolved.candidates[2].0, ConfigSeedTier::MatrixProfile);
         assert_eq!(
@@ -1379,8 +1379,8 @@ mod tests {
         assert_eq!(
             tiers,
             vec![
-                ConfigSeedTier::WorkspaceProfile,
-                ConfigSeedTier::WorkspaceBase
+                ConfigSeedTier::AcRootProfile,
+                ConfigSeedTier::AcRootBase
             ]
         );
     }
@@ -1431,7 +1431,7 @@ mod tests {
         let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
         let publication = assert_published(perform_config_seed(&resolved, "sfx1"));
-        assert_eq!(publication.tier, ConfigSeedTier::WorkspaceProfile);
+        assert_eq!(publication.tier, ConfigSeedTier::AcRootProfile);
         assert_eq!(publication.dest, replica.join(".claude"));
         assert_eq!(
             publication.files,
@@ -1468,7 +1468,7 @@ mod tests {
         let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
         let publication =
             assert_published(perform_config_seed_recorded(&resolved, "sfx", Some(&token)));
-        assert_eq!(publication.tier, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(publication.tier, ConfigSeedTier::AcRootBase);
         assert_eq!(
             publication.files,
             CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
@@ -1489,7 +1489,7 @@ mod tests {
             "manifest: {manifest}"
         );
         assert!(
-            manifest.contains("source = \"workspace_base\""),
+            manifest.contains("source = \"ac_root_base\""),
             "manifest: {manifest}"
         );
     }
@@ -1715,7 +1715,7 @@ mod tests {
         std::fs::create_dir_all(&replica).unwrap();
         let ctx = ctx_with(&replica, Some(&ac_root), None);
         let resolved = resolve_config_seed(&seed_cfg(".claude"), "A", Some(&ctx)).unwrap();
-        let mut collector = SeedFileCollector::new(&resolved, ConfigSeedTier::WorkspaceBase);
+        let mut collector = SeedFileCollector::new(&resolved, ConfigSeedTier::AcRootBase);
         for index in 0..=MAX_MANIFEST_ROWS {
             collector.record(PathBuf::from(format!("f-{index}")));
         }

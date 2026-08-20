@@ -2232,11 +2232,11 @@ mod tests {
         // `.ac/coding-agents/_seed/<dest>`.
         let mut expected = vec![
             (
-                ConfigSeedTier::WorkspaceProfile,
+                ConfigSeedTier::AcRootProfile,
                 ac_root.join(format!("default_profile_{}.claude", letter)),
             ),
             (
-                ConfigSeedTier::WorkspaceBase,
+                ConfigSeedTier::AcRootBase,
                 ac_root.join("default.claude"),
             ),
             (
