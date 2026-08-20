@@ -551,6 +551,24 @@ export type WebServerOwnershipState =
   | "externalListening"
   | "stopped";
 
+/** #1453 - reason the last web server start failed. `bind` is ALWAYS the raw
+ *  settings string (never the canonical SocketAddr form), so a consumer that
+ *  cross-checks it against `WebServerInterfaceInfo` must gate on an IPv4 shape
+ *  first. `detail` is the verbatim OS error. */
+export interface WebServerBindFailure {
+  bind: string;
+  port: number;
+  detail: string;
+}
+
+/** #1453 - one IPv4 address currently assigned to an adapter, offerable as a
+ *  bind. Loopback, link-local and unspecified are filtered out by the backend. */
+export interface WebServerInterfaceInfo {
+  address: string;
+  interfaceName: string;
+  isVirtual: boolean;
+}
+
 export interface WebServerOwnedStatus {
   listening: boolean;
   owned: boolean;
@@ -559,6 +577,8 @@ export interface WebServerOwnedStatus {
   bind: string;
   port: number;
   state: WebServerOwnershipState;
+  // Required, not optional: serde always emits the key, `null` when absent.
+  bindFailure: WebServerBindFailure | null;
 }
 
 export type ApiClientMintScope = "send" | "list-peers-lean" | "session-transport";

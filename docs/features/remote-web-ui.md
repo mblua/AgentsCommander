@@ -67,9 +67,38 @@ For the wider picture of what an agent and a remote caller can reach, see [Secur
 |---|---|
 | `webServerEnabled` | Whether the embedded HTTP and WebSocket server runs. `false` by default. |
 | `webServerPort` | The listening port. The default is platform-specific per binary suffix. Editable from the web server menu. |
-| `webServerBind` | The bind address. `"127.0.0.1"` by default. No UI: edit it in `settings.json` while AC is closed. |
+| `webServerBind` | The bind address. `"127.0.0.1"` by default. Editable from the web server menu (see below). |
 
 See [Settings reference](../reference/settings.md#web-server-opt-in) for the field types and the LAN procedure.
+
+### Bind address
+
+The titlebar Web Server popover exposes the bind address next to the port
+(BIND section, ADDR row). The chooser offers:
+
+- **Localhost only (127.0.0.1)** - reachable from this machine only. This is the
+  default.
+- **All interfaces (0.0.0.0)** - binds every adapter, so it survives DHCP address
+  changes. It also means **any device on your network can reach this server**,
+  which gives that device the same control over your sessions that the desktop UI
+  has, including sending input to terminals. Release builds protect the web UI
+  with a token that travels as a plain-text URL parameter over plain HTTP, so it
+  is observable on the network path; **development builds skip token validation
+  entirely and are not protected at all**. Prefer `Localhost only` unless you
+  specifically need LAN access and trust every device on that network.
+- Every IPv4 address currently assigned to a network adapter, with its adapter
+  name. Virtual and tunnel adapters (WSL, Tailscale, VPNs) are grouped and
+  collapsed. Link-local `169.254.*` addresses are not offered.
+- A manual IPv4 entry for addresses the detection does not list.
+
+Applying an address restarts the server if it is running, starts it if it is
+enabled but stopped (for example after a failed bind), and otherwise only saves.
+
+If the configured address is no longer assigned to any adapter (a common
+consequence of a DHCP lease change), the server cannot bind: the popover then
+reports `Stopped · bind failed`, explains which address is missing, shows the
+verbatim OS error as a secondary line, and the stored address stays listed as
+a disabled `Unavailable` row until you pick a current one.
 
 ## Troubleshooting
 
