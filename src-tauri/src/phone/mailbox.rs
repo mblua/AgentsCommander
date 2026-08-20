@@ -3128,7 +3128,7 @@ impl MailboxPoller {
                     OutboxClassification::Standard(content) => content,
                 };
                 let outcome = self
-                    .process_message_content(app, &path, is_app_outbox, &standard_content)
+                    .process_message_content(app, &path, is_app_outbox, &standard_content, None)
                     .await;
                 self.record_message_outcome(path, outcome).await;
             }
@@ -6069,16 +6069,22 @@ impl MailboxPoller {
                 return Ok(());
             }
         };
-        self.process_message_content(app, path, is_app_outbox, &content)
+        self.process_message_content(app, path, is_app_outbox, &content, None)
             .await
     }
 
+    /// (#1399) `deferred_tail`: `Some(slot)` when the caller owns a worker pool
+    /// and wants the delivery tail detached: the validated message is parked in
+    /// `slot` and `Ok(())` is returned WITHOUT delivering. `None` runs the tail
+    /// inline (the `#[cfg(test)]` `process_message` entry point). Every earlier
+    /// rejection return is unaffected because the success type stays `()`.
     async fn process_message_content<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         path: &Path,
         is_app_outbox: bool,
         content: &str,
+        deferred_tail: Option<&mut Option<OutboxMessage>>,
     ) -> Result<(), String> {
         // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
         // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
@@ -6467,6 +6473,10 @@ impl MailboxPoller {
                     &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
                 )
                 .await;
+        }
+        if let Some(slot) = deferred_tail {
+            *slot = Some(msg);
+            return Ok(());
         }
         self.deliver_wake(app, &msg).await?;
 
