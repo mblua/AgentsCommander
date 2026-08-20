@@ -1633,6 +1633,46 @@ pub enum WebServerOwnershipState {
     Stopped,
 }
 
+/// §1453: motivo del ultimo arranque fallido, expuesto al frontend.
+/// `detail` es el texto verbatim del error subyacente; la UI lo demota a
+/// linea secundaria y construye el titular llano por su cuenta (D8).
+/// CONTRATO (D2): `bind` es SIEMPRE el string de settings crudo, en las dos
+/// variantes del error. Quien lo cruce contra la lista de interfaces debe
+/// gatear antes con un shape IPv4 (ver 5.7.2).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebServerBindFailure {
+    pub bind: String,
+    pub port: u16,
+    pub detail: String,
+}
+
+/// §1453: una direccion IPv4 ofrecible como bind, con su adaptador.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebServerInterfaceInfo {
+    pub address: String,
+    pub interface_name: String,
+    pub is_virtual: bool,
+}
+
+/// §1453: unica conversion error -> payload. Reemplaza los accesores
+/// bind()/port()/detail() de la ronda 1: la conversion vive donde vive el
+/// payload. Emite el `bind` CRUDO en ambas variantes (contrato de D2).
+impl From<&crate::web::StartServerError> for WebServerBindFailure {
+    fn from(err: &crate::web::StartServerError) -> Self {
+        let (bind, port, detail) = match err {
+            crate::web::StartServerError::InvalidAddr { bind, port, detail } => {
+                (bind.clone(), *port, detail.clone())
+            }
+            crate::web::StartServerError::BindFailed { bind, addr, detail } => {
+                (bind.clone(), addr.port(), detail.clone())
+            }
+        };
+        WebServerBindFailure { bind, port, detail }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebServerOwnedStatus {
@@ -1643,6 +1683,7 @@ pub struct WebServerOwnedStatus {
     pub bind: String,
     pub port: u16,
     pub state: WebServerOwnershipState,
+    pub bind_failure: Option<WebServerBindFailure>,
 }
 
 fn ensure_web_remote_open_allowed(
@@ -1660,11 +1701,37 @@ fn ensure_web_remote_open_allowed(
     Ok(())
 }
 
+/// §1453 D2: el status solo carga el fallo si describe el target configurado
+/// AHORA y si nada esta escuchando. Un fallo grabado para un bind/port
+/// anterior (p.ej. el usuario edito el puerto estando parado) no debe pintar
+/// la alerta del target nuevo, y un fallo viejo no debe pintar sobre algo que
+/// SI esta sirviendo. El slot significa exactamente "esto explica por que
+/// nada esta sirviendo".
+/// El guard de `listening` es la SEGUNDA guardia, independiente de la del
+/// frontend (`showBindAlert`, 5.7.2), que sigue siendo la primaria: ninguna
+/// de las dos es load-bearing sola porque los dos early-returns Ok(false) de
+/// start_web_server nunca graban fallo.
+fn select_current_bind_failure(
+    recorded: Option<crate::web::StartServerError>,
+    bind: &str,
+    port: u16,
+    listening: bool,
+) -> Option<WebServerBindFailure> {
+    if listening {
+        return None;
+    }
+    recorded
+        .as_ref()
+        .map(WebServerBindFailure::from)
+        .filter(|failure| failure.bind == bind && failure.port == port)
+}
+
 fn build_web_server_owned_status(
     bind: String,
     port: u16,
     owned: bool,
     listening: bool,
+    bind_failure: Option<WebServerBindFailure>,
 ) -> WebServerOwnedStatus {
     let external_listening = listening && !owned;
     let state = if owned {
@@ -1683,6 +1750,7 @@ fn build_web_server_owned_status(
         bind,
         port,
         state,
+        bind_failure,
     }
 }
 
@@ -1976,12 +2044,14 @@ pub async fn start_web_server(
 
     match start_result {
         Ok(join_handle) => {
+            ws_handle.clear_bind_failure();
             ws_handle.store_owned(bind, port, join_handle);
             log::info!("[web-server] Started via command");
             Ok(true)
         }
         Err(err) => {
             log::warn!("[web-server] start failed: {}", err);
+            ws_handle.record_bind_failure(err);
             Ok(false)
         }
     }
@@ -1989,6 +2059,7 @@ pub async fn start_web_server(
 
 #[tauri::command]
 pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bool, String> {
+    ws_handle.clear_bind_failure();
     if ws_handle.abort_running() {
         log::info!("[web-server] Stopped via command");
         Ok(true)
@@ -2023,7 +2094,101 @@ pub async fn get_web_server_owned_status(
         is_tcp_listening(&addr).await
     };
 
-    Ok(build_web_server_owned_status(bind, port, owned, listening))
+    let bind_failure =
+        select_current_bind_failure(ws_handle.last_bind_failure(), &bind, port, listening);
+    Ok(build_web_server_owned_status(
+        bind,
+        port,
+        owned,
+        listening,
+        bind_failure,
+    ))
+}
+
+/// §1453 D3: heuristica por nombre para separar adaptadores virtuales/tunel
+/// de los fisicos. Cubre los friendly names de Windows y los prefijos unix.
+/// Un falso positivo/negativo solo mueve la fila de grupo en el popover; la
+/// fila sigue siendo seleccionable, asi que el costo de un miss es cosmetico.
+fn classify_virtual_interface(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    // "loopback" NO va aca: la clasificacion corre en el .map() POSTERIOR al
+    // filtro de loopback, asi que seria una rama inalcanzable (dev-rust).
+    const CONTAINS: [&str; 10] = [
+        "vethernet",
+        "wsl",
+        "tailscale",
+        "virtualbox",
+        "vmware",
+        "hyper-v",
+        "docker",
+        "zerotier",
+        "hamachi",
+        "wireguard",
+    ];
+    const PREFIXES: [&str; 9] = [
+        "veth", "virbr", "vmnet", "tun", "tap", "utun", "wg", "br-", "zt",
+    ];
+    CONTAINS.iter().any(|needle| lowered.contains(needle))
+        || PREFIXES.iter().any(|prefix| lowered.starts_with(prefix))
+}
+
+/// §1453 D1/D3: transforma pares (nombre, IPv4) crudos en la lista ofrecida.
+/// Filtra loopback (la representa el preset Localhost), link-local 169.254/16
+/// (APIPA: exactamente la clase de bind fragil que este issue elimina) y
+/// unspecified; ordena fisicas primero y dedup exacto.
+///
+/// NO BORRAR el filtro is_link_local() "por muerto": en Windows es un no-op
+/// porque el crate ya descarta 169.254.* antes de entregarlas, pero en
+/// Linux/macOS SI llegan y el filtro es el unico que las saca (D1).
+fn map_web_server_interfaces(
+    raw: Vec<(String, std::net::Ipv4Addr)>,
+) -> Vec<WebServerInterfaceInfo> {
+    let mut out: Vec<WebServerInterfaceInfo> = raw
+        .into_iter()
+        .filter(|(_, ip)| !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified())
+        .map(|(name, ip)| WebServerInterfaceInfo {
+            address: ip.to_string(),
+            is_virtual: classify_virtual_interface(&name),
+            interface_name: name,
+        })
+        .collect();
+    // INVARIANTE: la clave de sort debe cubrir TODOS los campos del struct,
+    // porque Vec::dedup solo elimina duplicados CONSECUTIVOS. Si se agrega un
+    // campo a WebServerInterfaceInfo sin agregarlo aca, el dedup deja de
+    // funcionar en silencio (dev-rust).
+    out.sort_by(|a, b| {
+        (a.is_virtual, &a.interface_name, &a.address).cmp(&(
+            b.is_virtual,
+            &b.interface_name,
+            &b.address,
+        ))
+    });
+    out.dedup();
+    out
+}
+
+/// §1453: IPv4 actuales de la maquina con su adaptador, para el chooser de
+/// bind del popover. Solo registrado en el invoke_handler de escritorio; el
+/// bridge WS del browser no rutea ningun comando de web server (D3).
+/// async no por consistencia (este archivo tiene comandos sync), sino para no
+/// ocupar el main thread: Tauri v2 corre los comandos sync ahi.
+/// Lista adaptadores caidos con IPv4 estatica: deliberado (D3/D6).
+/// get_if_addrs() puede entrar en panico si falla HeapAlloc (camino de OOM).
+#[tauri::command]
+pub async fn list_web_server_interfaces() -> Result<Vec<WebServerInterfaceInfo>, String> {
+    let interfaces = if_addrs::get_if_addrs().map_err(|e| {
+        log::warn!("[web-server] interface enumeration failed: {}", e);
+        format!("Failed to enumerate network interfaces: {}", e)
+    })?;
+    Ok(map_web_server_interfaces(
+        interfaces
+            .into_iter()
+            .filter_map(|iface| match iface.addr {
+                if_addrs::IfAddr::V4(v4) => Some((iface.name, v4.ip)),
+                _ => None,
+            })
+            .collect(),
+    ))
 }
 
 fn api_server_probe_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
@@ -2321,12 +2486,14 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 mod tests {
     use super::{
         api_server_probe_addr, api_server_status, build_web_server_owned_status,
-        ensure_web_remote_open_allowed, is_tcp_socket_listening, mint_api_client_with_path,
+        classify_virtual_interface, ensure_web_remote_open_allowed, is_tcp_socket_listening,
+        map_web_server_interfaces, mint_api_client_with_path,
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        set_rail_collapse_inner_with_saver, start_api_server, WebServerOwnershipState,
-        MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
+        select_current_bind_failure, set_rail_collapse_inner_with_saver, start_api_server,
+        WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
+        MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
@@ -2973,7 +3140,7 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_owned_running() {
-        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, true, true);
+        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, true, true, None);
 
         assert!(status.listening);
         assert!(status.owned);
@@ -2986,7 +3153,8 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_external_listener() {
-        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, true);
+        let status =
+            build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, true, None);
 
         assert!(status.listening);
         assert!(!status.owned);
@@ -2997,13 +3165,152 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_stopped() {
-        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, false);
+        let status =
+            build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, false, None);
 
         assert!(!status.listening);
         assert!(!status.owned);
         assert!(!status.external_listening);
         assert!(!status.open_allowed);
         assert_eq!(status.state, WebServerOwnershipState::Stopped);
+    }
+
+    // §1453 D2: el fallo viaja en el status solo si describe el target actual.
+    #[test]
+    fn web_server_owned_status_carries_matching_bind_failure() {
+        let recorded = Some(crate::web::StartServerError::BindFailed {
+            bind: "192.168.1.12".to_string(),
+            addr: "192.168.1.12:8888".parse().unwrap(),
+            detail: "os error 10049".to_string(),
+        });
+        let failure = select_current_bind_failure(recorded, "192.168.1.12", 8888, false)
+            .expect("matching failure must survive");
+        assert_eq!(failure.bind, "192.168.1.12");
+        assert_eq!(failure.port, 8888);
+        assert_eq!(failure.detail, "os error 10049");
+
+        let status = build_web_server_owned_status(
+            "192.168.1.12".to_string(),
+            8888,
+            false,
+            false,
+            Some(failure),
+        );
+        assert_eq!(status.state, WebServerOwnershipState::Stopped);
+        assert!(status.bind_failure.is_some());
+    }
+
+    // §1453 D2: un fallo de un target anterior (o sobre algo que SI escucha)
+    // no pinta el target nuevo. El caso IPv6 bracketed es el fix D-2: con el
+    // bind crudo guardado, matchea; con la forma canonica se perdia siempre.
+    #[test]
+    fn web_server_owned_status_drops_stale_bind_failure() {
+        let recorded = || {
+            Some(crate::web::StartServerError::BindFailed {
+                bind: "192.168.1.12".to_string(),
+                addr: "192.168.1.12:8888".parse().unwrap(),
+                detail: "os error 10049".to_string(),
+            })
+        };
+        assert!(select_current_bind_failure(recorded(), "192.168.1.12", 9999, false).is_none());
+        assert!(select_current_bind_failure(recorded(), "0.0.0.0", 8888, false).is_none());
+        assert!(select_current_bind_failure(None, "192.168.1.12", 8888, false).is_none());
+        // guardia de listening (D2, higiene)
+        assert!(select_current_bind_failure(recorded(), "192.168.1.12", 8888, true).is_none());
+        // IPv6 bracketed: el crudo matchea contra el settings crudo
+        let v6 = Some(crate::web::StartServerError::BindFailed {
+            bind: "[::1]".to_string(),
+            addr: "[::1]:8888".parse().unwrap(),
+            detail: "os error 10049".to_string(),
+        });
+        assert!(select_current_bind_failure(v6, "[::1]", 8888, false).is_some());
+    }
+
+    // §1453 D3: heuristica de clasificacion sobre nombres reales de ambos mundos.
+    #[test]
+    fn classify_virtual_interface_names() {
+        for physical in [
+            "Ethernet",
+            "Wi-Fi",
+            "Local Area Connection",
+            "eth0",
+            "enp3s0",
+            "en0",
+            "wlan0",
+        ] {
+            assert!(
+                !classify_virtual_interface(physical),
+                "{physical} must be physical"
+            );
+        }
+        for virtual_name in [
+            // el nombre REAL de esta maquina, con parentesis anidados (2.4)
+            "vEthernet (WSL (Hyper-V firewall))",
+            "vEthernet (WSL)",
+            "vEthernet (Default Switch)",
+            "Tailscale",
+            "VirtualBox Host-Only Network",
+            "Docker0",
+            "docker0",
+            "tailscale0",
+            "tun0",
+            "utun3",
+            "wg0",
+            "br-1a2b3c",
+            "veth42",
+            "virbr0",
+            "zt0",
+            "WireGuard Tunnel",
+        ] {
+            assert!(
+                classify_virtual_interface(virtual_name),
+                "{virtual_name} must be virtual"
+            );
+        }
+    }
+
+    // §1453 D1: filtro (loopback, APIPA, unspecified), orden y dedup.
+    #[test]
+    fn map_web_server_interfaces_filters_and_sorts() {
+        let mapped = map_web_server_interfaces(vec![
+            ("Tailscale".to_string(), "100.121.138.61".parse().unwrap()),
+            ("Ethernet".to_string(), "192.168.1.9".parse().unwrap()),
+            ("Ethernet".to_string(), "169.254.10.20".parse().unwrap()),
+            (
+                "Loopback Pseudo-Interface 1".to_string(),
+                "127.0.0.1".parse().unwrap(),
+            ),
+            ("Wi-Fi".to_string(), "192.168.1.2".parse().unwrap()),
+            ("Ethernet".to_string(), "192.168.1.9".parse().unwrap()),
+        ]);
+        let flat: Vec<(String, String, bool)> = mapped
+            .into_iter()
+            .map(|i| (i.interface_name, i.address, i.is_virtual))
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                ("Ethernet".to_string(), "192.168.1.9".to_string(), false),
+                ("Wi-Fi".to_string(), "192.168.1.2".to_string(), false),
+                ("Tailscale".to_string(), "100.121.138.61".to_string(), true),
+            ]
+        );
+    }
+
+    // §1453 D8: el backend PUEDE devolver [] legitimamente (maquina cuyas
+    // unicas direcciones son loopback y APIPA). Es la precondicion del memo
+    // hasDetection() del frontend: lista vacia = sin evidencia, no evidencia
+    // de ausencia.
+    #[test]
+    fn map_web_server_interfaces_returns_empty_when_all_filtered() {
+        let mapped = map_web_server_interfaces(vec![
+            (
+                "Loopback Pseudo-Interface 1".to_string(),
+                "127.0.0.1".parse().unwrap(),
+            ),
+            ("Ethernet".to_string(), "169.254.10.20".parse().unwrap()),
+        ]);
+        assert!(mapped.is_empty());
     }
 
     #[test]
