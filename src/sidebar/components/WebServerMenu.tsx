@@ -207,14 +207,22 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     }
   };
 
-  // #1453 - defensive only; production cannot reach the failing branch. This
-  // menu renders solely in the desktop titlebar (Titlebar.tsx, under `isTauri`,
-  // and the served page passes `embedded` so it gets no titlebar at all), so a
-  // browser never calls this. The catch stays because the WS bridge routes no
-  // web server commands, so any future non-Tauri render site would throw here.
-  // It is NOT observable browser behaviour: there is no chooser in a browser to
-  // degrade, and documenting it as one is exactly the false claim #1453 removed
-  // from docs/features/remote-web-ui.md.
+  // #1453 - the catch has a LIVE production path and a defensive one.
+  // LIVE, on the desktop today: list_web_server_interfaces returns Err when
+  // if_addrs::get_if_addrs() fails (config.rs:2179), so this is what turns an
+  // enumeration failure into interfaces() === null, the designed degradation
+  // hasDetection() at :119 exists to consume (D3, D8). Do not delete it as
+  // dead: that Err would escape refreshState's Promise.all, unhandled on mount,
+  // and inside applyBind it would throw after the bind was saved and the start
+  // attempted, so the convergence gate that keeps the chooser open would never
+  // run.
+  // DEFENSIVE: no browser reaches this, because the menu renders solely in the
+  // desktop titlebar (Titlebar.tsx:228 under `isTauri` at :225, and the served
+  // page passes `embedded` so it gets no titlebar at all); the WS bridge routes
+  // no web server commands, so a future non-Tauri render site would throw here
+  // too. Neither path is anything a browser user can observe: there is no
+  // chooser in a browser to degrade, and documenting it as one was the false
+  // claim #1453 removed from docs/features/remote-web-ui.md.
   const loadInterfaces = async () => {
     try {
       setInterfaces(await SettingsAPI.listWebServerInterfaces());
