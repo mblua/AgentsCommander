@@ -1755,6 +1755,22 @@ fn build_web_server_owned_status(
     }
 }
 
+fn web_remote_url(bind: &str, port: u16, token: &str) -> Result<String, String> {
+    let destination_ip = match bind
+        .parse::<IpAddr>()
+        .map_err(|error| format!("Invalid web server bind address '{bind}': {error}"))?
+    {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    let socket_addr = SocketAddr::new(destination_ip, port);
+
+    Ok(format!(
+        "http://{socket_addr}/?window=browser&remoteToken={token}"
+    ))
+}
+
 #[tauri::command]
 pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<(), String> {
     let settings = load_settings();
@@ -1767,12 +1783,11 @@ pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<()
     let token = std::fs::read_to_string(&token_path)
         .map_err(|e| format!("Cannot read web token: {}", e))?;
 
-    let url = format!(
-        "http://{}:{}/?window=browser&remoteToken={}",
-        settings.web_server_bind,
+    let url = web_remote_url(
+        &settings.web_server_bind,
         settings.web_server_port,
-        token.trim()
-    );
+        token.trim(),
+    )?;
 
     open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))?;
     Ok(())
@@ -2493,8 +2508,8 @@ mod tests {
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
         select_current_bind_failure, set_rail_collapse_inner_with_saver, start_api_server,
-        WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
-        MINT_API_CLIENT_NOTE,
+        web_remote_url, WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
+        MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
@@ -2883,6 +2898,55 @@ mod tests {
         )));
         app.manage(pty_mgr);
         app
+    }
+
+    #[test]
+    fn web_remote_url_maps_wildcards_and_preserves_concrete_ips() {
+        let cases = [
+            (
+                "0.0.0.0",
+                "http://127.0.0.1:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "::",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "0:0:0:0:0:0:0:0",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "0::0",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "127.0.0.1",
+                "http://127.0.0.1:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "192.168.1.50",
+                "http://192.168.1.50:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "::1",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "2001:db8::25",
+                "http://[2001:db8::25]:8888/?window=browser&remoteToken=test-token",
+            ),
+        ];
+
+        for (bind, expected) in cases {
+            assert_eq!(web_remote_url(bind, 8888, "test-token").unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn web_remote_url_rejects_invalid_bind() {
+        let error = web_remote_url("not-an-ip", 8888, "test-token").unwrap_err();
+
+        assert!(error.starts_with("Invalid web server bind address 'not-an-ip':"));
     }
 
     #[test]

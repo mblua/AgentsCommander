@@ -19,6 +19,25 @@ const RESTART_POLL_ATTEMPTS = 15;
 
 const ALL_INTERFACES = "0.0.0.0";
 const LOCALHOST = "127.0.0.1";
+
+function browserUrlHost(bind: string): string {
+  if (bind === ALL_INTERFACES) {
+    return LOCALHOST;
+  }
+
+  if (bind.includes(":") && /^[0-9A-Fa-f:.]+$/.test(bind)) {
+    try {
+      if (new URL(`http://[${bind}]/`).hostname === "[::]") {
+        return "[::1]";
+      }
+    } catch {
+      // Preserve the existing fallback for invalid or non-IP values.
+    }
+  }
+
+  return bind.includes(":") ? `[${bind}]` : bind;
+}
+
 // #1453 - strict IPv4 shape (0-255 per octet), the same regex as the approved
 // prototype. It rejects leading zeros exactly like Rust's parser, so a string
 // that passes is already canonical and safe to cross-check against the
@@ -87,7 +106,9 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const configuredPort = createMemo(() => settings()?.webServerPort ?? 0);
   const configuredBind = createMemo(() => settings()?.webServerBind || "127.0.0.1");
   const webServerEnabled = createMemo(() => settings()?.webServerEnabled ?? false);
-  const baseUrl = createMemo(() => `http://${configuredBind()}:${configuredPort()}`);
+  const baseUrl = createMemo(
+    () => `http://${browserUrlHost(configuredBind())}:${configuredPort()}`,
+  );
   const running = createMemo(() => status()?.listening ?? false);
   const ownedRunning = createMemo(() => status()?.owned ?? false);
   const ownershipAmbiguous = createMemo(() =>
