@@ -1694,11 +1694,6 @@ fn workgroup_creation_and_scopeless_removal_leave_no_manifest() {
 ///
 /// The literal is a v1 manifest on purpose: the upgrade path must prove it
 /// handles a pre-upgrade manifest written by an old build.
-///
-/// LEGACY-ALIAS(#1451): `source = "workspace_base"` below is deliberately NOT
-/// renamed to `ac_root_base`. It is the only end-to-end proof in the repository
-/// that a real pre-#1451 manifest still parses through the production CLI, and
-/// rewriting it would leave every gate green while destroying that proof.
 fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: &str) {
     let manifest = format!(
         concat!(
@@ -1712,7 +1707,7 @@ fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: 
             "path_encoding = \"utf8\"\n",
             "kind = \"replica_config_file\"\n",
             "scope = \"config:.ac/{workgroup}/__agent_{agent}/.claude\"\n",
-            "source = \"workspace_base\"\n",
+            "source = \"workspace_base\"\n", // LEGACY-ALIAS(#1451)
             "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
         ),
         workgroup = workgroup,

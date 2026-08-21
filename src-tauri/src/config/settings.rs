@@ -5807,6 +5807,24 @@ mod tests {
             super::validate_codex_home_template_value(value, "ctx")
                 .unwrap_or_else(|e| panic!("legacy template {value} should be accepted: {e}"));
         }
+
+        let err = super::validate_codex_home_template_value(
+            r"prefix%AC_PROJECT_ROOT%\%AC_WORKSPACE_ROOT%\x",
+            "ctx",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("complete path segment") && err.contains("%AC_PROJECT_ROOT%"),
+            "{err}"
+        );
+
+        let err =
+            super::validate_codex_home_template_value(r"prefix%AC_WORKSPACE_ROOT%\x", "ctx")
+                .unwrap_err();
+        assert!(
+            err.contains("complete path segment") && err.contains("%AC_WORKSPACE_ROOT%"),
+            "{err}"
+        );
     }
 
     #[test]
