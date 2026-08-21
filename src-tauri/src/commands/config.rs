@@ -2912,6 +2912,14 @@ mod tests {
                 "http://[::1]:8888/?window=browser&remoteToken=test-token",
             ),
             (
+                "0:0:0:0:0:0:0:0",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
+                "0::0",
+                "http://[::1]:8888/?window=browser&remoteToken=test-token",
+            ),
+            (
                 "127.0.0.1",
                 "http://127.0.0.1:8888/?window=browser&remoteToken=test-token",
             ),
