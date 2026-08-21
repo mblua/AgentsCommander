@@ -21,8 +21,21 @@ const ALL_INTERFACES = "0.0.0.0";
 const LOCALHOST = "127.0.0.1";
 
 function browserUrlHost(bind: string): string {
-  const host = bind === ALL_INTERFACES ? LOCALHOST : bind === "::" ? "::1" : bind;
-  return host.includes(":") ? `[${host}]` : host;
+  if (bind === ALL_INTERFACES) {
+    return LOCALHOST;
+  }
+
+  if (bind.includes(":") && /^[0-9A-Fa-f:.]+$/.test(bind)) {
+    try {
+      if (new URL(`http://[${bind}]/`).hostname === "[::]") {
+        return "[::1]";
+      }
+    } catch {
+      // Preserve the existing fallback for invalid or non-IP values.
+    }
+  }
+
+  return bind.includes(":") ? `[${bind}]` : bind;
 }
 
 // #1453 - strict IPv4 shape (0-255 per octet), the same regex as the approved
