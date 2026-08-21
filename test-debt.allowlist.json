@@ -202,30 +202,6 @@
       "resolution": "Run manually with AC_STAGE_D_LOCK_ORDER_DRIVE=1 cargo test --lib -- --ignored --test-threads=1 --exact cli::workgroup::tests::cli_workgroup_lock_order_inversion_driver."
     },
     {
-      "id": "rust:src-tauri/src/config/seed_manifest.rs::stage_e_conformance::bench_whole_scope_replacement_1k_10k_100k",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 1064,
-      "reason": "#1064 Stage E release-mode scale benchmark: whole-scope manifest replacement at 1k/10k/100k rows. It records elapsed, additional-working-set, and canonical-byte measurements and enforces the plan section 7.4 10 s / 512 MiB gate only in a release build on the reference machine, so it must stay out of the standard debug cargo test lane (plan section 10.5 item 6).",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::stage_e_conformance::bench_whole_scope_replacement_1k_10k_100k."
-    },
-    {
-      "id": "rust:src-tauri/src/config/seed_manifest.rs::stage_e_conformance::bench_small_scope_mutation_in_whole_manifest_1k_10k_100k",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 1064,
-      "reason": "#1064 Stage E release-mode scale benchmark: a small-scope mutation inside a whole 1k/10k/100k-row manifest. Records the same measurements and enforces the plan section 7.4 gate only in release on the reference machine, so it must stay out of the standard debug cargo test lane (plan section 10.5 item 6).",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::stage_e_conformance::bench_small_scope_mutation_in_whole_manifest_1k_10k_100k."
-    },
-    {
-      "id": "rust:src-tauri/src/config/seed_manifest.rs::stage_e_conformance::bench_git_diff_numstat_1k_10k_100k",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 1064,
-      "reason": "#1064 Stage E release-mode Git-diff evidence benchmark: records canonical bytes, git diff --numstat, and diff-generation time for 1k/10k/100k rows (plan section 7.4, 10.5 item 8, observational, no numeric threshold). It shells out to git and is measurement-only, so it must stay out of the standard debug cargo test lane.",
-      "resolution": "Run as Stage F acceptance or manually with cargo test --release --lib -- --ignored --test-threads=1 --exact config::seed_manifest::stage_e_conformance::bench_git_diff_numstat_1k_10k_100k."
-    },
-    {
       "id": "rust:src-tauri/src/config/seed_manifest.rs::stage_e_conformance::bench_adversarial_parser_memory_stays_bounded",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
