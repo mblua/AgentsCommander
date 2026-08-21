@@ -26,7 +26,24 @@ import {
 } from "../../shared/testing/ui-harness";
 import { terminalStore } from "../stores/terminal";
 import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
+import {
+  TEST_TERMINAL_DOCUMENT_EPOCH,
+  terminalActivationWire,
+} from "../../shared/testing/terminal-output";
 import { TERMINAL_RETENTION_LIMIT } from "./terminal-session-registry";
+
+vi.mock("../../sidebar/stores/sessions", () => ({
+  sessionsStore: {
+    resetContextReadingsForTests: () => undefined,
+    setSessions: () => undefined,
+    resetSelectionForTests: () => undefined,
+    setTeams: () => undefined,
+    setRepos: () => undefined,
+    setAlwaysShowSelectedWorkgroup: () => undefined,
+    setCoordSortByActivity: () => undefined,
+    clearDetached: () => undefined,
+  },
+}));
 
 interface RecordedWrite {
   bytes: number[];
@@ -42,6 +59,17 @@ interface FakeTerminalInstance {
   disposed: boolean;
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
+  readonly buffer: {
+    readonly active: {
+      readonly type: "normal";
+      readonly viewportY: number;
+      readonly baseY: number;
+      readonly length: number;
+      readonly getLine: (index: number) =>
+        | { readonly getCell: (col: number) => { readonly getChars: () => string } | undefined }
+        | undefined;
+    };
+  };
 }
 
 const xterm = vi.hoisted(() => ({
@@ -59,15 +87,33 @@ vi.mock("@xterm/xterm", () => ({
     screen: number[][] = [];
     resets = 0;
     disposed = false;
+    private viewportY = 0;
+    private baseY = 0;
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     constructor() {
       xterm.instances.push(this);
     }
 
-    loadAddon(): void {}
+    loadAddon(addon: { activate?: (terminal: FakeTerminalInstance) => void }): void {
+      addon.activate?.(this);
+    }
 
-    open(element: HTMLElement): void {
+    open(container: HTMLElement): void {
+      const element = document.createElement("div");
+      element.className = "xterm";
+      const screen = document.createElement("div");
+      screen.className = "xterm-screen";
+      const canvas = document.createElement("canvas");
+      canvas.width = 880;
+      canvas.height = 520;
+      screen.appendChild(canvas);
+      element.appendChild(screen);
+      container.appendChild(element);
+      const rect = () => new DOMRect(0, 0, 880, 520);
+      container.getBoundingClientRect = rect;
+      element.getBoundingClientRect = rect;
+      screen.getBoundingClientRect = rect;
       this.element = element;
     }
 
@@ -78,10 +124,15 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
 
-    write(data: unknown): void {
+    write(data: unknown, callback?: () => void): void {
       const bytes = Array.from(data as Uint8Array);
+      if (bytes.length === 0) {
+        callback?.();
+        return;
+      }
       this.writes.push({ bytes });
       this.screen.push(bytes);
+      callback?.();
     }
 
     reset(): void {
@@ -89,7 +140,29 @@ vi.mock("@xterm/xterm", () => ({
       this.screen.length = 0;
     }
 
-    scrollToBottom(): void {}
+    scrollToBottom(): void {
+      this.viewportY = this.baseY;
+    }
+    get buffer() {
+      return {
+        active: {
+          type: "normal" as const,
+          viewportY: this.viewportY,
+          baseY: this.baseY,
+          length: this.baseY + this.rows,
+          getLine: (index: number) => {
+            if (index < this.baseY || index >= this.baseY + this.rows) return undefined;
+            return {
+              getCell: (col: number) => {
+                if (col < 0 || col >= this.cols) return undefined;
+                const hasText = this.screen.some((line) => line.length > 0);
+                return { getChars: () => (hasText && index === this.baseY && col === 0 ? "x" : "") };
+              },
+            };
+          },
+        },
+      };
+    }
     paste(): void {}
     hasSelection(): boolean {
       return false;
@@ -135,6 +208,7 @@ vi.mock("@xterm/addon-fit", () => ({
 
 vi.mock("@xterm/addon-webgl", () => ({
   WebglAddon: class {
+    activate(): void {}
     onContextLoss = vi.fn();
     dispose = vi.fn();
   },
@@ -145,6 +219,12 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("../../shared/platform", () => ({
   isTauri: true,
   isBrowser: false,
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ onCloseRequested: async () => () => {} }),
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "terminal" }),
 }));
 
 async function flushMicrotasks(): Promise<void> {
@@ -164,6 +244,7 @@ function installBackend(fake: FakeTransport, sessions: string[]): void {
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
   fake.resolve("set_last_prompt", undefined);
+  fake.resolve("terminal_output_document_epoch", TEST_TERMINAL_DOCUMENT_EPOCH);
   fake.onInvoke("get_screen_snapshot", (args) => ({
     sessionId: String(args.sessionId),
     data: [89, 89, 89, 89],
@@ -171,14 +252,12 @@ function installBackend(fake: FakeTransport, sessions: string[]): void {
     cols: null,
     sequence: 999,
   }));
-  fake.onInvoke("activate_terminal_output", (args) => ({
-    sessionId: String(args.sessionId),
-    data: [83, 78, 65, 80],
-    rows: 24,
-    cols: 80,
-    sequence: 0,
-  }));
+  fake.onInvoke("activate_terminal_output", (args) =>
+    terminalActivationWire(args, { replayData: [83, 78, 65, 80] }),
+  );
   fake.resolve("detach_terminal_output", undefined);
+  fake.resolve("cancel_terminal_output_activation", undefined);
+  fake.resolve("record_terminal_attach_observation", undefined);
 }
 
 let currentFake: FakeTransport | null = null;
@@ -190,7 +269,7 @@ function instanceFor(sessionId: string): FakeTerminalInstance {
   const instance = xterm.instances.find(
     (candidate) =>
       !candidate.disposed &&
-      candidate.element?.getAttribute("data-ac-session-id") === sessionId,
+      candidate.element?.parentElement?.getAttribute("data-ac-session-id") === sessionId,
   );
   if (!instance) {
     throw new Error(`no live xterm instance for ${sessionId}; have ${xterm.instances.length}`);
@@ -282,6 +361,9 @@ describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", ()
     try {
       await settleReal();
       await waitFor(() => expect(instanceFor(SESSION_A).writes).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(3),
+      );
       const attachesBefore = fake.callsFor("activate_terminal_output").length;
       const detachesBefore = fake.callsFor("detach_terminal_output").length;
 
@@ -295,12 +377,16 @@ describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", ()
       expect(fake.lastCall("activate_terminal_output")?.args).toEqual({
         sessionId: SESSION_B,
         includeHistory: true,
+        documentEpoch: TEST_TERMINAL_DOCUMENT_EPOCH,
+        attachGeneration: 2,
       });
       expect(fake.lastCall("detach_terminal_output")?.args).toEqual({
         sessionId: SESSION_A,
+        documentEpoch: TEST_TERMINAL_DOCUMENT_EPOCH,
+        attachGeneration: 1,
       });
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -329,7 +415,7 @@ describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", ()
           const visible = xterm.instances.find(
             (instance) =>
               !instance.disposed &&
-              instance.element?.getAttribute("data-ac-session-id") === sessionId,
+              instance.element?.parentElement?.getAttribute("data-ac-session-id") === sessionId,
           );
           return visible !== undefined && visible.writes.length >= 1;
         });
@@ -364,12 +450,12 @@ describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", ()
       }
 
       // Unmount: nothing scheduled remains; every instance disposed.
-      rendered.cleanup();
+      await rendered.cleanupAsync();
       await vi.advanceTimersByTimeAsync(20_000);
       expect(xterm.instances.every((instance) => instance.disposed)).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 });

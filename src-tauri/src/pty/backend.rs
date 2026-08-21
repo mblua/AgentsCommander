@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::{
-    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, TerminalOutputAttachError,
+    CapturedVtScreen, PtyOutputTarget, PtyScreenSnapshot, PtyTerminalOutputActivation,
+    TerminalOutputAttachError,
 };
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::resource_monitor::{ResourceLaunchRegistration, ResourceLogicalAgentSlot};
@@ -286,12 +287,21 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     ///
     /// `label` is the calling webview's window label, supplied by Tauri rather than by
     /// JavaScript, and it is the identity the emission gate is keyed on.
+    ///
+    /// The manager owns document-epoch and attach-generation acceptance, high-water tracking,
+    /// and output ownership. Backends receive those values only as accepted correlation
+    /// metadata and must not create a second ownership decision. The coordinator intentionally
+    /// holds its view registry while calling these methods, so implementations must not
+    /// synchronously re-enter the coordinator. The permitted nested order is view registry,
+    /// backend parser state, then backend attachment state.
     fn activate_terminal_output(
         &self,
         _id: Uuid,
         _label: &str,
         _include_history: bool,
-    ) -> Result<Option<PtyScreenSnapshot>, TerminalOutputAttachError> {
+        _document_epoch: u64,
+        _attach_generation: u32,
+    ) -> Result<PtyTerminalOutputActivation, TerminalOutputAttachError> {
         Err(TerminalOutputAttachError::SessionUnavailable)
     }
 

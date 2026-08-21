@@ -19,7 +19,15 @@ import type {
   SessionEnvWarningPayload,
   SessionWarning,
   PtyOutputEvent,
+  PtyLegacyScreenSnapshot,
   PtyScreenSnapshot,
+  PtyTerminalActiveBuffer,
+  PtyTerminalAlternateEntryMode,
+  PtyTerminalAttachObservation,
+  PtyTerminalHistoryTruncationReason,
+  PtyTerminalOutputActivation,
+  PtyTerminalReplayStage,
+  PtyTerminalSeedlessReason,
   AppSettings,
   SettingsSnapshot,
   LogLevel,
@@ -255,7 +263,7 @@ export const PtyAPI = {
     transport.invoke<void>("pty_resize", { sessionId, cols, rows }),
 
   getScreenSnapshot: (sessionId: string) =>
-    transport.invoke<PtyScreenSnapshot | null>("get_screen_snapshot", { sessionId }),
+    transport.invoke<PtyLegacyScreenSnapshot | null>("get_screen_snapshot", { sessionId }),
 
   getSessionContext: (sessionId: string) =>
     transport.invoke<number | null>("get_session_context", { sessionId }),
@@ -420,6 +428,418 @@ export const ReposAPI = {
     transport.invoke<string | null>("git_remote_url", { path }),
 };
 
+const TERMINAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const TERMINAL_U64_MAX_DECIMAL = "18446744073709551615";
+const TERMINAL_U32_MAX = 4_294_967_295;
+const TERMINAL_REPLAY_MAX_BYTES = 512 * 1024;
+const TERMINAL_HISTORY_MAX_BYTES = 64 * 1024;
+const TERMINAL_HISTORY_MAX_ROWS = 1024;
+const TERMINAL_PENDING_PREFIX_MAX_BYTES = 64;
+
+const TERMINAL_SNAPSHOT_REQUIRED_KEYS = [
+  "replayData",
+  "rows",
+  "cols",
+  "sequence",
+  "activeBuffer",
+  "replayStage",
+  "historyIncluded",
+  "historyTruncated",
+  "historyTruncationReason",
+  "historyBoundaryHardened",
+  "normalScreenIncluded",
+  "retainedHistoryRows",
+  "includedHistoryRows",
+  "semanticHistoryBytes",
+  "replayBytes",
+  "pendingParserBytes",
+  "activeScreenHasText",
+  "activeBottomLineHasText",
+] as const;
+
+function failTerminalPayload(path: string, detail: string): never {
+  throw new Error(`Invalid terminal payload at ${path}: ${detail}`);
+}
+
+function requireTerminalRecord(
+  value: unknown,
+  path: string,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = [],
+): object {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return failTerminalPayload(path, "expected a plain object");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return failTerminalPayload(path, "expected a plain object prototype");
+  }
+  const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.some((key) => typeof key !== "string" || !allowedKeys.has(key)) ||
+    requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+  ) {
+    return failTerminalPayload(path, "missing, extra, or symbolic fields");
+  }
+  for (const key of keys) {
+    if (typeof key !== "string") {
+      return failTerminalPayload(path, "symbolic fields are not allowed");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor)) {
+      return failTerminalPayload(`${path}.${key}`, "accessor-backed fields are not allowed");
+    }
+  }
+  return value;
+}
+
+function terminalDataValue(record: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (!descriptor || !("value" in descriptor)) {
+    return failTerminalPayload(key, "missing own data field");
+  }
+  return descriptor.value;
+}
+
+function hasTerminalDataValue(record: object, key: string): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor !== undefined && "value" in descriptor;
+}
+
+function requireTerminalBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") {
+    return failTerminalPayload(path, "expected a boolean");
+  }
+  return value;
+}
+
+function requireTerminalInteger(
+  value: unknown,
+  path: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    return failTerminalPayload(path, `expected an integer from ${minimum} through ${maximum}`);
+  }
+  return value;
+}
+
+function requireTerminalEnum<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T {
+  const match = allowed.find((candidate) => candidate === value);
+  if (match === undefined) {
+    return failTerminalPayload(path, `expected one of ${allowed.join(",")}`);
+  }
+  return match;
+}
+
+function requireTerminalUuid(value: unknown, path: string): string {
+  if (typeof value !== "string" || !TERMINAL_UUID_PATTERN.test(value)) {
+    return failTerminalPayload(path, "expected a canonical lowercase UUID");
+  }
+  return value;
+}
+
+export function decodeTerminalDocumentEpoch(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^[1-9][0-9]*$/.test(value) ||
+    value.length > TERMINAL_U64_MAX_DECIMAL.length ||
+    (value.length === TERMINAL_U64_MAX_DECIMAL.length &&
+      value > TERMINAL_U64_MAX_DECIMAL)
+  ) {
+    return failTerminalPayload("documentEpoch", "expected a canonical positive u64 decimal");
+  }
+  return value;
+}
+
+function decodeTerminalBytes(
+  value: unknown,
+  path: string,
+  maximumLength: number,
+): readonly number[] {
+  if (!Array.isArray(value) || value.length > maximumLength) {
+    return failTerminalPayload(path, `expected a byte array no longer than ${maximumLength}`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Array.prototype && prototype !== null) {
+    return failTerminalPayload(path, "expected an ordinary array prototype");
+  }
+  const bytes: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !("value" in descriptor)) {
+      return failTerminalPayload(`${path}[${index}]`, "sparse or accessor-backed arrays are invalid");
+    }
+    bytes.push(requireTerminalInteger(descriptor.value, `${path}[${index}]`, 0, 255));
+  }
+  const expectedKeys = value.length + 1;
+  if (Reflect.ownKeys(value).length !== expectedKeys) {
+    return failTerminalPayload(path, "extra array fields are not allowed");
+  }
+  return Object.freeze(bytes);
+}
+
+function decodeTerminalSnapshot(value: unknown): PtyScreenSnapshot {
+  const record = requireTerminalRecord(
+    value,
+    "activation.snapshot",
+    TERMINAL_SNAPSHOT_REQUIRED_KEYS,
+    ["alternateEntryMode"],
+  );
+  const replayData = decodeTerminalBytes(
+    terminalDataValue(record, "replayData"),
+    "activation.snapshot.replayData",
+    TERMINAL_REPLAY_MAX_BYTES,
+  );
+  const rows = requireTerminalInteger(
+    terminalDataValue(record, "rows"),
+    "activation.snapshot.rows",
+    1,
+    65_535,
+  );
+  const cols = requireTerminalInteger(
+    terminalDataValue(record, "cols"),
+    "activation.snapshot.cols",
+    1,
+    65_535,
+  );
+  const sequence = requireTerminalInteger(
+    terminalDataValue(record, "sequence"),
+    "activation.snapshot.sequence",
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const activeBuffer = requireTerminalEnum<PtyTerminalActiveBuffer>(
+    terminalDataValue(record, "activeBuffer"),
+    "activation.snapshot.activeBuffer",
+    ["normal", "alternate"],
+  );
+  const alternateEntryMode = hasTerminalDataValue(record, "alternateEntryMode")
+    ? requireTerminalEnum<PtyTerminalAlternateEntryMode>(
+        terminalDataValue(record, "alternateEntryMode"),
+        "activation.snapshot.alternateEntryMode",
+        ["mode47", "mode1047", "mode1049"],
+      )
+    : null;
+  const replayStage = requireTerminalEnum<PtyTerminalReplayStage>(
+    terminalDataValue(record, "replayStage"),
+    "activation.snapshot.replayStage",
+    ["semanticHistory", "screenOnlyHistoryDisabled", "screenOnlyCheckpointUnavailable"],
+  );
+  const historyIncluded = requireTerminalBoolean(
+    terminalDataValue(record, "historyIncluded"),
+    "activation.snapshot.historyIncluded",
+  );
+  const historyTruncated = requireTerminalBoolean(
+    terminalDataValue(record, "historyTruncated"),
+    "activation.snapshot.historyTruncated",
+  );
+  const historyTruncationReason = requireTerminalEnum<PtyTerminalHistoryTruncationReason>(
+    terminalDataValue(record, "historyTruncationReason"),
+    "activation.snapshot.historyTruncationReason",
+    ["none", "rowLimitReached", "byteLimitReached", "rowAndByteLimitReached"],
+  );
+  const historyBoundaryHardened = requireTerminalBoolean(
+    terminalDataValue(record, "historyBoundaryHardened"),
+    "activation.snapshot.historyBoundaryHardened",
+  );
+  const normalScreenIncluded = requireTerminalBoolean(
+    terminalDataValue(record, "normalScreenIncluded"),
+    "activation.snapshot.normalScreenIncluded",
+  );
+  const retainedHistoryRows = requireTerminalInteger(
+    terminalDataValue(record, "retainedHistoryRows"),
+    "activation.snapshot.retainedHistoryRows",
+    0,
+    TERMINAL_HISTORY_MAX_ROWS,
+  );
+  const includedHistoryRows = requireTerminalInteger(
+    terminalDataValue(record, "includedHistoryRows"),
+    "activation.snapshot.includedHistoryRows",
+    0,
+    TERMINAL_HISTORY_MAX_ROWS,
+  );
+  const semanticHistoryBytes = requireTerminalInteger(
+    terminalDataValue(record, "semanticHistoryBytes"),
+    "activation.snapshot.semanticHistoryBytes",
+    0,
+    TERMINAL_HISTORY_MAX_BYTES,
+  );
+  const replayBytes = requireTerminalInteger(
+    terminalDataValue(record, "replayBytes"),
+    "activation.snapshot.replayBytes",
+    0,
+    TERMINAL_REPLAY_MAX_BYTES,
+  );
+  const pendingParserBytes = requireTerminalInteger(
+    terminalDataValue(record, "pendingParserBytes"),
+    "activation.snapshot.pendingParserBytes",
+    0,
+    TERMINAL_PENDING_PREFIX_MAX_BYTES,
+  );
+  const activeScreenHasText = requireTerminalBoolean(
+    terminalDataValue(record, "activeScreenHasText"),
+    "activation.snapshot.activeScreenHasText",
+  );
+  const activeBottomLineHasText = requireTerminalBoolean(
+    terminalDataValue(record, "activeBottomLineHasText"),
+    "activation.snapshot.activeBottomLineHasText",
+  );
+
+  if (
+    replayBytes !== replayData.length ||
+    includedHistoryRows > retainedHistoryRows ||
+    historyIncluded !== (includedHistoryRows > 0) ||
+    (includedHistoryRows === 0 && semanticHistoryBytes !== 0) ||
+    semanticHistoryBytes > replayBytes ||
+    pendingParserBytes > replayBytes ||
+    historyTruncated !== (historyTruncationReason !== "none") ||
+    (historyBoundaryHardened &&
+      historyTruncationReason !== "byteLimitReached" &&
+      historyTruncationReason !== "rowAndByteLimitReached") ||
+    (activeBuffer === "normal" && alternateEntryMode !== null) ||
+    (activeBuffer === "alternate" && alternateEntryMode === null) ||
+    (activeBuffer === "normal" && !normalScreenIncluded) ||
+    (activeBottomLineHasText && !activeScreenHasText) ||
+    (activeBuffer === "alternate" &&
+      replayStage !== "screenOnlyCheckpointUnavailable" &&
+      !normalScreenIncluded) ||
+    (replayStage === "screenOnlyHistoryDisabled" &&
+      (historyIncluded || historyTruncated || includedHistoryRows !== 0)) ||
+    (replayStage === "screenOnlyCheckpointUnavailable" &&
+      (activeBuffer !== "alternate" ||
+        alternateEntryMode !== "mode47" ||
+        normalScreenIncluded ||
+        historyIncluded ||
+        historyTruncated ||
+        includedHistoryRows !== 0))
+  ) {
+    return failTerminalPayload("activation.snapshot", "contradictory replay metadata");
+  }
+
+  return Object.freeze({
+    replayData,
+    rows,
+    cols,
+    sequence,
+    activeBuffer,
+    alternateEntryMode,
+    replayStage,
+    historyIncluded,
+    historyTruncated,
+    historyTruncationReason,
+    historyBoundaryHardened,
+    normalScreenIncluded,
+    retainedHistoryRows,
+    includedHistoryRows,
+    semanticHistoryBytes,
+    replayBytes,
+    pendingParserBytes,
+    activeScreenHasText,
+    activeBottomLineHasText,
+  });
+}
+
+export function decodePtyOutputEvent(value: unknown): PtyOutputEvent {
+  const record = requireTerminalRecord(value, "ptyOutput", ["sessionId", "data"], ["sequence"]);
+  const sessionId = requireTerminalUuid(terminalDataValue(record, "sessionId"), "ptyOutput.sessionId");
+  const data = decodeTerminalBytes(
+    terminalDataValue(record, "data"),
+    "ptyOutput.data",
+    TERMINAL_REPLAY_MAX_BYTES,
+  );
+  if (!hasTerminalDataValue(record, "sequence")) {
+    return Object.freeze({ sessionId, data });
+  }
+  const sequence = requireTerminalInteger(
+    terminalDataValue(record, "sequence"),
+    "ptyOutput.sequence",
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  return Object.freeze({ sessionId, data, sequence });
+}
+
+export function decodeTerminalOutputActivation(
+  value: unknown,
+  expectedDocumentEpoch: string,
+  expectedAttachGeneration: number,
+): PtyTerminalOutputActivation {
+  const canonicalExpectedEpoch = decodeTerminalDocumentEpoch(expectedDocumentEpoch);
+  const canonicalExpectedGeneration = requireTerminalInteger(
+    expectedAttachGeneration,
+    "expected.attachGeneration",
+    1,
+    TERMINAL_U32_MAX,
+  );
+  const base = requireTerminalRecord(
+    value,
+    "activation",
+    ["attachGeneration", "documentEpoch"],
+    ["snapshot", "seedlessReason"],
+  );
+  const attachGeneration = requireTerminalInteger(
+    terminalDataValue(base, "attachGeneration"),
+    "activation.attachGeneration",
+    1,
+    TERMINAL_U32_MAX,
+  );
+  const documentEpoch = decodeTerminalDocumentEpoch(terminalDataValue(base, "documentEpoch"));
+  if (
+    attachGeneration !== canonicalExpectedGeneration ||
+    documentEpoch !== canonicalExpectedEpoch
+  ) {
+    return failTerminalPayload("activation", "echoed owner does not match the request");
+  }
+  const hasSnapshot = hasTerminalDataValue(base, "snapshot");
+  const hasSeedlessReason = hasTerminalDataValue(base, "seedlessReason");
+  if (hasSnapshot === hasSeedlessReason) {
+    return failTerminalPayload("activation", "expected exactly one snapshot or seedlessReason");
+  }
+  if (hasSnapshot) {
+    return Object.freeze({
+      snapshot: decodeTerminalSnapshot(terminalDataValue(base, "snapshot")),
+      seedlessReason: null,
+      attachGeneration,
+      documentEpoch,
+    });
+  }
+  const seedlessReason = requireTerminalEnum<PtyTerminalSeedlessReason>(
+    terminalDataValue(base, "seedlessReason"),
+    "activation.seedlessReason",
+    [
+      "seedlessParserUnavailable",
+      "seedlessParserPoisoned",
+      "seedlessContinuationUnsafe",
+      "seedlessInvalidGrid",
+      "seedlessResizeFailed",
+      "seedlessResourceLimitExceeded",
+      "seedlessReplayCapExceeded",
+      "seedlessSequenceUnsafe",
+      "seedlessCaptureFailed",
+      "seedlessEncodeFailed",
+    ],
+  );
+  return Object.freeze({
+    snapshot: null,
+    seedlessReason,
+    attachGeneration,
+    documentEpoch,
+  });
+}
+
 /**
  * #1363 - this listener MUST be scoped to the window it runs in.
  *
@@ -440,7 +860,17 @@ export const ReposAPI = {
 export function onPtyOutput(
   callback: (data: PtyOutputEvent) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<PtyOutputEvent>("pty_output", callback, {
+  let malformedReported = false;
+  return transport.listen<unknown>("pty_output", (value) => {
+    try {
+      callback(decodePtyOutputEvent(value));
+    } catch {
+      if (!malformedReported) {
+        malformedReported = true;
+        console.warn("[terminal-snapshot] event=pty_output_dropped reason=malformed");
+      }
+    }
+  }, {
     scopeToCurrentWindow: true,
   });
 }
@@ -457,26 +887,87 @@ export function onPtyOutput(
  * label can be neither forged nor misattributed.
  */
 export const TerminalOutputAPI = {
-  /** Attaches this window to the session's output and returns the seed
-   *  snapshot, or `null` when there is nothing to seed from (an unavailable
-   *  parser or a failed snapshot read still attaches, and the client then
-   *  writes live with no reconcile). Rejects only when there is nothing to
-   *  attach to: `sessionUnavailable` or `outputTargetUnavailable`.
-   *
-   *  `includeHistory` is always `true`: every seed is applied after a
-   *  `terminal.reset()`, so replaying the 64 KiB ring cannot duplicate
-   *  history, and dropping the seed on re-attach would instead hide
-   *  everything the session produced while detached (plan 3.4.2). */
-  attachOutput: (sessionId: string): Promise<PtyScreenSnapshot | null> =>
-    transport.invoke<PtyScreenSnapshot | null>("activate_terminal_output", {
-      sessionId,
-      includeHistory: true,
-    }),
+  documentEpoch: async (): Promise<string> => {
+    const value = await transport.invoke<unknown>("terminal_output_document_epoch");
+    return decodeTerminalDocumentEpoch(value);
+  },
+
+  /** Attach ingress is decoded exactly once. A malformed response is converted
+   *  to the local content-free `snapshotDiscarded` fallback; command rejection
+   *  still propagates because the backend did not establish ownership. */
+  attachOutput: async (
+    sessionId: string,
+    includeHistory: boolean,
+    documentEpoch: string,
+    attachGeneration: number,
+  ): Promise<PtyTerminalOutputActivation> => {
+    const canonicalSessionId = requireTerminalUuid(sessionId, "attach.sessionId");
+    const canonicalEpoch = decodeTerminalDocumentEpoch(documentEpoch);
+    const canonicalGeneration = requireTerminalInteger(
+      attachGeneration,
+      "attach.attachGeneration",
+      1,
+      TERMINAL_U32_MAX,
+    );
+    const value = await transport.invoke<unknown>("activate_terminal_output", {
+      sessionId: canonicalSessionId,
+      includeHistory,
+      documentEpoch: canonicalEpoch,
+      attachGeneration: canonicalGeneration,
+    });
+    try {
+      return decodeTerminalOutputActivation(value, canonicalEpoch, canonicalGeneration);
+    } catch {
+      console.warn(
+        `[terminal-snapshot] event=terminal_attach_frontend stage=decode ` +
+          `session=${canonicalSessionId} epoch=${canonicalEpoch} ` +
+          `generation=${canonicalGeneration} outcome=snapshotDiscarded`,
+      );
+      return Object.freeze({
+        snapshot: null,
+        seedlessReason: "snapshotDiscarded",
+        attachGeneration: canonicalGeneration,
+        documentEpoch: canonicalEpoch,
+      });
+    }
+  },
 
   /** Releases this window's attachment. Never rejects for a session that is
    *  already gone: window close races session destroy. */
-  detachOutput: (sessionId: string): Promise<void> =>
-    transport.invoke<void>("detach_terminal_output", { sessionId }),
+  detachOutput: (
+    sessionId: string,
+    documentEpoch: string,
+    attachGeneration: number,
+  ): Promise<void> =>
+    transport.invoke<void>("detach_terminal_output", {
+      sessionId: requireTerminalUuid(sessionId, "detach.sessionId"),
+      documentEpoch: decodeTerminalDocumentEpoch(documentEpoch),
+      attachGeneration: requireTerminalInteger(
+        attachGeneration,
+        "detach.attachGeneration",
+        1,
+        TERMINAL_U32_MAX,
+      ),
+    }),
+
+  cancelOutput: (
+    sessionId: string,
+    documentEpoch: string,
+    attachGeneration: number,
+  ): Promise<void> =>
+    transport.invoke<void>("cancel_terminal_output_activation", {
+      sessionId: requireTerminalUuid(sessionId, "cancel.sessionId"),
+      documentEpoch: decodeTerminalDocumentEpoch(documentEpoch),
+      attachGeneration: requireTerminalInteger(
+        attachGeneration,
+        "cancel.attachGeneration",
+        1,
+        TERMINAL_U32_MAX,
+      ),
+    }),
+
+  recordObservation: (observation: PtyTerminalAttachObservation): Promise<void> =>
+    transport.invoke<void>("record_terminal_attach_observation", { observation }),
 };
 
 export function onSessionCreated(

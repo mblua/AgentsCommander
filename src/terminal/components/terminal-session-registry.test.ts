@@ -156,6 +156,12 @@ function createFactory(h: Harness) {
       h.contextLosses += 1;
       h.registry.noteWebglContextLoss();
       webgl.dispose();
+      const entry = h.registry.get(sessionId);
+      if (entry) {
+        entry.webglAddon = null;
+        entry.renderer = "dom";
+        entry.contextState = "lost";
+      }
     });
     h.terminals.set(sessionId, terminal);
     h.webgls.set(sessionId, webgl);
@@ -164,19 +170,34 @@ function createFactory(h: Harness) {
       terminal: terminal as unknown as SessionTerminalEntry["terminal"],
       fitAddon: new FakeFitAddon() as unknown as SessionTerminalEntry["fitAddon"],
       webglAddon: webgl as unknown as SessionTerminalEntry["webglAddon"],
+      renderer: "webgl" as const,
+      contextState: "active" as const,
       replayStatus,
       hasRenderedOutput: false,
       snapshotResizeSuppressed: false,
       inputBuffer: "",
       spawnViewport: null,
-      lastSentViewport: null,
+      confirmedViewport: null,
+      resizeOperationToken: 0,
+      inFlightResize: null,
       spawnDriftReported: false,
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
-      snapshotSettleTimer: null,
+      attachmentDeadlineTimer: null,
+      firstAttachmentRaf: null,
+      secondAttachmentRaf: null,
+      ordinaryViewportRaf: null,
+      attachGeneration: null,
+      attachmentAbortController: null,
+      bottomSettledGeneration: null,
+      attachmentSettlePending: false,
+      deferredViewportSync: false,
+      observationProgress: "none" as const,
+      observationChain: Promise.resolve(),
       snapshotReplayPending: false,
       pendingSnapshotEvents: [],
       pendingSnapshotBytes: 0,
+      snapshotReconcileDiscarded: false,
       lastAppliedSequence: null,
     };
   };
@@ -265,18 +286,43 @@ describe("terminal-session-registry", () => {
     expect(h.registry.metrics().retained).toBe(0);
   });
 
-  it("cancels every per-entry timer during disposal", () => {
+  it("cancels every timer, frame, abort owner, and resize token during disposal", () => {
     vi.useFakeTimers();
+    const cancelFrame = vi.fn();
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
     try {
       const factory = createFactory(h);
       h.registry.activate(S1, factory);
       const entry = h.entry(S1);
-      entry.snapshotSettleTimer = setTimeout(() => {}, 500);
+      entry.attachmentDeadlineTimer = setTimeout(() => {}, 500);
       entry.resizeRetryTimer = setTimeout(() => {}, 120);
+      entry.firstAttachmentRaf = 11;
+      entry.secondAttachmentRaf = 12;
+      entry.ordinaryViewportRaf = 13;
+      const controller = new AbortController();
+      entry.attachmentAbortController = controller;
+      entry.resizeOperationToken = 7;
+      entry.inFlightResize = {
+        token: 7,
+        generation: 1,
+        viewport: { cols: 80, rows: 24 },
+      };
+      entry.attachmentSettlePending = true;
+      entry.deferredViewportSync = true;
 
       h.registry.remove(S1);
-      expect(entry.snapshotSettleTimer).toBeNull();
+      expect(entry.attachmentDeadlineTimer).toBeNull();
       expect(entry.resizeRetryTimer).toBeNull();
+      expect(entry.firstAttachmentRaf).toBeNull();
+      expect(entry.secondAttachmentRaf).toBeNull();
+      expect(entry.ordinaryViewportRaf).toBeNull();
+      expect(cancelFrame.mock.calls.map((call) => call[0])).toEqual([11, 12, 13]);
+      expect(controller.signal.aborted).toBe(true);
+      expect(entry.attachmentAbortController).toBeNull();
+      expect(entry.resizeOperationToken).toBe(8);
+      expect(entry.inFlightResize).toBeNull();
+      expect(entry.attachmentSettlePending).toBe(false);
+      expect(entry.deferredViewportSync).toBe(false);
 
       // Advancing past every deadline must not fire anything.
       const spy = vi.fn();
@@ -287,6 +333,7 @@ describe("terminal-session-registry", () => {
       vi.advanceTimersByTime(10_000);
       expect(spy).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllGlobals();
       vi.useRealTimers();
     }
   });
@@ -295,10 +342,14 @@ describe("terminal-session-registry", () => {
     const factory = createFactory(h);
     h.registry.activate(S1, factory);
     const entry = h.entry(S1);
-    (entry.webglAddon as unknown as FakeWebglImpl).fireContextLoss();
-    (entry.webglAddon as unknown as FakeWebglImpl).fireContextLoss();
-    expect(h.contextLosses).toBe(2);
-    expect(h.registry.metrics().webglContextLosses).toBe(2);
+    const webgl = entry.webglAddon as unknown as FakeWebglImpl;
+    webgl.fireContextLoss();
+    expect(entry.webglAddon).toBeNull();
+    expect(entry.renderer).toBe("dom");
+    expect(entry.contextState).toBe("lost");
+    expect(h.contextLosses).toBe(1);
+    expect(h.registry.metrics().webglContextLosses).toBe(1);
+    expect(h.registry.metrics().webglContexts).toBe(0);
   });
 
   it("reports retained/visible/webgl gauges", () => {

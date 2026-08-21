@@ -3235,12 +3235,19 @@ impl PtyBackend for ContainerTransportBackend {
         id: Uuid,
         label: &str,
         include_history: bool,
+        document_epoch: u64,
+        attach_generation: u32,
     ) -> Result<
-        Option<crate::pty::output::PtyScreenSnapshot>,
+        crate::pty::output::PtyTerminalOutputActivation,
         crate::pty::output::TerminalOutputAttachError,
     > {
-        self.fanout
-            .activate_terminal_output(id, label, include_history)
+        self.fanout.activate_terminal_output(
+            id,
+            label,
+            include_history,
+            document_epoch,
+            attach_generation,
+        )
     }
 
     fn detach_terminal_output(&self, id: Uuid, label: &str) {
@@ -5538,9 +5545,12 @@ mod tests {
             .expect("spawn");
         let ticket = backend.last_issued_ticket_for_test(id).unwrap();
         let _rx = attach(&backend, id, root, &ticket);
-        backend
-            .activate_terminal_output(id, "main", true)
+        let activation = backend
+            .activate_terminal_output(id, "main", true, 17, 23)
             .expect("attach");
+        assert_eq!(activation.document_epoch, 17);
+        assert_eq!(activation.attach_generation, 23);
+        assert!(activation.snapshot.is_some());
 
         backend
             .handle_bridge_output(id, b"hello".to_vec())

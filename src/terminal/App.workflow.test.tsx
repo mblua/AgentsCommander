@@ -5,7 +5,11 @@ import { terminalStore } from "./stores/terminal";
 import { __setTransportForTests } from "../shared/ipc";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import type { TransportConnectionState, UnlistenFn } from "../shared/transport";
-import type { PtyScreenSnapshot, Session } from "../shared/types";
+import type { Session } from "../shared/types";
+import {
+  TEST_TERMINAL_DOCUMENT_EPOCH,
+  terminalActivationWire,
+} from "../shared/testing/terminal-output";
 import {
   baseSettings,
   installBrowserDomStubs,
@@ -27,6 +31,19 @@ import {
   userLiveSelection,
 } from "../shared/testing/session-selection";
 
+vi.mock("../sidebar/stores/sessions", () => ({
+  sessionsStore: {
+    resetContextReadingsForTests: () => undefined,
+    setSessions: () => undefined,
+    resetSelectionForTests: () => undefined,
+    setTeams: () => undefined,
+    setRepos: () => undefined,
+    setAlwaysShowSelectedWorkgroup: () => undefined,
+    setCoordSortByActivity: () => undefined,
+    clearDetached: () => undefined,
+  },
+}));
+
 const tauriWindow = vi.hoisted(() => ({
   destroy: vi.fn(() => Promise.resolve()),
   onCloseRequested: vi.fn(() => Promise.resolve(() => undefined)),
@@ -34,6 +51,9 @@ const tauriWindow = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => tauriWindow,
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "terminal" }),
 }));
 
 interface FakeTerminalInstance {
@@ -50,6 +70,17 @@ interface FakeTerminalInstance {
   emitData(data: string): void;
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
+  readonly buffer: {
+    readonly active: {
+      readonly type: "normal";
+      readonly viewportY: number;
+      readonly baseY: number;
+      readonly length: number;
+      readonly getLine: (index: number) =>
+        | { readonly getCell: (col: number) => { readonly getChars: () => string } | undefined }
+        | undefined;
+    };
+  };
 }
 
 const xterm = vi.hoisted(() => ({
@@ -71,6 +102,8 @@ vi.mock("@xterm/xterm", () => ({
     resets = 0;
     disposed = false;
     resizes: { cols: number; rows: number }[] = [];
+    private viewportY = 0;
+    private baseY = 0;
     private dataHandlers = new Set<(data: string) => void>();
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
@@ -82,7 +115,21 @@ vi.mock("@xterm/xterm", () => ({
       addon?.activate?.(this);
     }
 
-    open(element: HTMLElement): void {
+    open(container: HTMLElement): void {
+      const element = document.createElement("div");
+      element.className = "xterm";
+      const screen = document.createElement("div");
+      screen.className = "xterm-screen";
+      const canvas = document.createElement("canvas");
+      canvas.width = 880;
+      canvas.height = 520;
+      screen.appendChild(canvas);
+      element.appendChild(screen);
+      container.appendChild(element);
+      const rect = () => new DOMRect(0, 0, 880, 520);
+      container.getBoundingClientRect = rect;
+      element.getBoundingClientRect = rect;
+      screen.getBoundingClientRect = rect;
       this.element = element;
     }
 
@@ -95,6 +142,10 @@ vi.mock("@xterm/xterm", () => ({
     }
 
     write(data: unknown, callback?: () => void): void {
+      if (data instanceof Uint8Array && data.length === 0) {
+        callback?.();
+        return;
+      }
       this.writes.push(data);
       this.screen.push(data);
       // Real xterm fires the write callback; the #1283 admission settles its
@@ -108,7 +159,32 @@ vi.mock("@xterm/xterm", () => ({
       this.screen.length = 0;
     }
 
-    scrollToBottom(): void {}
+    scrollToBottom(): void {
+      this.viewportY = this.baseY;
+    }
+
+    get buffer() {
+      return {
+        active: {
+          type: "normal" as const,
+          viewportY: this.viewportY,
+          baseY: this.baseY,
+          length: this.baseY + this.rows,
+          getLine: (index: number) => {
+            if (index < this.baseY || index >= this.baseY + this.rows) return undefined;
+            return {
+              getCell: (col: number) => {
+                if (col < 0 || col >= this.cols) return undefined;
+                const hasText = this.screen.some(
+                  (value) => value instanceof Uint8Array && value.length > 0,
+                );
+                return { getChars: () => (hasText && index === this.baseY && col === 0 ? "x" : "") };
+              },
+            };
+          },
+        },
+      };
+    }
 
     paste(): void {}
 
@@ -166,11 +242,16 @@ vi.mock("@xterm/addon-fit", () => ({
     fit = vi.fn(() => {
       this.terminal?.resize(fitViewport.cols, fitViewport.rows);
     });
+
+    proposeDimensions(): { cols: number; rows: number } {
+      return { ...fitViewport };
+    }
   },
 }));
 
 vi.mock("@xterm/addon-webgl", () => ({
   WebglAddon: class {
+    activate(): void {}
     onContextLoss = vi.fn();
     dispose = vi.fn();
   },
@@ -193,6 +274,7 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
   fake.resolve("set_last_prompt", undefined);
+  fake.resolve("terminal_output_document_epoch", TEST_TERMINAL_DOCUMENT_EPOCH);
 
   // #1363: the selection path attaches and seeds from the snapshot the attach
   // resolves to. The default payload is an empty snapshot at the terminal's
@@ -201,17 +283,17 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
     const sessionId = String(args.sessionId);
     const instance = xterm.instances.find(
       (candidate) =>
-        candidate.element?.getAttribute("data-ac-session-id") === sessionId,
+        candidate.element?.parentElement?.getAttribute("data-ac-session-id") === sessionId,
     );
-    return {
-      sessionId,
-      data: [],
+    return terminalActivationWire(args, {
+      replayData: [],
       rows: instance?.rows ?? 24,
       cols: instance?.cols ?? 80,
-      sequence: 0,
-    };
+    });
   });
   fake.resolve("detach_terminal_output", undefined);
+  fake.resolve("cancel_terminal_output_activation", undefined);
+  fake.resolve("record_terminal_attach_observation", undefined);
 }
 
 function deferred<T>(): {
@@ -259,8 +341,9 @@ class TrackingTerminalTransport extends FakeTransport {
 }
 
 async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let pass = 0; pass < 8; pass += 1) {
+    await Promise.resolve();
+  }
 }
 
 function hasPtyResizeCall(
@@ -326,6 +409,11 @@ describe("TerminalApp workflow", () => {
         })
       );
 
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(3),
+      );
+      await flushPromises();
+
       terminal.emitResize(100, 32);
       expect(fake.lastCall("pty_resize")?.args).toEqual({
         sessionId: SESSION_A,
@@ -344,7 +432,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(Array.from(terminal.writes[0] as Uint8Array)).toEqual([111, 107]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -382,7 +470,7 @@ describe("TerminalApp workflow", () => {
         })
       );
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -396,13 +484,13 @@ describe("TerminalApp workflow", () => {
       }),
     ]);
     // The attach payload carries the PTY's reported dimensions.
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: [83, 78, 65, 80],
-      rows: 30,
-      cols: 120,
-      sequence: 0,
-    }));
+    fake.onInvoke("activate_terminal_output", (args) =>
+      terminalActivationWire(args, {
+        replayData: [83, 78, 65, 80],
+        rows: 30,
+        cols: 120,
+      }),
+    );
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -436,7 +524,7 @@ describe("TerminalApp workflow", () => {
       expect(fake.callsFor("pty_resize")).toHaveLength(0);
       expect(terminal.writes).toHaveLength(1);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -450,13 +538,9 @@ describe("TerminalApp workflow", () => {
       }),
     ]);
     // The attach snapshot predates the live chunk (S=0 < 1).
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: [83, 78, 65, 80],
-      rows: 24,
-      cols: 80,
-      sequence: 0,
-    }));
+    fake.onInvoke("activate_terminal_output", (args) =>
+      terminalActivationWire(args, { replayData: [83, 78, 65, 80] }),
+    );
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -480,7 +564,7 @@ describe("TerminalApp workflow", () => {
       // Every attach re-seeds, so the seed reset ran exactly once (plan 3.4.2).
       expect(terminal.resets).toBe(1);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -494,13 +578,12 @@ describe("TerminalApp workflow", () => {
       }),
     ]);
     // The snapshot's screen already contains the live chunk (S=1).
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: [83, 78, 65, 80, 76, 73, 86, 69],
-      rows: 24,
-      cols: 80,
-      sequence: 1,
-    }));
+    fake.onInvoke("activate_terminal_output", (args) =>
+      terminalActivationWire(args, {
+        replayData: [83, 78, 65, 80, 76, 73, 86, 69],
+        sequence: 1,
+      }),
+    );
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -527,7 +610,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
       expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([78, 69, 87]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -540,13 +623,12 @@ describe("TerminalApp workflow", () => {
         workingDirectory: "C:\Project\.ac\wg-1-dev-team\__agent_architect",
       }),
     ]);
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: [83, 78, 65, 80, 76, 73, 86, 69],
-      rows: 24,
-      cols: 80,
-      sequence: 1,
-    }));
+    fake.onInvoke("activate_terminal_output", (args) =>
+      terminalActivationWire(args, {
+        replayData: [83, 78, 65, 80, 76, 73, 86, 69],
+        sequence: 1,
+      }),
+    );
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -572,11 +654,11 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
       expect(Array.from(terminal.writes[1] as Uint8Array)).toEqual([78, 69, 87]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
-  it("re-attaches when switching away and back, never consulting the legacy snapshot", async () => {
+  it("re-attaches with exact-owner release compensation and never consults the legacy snapshot", async () => {
     const sessions = [
       session({
         id: SESSION_A,
@@ -605,10 +687,19 @@ describe("TerminalApp workflow", () => {
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0));
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(3),
+      );
+      await flushPromises();
 
       fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
       await waitFor(() => expect(xterm.instances).toHaveLength(2));
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(6),
+      );
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
       await waitFor(() => {
@@ -617,14 +708,39 @@ describe("TerminalApp workflow", () => {
         );
         expect(sessionOne?.hidden).toBe(false);
       });
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(9),
+      );
 
       // Each selection attaches once and seeds from that attach; the legacy
-      // snapshot surface stays untouched. Switching away detached first.
+      // snapshot surface stays untouched. A fully unwound owner detaches;
+      // transition-gap ownership may also be cancelled exactly while local
+      // observation acceptance unwinds.
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
       expect(fake.callsFor("activate_terminal_output")).toHaveLength(3);
-      expect(fake.callsFor("detach_terminal_output")).toHaveLength(2);
+      const releases = [
+        ...fake.callsFor("detach_terminal_output"),
+        ...fake.callsFor("cancel_terminal_output_activation"),
+      ];
+      expect(new Set(releases.map((call) => call.args.sessionId))).toEqual(
+        new Set([SESSION_A, SESSION_B]),
+      );
+      expect(releases.length).toBeLessThanOrEqual(4);
+      const releaseKeys = [
+        ...fake
+          .callsFor("detach_terminal_output")
+          .map((call) => `detach:${call.args.sessionId}:${call.args.attachGeneration}`),
+        ...fake
+          .callsFor("cancel_terminal_output_activation")
+          .map((call) => `cancel:${call.args.sessionId}:${call.args.attachGeneration}`),
+      ];
+      expect(new Set(releaseKeys).size).toBe(releaseKeys.length);
+      for (const release of releases) {
+        expect(release.args.documentEpoch).toBe(TEST_TERMINAL_DOCUMENT_EPOCH);
+        expect(release.args.attachGeneration).toEqual(expect.any(Number));
+      }
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -669,15 +785,12 @@ describe("TerminalApp workflow", () => {
       fake.onInvoke("activate_terminal_output", (args) => {
         const sessionId = String(args.sessionId);
         if (sessionId !== SESSION_B) {
-          return { sessionId, data: [], rows: 24, cols: 80, sequence: 0 };
+          return terminalActivationWire(args, { replayData: [] });
         }
-        return {
-          sessionId,
-          data: [82, 69, 80, 76, 65, 89],
-          rows: 24,
-          cols: 80,
+        return terminalActivationWire(args, {
+          replayData: [82, 69, 80, 76, 65, 89],
           sequence: 1,
-        };
+        });
       });
       listSessions.resolve([sessionOne, sessionTwo]);
 
@@ -692,7 +805,7 @@ describe("TerminalApp workflow", () => {
       // already contains it (its sequence is 1), and it was never retained.
       expect(sessionTwoTerminal.writes).toHaveLength(1);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -732,7 +845,7 @@ describe("TerminalApp workflow", () => {
       );
       expect(input!.value).toBe("");
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -757,7 +870,7 @@ describe("TerminalApp workflow", () => {
       );
       expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -780,7 +893,7 @@ describe("TerminalApp workflow", () => {
       );
       expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -823,7 +936,7 @@ describe("TerminalApp workflow", () => {
       // LAST PROMPT is present throughout.
       expect(rendered.root.querySelector(".last-prompt-panel")).not.toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -856,7 +969,7 @@ describe("TerminalApp workflow", () => {
       xterm.instances[0].emitData("x");
       expect(fake.callsFor("pty_write")).toHaveLength(0);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -879,7 +992,7 @@ describe("TerminalApp workflow", () => {
       expect(fake.callsFor("pty_resize")).toHaveLength(0);
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -906,7 +1019,7 @@ describe("TerminalApp workflow", () => {
       pending.resolve(rows);
       await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_B));
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -931,7 +1044,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.activeSessionId).toBe(SESSION_A);
       expect(terminalStore.appliedRevision).toBe(3);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -949,7 +1062,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.activeSessionId).toBeNull();
       expect(rendered.root.textContent).toContain("Session unavailable");
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -969,7 +1082,7 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("session_switched", noneSelection(2));
       await waitFor(() => expect(terminalStore.selectionMode).toBe("none"));
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -991,7 +1104,7 @@ describe("TerminalApp workflow", () => {
       expect(fake.callsFor("get_active_session")).toHaveLength(hydrationCalls);
       expect(fake.callsFor("list_sessions")).toHaveLength(listCalls);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1018,7 +1131,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.appliedRevision).toBe(0);
       expect(terminalStore.activeSessionId).toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1044,7 +1157,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.selectionEpoch).toBe(TEST_EPOCH_2);
       expect(terminalStore.activeSessionId).toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1070,7 +1183,7 @@ describe("TerminalApp workflow", () => {
       expect(fake.callsFor("get_active_session")).toHaveLength(7);
       expect(terminalStore.activeSessionId).toBe(SESSION_A);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1091,7 +1204,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.appliedRevision).toBe(2);
       expect(terminalStore.activeSessionId).toBe(SESSION_A);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1111,7 +1224,7 @@ describe("TerminalApp workflow", () => {
     fake.setConnectionState({ state: "connected", generation: 1 });
     await vi.advanceTimersByTimeAsync(0);
     expect(fake.callsFor("get_active_session")).toHaveLength(2);
-    rendered.cleanup();
+      await rendered.cleanupAsync();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fake.callsFor("get_active_session")).toHaveLength(2);
   });
@@ -1134,7 +1247,7 @@ describe("TerminalApp workflow", () => {
       expect(terminalStore.bindingState).toBe("unavailable");
       expect(terminalStore.activeSessionId).toBeNull();
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1158,7 +1271,7 @@ describe("TerminalApp workflow", () => {
       fake.emitFromBackend("session_destroyed", { id: SESSION_A });
       await waitFor(() => expect(tauriWindow.destroy).toHaveBeenCalledOnce());
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1178,7 +1291,7 @@ describe("TerminalApp workflow", () => {
       await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
       expect(fake.callsFor("list_sessions")).toHaveLength(1);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -1189,7 +1302,7 @@ describe("TerminalApp workflow", () => {
     fake.onInvoke("list_sessions", () => list.promise);
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     await waitFor(() => expect(terminalStore.bindingState).toBe("pending"));
-    rendered.cleanup();
+    await rendered.cleanupAsync();
     list.resolve([session({ id: SESSION_A, status: "active" })]);
     await flushPromises();
     expect(terminalStore.activeSessionId).toBeNull();
@@ -1201,7 +1314,7 @@ describe("TerminalApp workflow", () => {
     setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     await waitFor(() => expect(terminalStore.activeSessionId).toBe(SESSION_A));
-    rendered.cleanup();
+    await rendered.cleanupAsync();
     expect(fake.selectionUnlisten).toHaveBeenCalledOnce();
     expect(fake.connectionUnlisten).toHaveBeenCalledOnce();
   });
@@ -1212,7 +1325,7 @@ describe("TerminalApp workflow", () => {
     fake.selectionRegistrationGate = gate.promise;
     setupTerminalTransport(fake, [session({ id: SESSION_A, status: "active" })]);
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    rendered.cleanup();
+    await rendered.cleanupAsync();
     const restoreLateTransport = __setTransportForTests(fake);
     try {
       gate.resolve(undefined);

@@ -39,6 +39,23 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { DeterministicAnimationFrames } from "../../shared/testing/ui-harness";
 import { liveSelection, SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
+import {
+  TEST_TERMINAL_DOCUMENT_EPOCH,
+  terminalActivationWire,
+} from "../../shared/testing/terminal-output";
+
+vi.mock("../../sidebar/stores/sessions", () => ({
+  sessionsStore: {
+    resetContextReadingsForTests: () => undefined,
+    setSessions: () => undefined,
+    resetSelectionForTests: () => undefined,
+    setTeams: () => undefined,
+    setRepos: () => undefined,
+    setAlwaysShowSelectedWorkgroup: () => undefined,
+    setCoordSortByActivity: () => undefined,
+    clearDetached: () => undefined,
+  },
+}));
 
 interface FakeTerminalInstance {
   cols: number;
@@ -47,6 +64,17 @@ interface FakeTerminalInstance {
   resizes: { cols: number; rows: number }[];
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
+  readonly buffer: {
+    readonly active: {
+      readonly type: "normal";
+      readonly viewportY: number;
+      readonly baseY: number;
+      readonly length: number;
+      readonly getLine: (index: number) =>
+        | { readonly getCell: (col: number) => { readonly getChars: () => string } | undefined }
+        | undefined;
+    };
+  };
 }
 
 const xterm = vi.hoisted(() => ({
@@ -64,6 +92,8 @@ vi.mock("@xterm/xterm", () => ({
     element: HTMLElement | null = null;
     writes: unknown[] = [];
     resizes: { cols: number; rows: number }[] = [];
+    private viewportY = 0;
+    private baseY = 0;
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     // Real xterm honours cols/rows from the constructor and defaults to 80x24.
@@ -78,7 +108,21 @@ vi.mock("@xterm/xterm", () => ({
       addon?.activate?.(this);
     }
 
-    open(element: HTMLElement): void {
+    open(container: HTMLElement): void {
+      const element = document.createElement("div");
+      element.className = "xterm";
+      const screen = document.createElement("div");
+      screen.className = "xterm-screen";
+      const canvas = document.createElement("canvas");
+      canvas.width = 740;
+      canvas.height = 460;
+      screen.appendChild(canvas);
+      element.appendChild(screen);
+      container.appendChild(element);
+      const rect = () => new DOMRect(0, 0, 740, 460);
+      container.getBoundingClientRect = rect;
+      element.getBoundingClientRect = rect;
+      screen.getBoundingClientRect = rect;
       this.element = element;
     }
 
@@ -87,13 +131,34 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
     write(data: unknown, callback?: () => void): void {
-      this.writes.push(data);
+      if (!(data instanceof Uint8Array) || data.length > 0) {
+        this.writes.push(data);
+      }
       // Real xterm fires the write callback when the write completes; the
       // #1283 admission uses it to settle the replay/write gate.
       callback?.();
     }
     reset(): void {}
-    scrollToBottom(): void {}
+    scrollToBottom(): void {
+      this.viewportY = this.baseY;
+    }
+    get buffer() {
+      return {
+        active: {
+          type: "normal" as const,
+          viewportY: this.viewportY,
+          baseY: this.baseY,
+          length: this.baseY + this.rows,
+          getLine: (index: number) => {
+            if (index < this.baseY || index >= this.baseY + this.rows) return undefined;
+            return {
+              getCell: (col: number) =>
+                col >= 0 && col < this.cols ? { getChars: () => "" } : undefined,
+            };
+          },
+        },
+      };
+    }
     paste(): void {}
     hasSelection(): boolean {
       return false;
@@ -160,6 +225,7 @@ vi.mock("@xterm/addon-fit", () => ({
 
 vi.mock("@xterm/addon-webgl", () => ({
   WebglAddon: class {
+    activate(): void {}
     onContextLoss = vi.fn();
     dispose = vi.fn();
   },
@@ -170,6 +236,12 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 vi.mock("../../shared/platform", () => ({
   isTauri: true,
   isBrowser: false,
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ onCloseRequested: async () => () => {} }),
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "terminal" }),
 }));
 
 const ON_SCREEN = SESSION_A;
@@ -186,6 +258,7 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("pty_resize", undefined);
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
+  fake.resolve("terminal_output_document_epoch", TEST_TERMINAL_DOCUMENT_EPOCH);
 
   // #1363: the selection path attaches and seeds from the snapshot the attach
   // resolves to. The snapshot reports the PTY size the terminal was created at
@@ -195,17 +268,17 @@ function setupTerminalTransport(fake: FakeTransport): void {
     const sessionId = String(args.sessionId);
     const instance = xterm.instances.find(
       (candidate) =>
-        candidate.element?.getAttribute("data-ac-session-id") === sessionId,
+        candidate.element?.parentElement?.getAttribute("data-ac-session-id") === sessionId,
     );
-    return {
-      sessionId,
-      data: [],
+    return terminalActivationWire(args, {
+      replayData: [],
       rows: instance?.rows ?? 24,
       cols: instance?.cols ?? 80,
-      sequence: 0,
-    };
+    });
   });
   fake.resolve("detach_terminal_output", undefined);
+  fake.resolve("cancel_terminal_output_activation", undefined);
+  fake.resolve("record_terminal_attach_observation", undefined);
 }
 
 function resizesFor(fake: FakeTransport, sessionId: string) {
@@ -306,7 +379,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       expect(args.cols).toBe(74);
       expect(args.rows).toBe(23);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -351,7 +424,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // resizes exactly as before.
       expect(resizesFor(fake, ON_SCREEN).length).toBeGreaterThan(0);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -370,11 +443,11 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // ...so it never reflowed, and never fired onResize.
       expect(spawned.resizes).toHaveLength(0);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
-  it("resizes once for the drift and once more at the settle, and reports the drift exactly once", async () => {
+  it("suppresses fit-triggered resize and sends one authoritative drift correction", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
@@ -391,35 +464,28 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
       await attachSpawnedSession();
 
-      // Correctness first: the PTY is told the truth. The drift fires one
-      // resize from xterm's onResize, and since #1439 (R1) the attach settle
-      // re-imposes the identical size once more (the settle invalidates the
-      // dedup key; the backend `resize_instance` dedup absorbs the repeat).
-      // Exactly these two named senders: any identical-resize burst beyond
-      // them is still gone, which is what #973 pinned.
+      // Attachment fit suppresses onResize; the explicit awaited request is
+      // the single authoritative correction.
       await driveFramesUntil(
         frames,
-        "drift send and settle re-send landed",
-        () => resizesFor(fake, SPAWNED).length >= 2
+        "authoritative drift correction landed",
+        () => resizesFor(fake, SPAWNED).length >= 1
       );
       expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
-        { sessionId: SPAWNED, cols: 74, rows: 24 },
         { sessionId: SPAWNED, cols: 74, rows: 24 },
       ]);
       await frames.flush();
       expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
         { sessionId: SPAWNED, cols: 74, rows: 24 },
-        { sessionId: SPAWNED, cols: 74, rows: 24 },
       ]);
 
       // And the drift is reported exactly once (the `spawnDriftReported`
-      // latch; the settle re-send carries no drift of its own), because a
-      // silent drift is a silent 6/10 blank.
+      // latch), because a silent drift is a silent 6/10 blank.
       expect(
         warn.mock.calls.filter((call) => String(call[0]).includes("spawn-size drift"))
       ).toHaveLength(1);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -445,7 +511,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
         rows: 23,
       });
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -493,7 +559,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       expect(resizes.length).toBeGreaterThan(0);
       expect(resizes[0].args).toEqual({ sessionId: SPAWNED, cols: 2, rows: 1 });
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -564,11 +630,11 @@ describe("TerminalView PTY spawn size (#973)", () => {
       expect(resizes[1].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
       expect(resizes[2].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
-  it("gives up loudly, and boundedly, when the resize can never land", async () => {
+  it("aborts boundedly with resizeFailed when the authoritative resize cannot land", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const fake = new FakeTransport();
@@ -588,42 +654,38 @@ describe("TerminalView PTY spawn size (#973)", () => {
       const spawned = await attachSpawnedSession();
       await frames.flush();
 
-      // A PTY stranded at a size the terminal is not must never be mistaken for
-      // a PTY that was resized. When the budget runs out, it says so. In an
-      // all-fail world the #1439 (R1) settle burst alone consumes the whole
-      // budget: one frame-driven send, at most one second-frame repeat, then
-      // PTY_RESIZE_MAX_RETRIES timer re-sends, then this loud line.
+      // The attachment-owned resize is authoritative: it is attempted once,
+      // never retried as ordinary viewport work, and fails through the bounded
+      // content-free observation contract.
       await waitFor(
         () =>
           expect(
-            error.mock.calls.some((call) => String(call[0]).includes("giving up"))
+            fake.callsFor("record_terminal_attach_observation").some((call) => {
+              const observation = call.args.observation;
+              return (
+                typeof observation === "object" &&
+                observation !== null &&
+                "stage" in observation &&
+                "outcome" in observation &&
+                observation.stage === "aborted" &&
+                observation.outcome === "resizeFailed"
+              );
+            }),
           ).toBe(true),
         3000
       );
 
-      // And the budget is a budget, all of it spent by the settle burst here,
-      // not an endless loop against a backend that is gone.
       const settleSends = resizesFor(fake, SPAWNED).length;
-      expect(settleSends).toBeLessThanOrEqual(5);
+      expect(settleSends).toBe(1);
+      expect(error).not.toHaveBeenCalled();
 
-      // The user drags the window. First attempts are never budget-gated, so
-      // the drag's own send still goes out (and says "giving up" once more),
-      // but it arms no retry: the attempt counter resets only on a success
-      // (#1439 round-2 residual, plan section 7). Bounded either way.
+      // The failed generation is inert; later xterm resize callbacks cannot
+      // mutate or retry it.
       spawned.emitResize(74, 24);
-
-      await waitFor(() =>
-        expect(resizesFor(fake, SPAWNED).length).toBe(settleSends + 1)
-      );
-      const resizes = resizesFor(fake, SPAWNED);
-      expect(resizes[resizes.length - 1].args).toEqual({
-        sessionId: SPAWNED,
-        cols: 74,
-        rows: 24,
-      });
-      expect(resizes.length).toBeLessThanOrEqual(6);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(resizesFor(fake, SPAWNED)).toHaveLength(settleSends);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -702,7 +764,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
         { sessionId: ON_SCREEN, cols: 74, rows: 23 },
       ]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 });

@@ -1287,7 +1287,7 @@ pub fn load_sessions_raw() -> Vec<PersistedSession> {
     load_sessions_raw_from_path(&path)
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, debug_assertions))]
 pub fn load_sessions_raw_from_dir_for_test(dir: &Path) -> Vec<PersistedSession> {
     load_sessions_raw_from_path(&dir.join("sessions.json"))
 }

@@ -4,7 +4,11 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::pty::manager::PtyManager;
+use crate::errors::AppError;
+use crate::pty::manager::{
+    PtyManager, PtyTerminalReplaySnapshot, PtyTerminalSeedlessReason,
+    TerminalOutputObservationStage,
+};
 use crate::voice::tracker::VoiceTrackingState;
 
 #[derive(Clone, serde::Serialize)]
@@ -15,6 +19,746 @@ pub struct PtyScreenSnapshotPayload {
     pub rows: Option<u16>,
     pub cols: Option<u16>,
     pub sequence: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PtyTerminalOutputActivationPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot: Option<PtyTerminalReplaySnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seedless_reason: Option<PtyTerminalSeedlessReason>,
+    attach_generation: u32,
+    document_epoch: String,
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachViewKind {
+    Embedded,
+    Externalized,
+}
+
+impl PtyTerminalAttachViewKind {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Embedded => "embedded",
+            Self::Externalized => "externalized",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachTransitionKind {
+    Initial,
+    Switch,
+    Reattach,
+}
+
+impl PtyTerminalAttachTransitionKind {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Switch => "switch",
+            Self::Reattach => "reattach",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachRenderer {
+    Webgl,
+    Dom,
+}
+
+impl PtyTerminalAttachRenderer {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Webgl => "webgl",
+            Self::Dom => "dom",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachContextState {
+    Active,
+    Lost,
+    Unavailable,
+}
+
+impl PtyTerminalAttachContextState {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Lost => "lost",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachActiveBuffer {
+    Normal,
+    Alternate,
+}
+
+impl PtyTerminalAttachActiveBuffer {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Alternate => "alternate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachAlternateEntryMode {
+    Mode47,
+    Mode1047,
+    Mode1049,
+}
+
+impl PtyTerminalAttachAlternateEntryMode {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Mode47 => "mode47",
+            Self::Mode1047 => "mode1047",
+            Self::Mode1049 => "mode1049",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachReplayStage {
+    SemanticHistory,
+    ScreenOnlyHistoryDisabled,
+    ScreenOnlyCheckpointUnavailable,
+}
+
+impl PtyTerminalAttachReplayStage {
+    fn code(self) -> &'static str {
+        match self {
+            Self::SemanticHistory => "semanticHistory",
+            Self::ScreenOnlyHistoryDisabled => "screenOnlyHistoryDisabled",
+            Self::ScreenOnlyCheckpointUnavailable => "screenOnlyCheckpointUnavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachHistoryTruncationReason {
+    None,
+    RowLimitReached,
+    ByteLimitReached,
+    RowAndByteLimitReached,
+}
+
+impl PtyTerminalAttachHistoryTruncationReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RowLimitReached => "rowLimitReached",
+            Self::ByteLimitReached => "byteLimitReached",
+            Self::RowAndByteLimitReached => "rowAndByteLimitReached",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PtyTerminalAttachOutcome {
+    Success,
+    Stale,
+    Timeout,
+    Disposed,
+    ResizeFailed,
+    InvariantFailed,
+    SnapshotDiscarded,
+    SeedlessParserUnavailable,
+    SeedlessParserPoisoned,
+    SeedlessContinuationUnsafe,
+    SeedlessInvalidGrid,
+    SeedlessResizeFailed,
+    SeedlessResourceLimitExceeded,
+    SeedlessReplayCapExceeded,
+    SeedlessSequenceUnsafe,
+    SeedlessCaptureFailed,
+    SeedlessEncodeFailed,
+    ScreenOnlyHistoryDisabled,
+    ScreenOnlyCheckpointUnavailable,
+}
+
+impl PtyTerminalAttachOutcome {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Stale => "stale",
+            Self::Timeout => "timeout",
+            Self::Disposed => "disposed",
+            Self::ResizeFailed => "resizeFailed",
+            Self::InvariantFailed => "invariantFailed",
+            Self::SnapshotDiscarded => "snapshotDiscarded",
+            Self::SeedlessParserUnavailable => "seedlessParserUnavailable",
+            Self::SeedlessParserPoisoned => "seedlessParserPoisoned",
+            Self::SeedlessContinuationUnsafe => "seedlessContinuationUnsafe",
+            Self::SeedlessInvalidGrid => "seedlessInvalidGrid",
+            Self::SeedlessResizeFailed => "seedlessResizeFailed",
+            Self::SeedlessResourceLimitExceeded => "seedlessResourceLimitExceeded",
+            Self::SeedlessReplayCapExceeded => "seedlessReplayCapExceeded",
+            Self::SeedlessSequenceUnsafe => "seedlessSequenceUnsafe",
+            Self::SeedlessCaptureFailed => "seedlessCaptureFailed",
+            Self::SeedlessEncodeFailed => "seedlessEncodeFailed",
+            Self::ScreenOnlyHistoryDisabled => "screenOnlyHistoryDisabled",
+            Self::ScreenOnlyCheckpointUnavailable => "screenOnlyCheckpointUnavailable",
+        }
+    }
+
+    fn is_debug(self) -> bool {
+        matches!(
+            self,
+            Self::Success | Self::Stale | Self::Disposed | Self::ScreenOnlyHistoryDisabled
+        )
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PtyTerminalAttachObservation {
+    session_id: String,
+    stage: TerminalOutputObservationStage,
+    document_epoch: String,
+    xterm_instance_id: u32,
+    view_kind: PtyTerminalAttachViewKind,
+    transition_kind: PtyTerminalAttachTransitionKind,
+    attach_generation: u32,
+    sequence: u64,
+    outcome: PtyTerminalAttachOutcome,
+    parser_rows: Option<u16>,
+    parser_cols: Option<u16>,
+    conpty_rows: Option<u16>,
+    conpty_cols: Option<u16>,
+    snapshot_rows: Option<u16>,
+    snapshot_cols: Option<u16>,
+    xterm_rows: Option<u16>,
+    xterm_cols: Option<u16>,
+    history_requested: Option<bool>,
+    history_included: Option<bool>,
+    history_truncated: Option<bool>,
+    history_truncation_reason: Option<PtyTerminalAttachHistoryTruncationReason>,
+    history_boundary_hardened: Option<bool>,
+    retained_history_rows: Option<u32>,
+    included_history_rows: Option<u32>,
+    semantic_history_bytes: Option<u32>,
+    replay_bytes: Option<u32>,
+    normal_screen_included: Option<bool>,
+    active_buffer: Option<PtyTerminalAttachActiveBuffer>,
+    alternate_entry_mode: Option<PtyTerminalAttachAlternateEntryMode>,
+    replay_stage: Option<PtyTerminalAttachReplayStage>,
+    retained_event_count: Option<u32>,
+    retained_byte_count: Option<u64>,
+    resource_sessions: Option<u32>,
+    resource_steady_bytes: Option<u64>,
+    resource_checkpoint_bytes: Option<u64>,
+    resource_attach_bytes: Option<u64>,
+    viewport_y: Option<u32>,
+    base_y: Option<u32>,
+    buffer_length: Option<u32>,
+    visible_row_count: Option<u16>,
+    missing_visible_row_count: Option<u16>,
+    renderer: Option<PtyTerminalAttachRenderer>,
+    context_state: Option<PtyTerminalAttachContextState>,
+    container_connected: Option<bool>,
+    xterm_connected: Option<bool>,
+    screen_connected: Option<bool>,
+    element_width: Option<u32>,
+    element_height: Option<u32>,
+    screen_width: Option<u32>,
+    screen_height: Option<u32>,
+    canvas_width: Option<u32>,
+    canvas_height: Option<u32>,
+    route_wait_micros: Option<u64>,
+    ownership_wait_micros: Option<u64>,
+    parser_lock_hold_micros: Option<u64>,
+    clone_micros: Option<u64>,
+    encode_micros: Option<u64>,
+    backend_activation_micros: Option<u64>,
+    fetch_micros: Option<u64>,
+    write_micros: Option<u64>,
+    fit_micros: Option<u64>,
+    resize_micros: Option<u64>,
+    settle_micros: Option<u64>,
+    total_micros: Option<u64>,
+    parser_prefix_included: Option<bool>,
+    replay_barrier_completed: Option<bool>,
+    retained_barrier_completed: Option<bool>,
+    grid_agreement: Option<bool>,
+    resize_confirmed: Option<bool>,
+    visible_rows_present: Option<bool>,
+    bottom_position_satisfied: Option<bool>,
+    expected_active_screen_has_text: Option<bool>,
+    observed_active_screen_has_text: Option<bool>,
+    expected_bottom_line_has_text: Option<bool>,
+    observed_bottom_line_has_text: Option<bool>,
+}
+
+fn parse_canonical_session_id(value: &str) -> Result<Uuid, String> {
+    let parsed = Uuid::parse_str(value).map_err(|_| "invalidSessionId".to_string())?;
+    if parsed.hyphenated().to_string() != value {
+        return Err("invalidSessionId".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_document_epoch(value: &str) -> Result<u64, String> {
+    if value.is_empty()
+        || value.starts_with('0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("invalidDocumentEpoch".to_string());
+    }
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| "invalidDocumentEpoch".to_string())?;
+    if parsed == 0 || parsed.to_string() != value {
+        return Err("invalidDocumentEpoch".to_string());
+    }
+    Ok(parsed)
+}
+
+fn validate_attach_generation(value: u32) -> Result<u32, String> {
+    if value == 0 {
+        Err("invalidAttachGeneration".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+fn validate_observation_grid(
+    rows: Option<u16>,
+    cols: Option<u16>,
+    allow_zero: bool,
+) -> Result<(), String> {
+    match (rows, cols) {
+        (None, None) => Ok(()),
+        (Some(_), None) | (None, Some(_)) => Err("observationGridPairRequired".to_string()),
+        (Some(rows), Some(cols)) if !allow_zero && (rows == 0 || cols == 0) => {
+            Err("observationGridInvalid".to_string())
+        }
+        (Some(_), Some(_)) => Ok(()),
+    }
+}
+
+fn validate_observation_shape(
+    observation: &PtyTerminalAttachObservation,
+    label: &str,
+) -> Result<(Uuid, u64), String> {
+    if label.is_empty() || label.len() > 256 {
+        return Err("invalidWebviewLabel".to_string());
+    }
+    let session_id = parse_canonical_session_id(&observation.session_id)?;
+    let document_epoch = parse_document_epoch(&observation.document_epoch)?;
+    if observation.xterm_instance_id == 0 || observation.attach_generation == 0 {
+        return Err("invalidObservationIdentity".to_string());
+    }
+    if observation.sequence > 9_007_199_254_740_991 {
+        return Err("unsafeObservationSequence".to_string());
+    }
+
+    validate_observation_grid(observation.parser_rows, observation.parser_cols, false)?;
+    validate_observation_grid(observation.conpty_rows, observation.conpty_cols, false)?;
+    validate_observation_grid(observation.snapshot_rows, observation.snapshot_cols, false)?;
+    validate_observation_grid(observation.xterm_rows, observation.xterm_cols, true)?;
+
+    for value in [
+        observation.retained_byte_count,
+        observation.resource_steady_bytes,
+        observation.resource_checkpoint_bytes,
+        observation.resource_attach_bytes,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value > 512 * 1024 * 1024 {
+            return Err("unsafeObservationCounter".to_string());
+        }
+    }
+    for value in [
+        observation.route_wait_micros,
+        observation.ownership_wait_micros,
+        observation.parser_lock_hold_micros,
+        observation.clone_micros,
+        observation.encode_micros,
+        observation.backend_activation_micros,
+        observation.fetch_micros,
+        observation.write_micros,
+        observation.fit_micros,
+        observation.resize_micros,
+        observation.settle_micros,
+        observation.total_micros,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value > 60_000_000 {
+            return Err("observationDurationOutOfRange".to_string());
+        }
+    }
+    for value in [
+        observation.element_width,
+        observation.element_height,
+        observation.screen_width,
+        observation.screen_height,
+        observation.canvas_width,
+        observation.canvas_height,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value > 131_072 {
+            return Err("observationPixelOutOfRange".to_string());
+        }
+    }
+    if observation
+        .replay_bytes
+        .is_some_and(|value| value > 512 * 1024)
+        || observation
+            .semantic_history_bytes
+            .is_some_and(|value| value > 65_536)
+        || observation
+            .history_boundary_hardened
+            .is_some_and(|hardened| hardened && observation.history_truncated != Some(true))
+    {
+        return Err("observationReplayMetadataInvalid".to_string());
+    }
+    if observation
+        .resource_sessions
+        .is_some_and(|sessions| sessions > 32)
+    {
+        return Err("observationResourceMetadataInvalid".to_string());
+    }
+    if observation
+        .resource_steady_bytes
+        .is_some_and(|bytes| bytes > 128 * 1024 * 1024)
+        || observation
+            .resource_checkpoint_bytes
+            .is_some_and(|bytes| bytes > 256 * 1024 * 1024)
+        || observation
+            .resource_attach_bytes
+            .is_some_and(|bytes| bytes > 512 * 1024 * 1024)
+    {
+        return Err("observationResourceMetadataInvalid".to_string());
+    }
+    if observation
+        .retained_history_rows
+        .zip(observation.included_history_rows)
+        .is_some_and(|(retained, included)| included > retained)
+        || observation
+            .included_history_rows
+            .is_some_and(|included| included > 1024)
+        || observation
+            .history_requested
+            .is_some_and(|requested| !requested && observation.history_included != Some(false))
+        || observation.history_included.is_some_and(|included| {
+            !included && observation.included_history_rows.unwrap_or(0) != 0
+        })
+    {
+        return Err("observationHistoryMetadataInvalid".to_string());
+    }
+    if observation.history_truncated.is_some_and(|truncated| {
+        !truncated
+            && observation
+                .history_truncation_reason
+                .is_some_and(|reason| reason != PtyTerminalAttachHistoryTruncationReason::None)
+    }) || observation.history_truncation_reason.is_some_and(|reason| {
+        reason == PtyTerminalAttachHistoryTruncationReason::None
+            && observation.history_truncated == Some(true)
+    }) {
+        return Err("observationHistoryTruncationInvalid".to_string());
+    }
+    if observation.active_buffer == Some(PtyTerminalAttachActiveBuffer::Normal)
+        && observation.alternate_entry_mode.is_some()
+    {
+        return Err("observationAlternateMetadataInvalid".to_string());
+    }
+    if observation.alternate_entry_mode.is_some()
+        && observation.active_buffer != Some(PtyTerminalAttachActiveBuffer::Alternate)
+    {
+        return Err("observationAlternateMetadataInvalid".to_string());
+    }
+    match (observation.renderer, observation.context_state) {
+        (None, None) => {}
+        (Some(PtyTerminalAttachRenderer::Webgl), Some(PtyTerminalAttachContextState::Active))
+        | (Some(PtyTerminalAttachRenderer::Dom), Some(PtyTerminalAttachContextState::Lost))
+        | (
+            Some(PtyTerminalAttachRenderer::Dom),
+            Some(PtyTerminalAttachContextState::Unavailable),
+        ) => {}
+        _ => return Err("observationRendererContextInvalid".to_string()),
+    }
+    if observation.viewport_y.is_some()
+        || observation.base_y.is_some()
+        || observation.buffer_length.is_some()
+    {
+        let (Some(_viewport), Some(base), Some(buffer), Some(rows)) = (
+            observation.viewport_y,
+            observation.base_y,
+            observation.buffer_length,
+            observation.xterm_rows,
+        ) else {
+            return Err("observationBufferInvariantMissing".to_string());
+        };
+        if base
+            .checked_add(u32::from(rows))
+            .is_none_or(|end| end > buffer)
+        {
+            return Err("observationBufferInvariantFailed".to_string());
+        }
+    }
+    if observation
+        .missing_visible_row_count
+        .zip(observation.visible_row_count)
+        .is_some_and(|(missing, visible)| missing > visible)
+    {
+        return Err("observationVisibleRowsInvalid".to_string());
+    }
+    if observation
+        .visible_rows_present
+        .is_some_and(|present| present && observation.missing_visible_row_count != Some(0))
+    {
+        return Err("observationVisibleRowsInvalid".to_string());
+    }
+    if observation.container_connected.is_some_and(|connected| {
+        connected
+            && observation
+                .element_width
+                .zip(observation.element_height)
+                .is_none()
+    }) {
+        return Err("observationGeometryMissing".to_string());
+    }
+
+    match observation.stage {
+        TerminalOutputObservationStage::Settled => {
+            let current_grid = observation.xterm_rows.zip(observation.xterm_cols);
+            let current_grid_agrees = current_grid.is_some_and(|grid| {
+                observation.parser_rows.zip(observation.parser_cols) == Some(grid)
+                    && observation.conpty_rows.zip(observation.conpty_cols) == Some(grid)
+            });
+            let canvas_matches_renderer = match observation.renderer {
+                Some(PtyTerminalAttachRenderer::Webgl) => observation
+                    .canvas_width
+                    .zip(observation.canvas_height)
+                    .is_some_and(|(width, height)| width > 0 && height > 0),
+                Some(PtyTerminalAttachRenderer::Dom) => {
+                    matches!(
+                        (observation.canvas_width, observation.canvas_height),
+                        (None, None) | (Some(1..), Some(1..))
+                    )
+                }
+                None => false,
+            };
+            let semantic_expectations_match = observation
+                .expected_active_screen_has_text
+                .zip(observation.observed_active_screen_has_text)
+                .is_some_and(|(expected, observed)| expected == observed)
+                && observation
+                    .expected_bottom_line_has_text
+                    .zip(observation.observed_bottom_line_has_text)
+                    .is_some_and(|(expected, observed)| expected == observed);
+            if !matches!(
+                observation.outcome,
+                PtyTerminalAttachOutcome::Success
+                    | PtyTerminalAttachOutcome::ScreenOnlyHistoryDisabled
+                    | PtyTerminalAttachOutcome::ScreenOnlyCheckpointUnavailable
+            ) {
+                return Err("observationSettledOutcomeInvalid".to_string());
+            }
+            if observation.renderer.is_none()
+                || observation.context_state.is_none()
+                || observation.container_connected != Some(true)
+                || observation.xterm_connected != Some(true)
+                || observation.screen_connected != Some(true)
+                || observation
+                    .element_width
+                    .zip(observation.element_height)
+                    .is_none_or(|(width, height)| width == 0 || height == 0)
+                || observation
+                    .screen_width
+                    .zip(observation.screen_height)
+                    .is_none_or(|(width, height)| width == 0 || height == 0)
+                || !canvas_matches_renderer
+                || observation.viewport_y.is_none()
+                || observation.base_y.is_none()
+                || observation.buffer_length.is_none()
+                || current_grid.is_none_or(|(rows, cols)| rows == 0 || cols == 0)
+                || observation
+                    .snapshot_rows
+                    .zip(observation.snapshot_cols)
+                    .is_none()
+                || observation.grid_agreement != Some(true)
+                || !current_grid_agrees
+                || observation.resize_confirmed != Some(true)
+                || observation.visible_rows_present != Some(true)
+                || observation.visible_row_count != observation.xterm_rows
+                || observation.missing_visible_row_count.is_none()
+                || observation.bottom_position_satisfied != Some(true)
+                || observation.replay_barrier_completed != Some(true)
+                || observation.retained_barrier_completed != Some(true)
+                || observation.missing_visible_row_count != Some(0)
+                || observation.viewport_y != observation.base_y
+                || !semantic_expectations_match
+            {
+                return Err("observationSettlementInvariantFailed".to_string());
+            }
+        }
+        TerminalOutputObservationStage::Aborted => {
+            if observation.outcome == PtyTerminalAttachOutcome::Success {
+                return Err("observationAbortedOutcomeInvalid".to_string());
+            }
+        }
+        TerminalOutputObservationStage::PostWrite | TerminalOutputObservationStage::PostFit => {}
+    }
+    Ok((session_id, document_epoch))
+}
+
+fn render_terminal_attach_observation(
+    observation: &PtyTerminalAttachObservation,
+    session_id: Uuid,
+    document_epoch: u64,
+    label: &str,
+) -> String {
+    let message = format!(
+        "[terminal-snapshot] event=terminal_attach_observation stage={} session={} label={label:?} epoch={document_epoch} instance={} view={} transition={} generation={} sequence={} outcome={} parser_rows={:?} parser_cols={:?} conpty_rows={:?} conpty_cols={:?} snapshot_rows={:?} snapshot_cols={:?} xterm_rows={:?} xterm_cols={:?} history_requested={:?} history_included={:?} history_truncated={:?} history_reason={} history_boundary_hardened={:?} retained_history_rows={:?} included_history_rows={:?} semantic_history_bytes={:?} replay_bytes={:?} normal_screen_included={:?} active_buffer={:?} alternate_entry_mode={:?} replay_stage={:?} retained_event_count={:?} retained_byte_count={:?} renderer={:?} context={:?} element_width={:?} element_height={:?} screen_width={:?} screen_height={:?} canvas_width={:?} canvas_height={:?} resource_sessions={:?} resource_steady_bytes={:?} resource_checkpoint_bytes={:?} resource_attach_bytes={:?} viewport_y={:?} base_y={:?} buffer_length={:?} visible_rows={:?} missing_visible_rows={:?} route_wait_us={:?} ownership_wait_us={:?} parser_lock_hold_us={:?} clone_us={:?} encode_us={:?} backend_activation_us={:?} fetch_us={:?} write_us={:?} fit_us={:?} resize_us={:?} settle_us={:?} total_us={:?} connected={} resize_confirmed={:?} grid_agreement={:?} parser_prefix_included={:?} replay_barrier_completed={:?} retained_barrier_completed={:?} visible_rows_present={:?} bottom_position_satisfied={:?} expected_active_text={:?} observed_active_text={:?} expected_bottom_text={:?} observed_bottom_text={:?}",
+        observation.stage.code(),
+        session_id,
+        observation.xterm_instance_id,
+        observation.view_kind.code(),
+        observation.transition_kind.code(),
+        observation.attach_generation,
+        observation.sequence,
+        observation.outcome.code(),
+        observation.parser_rows,
+        observation.parser_cols,
+        observation.conpty_rows,
+        observation.conpty_cols,
+        observation.snapshot_rows,
+        observation.snapshot_cols,
+        observation.xterm_rows,
+        observation.xterm_cols,
+        observation.history_requested,
+        observation.history_included,
+        observation.history_truncated,
+        observation
+            .history_truncation_reason
+            .map_or("none", PtyTerminalAttachHistoryTruncationReason::code),
+        observation.history_boundary_hardened,
+        observation.retained_history_rows,
+        observation.included_history_rows,
+        observation.semantic_history_bytes,
+        observation.replay_bytes,
+        observation.normal_screen_included,
+        observation.active_buffer.map(PtyTerminalAttachActiveBuffer::code),
+        observation
+            .alternate_entry_mode
+            .map(PtyTerminalAttachAlternateEntryMode::code),
+        observation.replay_stage.map(PtyTerminalAttachReplayStage::code),
+        observation.retained_event_count,
+        observation.retained_byte_count,
+        observation.renderer.map(PtyTerminalAttachRenderer::code),
+        observation.context_state.map(PtyTerminalAttachContextState::code),
+        observation.element_width,
+        observation.element_height,
+        observation.screen_width,
+        observation.screen_height,
+        observation.canvas_width,
+        observation.canvas_height,
+        observation.resource_sessions,
+        observation.resource_steady_bytes,
+        observation.resource_checkpoint_bytes,
+        observation.resource_attach_bytes,
+        observation.viewport_y,
+        observation.base_y,
+        observation.buffer_length,
+        observation.visible_row_count,
+        observation.missing_visible_row_count,
+        observation.route_wait_micros,
+        observation.ownership_wait_micros,
+        observation.parser_lock_hold_micros,
+        observation.clone_micros,
+        observation.encode_micros,
+        observation.backend_activation_micros,
+        observation.fetch_micros,
+        observation.write_micros,
+        observation.fit_micros,
+        observation.resize_micros,
+        observation.settle_micros,
+        observation.total_micros,
+        observation.xterm_connected.unwrap_or(false)
+            || observation.screen_connected.unwrap_or(false)
+            || observation.container_connected.unwrap_or(false),
+        observation.resize_confirmed,
+        observation.grid_agreement,
+        observation.parser_prefix_included,
+        observation.replay_barrier_completed,
+        observation.retained_barrier_completed,
+        observation.visible_rows_present,
+        observation.bottom_position_satisfied,
+        observation.expected_active_screen_has_text,
+        observation.observed_active_screen_has_text,
+        observation.expected_bottom_line_has_text,
+        observation.observed_bottom_line_has_text,
+    );
+    message
+}
+
+fn log_terminal_attach_observation(
+    observation: &PtyTerminalAttachObservation,
+    session_id: Uuid,
+    document_epoch: u64,
+    label: &str,
+) {
+    let message =
+        render_terminal_attach_observation(observation, session_id, document_epoch, label);
+    if observation.outcome.is_debug() {
+        log::debug!("{message}");
+    } else {
+        log::warn!("{message}");
+    }
+}
+
+#[tauri::command]
+pub(crate) fn record_terminal_attach_observation<R: tauri::Runtime>(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    webview: tauri::Webview<R>,
+    observation: PtyTerminalAttachObservation,
+) -> Result<(), String> {
+    let label = webview.label();
+    let (session_id, document_epoch) = validate_observation_shape(&observation, label)?;
+    let coordinator = {
+        let manager = pty_mgr
+            .lock()
+            .map_err(|_| "PtyManager lock poisoned".to_string())?;
+        manager.terminal_output_coordinator()
+    };
+    coordinator
+        .accept_observation_stage(
+            label,
+            session_id,
+            document_epoch,
+            observation.attach_generation,
+            observation.stage,
+        )
+        .map_err(|error| error.code().to_string())?;
+    log_terminal_attach_observation(&observation, session_id, document_epoch, label);
+    Ok(())
 }
 
 /// (#871) Classifies user-input notifications so fresh-intent clearing can be
@@ -530,6 +1274,21 @@ pub fn get_screen_snapshot(
 /// The window label comes from Tauri, from the calling webview, so a frontend can only ever
 /// attach the window it runs in and the label can be neither forged nor misattributed.
 #[tauri::command]
+pub(crate) fn terminal_output_document_epoch<R: tauri::Runtime>(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    webview: tauri::Webview<R>,
+) -> Result<String, String> {
+    let coordinator = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?
+        .terminal_output_coordinator();
+    coordinator
+        .document_epoch(webview.label())
+        .map(|epoch| epoch.to_string())
+        .map_err(|error| error.code().to_string())
+}
+
+#[tauri::command]
 pub(crate) fn activate_terminal_output<R: tauri::Runtime>(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     webview: tauri::Webview<R>,
@@ -543,26 +1302,36 @@ pub(crate) fn activate_terminal_output<R: tauri::Runtime>(
     // other default produces instead is the silent content gap the plan rules to be the
     // worse of the two.
     include_history: Option<bool>,
-) -> Result<Option<PtyScreenSnapshotPayload>, String> {
-    let parsed = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
-    let route = {
-        let manager = pty_mgr
-            .lock()
-            .map_err(|_| "PtyManager lock poisoned".to_string())?;
-        manager
-            .terminal_output_route(parsed)
-            .map_err(|error| error.to_string())?
-    };
-    let snapshot = route
-        .activate_terminal_output(webview.label(), include_history.unwrap_or(true))
-        .map_err(|error| error.code().to_string())?;
-    Ok(snapshot.map(|snapshot| PtyScreenSnapshotPayload {
-        session_id,
-        data: snapshot.data,
-        rows: Some(snapshot.rows),
-        cols: Some(snapshot.cols),
-        sequence: snapshot.sequence,
-    }))
+    document_epoch: String,
+    attach_generation: u32,
+) -> Result<PtyTerminalOutputActivationPayload, String> {
+    let parsed = parse_canonical_session_id(&session_id)?;
+    let epoch = parse_document_epoch(&document_epoch)?;
+    let generation = validate_attach_generation(attach_generation)?;
+    let coordinator = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?
+        .terminal_output_coordinator();
+    let activation = coordinator
+        .activate(
+            webview.label(),
+            parsed,
+            epoch,
+            generation,
+            include_history.unwrap_or(true),
+        )
+        .map_err(|error| match error {
+            crate::pty::manager::TerminalOutputCoordinationError::RouteUnavailable => {
+                AppError::SessionNotFound(parsed.to_string()).to_string()
+            }
+            other => other.code().to_string(),
+        })?;
+    Ok(PtyTerminalOutputActivationPayload {
+        snapshot: activation.snapshot,
+        seedless_reason: activation.seedless_reason,
+        attach_generation: activation.attach_generation,
+        document_epoch: activation.document_epoch.to_string(),
+    })
 }
 
 /// Releases this window's attachment.
@@ -576,20 +1345,49 @@ pub(crate) fn detach_terminal_output<R: tauri::Runtime>(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     webview: tauri::Webview<R>,
     session_id: String,
+    document_epoch: String,
+    attach_generation: u32,
 ) -> Result<(), String> {
-    let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
-    let route = {
-        let manager = pty_mgr
-            .lock()
-            .map_err(|_| "PtyManager lock poisoned".to_string())?;
-        match manager.terminal_output_route(session_id) {
-            Ok(route) => route,
-            Err(crate::errors::AppError::SessionNotFound(_)) => return Ok(()),
-            Err(error) => return Err(error.to_string()),
-        }
-    };
-    route.detach_terminal_output(webview.label());
-    Ok(())
+    let session_id = parse_canonical_session_id(&session_id)?;
+    let document_epoch = parse_document_epoch(&document_epoch)?;
+    let attach_generation = validate_attach_generation(attach_generation)?;
+    let coordinator = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?
+        .terminal_output_coordinator();
+    coordinator
+        .detach(
+            webview.label(),
+            session_id,
+            document_epoch,
+            attach_generation,
+        )
+        .map_err(|error| error.code().to_string())
+}
+
+#[tauri::command]
+pub(crate) fn cancel_terminal_output_activation<R: tauri::Runtime>(
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    webview: tauri::Webview<R>,
+    session_id: String,
+    document_epoch: String,
+    attach_generation: u32,
+) -> Result<(), String> {
+    let session_id = parse_canonical_session_id(&session_id)?;
+    let document_epoch = parse_document_epoch(&document_epoch)?;
+    let attach_generation = validate_attach_generation(attach_generation)?;
+    let coordinator = pty_mgr
+        .lock()
+        .map_err(|_| "PtyManager lock poisoned".to_string())?
+        .terminal_output_coordinator();
+    coordinator
+        .cancel(
+            webview.label(),
+            session_id,
+            document_epoch,
+            attach_generation,
+        )
+        .map_err(|error| error.code().to_string())
 }
 
 /// #1032 - the last context reading for a session, for a frontend that just mounted and
@@ -1719,6 +2517,7 @@ mod watcher_preview_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use crate::config::coordinator_clocks::{CoordinatorClocks, CoordinatorClocksState};
@@ -1855,6 +2654,482 @@ mod tests {
         );
         assert_eq!(combine_boundary_metadata(O::Failed, O::Applied), O::Failed);
         assert_eq!(combine_boundary_metadata(O::Applied, O::Failed), O::Failed);
+    }
+
+    #[test]
+    fn terminal_output_identifiers_are_strictly_canonical() {
+        let id = Uuid::new_v4();
+        let canonical = id.hyphenated().to_string();
+        assert_eq!(parse_canonical_session_id(&canonical), Ok(id));
+        for invalid in [
+            canonical.to_uppercase(),
+            id.simple().to_string(),
+            format!("{{{canonical}}}"),
+            format!(" {canonical}"),
+            "not-a-uuid".to_string(),
+        ] {
+            assert_eq!(
+                parse_canonical_session_id(&invalid),
+                Err("invalidSessionId".to_string())
+            );
+        }
+
+        assert_eq!(parse_document_epoch("1"), Ok(1));
+        assert_eq!(parse_document_epoch(&u64::MAX.to_string()), Ok(u64::MAX));
+        for invalid in [
+            "",
+            "0",
+            "00",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+        ] {
+            assert_eq!(
+                parse_document_epoch(invalid),
+                Err("invalidDocumentEpoch".to_string())
+            );
+        }
+        assert_eq!(
+            validate_attach_generation(0),
+            Err("invalidAttachGeneration".to_string())
+        );
+        assert_eq!(validate_attach_generation(u32::MAX), Ok(u32::MAX));
+    }
+
+    fn observation_fixture(id: Uuid, stage: &str, outcome: &str) -> PtyTerminalAttachObservation {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": id.to_string(),
+            "stage": stage,
+            "documentEpoch": "9",
+            "xtermInstanceId": 1,
+            "viewKind": "embedded",
+            "transitionKind": "initial",
+            "attachGeneration": 1,
+            "sequence": 1,
+            "outcome": outcome,
+        }))
+        .expect("valid observation fixture")
+    }
+
+    fn settled_observation_fixture(
+        id: Uuid,
+        renderer: PtyTerminalAttachRenderer,
+        context_state: PtyTerminalAttachContextState,
+    ) -> PtyTerminalAttachObservation {
+        let mut observation = observation_fixture(id, "settled", "success");
+        observation.parser_rows = Some(24);
+        observation.parser_cols = Some(81);
+        observation.conpty_rows = Some(24);
+        observation.conpty_cols = Some(81);
+        observation.snapshot_rows = Some(24);
+        observation.snapshot_cols = Some(81);
+        observation.xterm_rows = Some(24);
+        observation.xterm_cols = Some(81);
+        observation.viewport_y = Some(0);
+        observation.base_y = Some(0);
+        observation.buffer_length = Some(24);
+        observation.visible_row_count = Some(24);
+        observation.missing_visible_row_count = Some(0);
+        observation.renderer = Some(renderer);
+        observation.context_state = Some(context_state);
+        observation.container_connected = Some(true);
+        observation.xterm_connected = Some(true);
+        observation.screen_connected = Some(true);
+        observation.element_width = Some(810);
+        observation.element_height = Some(480);
+        observation.screen_width = Some(810);
+        observation.screen_height = Some(480);
+        if renderer == PtyTerminalAttachRenderer::Webgl {
+            observation.canvas_width = Some(810);
+            observation.canvas_height = Some(480);
+        }
+        observation.replay_barrier_completed = Some(true);
+        observation.retained_barrier_completed = Some(true);
+        observation.grid_agreement = Some(true);
+        observation.resize_confirmed = Some(true);
+        observation.visible_rows_present = Some(true);
+        observation.bottom_position_satisfied = Some(true);
+        observation.expected_active_screen_has_text = Some(true);
+        observation.observed_active_screen_has_text = Some(true);
+        observation.expected_bottom_line_has_text = Some(false);
+        observation.observed_bottom_line_has_text = Some(false);
+        observation
+    }
+
+    #[test]
+    fn terminal_attach_observation_rejects_hostile_shapes_and_contradictions() {
+        let id = Uuid::new_v4();
+        let base = serde_json::json!({
+            "sessionId": id.to_string(),
+            "stage": "postWrite",
+            "documentEpoch": "9",
+            "xtermInstanceId": 1,
+            "viewKind": "embedded",
+            "transitionKind": "initial",
+            "attachGeneration": 1,
+            "sequence": 1,
+            "outcome": "success",
+        });
+        for (field, value) in [
+            ("stage", serde_json::json!("unknown")),
+            ("viewKind", serde_json::json!("other")),
+            ("transitionKind", serde_json::json!("other")),
+        ] {
+            let mut value_object = base.as_object().expect("base object").clone();
+            value_object.insert(field.to_string(), value);
+            assert!(
+                serde_json::from_value::<PtyTerminalAttachObservation>(serde_json::Value::Object(
+                    value_object
+                ))
+                .is_err(),
+                "hostile field {field} must be rejected"
+            );
+        }
+        let mut unsafe_sequence = observation_fixture(id, "postWrite", "success");
+        unsafe_sequence.sequence = 9_007_199_254_740_992;
+        assert_eq!(
+            validate_observation_shape(&unsafe_sequence, "main"),
+            Err("unsafeObservationSequence".to_string())
+        );
+        let mut zero_generation = observation_fixture(id, "postWrite", "success");
+        zero_generation.attach_generation = 0;
+        assert_eq!(
+            validate_observation_shape(&zero_generation, "main"),
+            Err("invalidObservationIdentity".to_string())
+        );
+        let mut duration = observation_fixture(id, "postWrite", "success");
+        duration.total_micros = Some(60_000_001);
+        assert_eq!(
+            validate_observation_shape(&duration, "main"),
+            Err("observationDurationOutOfRange".to_string())
+        );
+        let mut pixels = observation_fixture(id, "postWrite", "success");
+        pixels.element_width = Some(131_073);
+        assert_eq!(
+            validate_observation_shape(&pixels, "main"),
+            Err("observationPixelOutOfRange".to_string())
+        );
+        let mut extra = base.as_object().expect("base object").clone();
+        extra.insert("terminalBytes".to_string(), serde_json::json!([1, 2, 3]));
+        assert!(
+            serde_json::from_value::<PtyTerminalAttachObservation>(serde_json::Value::Object(
+                extra
+            ))
+            .is_err()
+        );
+
+        let mut renderer = observation_fixture(id, "postWrite", "success");
+        renderer.renderer = Some(PtyTerminalAttachRenderer::Dom);
+        renderer.context_state = Some(PtyTerminalAttachContextState::Active);
+        assert_eq!(
+            validate_observation_shape(&renderer, "main"),
+            Err("observationRendererContextInvalid".to_string())
+        );
+
+        let mut buffer = observation_fixture(id, "postWrite", "success");
+        buffer.viewport_y = Some(0);
+        buffer.base_y = Some(1);
+        buffer.buffer_length = Some(10);
+        buffer.xterm_rows = Some(24);
+        buffer.xterm_cols = Some(81);
+        assert_eq!(
+            validate_observation_shape(&buffer, "main"),
+            Err("observationBufferInvariantFailed".to_string())
+        );
+
+        let sparse = observation_fixture(id, "settled", "success");
+        assert_eq!(
+            validate_observation_shape(&sparse, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        let mut semantic = settled_observation_fixture(
+            id,
+            PtyTerminalAttachRenderer::Webgl,
+            PtyTerminalAttachContextState::Active,
+        );
+        semantic.observed_active_screen_has_text = Some(false);
+        assert_eq!(
+            validate_observation_shape(&semantic, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        let mut visible_rows = settled_observation_fixture(
+            id,
+            PtyTerminalAttachRenderer::Webgl,
+            PtyTerminalAttachContextState::Active,
+        );
+        visible_rows.visible_row_count = Some(23);
+        assert_eq!(
+            validate_observation_shape(&visible_rows, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        let mut grid = settled_observation_fixture(
+            id,
+            PtyTerminalAttachRenderer::Webgl,
+            PtyTerminalAttachContextState::Active,
+        );
+        grid.conpty_rows = Some(27);
+        assert_eq!(
+            validate_observation_shape(&grid, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        let mut claimed_grid = settled_observation_fixture(
+            id,
+            PtyTerminalAttachRenderer::Webgl,
+            PtyTerminalAttachContextState::Active,
+        );
+        claimed_grid.grid_agreement = Some(false);
+        assert_eq!(
+            validate_observation_shape(&claimed_grid, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        let mut webgl_without_canvas = settled_observation_fixture(
+            id,
+            PtyTerminalAttachRenderer::Webgl,
+            PtyTerminalAttachContextState::Active,
+        );
+        webgl_without_canvas.canvas_width = None;
+        webgl_without_canvas.canvas_height = None;
+        assert_eq!(
+            validate_observation_shape(&webgl_without_canvas, "main"),
+            Err("observationSettlementInvariantFailed".to_string())
+        );
+
+        for context_state in [
+            PtyTerminalAttachContextState::Lost,
+            PtyTerminalAttachContextState::Unavailable,
+        ] {
+            let dom_without_canvas =
+                settled_observation_fixture(id, PtyTerminalAttachRenderer::Dom, context_state);
+            assert_eq!(
+                validate_observation_shape(&dom_without_canvas, "main"),
+                Ok((id, 9))
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_attach_observation_validates_and_escapes_labels() {
+        let id = Uuid::new_v4();
+        let observation = observation_fixture(id, "postWrite", "success");
+        assert_eq!(
+            validate_observation_shape(&observation, ""),
+            Err("invalidWebviewLabel".to_string())
+        );
+        assert_eq!(
+            validate_observation_shape(&observation, &"x".repeat(257)),
+            Err("invalidWebviewLabel".to_string())
+        );
+        assert_eq!(
+            validate_observation_shape(&observation, "main"),
+            Ok((id, 9))
+        );
+        let injected = "main\nsecret";
+        let rendered = render_terminal_attach_observation(&observation, id, 9, injected);
+        assert!(!rendered.contains('\n'));
+        assert!(rendered.contains("\\n"));
+        assert!(!rendered.contains("terminalBytes"));
+        assert!(!rendered.contains("commandText"));
+    }
+
+    #[test]
+    fn terminal_attach_observation_outcome_levels_and_codes_are_closed() {
+        assert!(PtyTerminalAttachOutcome::Success.is_debug());
+        assert!(PtyTerminalAttachOutcome::Stale.is_debug());
+        assert!(!PtyTerminalAttachOutcome::Timeout.is_debug());
+        assert!(!PtyTerminalAttachOutcome::InvariantFailed.is_debug());
+        assert_eq!(
+            PtyTerminalAttachOutcome::SeedlessParserPoisoned.code(),
+            "seedlessParserPoisoned"
+        );
+    }
+
+    #[test]
+    fn terminal_output_activation_serializes_the_exact_camel_case_contract() {
+        use crate::pty::output::{
+            PtyTerminalActiveBuffer, PtyTerminalAlternateEntryMode,
+            PtyTerminalHistoryTruncationReason, PtyTerminalReplayStage,
+        };
+
+        let fanout = crate::pty::output::SessionIoFanout::new_with_isolated_replay_budget(
+            Arc::new(Mutex::new(HashMap::new())),
+            crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {}),
+            None,
+        );
+        let id = Uuid::new_v4();
+        let token = fanout
+            .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 6, 20)
+            .expect("register serialization session");
+        fanout.handle_output(
+            &token,
+            &id.to_string(),
+            b"normal\r\n\x1b[?1049halt".to_vec(),
+        );
+        let activation = fanout
+            .activate_terminal_output(id, "main", true, 42, 7)
+            .expect("activation");
+        let payload = PtyTerminalOutputActivationPayload {
+            snapshot: activation.snapshot,
+            seedless_reason: activation.seedless_reason,
+            attach_generation: activation.attach_generation,
+            document_epoch: activation.document_epoch.to_string(),
+        };
+        let serialized = serde_json::to_value(payload).expect("serialize activation");
+        let envelope = serialized.as_object().expect("activation object");
+        assert_eq!(envelope.get("attachGeneration").unwrap(), 7);
+        assert_eq!(envelope.get("documentEpoch").unwrap(), "42");
+        assert!(!envelope.contains_key("seedlessReason"));
+        assert!(!envelope.contains_key("attach_generation"));
+        assert!(!envelope.contains_key("document_epoch"));
+
+        let snapshot = envelope
+            .get("snapshot")
+            .and_then(serde_json::Value::as_object)
+            .expect("snapshot object");
+        for required in [
+            "replayData",
+            "rows",
+            "cols",
+            "sequence",
+            "activeBuffer",
+            "alternateEntryMode",
+            "replayStage",
+            "historyIncluded",
+            "historyTruncated",
+            "historyTruncationReason",
+            "historyBoundaryHardened",
+            "normalScreenIncluded",
+            "retainedHistoryRows",
+            "includedHistoryRows",
+            "semanticHistoryBytes",
+            "replayBytes",
+            "pendingParserBytes",
+            "activeScreenHasText",
+            "activeBottomLineHasText",
+        ] {
+            assert!(snapshot.contains_key(required), "missing {required}");
+        }
+        assert_eq!(snapshot.get("rows").unwrap(), 6);
+        assert_eq!(snapshot.get("cols").unwrap(), 20);
+        assert_eq!(snapshot.get("sequence").unwrap(), 1);
+        assert_eq!(snapshot.get("activeBuffer").unwrap(), "alternate");
+        assert_eq!(snapshot.get("alternateEntryMode").unwrap(), "mode1049");
+        assert!(snapshot.get("replayData").unwrap().is_array());
+        assert!(!snapshot.contains_key("replay_data"));
+
+        let seedless = PtyTerminalOutputActivationPayload {
+            snapshot: None,
+            seedless_reason: Some(PtyTerminalSeedlessReason::SeedlessSequenceUnsafe),
+            attach_generation: u32::MAX,
+            document_epoch: u64::MAX.to_string(),
+        };
+        let serialized = serde_json::to_value(seedless).expect("serialize seedless activation");
+        let envelope = serialized.as_object().expect("seedless object");
+        assert!(!envelope.contains_key("snapshot"));
+        assert_eq!(
+            envelope.get("seedlessReason").unwrap(),
+            "seedlessSequenceUnsafe"
+        );
+        assert_eq!(envelope.get("attachGeneration").unwrap(), u32::MAX);
+        assert_eq!(
+            envelope.get("documentEpoch").unwrap(),
+            &serde_json::Value::String(u64::MAX.to_string())
+        );
+
+        for (value, expected) in [
+            (
+                PtyTerminalSeedlessReason::SeedlessParserUnavailable,
+                "seedlessParserUnavailable",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessParserPoisoned,
+                "seedlessParserPoisoned",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessContinuationUnsafe,
+                "seedlessContinuationUnsafe",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessInvalidGrid,
+                "seedlessInvalidGrid",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessResizeFailed,
+                "seedlessResizeFailed",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded,
+                "seedlessResourceLimitExceeded",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessReplayCapExceeded,
+                "seedlessReplayCapExceeded",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessSequenceUnsafe,
+                "seedlessSequenceUnsafe",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessCaptureFailed,
+                "seedlessCaptureFailed",
+            ),
+            (
+                PtyTerminalSeedlessReason::SeedlessEncodeFailed,
+                "seedlessEncodeFailed",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        }
+        for (value, expected) in [
+            (PtyTerminalActiveBuffer::Normal, "normal"),
+            (PtyTerminalActiveBuffer::Alternate, "alternate"),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        }
+        for (value, expected) in [
+            (PtyTerminalAlternateEntryMode::Mode47, "mode47"),
+            (PtyTerminalAlternateEntryMode::Mode1047, "mode1047"),
+            (PtyTerminalAlternateEntryMode::Mode1049, "mode1049"),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        }
+        for (value, expected) in [
+            (PtyTerminalReplayStage::SemanticHistory, "semanticHistory"),
+            (
+                PtyTerminalReplayStage::ScreenOnlyHistoryDisabled,
+                "screenOnlyHistoryDisabled",
+            ),
+            (
+                PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable,
+                "screenOnlyCheckpointUnavailable",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        }
+        for (value, expected) in [
+            (PtyTerminalHistoryTruncationReason::None, "none"),
+            (
+                PtyTerminalHistoryTruncationReason::RowLimitReached,
+                "rowLimitReached",
+            ),
+            (
+                PtyTerminalHistoryTruncationReason::ByteLimitReached,
+                "byteLimitReached",
+            ),
+            (
+                PtyTerminalHistoryTruncationReason::RowAndByteLimitReached,
+                "rowAndByteLimitReached",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        }
     }
 
     #[tokio::test]

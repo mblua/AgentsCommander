@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Emitter};
@@ -43,8 +43,13 @@ pub struct SessionIoFanout {
     /// compiled that path out of every test build, and left it with no coverage at all.
     output_timer_enabled: Arc<AtomicBool>,
     fanout_identity: Arc<()>,
+    replay_budget: Arc<ReplayResourceBudget>,
     #[cfg(test)]
     trace: FanoutTraceRecorder,
+    #[cfg(test)]
+    activation_timings: Arc<Mutex<Vec<SemanticActivationTiming>>>,
+    #[cfg(test)]
+    capture_barrier: Arc<Mutex<Option<SemanticCaptureBarrier>>>,
 }
 
 #[derive(Clone)]
@@ -55,22 +60,590 @@ pub struct PtyScreenSnapshot {
     pub sequence: u64,
 }
 
+const SEMANTIC_SCROLLBACK_ROWS: usize = 1024;
+const SEMANTIC_HISTORY_REPLAY_BYTES: usize = 64 * 1024;
+const ALT_SEQUENCE_MAX_BYTES: usize = 64;
+const MAX_JAVASCRIPT_SEQUENCE: u64 = 9_007_199_254_740_991;
+const SEMANTIC_REPLAY_MAX_BYTES: usize = 512 * 1024;
+const SUPPORTED_SEMANTIC_REPLAY_SESSIONS: usize = 32;
+const SEMANTIC_STEADY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const SEMANTIC_CHECKPOINT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+const SEMANTIC_ATTACH_BUDGET_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PtyTerminalActiveBuffer {
+    Normal,
+    Alternate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PtyTerminalAlternateEntryMode {
+    Mode47,
+    Mode1047,
+    Mode1049,
+}
+
+impl PtyTerminalAlternateEntryMode {
+    fn entry_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Mode47 => b"\x1b[?47h",
+            Self::Mode1047 => b"\x1b[?1047h",
+            Self::Mode1049 => b"\x1b[?1049h",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PtyTerminalReplayStage {
+    SemanticHistory,
+    ScreenOnlyHistoryDisabled,
+    ScreenOnlyCheckpointUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PtyTerminalHistoryTruncationReason {
+    None,
+    RowLimitReached,
+    ByteLimitReached,
+    RowAndByteLimitReached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+// The repeated prefix is the frozen Phase 1 IPC vocabulary, not redundant naming.
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum PtyTerminalSeedlessReason {
+    SeedlessParserUnavailable,
+    SeedlessParserPoisoned,
+    SeedlessContinuationUnsafe,
+    SeedlessInvalidGrid,
+    SeedlessResizeFailed,
+    SeedlessResourceLimitExceeded,
+    SeedlessReplayCapExceeded,
+    SeedlessSequenceUnsafe,
+    SeedlessCaptureFailed,
+    SeedlessEncodeFailed,
+}
+
+impl PtyTerminalSeedlessReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::SeedlessParserUnavailable => "seedlessParserUnavailable",
+            Self::SeedlessParserPoisoned => "seedlessParserPoisoned",
+            Self::SeedlessContinuationUnsafe => "seedlessContinuationUnsafe",
+            Self::SeedlessInvalidGrid => "seedlessInvalidGrid",
+            Self::SeedlessResizeFailed => "seedlessResizeFailed",
+            Self::SeedlessResourceLimitExceeded => "seedlessResourceLimitExceeded",
+            Self::SeedlessReplayCapExceeded => "seedlessReplayCapExceeded",
+            Self::SeedlessSequenceUnsafe => "seedlessSequenceUnsafe",
+            Self::SeedlessCaptureFailed => "seedlessCaptureFailed",
+            Self::SeedlessEncodeFailed => "seedlessEncodeFailed",
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PtyTerminalReplaySnapshot {
+    pub(crate) replay_data: Vec<u8>,
+    pub(crate) rows: u16,
+    pub(crate) cols: u16,
+    pub(crate) sequence: u64,
+    pub(crate) active_buffer: PtyTerminalActiveBuffer,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) alternate_entry_mode: Option<PtyTerminalAlternateEntryMode>,
+    pub(crate) replay_stage: PtyTerminalReplayStage,
+    pub(crate) history_included: bool,
+    pub(crate) history_truncated: bool,
+    pub(crate) history_truncation_reason: PtyTerminalHistoryTruncationReason,
+    pub(crate) history_boundary_hardened: bool,
+    pub(crate) normal_screen_included: bool,
+    pub(crate) retained_history_rows: u32,
+    pub(crate) included_history_rows: u32,
+    pub(crate) semantic_history_bytes: u32,
+    pub(crate) replay_bytes: u32,
+    pub(crate) pending_parser_bytes: u32,
+    pub(crate) active_screen_has_text: bool,
+    pub(crate) active_bottom_line_has_text: bool,
+    #[serde(skip)]
+    _reservation: ReplayResourceReservation,
+}
+
+#[derive(Debug)]
+pub(crate) struct PtyTerminalOutputActivation {
+    pub(crate) snapshot: Option<PtyTerminalReplaySnapshot>,
+    pub(crate) seedless_reason: Option<PtyTerminalSeedlessReason>,
+    pub(crate) attach_generation: u32,
+    pub(crate) document_epoch: u64,
+}
+
+impl PtyTerminalOutputActivation {
+    fn snapshot(
+        snapshot: PtyTerminalReplaySnapshot,
+        document_epoch: u64,
+        attach_generation: u32,
+    ) -> Self {
+        Self {
+            snapshot: Some(snapshot),
+            seedless_reason: None,
+            attach_generation,
+            document_epoch,
+        }
+    }
+
+    fn seedless(
+        reason: PtyTerminalSeedlessReason,
+        document_epoch: u64,
+        attach_generation: u32,
+    ) -> Self {
+        Self {
+            snapshot: None,
+            seedless_reason: Some(reason),
+            attach_generation,
+            document_epoch,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplayResourceKind {
+    Sessions,
+    Steady,
+    Checkpoint,
+    Attach,
+}
+
+#[derive(Debug)]
+struct ReplayResourceBudget {
+    admitted_sessions: AtomicUsize,
+    steady_bytes: AtomicUsize,
+    checkpoint_bytes: AtomicUsize,
+    attach_bytes: AtomicUsize,
+}
+
+impl ReplayResourceBudget {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            admitted_sessions: AtomicUsize::new(0),
+            steady_bytes: AtomicUsize::new(0),
+            checkpoint_bytes: AtomicUsize::new(0),
+            attach_bytes: AtomicUsize::new(0),
+        })
+    }
+
+    fn counter(&self, kind: ReplayResourceKind) -> (&AtomicUsize, usize) {
+        match kind {
+            ReplayResourceKind::Sessions => {
+                (&self.admitted_sessions, SUPPORTED_SEMANTIC_REPLAY_SESSIONS)
+            }
+            ReplayResourceKind::Steady => (&self.steady_bytes, SEMANTIC_STEADY_BUDGET_BYTES),
+            ReplayResourceKind::Checkpoint => {
+                (&self.checkpoint_bytes, SEMANTIC_CHECKPOINT_BUDGET_BYTES)
+            }
+            ReplayResourceKind::Attach => (&self.attach_bytes, SEMANTIC_ATTACH_BUDGET_BYTES),
+        }
+    }
+
+    fn try_reserve(
+        self: &Arc<Self>,
+        kind: ReplayResourceKind,
+        amount: usize,
+    ) -> Option<ReplayResourceReservation> {
+        let (counter, limit) = self.counter(kind);
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let next = current.checked_add(amount)?;
+            if next > limit {
+                return None;
+            }
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    return Some(ReplayResourceReservation {
+                        budget: Arc::clone(self),
+                        kind,
+                        amount,
+                    });
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn try_admit(self: &Arc<Self>, steady_bytes: usize) -> Option<SemanticSessionReservation> {
+        let session = self.try_reserve(ReplayResourceKind::Sessions, 1)?;
+        let Some(steady) = self.try_reserve(ReplayResourceKind::Steady, steady_bytes) else {
+            drop(session);
+            return None;
+        };
+        Some(SemanticSessionReservation {
+            _session: session,
+            steady,
+        })
+    }
+
+    fn snapshot(&self) -> ReplayResourceSnapshot {
+        ReplayResourceSnapshot {
+            sessions: self.admitted_sessions.load(Ordering::Acquire),
+            steady_bytes: self.steady_bytes.load(Ordering::Acquire),
+            checkpoint_bytes: self.checkpoint_bytes.load(Ordering::Acquire),
+            attach_bytes: self.attach_bytes.load(Ordering::Acquire),
+        }
+    }
+}
+
+fn process_replay_budget() -> Arc<ReplayResourceBudget> {
+    static BUDGET: OnceLock<Arc<ReplayResourceBudget>> = OnceLock::new();
+    Arc::clone(BUDGET.get_or_init(ReplayResourceBudget::new))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReplayResourceSnapshot {
+    sessions: usize,
+    steady_bytes: usize,
+    checkpoint_bytes: usize,
+    attach_bytes: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReplayResourceReservation {
+    budget: Arc<ReplayResourceBudget>,
+    kind: ReplayResourceKind,
+    amount: usize,
+}
+
+impl ReplayResourceReservation {
+    fn try_resize(&mut self, new_amount: usize) -> bool {
+        if new_amount == self.amount {
+            return true;
+        }
+        let (counter, limit) = self.budget.counter(self.kind);
+        if new_amount < self.amount {
+            counter.fetch_sub(self.amount - new_amount, Ordering::AcqRel);
+            self.amount = new_amount;
+            return true;
+        }
+        let delta = new_amount - self.amount;
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(delta) else {
+                return false;
+            };
+            if next > limit {
+                return false;
+            }
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    self.amount = new_amount;
+                    return true;
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+impl Drop for ReplayResourceReservation {
+    fn drop(&mut self) {
+        self.budget
+            .counter(self.kind)
+            .0
+            .fetch_sub(self.amount, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug)]
+struct SemanticSessionReservation {
+    _session: ReplayResourceReservation,
+    steady: ReplayResourceReservation,
+}
+
+struct NormalScreenCheckpoint {
+    screen: vt100::Screen,
+    _reservation: ReplayResourceReservation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContinuationUnsafeReason {
+    Margins,
+    Origin,
+    Insert,
+    Autowrap,
+    SavedCursor,
+    Charset,
+    TabStops,
+    UnknownMode,
+    MalformedControl,
+    OpenControlString,
+}
+
+impl ContinuationUnsafeReason {
+    fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ControlBytes {
+    bytes: [u8; ALT_SEQUENCE_MAX_BYTES],
+    len: usize,
+}
+
+impl ControlBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlStringKind {
+    Osc,
+    Opaque,
+}
+
+enum BoundaryEvent {
+    Hold,
+    Raw(u8),
+    Control(ControlBytes),
+    StartString(ControlBytes, ControlStringKind),
+    Overlong(ControlBytes, bool),
+}
+
+struct ReplayBoundaryTracker {
+    pending: [u8; ALT_SEQUENCE_MAX_BYTES],
+    pending_len: usize,
+    opaque_csi: bool,
+    control_string: Option<ControlStringKind>,
+    control_string_esc: bool,
+    expected_alternate: bool,
+    alternate_entry_mode: Option<PtyTerminalAlternateEntryMode>,
+    checkpoint_reliable: bool,
+    unsafe_reasons: u16,
+    charset_designations: u8,
+    charset_shifted: bool,
+    charset_coding_non_default: bool,
+}
+
+impl ReplayBoundaryTracker {
+    fn new() -> Self {
+        Self {
+            pending: [0; ALT_SEQUENCE_MAX_BYTES],
+            pending_len: 0,
+            opaque_csi: false,
+            control_string: None,
+            control_string_esc: false,
+            expected_alternate: false,
+            alternate_entry_mode: None,
+            checkpoint_reliable: true,
+            unsafe_reasons: 0,
+            charset_designations: 0,
+            charset_shifted: false,
+            charset_coding_non_default: false,
+        }
+    }
+
+    fn set_unsafe(&mut self, reason: ContinuationUnsafeReason, unsafe_now: bool) {
+        if unsafe_now {
+            self.unsafe_reasons |= reason.bit();
+        } else {
+            self.unsafe_reasons &= !reason.bit();
+        }
+    }
+
+    fn first_unsafe_reason(&self) -> Option<ContinuationUnsafeReason> {
+        [
+            ContinuationUnsafeReason::Margins,
+            ContinuationUnsafeReason::Origin,
+            ContinuationUnsafeReason::Insert,
+            ContinuationUnsafeReason::Autowrap,
+            ContinuationUnsafeReason::SavedCursor,
+            ContinuationUnsafeReason::Charset,
+            ContinuationUnsafeReason::TabStops,
+            ContinuationUnsafeReason::UnknownMode,
+            ContinuationUnsafeReason::MalformedControl,
+            ContinuationUnsafeReason::OpenControlString,
+        ]
+        .into_iter()
+        .find(|reason| self.unsafe_reasons & reason.bit() != 0)
+    }
+
+    fn refresh_charset_safety(&mut self) {
+        self.set_unsafe(
+            ContinuationUnsafeReason::Charset,
+            self.charset_designations != 0
+                || self.charset_shifted
+                || self.charset_coding_non_default,
+        );
+    }
+
+    fn set_charset_designation(&mut self, register: u8, is_default: bool) {
+        let bit = 1 << register;
+        if is_default {
+            self.charset_designations &= !bit;
+        } else {
+            self.charset_designations |= bit;
+        }
+        self.refresh_charset_safety();
+    }
+
+    fn set_charset_shifted(&mut self, shifted: bool) {
+        self.charset_shifted = shifted;
+        self.refresh_charset_safety();
+    }
+
+    fn set_charset_coding_non_default(&mut self, non_default: bool) {
+        self.charset_coding_non_default = non_default;
+        self.refresh_charset_safety();
+    }
+
+    fn reset(&mut self) {
+        self.pending_len = 0;
+        self.opaque_csi = false;
+        self.control_string = None;
+        self.control_string_esc = false;
+        self.expected_alternate = false;
+        self.alternate_entry_mode = None;
+        self.checkpoint_reliable = true;
+        self.unsafe_reasons = 0;
+        self.charset_designations = 0;
+        self.charset_shifted = false;
+        self.charset_coding_non_default = false;
+    }
+
+    fn pending_original(&self) -> &[u8] {
+        &self.pending[..self.pending_len]
+    }
+
+    fn pending_is_csi(&self) -> bool {
+        self.pending.first() == Some(&0x9b)
+            || (self.pending_len >= 2 && self.pending[0] == 0x1b && self.pending[1] == b'[')
+    }
+
+    fn take_pending(&mut self) -> ControlBytes {
+        let control = ControlBytes {
+            bytes: self.pending,
+            len: self.pending_len,
+        };
+        self.pending_len = 0;
+        control
+    }
+
+    fn consume(&mut self, byte: u8) -> BoundaryEvent {
+        if let Some(kind) = self.control_string {
+            let closes = byte == 0x9c
+                || (kind == ControlStringKind::Osc && byte == 0x07)
+                || (self.control_string_esc && byte == b'\\');
+            self.control_string_esc = byte == 0x1b && !self.control_string_esc;
+            if closes {
+                self.control_string = None;
+                self.control_string_esc = false;
+                self.set_unsafe(ContinuationUnsafeReason::OpenControlString, false);
+            }
+            return BoundaryEvent::Raw(byte);
+        }
+
+        if self.opaque_csi {
+            if (0x40..=0x7e).contains(&byte) {
+                self.opaque_csi = false;
+            }
+            return BoundaryEvent::Raw(byte);
+        }
+
+        if self.pending_len == 0 {
+            if byte == 0x1b || byte == 0x9b {
+                self.pending[0] = byte;
+                self.pending_len = 1;
+                return BoundaryEvent::Hold;
+            }
+            if matches!(byte, 0x9d | 0x90 | 0x98 | 0x9e | 0x9f) {
+                let kind = if byte == 0x9d {
+                    ControlStringKind::Osc
+                } else {
+                    ControlStringKind::Opaque
+                };
+                self.control_string = Some(kind);
+                self.set_unsafe(ContinuationUnsafeReason::OpenControlString, true);
+                if kind == ControlStringKind::Opaque {
+                    self.set_unsafe(ContinuationUnsafeReason::UnknownMode, true);
+                }
+            }
+            return BoundaryEvent::Raw(byte);
+        }
+
+        self.pending[self.pending_len] = byte;
+        self.pending_len += 1;
+
+        if self.pending[0] == 0x1b && self.pending_len == 2 {
+            match byte {
+                b'[' => return BoundaryEvent::Hold,
+                b']' | b'P' | b'X' | b'^' | b'_' => {
+                    let kind = if byte == b']' {
+                        ControlStringKind::Osc
+                    } else {
+                        ControlStringKind::Opaque
+                    };
+                    self.control_string = Some(kind);
+                    self.set_unsafe(ContinuationUnsafeReason::OpenControlString, true);
+                    if kind == ControlStringKind::Opaque {
+                        self.set_unsafe(ContinuationUnsafeReason::UnknownMode, true);
+                    }
+                    return BoundaryEvent::StartString(self.take_pending(), kind);
+                }
+                0x20..=0x2f => return BoundaryEvent::Hold,
+                0x30..=0x7e => return BoundaryEvent::Control(self.take_pending()),
+                _ => {
+                    self.set_unsafe(ContinuationUnsafeReason::MalformedControl, true);
+                    self.checkpoint_reliable = false;
+                    return BoundaryEvent::Control(self.take_pending());
+                }
+            }
+        }
+
+        let is_csi = self.pending_is_csi();
+        if is_csi {
+            if (0x40..=0x7e).contains(&byte) {
+                return BoundaryEvent::Control(self.take_pending());
+            }
+            if !(0x20..=0x3f).contains(&byte) {
+                self.set_unsafe(ContinuationUnsafeReason::MalformedControl, true);
+                self.checkpoint_reliable = false;
+                return BoundaryEvent::Control(self.take_pending());
+            }
+        } else if (0x30..=0x7e).contains(&byte) {
+            return BoundaryEvent::Control(self.take_pending());
+        } else if !(0x20..=0x2f).contains(&byte) {
+            self.set_unsafe(ContinuationUnsafeReason::MalformedControl, true);
+            self.checkpoint_reliable = false;
+            return BoundaryEvent::Control(self.take_pending());
+        }
+
+        if self.pending_len == ALT_SEQUENCE_MAX_BYTES {
+            let was_csi = is_csi;
+            self.opaque_csi = was_csi;
+            self.set_unsafe(ContinuationUnsafeReason::MalformedControl, true);
+            self.checkpoint_reliable = false;
+            return BoundaryEvent::Overlong(self.take_pending(), was_csi);
+        }
+        BoundaryEvent::Hold
+    }
+}
+
 struct ScreenReplayState {
     parser: vt100::Parser,
     output_sequence: u64,
     registration: Arc<RegisteredPtyOutputTarget>,
     reader_gate: Arc<ReaderOperationGate>,
     parser_availability: ParserAvailability,
-    /// Bounded suffix of the raw output stream. Must be a `VecDeque`: trimming a `Vec` from
-    /// the front would memmove the whole ring on every chunk of the hot path.
-    history: std::collections::VecDeque<u8>,
-    /// Whether the ring's front byte is known to sit at the start of a line, that is, at a
-    /// point a parser in ground state can start reading from. Starts true, which is correct
-    /// for a ring that is still growing from the first byte the session emitted, and is
-    /// corrected by `append_history` both when a trim moves the front and when an oversized
-    /// chunk installs a truncated one. Conservative in one direction only: `false` never
-    /// means the front is definitely unsafe, it means nothing proved it safe (#1458).
-    history_aligned: bool,
+    semantic_unavailable: Option<PtyTerminalSeedlessReason>,
+    tracker: ReplayBoundaryTracker,
+    normal_checkpoint: Option<NormalScreenCheckpoint>,
+    semantic_reservation: Option<SemanticSessionReservation>,
+    poison_warned: bool,
     /// The last grid the ConPTY actually took (rows, cols): recorded by every
     /// follow call BEFORE the skippable steps, so a skipped or failed
     /// `set_size` leaves a visible divergence for the attach reconcile (#1439).
@@ -79,6 +652,1027 @@ struct ScreenReplayState {
     /// remote, not necessarily taken; the local backend's `if sent` gate is
     /// what keeps the record honest where #1439 lives.
     conpty_size: (u16, u16),
+}
+
+struct SnapshotMaterial {
+    live_screen: vt100::Screen,
+    normal_checkpoint: Option<vt100::Screen>,
+    pending: [u8; ALT_SEQUENCE_MAX_BYTES],
+    pending_len: usize,
+    sequence: u64,
+    include_history: bool,
+    alternate_entry_mode: Option<PtyTerminalAlternateEntryMode>,
+    checkpoint_reliable: bool,
+    clone_micros: u64,
+    reservation: ReplayResourceReservation,
+}
+
+impl ScreenReplayState {
+    fn process_parser_bytes(&mut self, bytes: &[u8], expected_transition: bool) {
+        if bytes.is_empty() {
+            return;
+        }
+        let before = self.parser.screen().alternate_screen();
+        self.parser.process(bytes);
+        let after = self.parser.screen().alternate_screen();
+        if before != after && !expected_transition {
+            self.normal_checkpoint = None;
+            self.tracker.checkpoint_reliable = false;
+            self.tracker.expected_alternate = after;
+            self.tracker.alternate_entry_mode = None;
+        }
+    }
+
+    fn invalidate_checkpoint(&mut self) {
+        self.normal_checkpoint = None;
+        self.tracker.checkpoint_reliable = false;
+    }
+
+    fn capture_normal_checkpoint(&mut self, budget: &Arc<ReplayResourceBudget>) {
+        self.normal_checkpoint = None;
+        self.tracker.checkpoint_reliable = false;
+        if self.semantic_unavailable.is_some() || self.semantic_reservation.is_none() {
+            return;
+        }
+        let (rows, cols) = self.parser.screen().size();
+        let Some(bytes) = semantic_cell_storage_bytes(rows, cols) else {
+            return;
+        };
+        let Some(reservation) = budget.try_reserve(ReplayResourceKind::Checkpoint, bytes) else {
+            return;
+        };
+        let cloned = crate::logging::catch_payload_unwind(|| {
+            let mut screen = self.parser.screen().clone();
+            screen.set_scrollback(0);
+            screen
+        });
+        if let Ok(screen) = cloned {
+            self.normal_checkpoint = Some(NormalScreenCheckpoint {
+                screen,
+                _reservation: reservation,
+            });
+            self.tracker.checkpoint_reliable = true;
+        }
+    }
+
+    fn apply_alternate_action(
+        &mut self,
+        mode: PtyTerminalAlternateEntryMode,
+        enter: bool,
+        budget: &Arc<ReplayResourceBudget>,
+    ) {
+        let was_alternate = self.parser.screen().alternate_screen();
+        if enter && !was_alternate {
+            self.capture_normal_checkpoint(budget);
+        }
+
+        match (mode, enter) {
+            (PtyTerminalAlternateEntryMode::Mode47, true) => {
+                self.process_parser_bytes(b"\x1b[?47h", true);
+            }
+            (PtyTerminalAlternateEntryMode::Mode47, false) => {
+                self.process_parser_bytes(b"\x1b[?47l", true);
+            }
+            (PtyTerminalAlternateEntryMode::Mode1047, true) => {
+                self.process_parser_bytes(b"\x1b[?47h", true);
+            }
+            (PtyTerminalAlternateEntryMode::Mode1047, false) => {
+                self.process_parser_bytes(b"\x1b[2J", false);
+                self.process_parser_bytes(b"\x1b[?47l", true);
+            }
+            (PtyTerminalAlternateEntryMode::Mode1049, true) => {
+                self.process_parser_bytes(b"\x1b[?1049h", true);
+            }
+            (PtyTerminalAlternateEntryMode::Mode1049, false) => {
+                self.process_parser_bytes(b"\x1b[?1049l", true);
+            }
+        }
+
+        let expected = enter;
+        self.tracker.expected_alternate = expected;
+        self.tracker.alternate_entry_mode = enter.then_some(mode);
+        if self.parser.screen().alternate_screen() != expected {
+            self.invalidate_checkpoint();
+        } else if enter && !was_alternate {
+            self.tracker.checkpoint_reliable = self.normal_checkpoint.is_some();
+        }
+        if !enter {
+            self.normal_checkpoint = None;
+            self.tracker.checkpoint_reliable = true;
+        }
+    }
+
+    fn update_mode_safety(&mut self, private: bool, parameter: u16, set: bool) {
+        if private {
+            match parameter {
+                6 => self
+                    .tracker
+                    .set_unsafe(ContinuationUnsafeReason::Origin, set),
+                7 => self
+                    .tracker
+                    .set_unsafe(ContinuationUnsafeReason::Autowrap, !set),
+                1 | 9 | 25 | 47 | 1000 | 1002 | 1003 | 1005 | 1006 | 1047 | 1049 | 2004 => {}
+                _ => self
+                    .tracker
+                    .set_unsafe(ContinuationUnsafeReason::UnknownMode, true),
+            }
+        } else {
+            match parameter {
+                4 => self
+                    .tracker
+                    .set_unsafe(ContinuationUnsafeReason::Insert, set),
+                _ => self
+                    .tracker
+                    .set_unsafe(ContinuationUnsafeReason::UnknownMode, true),
+            }
+        }
+    }
+
+    fn process_csi_control(&mut self, bytes: &[u8], budget: &Arc<ReplayResourceBudget>) {
+        let Some((private, parameters, final_byte)) = parse_csi(bytes) else {
+            self.tracker
+                .set_unsafe(ContinuationUnsafeReason::MalformedControl, true);
+            self.invalidate_checkpoint();
+            self.process_parser_bytes(bytes, false);
+            return;
+        };
+
+        if matches!(final_byte, b'h' | b'l') {
+            let set = final_byte == b'h';
+            let has_alternate = private
+                && parameters
+                    .iter()
+                    .any(|parameter| matches!(parameter, 47 | 1047 | 1049));
+            for parameter in &parameters {
+                self.update_mode_safety(private, *parameter, set);
+            }
+            if has_alternate {
+                for parameter in parameters {
+                    match parameter {
+                        47 => self.apply_alternate_action(
+                            PtyTerminalAlternateEntryMode::Mode47,
+                            set,
+                            budget,
+                        ),
+                        1047 => self.apply_alternate_action(
+                            PtyTerminalAlternateEntryMode::Mode1047,
+                            set,
+                            budget,
+                        ),
+                        1049 => self.apply_alternate_action(
+                            PtyTerminalAlternateEntryMode::Mode1049,
+                            set,
+                            budget,
+                        ),
+                        other => {
+                            let normalized = canonical_mode_sequence(private, other, final_byte);
+                            self.process_parser_bytes(&normalized, false);
+                        }
+                    }
+                }
+                return;
+            }
+        } else if !private && final_byte == b'r' {
+            let (rows, _) = self.parser.screen().size();
+            let default_margins = parameters.is_empty()
+                || parameters.as_slice() == [0]
+                || parameters.as_slice() == [1, rows];
+            self.tracker
+                .set_unsafe(ContinuationUnsafeReason::Margins, !default_margins);
+        } else if !private && final_byte == b's' {
+            self.tracker
+                .set_unsafe(ContinuationUnsafeReason::SavedCursor, true);
+        } else if !private && final_byte == b'g' {
+            self.tracker
+                .set_unsafe(ContinuationUnsafeReason::TabStops, true);
+        }
+
+        self.process_parser_bytes(bytes, false);
+    }
+
+    fn process_control(&mut self, control: ControlBytes, budget: &Arc<ReplayResourceBudget>) {
+        let bytes = control.as_slice();
+        if bytes == b"\x1bc" {
+            self.process_parser_bytes(bytes, false);
+            self.normal_checkpoint = None;
+            self.tracker.reset();
+            return;
+        }
+        if is_csi(bytes) {
+            self.process_csi_control(bytes, budget);
+            return;
+        }
+        match bytes {
+            b"\x1b7" => self
+                .tracker
+                .set_unsafe(ContinuationUnsafeReason::SavedCursor, true),
+            b"\x1bH" => self
+                .tracker
+                .set_unsafe(ContinuationUnsafeReason::TabStops, true),
+            _ if bytes.len() >= 3
+                && bytes[0] == 0x1b
+                && matches!(bytes[1], b'(' | b')' | b'*' | b'+') =>
+            {
+                let register = match bytes[1] {
+                    b'(' => 0,
+                    b')' => 1,
+                    b'*' => 2,
+                    b'+' => 3,
+                    _ => unreachable!(),
+                };
+                self.tracker
+                    .set_charset_designation(register, bytes[2] == b'B');
+            }
+            _ if bytes.len() >= 3 && bytes[0] == 0x1b && bytes[1] == b'%' => self
+                .tracker
+                .set_charset_coding_non_default(!matches!(bytes[2], b'G' | b'8')),
+            b"\x1bN" | b"\x1bO" | b"\x1bn" | b"\x1bo" | b"\x1b|" | b"\x1b}" | b"\x1b~" => {
+                self.tracker.set_charset_shifted(true)
+            }
+            _ => {}
+        }
+        self.process_parser_bytes(bytes, false);
+    }
+
+    fn process_output(&mut self, data: &[u8], budget: &Arc<ReplayResourceBudget>) {
+        let mut raw = Vec::with_capacity(data.len());
+        for byte in data {
+            match self.tracker.consume(*byte) {
+                BoundaryEvent::Hold => {}
+                BoundaryEvent::Raw(raw_byte) => {
+                    match raw_byte {
+                        0x0e | 0x8e | 0x8f => self.tracker.set_charset_shifted(true),
+                        0x0f => self.tracker.set_charset_shifted(false),
+                        _ => {}
+                    }
+                    raw.push(raw_byte);
+                }
+                BoundaryEvent::Control(control) => {
+                    self.process_parser_bytes(&raw, false);
+                    raw.clear();
+                    self.process_control(control, budget);
+                }
+                BoundaryEvent::StartString(control, kind) => {
+                    self.process_parser_bytes(&raw, false);
+                    raw.clear();
+                    if kind == ControlStringKind::Opaque {
+                        self.invalidate_checkpoint();
+                    }
+                    self.process_parser_bytes(control.as_slice(), false);
+                }
+                BoundaryEvent::Overlong(control, was_csi) => {
+                    self.process_parser_bytes(&raw, false);
+                    raw.clear();
+                    if was_csi {
+                        self.tracker
+                            .set_unsafe(ContinuationUnsafeReason::UnknownMode, true);
+                    }
+                    self.invalidate_checkpoint();
+                    self.process_parser_bytes(control.as_slice(), false);
+                }
+            }
+        }
+        self.process_parser_bytes(&raw, false);
+        if self.parser.screen().alternate_screen() != self.tracker.expected_alternate {
+            self.invalidate_checkpoint();
+            self.tracker.expected_alternate = self.parser.screen().alternate_screen();
+            self.tracker.alternate_entry_mode = None;
+        }
+    }
+
+    fn mark_semantic_unavailable(&mut self, reason: PtyTerminalSeedlessReason) -> bool {
+        let transitioned = self.semantic_unavailable.is_none();
+        self.semantic_unavailable = Some(reason);
+        self.normal_checkpoint = None;
+        transitioned
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), PtyTerminalSeedlessReason> {
+        if !valid_semantic_grid(rows, cols) {
+            self.mark_semantic_unavailable(PtyTerminalSeedlessReason::SeedlessInvalidGrid);
+            return Err(PtyTerminalSeedlessReason::SeedlessInvalidGrid);
+        }
+
+        let bytes = semantic_cell_storage_bytes(rows, cols)
+            .ok_or(PtyTerminalSeedlessReason::SeedlessInvalidGrid)?;
+        if let Some(resources) = self.semantic_reservation.as_mut() {
+            let old_steady = resources.steady.amount;
+            if !resources.steady.try_resize(bytes) {
+                self.mark_semantic_unavailable(
+                    PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded,
+                );
+                return Err(PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded);
+            }
+            if let Some(checkpoint) = self.normal_checkpoint.as_mut() {
+                if !checkpoint._reservation.try_resize(bytes) {
+                    let _ = resources.steady.try_resize(old_steady);
+                    self.mark_semantic_unavailable(
+                        PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded,
+                    );
+                    return Err(PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded);
+                }
+            }
+        }
+
+        if !self.parser.screen().alternate_screen() {
+            self.normal_checkpoint = None;
+            self.tracker.checkpoint_reliable = true;
+        }
+        self.parser.screen_mut().set_size(rows, cols);
+        if let Some(checkpoint) = self.normal_checkpoint.as_mut() {
+            checkpoint.screen.set_size(rows, cols);
+            checkpoint.screen.set_scrollback(0);
+        }
+        Ok(())
+    }
+
+    fn capture_snapshot_material(
+        &self,
+        include_history: bool,
+        budget: &Arc<ReplayResourceBudget>,
+    ) -> Result<SnapshotMaterial, PtyTerminalSeedlessReason> {
+        if self.parser_availability != ParserAvailability::Available {
+            return Err(PtyTerminalSeedlessReason::SeedlessParserUnavailable);
+        }
+        if let Some(reason) = self.semantic_unavailable {
+            return Err(reason);
+        }
+        if self.output_sequence > MAX_JAVASCRIPT_SEQUENCE {
+            return Err(PtyTerminalSeedlessReason::SeedlessSequenceUnsafe);
+        }
+        if self.tracker.first_unsafe_reason().is_some() {
+            return Err(PtyTerminalSeedlessReason::SeedlessContinuationUnsafe);
+        }
+        let (rows, cols) = self.parser.screen().size();
+        if !valid_semantic_grid(rows, cols) {
+            return Err(PtyTerminalSeedlessReason::SeedlessInvalidGrid);
+        }
+        let screen_bytes = semantic_cell_storage_bytes(rows, cols)
+            .ok_or(PtyTerminalSeedlessReason::SeedlessInvalidGrid)?;
+        let use_checkpoint = self.parser.screen().alternate_screen()
+            && self.tracker.checkpoint_reliable
+            && self.normal_checkpoint.is_some()
+            && self.tracker.alternate_entry_mode.is_some();
+        let clone_count = 1usize + usize::from(use_checkpoint);
+        let attach_bytes = screen_bytes
+            .checked_mul(clone_count)
+            .and_then(|bytes| bytes.checked_add(SEMANTIC_REPLAY_MAX_BYTES))
+            .ok_or(PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded)?;
+        let reservation = budget
+            .try_reserve(ReplayResourceKind::Attach, attach_bytes)
+            .ok_or(PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded)?;
+        let clone_started = Instant::now();
+        let live_screen = self.parser.screen().clone();
+        let normal_checkpoint = use_checkpoint.then(|| {
+            self.normal_checkpoint
+                .as_ref()
+                .expect("checkpoint presence validated")
+                .screen
+                .clone()
+        });
+        let clone_micros = elapsed_micros(clone_started);
+        let mut pending = [0; ALT_SEQUENCE_MAX_BYTES];
+        let pending_original = self.tracker.pending_original();
+        pending[..pending_original.len()].copy_from_slice(pending_original);
+        Ok(SnapshotMaterial {
+            live_screen,
+            normal_checkpoint,
+            pending,
+            pending_len: pending_original.len(),
+            sequence: self.output_sequence,
+            include_history,
+            alternate_entry_mode: self.tracker.alternate_entry_mode,
+            checkpoint_reliable: self.tracker.checkpoint_reliable,
+            clone_micros,
+            reservation,
+        })
+    }
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+fn valid_semantic_grid(rows: u16, cols: u16) -> bool {
+    rows != 0
+        && cols != 0
+        && semantic_cell_storage_bytes(rows, cols)
+            .is_some_and(|bytes| bytes <= SEMANTIC_STEADY_BUDGET_BYTES)
+}
+
+fn semantic_cell_storage_bytes(rows: u16, cols: u16) -> Option<usize> {
+    SEMANTIC_SCROLLBACK_ROWS
+        .checked_add(usize::from(rows).checked_mul(2)?)?
+        .checked_mul(usize::from(cols))?
+        .checked_mul(32)
+}
+
+fn is_csi(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&0x9b) || bytes.starts_with(b"\x1b[")
+}
+
+fn parse_csi(bytes: &[u8]) -> Option<(bool, Vec<u16>, u8)> {
+    if !is_csi(bytes) || bytes.len() < 2 {
+        return None;
+    }
+    let prefix = if bytes[0] == 0x9b { 1 } else { 2 };
+    let final_byte = *bytes.last()?;
+    if !(0x40..=0x7e).contains(&final_byte) || prefix >= bytes.len() {
+        return None;
+    }
+    let mut body = &bytes[prefix..bytes.len() - 1];
+    let private = body.first() == Some(&b'?');
+    if private {
+        body = &body[1..];
+    }
+    if body.is_empty() {
+        return Some((private, Vec::new(), final_byte));
+    }
+    if !body
+        .iter()
+        .all(|byte| byte.is_ascii_digit() || *byte == b';')
+    {
+        return None;
+    }
+    let mut parameters = Vec::new();
+    for parameter in body.split(|byte| *byte == b';') {
+        if parameter.is_empty() {
+            parameters.push(0);
+            continue;
+        }
+        let mut value = 0u16;
+        for digit in parameter {
+            value = value
+                .checked_mul(10)?
+                .checked_add(u16::from(*digit - b'0'))?;
+        }
+        parameters.push(value);
+    }
+    Some((private, parameters, final_byte))
+}
+
+fn canonical_mode_sequence(private: bool, parameter: u16, final_byte: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\x1b[");
+    if private {
+        bytes.push(b'?');
+    }
+    bytes.extend_from_slice(parameter.to_string().as_bytes());
+    bytes.push(final_byte);
+    bytes
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReplayCellStyle {
+    foreground: vt100::Color,
+    background: vt100::Color,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+}
+
+impl Default for ReplayCellStyle {
+    fn default() -> Self {
+        Self {
+            foreground: vt100::Color::Default,
+            background: vt100::Color::Default,
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+}
+
+impl ReplayCellStyle {
+    fn from_cell(cell: &vt100::Cell) -> Self {
+        Self {
+            foreground: cell.fgcolor(),
+            background: cell.bgcolor(),
+            bold: cell.bold(),
+            dim: cell.dim(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        }
+    }
+
+    fn write_to(self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(b"\x1b[0");
+        if self.bold {
+            bytes.extend_from_slice(b";1");
+        }
+        if self.dim {
+            bytes.extend_from_slice(b";2");
+        }
+        if self.italic {
+            bytes.extend_from_slice(b";3");
+        }
+        if self.underline {
+            bytes.extend_from_slice(b";4");
+        }
+        if self.inverse {
+            bytes.extend_from_slice(b";7");
+        }
+        write_color(bytes, self.foreground, true);
+        write_color(bytes, self.background, false);
+        bytes.push(b'm');
+    }
+}
+
+fn write_color(bytes: &mut Vec<u8>, color: vt100::Color, foreground: bool) {
+    match color {
+        vt100::Color::Default => {}
+        vt100::Color::Idx(index) => {
+            bytes.extend_from_slice(if foreground { b";38;5;" } else { b";48;5;" });
+            bytes.extend_from_slice(index.to_string().as_bytes());
+        }
+        vt100::Color::Rgb(red, green, blue) => {
+            bytes.extend_from_slice(if foreground { b";38;2;" } else { b";48;2;" });
+            bytes.extend_from_slice(red.to_string().as_bytes());
+            bytes.push(b';');
+            bytes.extend_from_slice(green.to_string().as_bytes());
+            bytes.push(b';');
+            bytes.extend_from_slice(blue.to_string().as_bytes());
+        }
+    }
+}
+
+struct EncodedPhysicalRow {
+    bytes: Vec<u8>,
+    wrapped: bool,
+}
+
+impl EncodedPhysicalRow {
+    fn followed_cost(&self) -> Option<usize> {
+        self.bytes
+            .len()
+            .checked_add(if self.wrapped { 0 } else { 2 })
+    }
+}
+
+struct EncodedScreenRows {
+    history: VecDeque<EncodedPhysicalRow>,
+    history_bytes: usize,
+    current: Vec<EncodedPhysicalRow>,
+    state: Vec<u8>,
+    retained_history_rows: usize,
+    row_limit_reached: bool,
+    byte_limit_reached: bool,
+    omitted_predecessor_wrapped: bool,
+}
+
+fn encode_physical_row(
+    screen: &vt100::Screen,
+    row: u16,
+) -> Result<EncodedPhysicalRow, PtyTerminalSeedlessReason> {
+    let (_, cols) = screen.size();
+    let initial = usize::from(cols)
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(8))
+        .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(initial.min(SEMANTIC_REPLAY_MAX_BYTES))
+        .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    bytes.extend_from_slice(b"\x1b[0m");
+    let mut style = ReplayCellStyle::default();
+    for col in 0..cols {
+        let cell = screen
+            .cell(row, col)
+            .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+        if cell.is_wide_continuation() {
+            continue;
+        }
+        let next_style = ReplayCellStyle::from_cell(cell);
+        if next_style != style {
+            next_style.write_to(&mut bytes);
+            style = next_style;
+        }
+        if cell.contents().is_empty() {
+            bytes.push(b' ');
+        } else {
+            bytes.extend_from_slice(cell.contents().as_bytes());
+        }
+        if bytes.len() > SEMANTIC_REPLAY_MAX_BYTES {
+            return Err(PtyTerminalSeedlessReason::SeedlessReplayCapExceeded);
+        }
+    }
+    bytes.extend_from_slice(b"\x1b[0m");
+    Ok(EncodedPhysicalRow {
+        bytes,
+        wrapped: screen.row_wrapped(row),
+    })
+}
+
+fn push_history_row(
+    history: &mut VecDeque<EncodedPhysicalRow>,
+    history_bytes: &mut usize,
+    row: EncodedPhysicalRow,
+    byte_limit_reached: &mut bool,
+    omitted_predecessor_wrapped: &mut bool,
+) -> Result<(), PtyTerminalSeedlessReason> {
+    let cost = row
+        .followed_cost()
+        .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    *history_bytes = history_bytes
+        .checked_add(cost)
+        .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    history.push_back(row);
+    while *history_bytes > SEMANTIC_HISTORY_REPLAY_BYTES {
+        let Some(omitted) = history.pop_front() else {
+            return Err(PtyTerminalSeedlessReason::SeedlessEncodeFailed);
+        };
+        *history_bytes = history_bytes
+            .checked_sub(
+                omitted
+                    .followed_cost()
+                    .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+            )
+            .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+        *byte_limit_reached = true;
+        *omitted_predecessor_wrapped = omitted.wrapped;
+    }
+    Ok(())
+}
+
+fn encode_screen_rows(
+    mut screen: vt100::Screen,
+    include_history: bool,
+) -> Result<EncodedScreenRows, PtyTerminalSeedlessReason> {
+    screen.set_scrollback(usize::MAX);
+    let retained_history_rows = screen.scrollback();
+    let row_limit_reached = retained_history_rows == SEMANTIC_SCROLLBACK_ROWS;
+    let mut history = VecDeque::new();
+    let mut history_bytes = 0usize;
+    let mut byte_limit_reached = false;
+    let mut omitted_predecessor_wrapped = false;
+    if include_history {
+        for offset in (1..=retained_history_rows).rev() {
+            screen.set_scrollback(offset);
+            let row = encode_physical_row(&screen, 0)?;
+            push_history_row(
+                &mut history,
+                &mut history_bytes,
+                row,
+                &mut byte_limit_reached,
+                &mut omitted_predecessor_wrapped,
+            )?;
+        }
+    }
+    screen.set_scrollback(0);
+    let (rows, _) = screen.size();
+    let mut current = Vec::new();
+    current
+        .try_reserve_exact(usize::from(rows))
+        .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    for row in 0..rows {
+        current.push(encode_physical_row(&screen, row)?);
+    }
+    let mut state = screen.input_mode_formatted();
+    state.extend_from_slice(&screen.cursor_state_formatted());
+    state.extend_from_slice(&screen.attributes_formatted());
+    Ok(EncodedScreenRows {
+        history,
+        history_bytes,
+        current,
+        state,
+        retained_history_rows,
+        row_limit_reached,
+        byte_limit_reached,
+        omitted_predecessor_wrapped,
+    })
+}
+
+fn physical_rows_cost(rows: &[EncodedPhysicalRow]) -> Option<usize> {
+    let mut total = 0usize;
+    for (index, row) in rows.iter().enumerate() {
+        total = total.checked_add(row.bytes.len())?;
+        if index + 1 < rows.len() && !row.wrapped {
+            total = total.checked_add(2)?;
+        }
+    }
+    Some(total)
+}
+
+fn append_physical_rows(
+    output: &mut Vec<u8>,
+    rows: impl Iterator<Item = EncodedPhysicalRow>,
+    followed_by_row: bool,
+) {
+    let rows = rows.collect::<Vec<_>>();
+    let count = rows.len();
+    for (index, row) in rows.into_iter().enumerate() {
+        output.extend_from_slice(&row.bytes);
+        if (index + 1 < count || followed_by_row) && !row.wrapped {
+            output.extend_from_slice(b"\r\n");
+        }
+    }
+}
+
+fn screen_has_text(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    (0..rows).any(|row| {
+        (0..cols).any(|col| {
+            screen
+                .cell(row, col)
+                .is_some_and(|cell| cell.contents().chars().any(|value| !value.is_whitespace()))
+        })
+    })
+}
+
+fn bottom_line_has_text(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    let Some(row) = rows.checked_sub(1) else {
+        return false;
+    };
+    (0..cols).any(|col| {
+        screen
+            .cell(row, col)
+            .is_some_and(|cell| cell.contents().chars().any(|value| !value.is_whitespace()))
+    })
+}
+
+fn encode_snapshot_material(
+    material: SnapshotMaterial,
+) -> Result<PtyTerminalReplaySnapshot, PtyTerminalSeedlessReason> {
+    let SnapshotMaterial {
+        live_screen,
+        normal_checkpoint,
+        pending,
+        pending_len,
+        sequence,
+        include_history,
+        alternate_entry_mode,
+        checkpoint_reliable,
+        clone_micros: _,
+        reservation,
+    } = material;
+    let (rows, cols) = live_screen.size();
+    if !valid_semantic_grid(rows, cols) || sequence > MAX_JAVASCRIPT_SEQUENCE {
+        return Err(PtyTerminalSeedlessReason::SeedlessInvalidGrid);
+    }
+    let active_buffer = if live_screen.alternate_screen() {
+        PtyTerminalActiveBuffer::Alternate
+    } else {
+        PtyTerminalActiveBuffer::Normal
+    };
+    let active_screen_has_text = screen_has_text(&live_screen);
+    let active_bottom_line_has_text = bottom_line_has_text(&live_screen);
+
+    let (mut normal, alternate, entry_mode, replay_stage, normal_screen_included) =
+        match active_buffer {
+            PtyTerminalActiveBuffer::Normal => (
+                encode_screen_rows(live_screen, include_history)?,
+                None,
+                None,
+                if include_history {
+                    PtyTerminalReplayStage::SemanticHistory
+                } else {
+                    PtyTerminalReplayStage::ScreenOnlyHistoryDisabled
+                },
+                true,
+            ),
+            PtyTerminalActiveBuffer::Alternate => {
+                let alternate = encode_screen_rows(live_screen, false)?;
+                if checkpoint_reliable {
+                    if let (Some(checkpoint), Some(mode)) =
+                        (normal_checkpoint, alternate_entry_mode)
+                    {
+                        (
+                            encode_screen_rows(checkpoint, include_history)?,
+                            Some(alternate),
+                            Some(mode),
+                            if include_history {
+                                PtyTerminalReplayStage::SemanticHistory
+                            } else {
+                                PtyTerminalReplayStage::ScreenOnlyHistoryDisabled
+                            },
+                            true,
+                        )
+                    } else {
+                        (
+                            EncodedScreenRows {
+                                history: VecDeque::new(),
+                                history_bytes: 0,
+                                current: Vec::new(),
+                                state: Vec::new(),
+                                retained_history_rows: 0,
+                                row_limit_reached: false,
+                                byte_limit_reached: false,
+                                omitted_predecessor_wrapped: false,
+                            },
+                            Some(alternate),
+                            Some(PtyTerminalAlternateEntryMode::Mode47),
+                            PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable,
+                            false,
+                        )
+                    }
+                } else {
+                    (
+                        EncodedScreenRows {
+                            history: VecDeque::new(),
+                            history_bytes: 0,
+                            current: Vec::new(),
+                            state: Vec::new(),
+                            retained_history_rows: 0,
+                            row_limit_reached: false,
+                            byte_limit_reached: false,
+                            omitted_predecessor_wrapped: false,
+                        },
+                        Some(alternate),
+                        Some(PtyTerminalAlternateEntryMode::Mode47),
+                        PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable,
+                        false,
+                    )
+                }
+            }
+        };
+
+    if !include_history {
+        normal.history.clear();
+        normal.history_bytes = 0;
+        normal.byte_limit_reached = false;
+        normal.omitted_predecessor_wrapped = false;
+    }
+
+    let alternate_required = alternate.as_ref().map_or(Some(0), |screen| {
+        physical_rows_cost(&screen.current)?.checked_add(screen.state.len())
+    });
+    let required_without_history = physical_rows_cost(&normal.current)
+        .and_then(|value| value.checked_add(normal.state.len()))
+        .and_then(|value| value.checked_add(entry_mode.map_or(0, |mode| mode.entry_bytes().len())))
+        .and_then(|value| value.checked_add(alternate_required?))
+        .and_then(|value| value.checked_add(pending_len))
+        .ok_or(PtyTerminalSeedlessReason::SeedlessReplayCapExceeded)?;
+    if required_without_history > SEMANTIC_REPLAY_MAX_BYTES {
+        return Err(PtyTerminalSeedlessReason::SeedlessReplayCapExceeded);
+    }
+    let history_budget =
+        SEMANTIC_HISTORY_REPLAY_BYTES.min(SEMANTIC_REPLAY_MAX_BYTES - required_without_history);
+    while normal.history_bytes > history_budget {
+        let Some(omitted) = normal.history.pop_front() else {
+            return Err(PtyTerminalSeedlessReason::SeedlessEncodeFailed);
+        };
+        normal.history_bytes = normal
+            .history_bytes
+            .checked_sub(
+                omitted
+                    .followed_cost()
+                    .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+            )
+            .ok_or(PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+        normal.byte_limit_reached = true;
+        normal.omitted_predecessor_wrapped = omitted.wrapped;
+    }
+
+    let replay_len = required_without_history
+        .checked_add(normal.history_bytes)
+        .ok_or(PtyTerminalSeedlessReason::SeedlessReplayCapExceeded)?;
+    if replay_len > SEMANTIC_REPLAY_MAX_BYTES {
+        return Err(PtyTerminalSeedlessReason::SeedlessReplayCapExceeded);
+    }
+    let mut replay_data = Vec::new();
+    replay_data
+        .try_reserve_exact(replay_len)
+        .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?;
+    let history_count = normal.history.len();
+    let normal_has_current = !normal.current.is_empty();
+    append_physical_rows(
+        &mut replay_data,
+        normal.history.into_iter(),
+        normal_has_current,
+    );
+    append_physical_rows(&mut replay_data, normal.current.into_iter(), false);
+    replay_data.extend_from_slice(&normal.state);
+    if let Some(mode) = entry_mode {
+        replay_data.extend_from_slice(mode.entry_bytes());
+    }
+    if let Some(alternate) = alternate {
+        append_physical_rows(&mut replay_data, alternate.current.into_iter(), false);
+        replay_data.extend_from_slice(&alternate.state);
+    }
+    replay_data.extend_from_slice(&pending[..pending_len]);
+    if replay_data.len() != replay_len {
+        return Err(PtyTerminalSeedlessReason::SeedlessEncodeFailed);
+    }
+
+    let row_limit_reached = include_history && normal.row_limit_reached;
+    let byte_limit_reached = include_history && normal.byte_limit_reached;
+    let history_truncation_reason = match (row_limit_reached, byte_limit_reached) {
+        (false, false) => PtyTerminalHistoryTruncationReason::None,
+        (true, false) => PtyTerminalHistoryTruncationReason::RowLimitReached,
+        (false, true) => PtyTerminalHistoryTruncationReason::ByteLimitReached,
+        (true, true) => PtyTerminalHistoryTruncationReason::RowAndByteLimitReached,
+    };
+    Ok(PtyTerminalReplaySnapshot {
+        replay_data,
+        rows,
+        cols,
+        sequence,
+        active_buffer,
+        alternate_entry_mode: entry_mode,
+        replay_stage,
+        history_included: history_count != 0,
+        history_truncated: row_limit_reached || byte_limit_reached,
+        history_truncation_reason,
+        history_boundary_hardened: byte_limit_reached
+            && history_count != 0
+            && normal.omitted_predecessor_wrapped,
+        normal_screen_included,
+        retained_history_rows: u32::try_from(normal.retained_history_rows)
+            .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+        included_history_rows: u32::try_from(history_count)
+            .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+        semantic_history_bytes: u32::try_from(normal.history_bytes)
+            .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+        replay_bytes: u32::try_from(replay_len)
+            .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+        pending_parser_bytes: u32::try_from(pending_len)
+            .map_err(|_| PtyTerminalSeedlessReason::SeedlessEncodeFailed)?,
+        active_screen_has_text,
+        active_bottom_line_has_text,
+        _reservation: reservation,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivationDecisionLevel {
+    Debug,
+    Warn,
+    Error,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedActivationDecision {
+    level: ActivationDecisionLevel,
+    message: String,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURED_ACTIVATION_DECISIONS: std::cell::RefCell<Option<Vec<CapturedActivationDecision>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_terminal_attach_decision(
+    level: ActivationDecisionLevel,
+    session_id: Uuid,
+    label: &str,
+    document_epoch: u64,
+    attach_generation: u32,
+    snapshot: Option<&PtyTerminalReplaySnapshot>,
+    reason: Option<&str>,
+    clone_micros: u64,
+    lock_micros: u64,
+    encode_micros: u64,
+    activation_micros: u64,
+    resources: ReplayResourceSnapshot,
+) {
+    let sequence = snapshot.map_or(0, |value| value.sequence);
+    let rows = snapshot.map_or(0, |value| value.rows);
+    let cols = snapshot.map_or(0, |value| value.cols);
+    let replay_bytes = snapshot.map_or(0, |value| value.replay_bytes);
+    let history_rows = snapshot.map_or(0, |value| value.included_history_rows);
+    let pending_bytes = snapshot.map_or(0, |value| value.pending_parser_bytes);
+    let stage = snapshot.map_or("none", |value| match value.replay_stage {
+        PtyTerminalReplayStage::SemanticHistory => "semanticHistory",
+        PtyTerminalReplayStage::ScreenOnlyHistoryDisabled => "screenOnlyHistoryDisabled",
+        PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable => {
+            "screenOnlyCheckpointUnavailable"
+        }
+    });
+    let active = snapshot.map_or("none", |value| match value.active_buffer {
+        PtyTerminalActiveBuffer::Normal => "normal",
+        PtyTerminalActiveBuffer::Alternate => "alternate",
+    });
+    let reason = reason.unwrap_or("none");
+    let message = format!(
+        "[terminal-snapshot] event=terminal_attach_backend stage=activation_decision session={session_id} label={label:?} epoch={document_epoch} generation={attach_generation} reason={reason} sequence={sequence} rows={rows} cols={cols} active={active} replay_stage={stage} replay_bytes={replay_bytes} history_rows={history_rows} pending_bytes={pending_bytes} clone_us={clone_micros} lock_us={lock_micros} encode_us={encode_micros} activation_us={activation_micros} resource_sessions={} resource_steady_bytes={} resource_checkpoint_bytes={} resource_attach_bytes={}",
+        resources.sessions,
+        resources.steady_bytes,
+        resources.checkpoint_bytes,
+        resources.attach_bytes,
+    );
+    #[cfg(test)]
+    CAPTURED_ACTIVATION_DECISIONS.with(|captured| {
+        if let Some(records) = captured.borrow_mut().as_mut() {
+            records.push(CapturedActivationDecision {
+                level,
+                message: message.clone(),
+            });
+        }
+    });
+    match level {
+        ActivationDecisionLevel::Debug => log::debug!("{message}"),
+        ActivationDecisionLevel::Warn => log::warn!("{message}"),
+        ActivationDecisionLevel::Error => log::error!("{message}"),
+    }
 }
 
 enum CaptureFailure {
@@ -159,7 +1753,7 @@ impl CapturedVtScreen {
                 } else {
                     TerminalCellWidth::Narrow
                 };
-                let text = cell.contents();
+                let text = cell.contents().to_string();
                 line_cells.push(TerminalCell {
                     text,
                     width,
@@ -234,83 +1828,6 @@ const UI_BATCH_INTERVAL_MS: u64 = 16;
 /// left on this path: a slow emit there blocks that session's reader, never the parser mutex
 /// the whole backend shares.
 const UI_BATCH_LIMIT_BYTES: usize = 65_536;
-/// Raw output bytes retained per session so a freshly created terminal can be rehydrated
-/// with history instead of a single viewport. Sized to keep the frontend replay peak close
-/// to its current value rather than to double the admission ceiling.
-const UI_HISTORY_LIMIT_BYTES: usize = 65_536;
-/// How far into the ring the line-boundary trim looks for a newline. A stream without
-/// newlines (progress bars redrawing with `\r`) would otherwise walk the whole ring on
-/// every chunk, inside the parser mutex shared by every session of the backend.
-const UI_HISTORY_LINE_SCAN_BYTES: usize = 4_096;
-/// Normalization prologue for a history replay: normal buffer, full scroll region, autowrap
-/// on, G0 back to ASCII, default attributes. Deliberately carries no erase sequence:
-/// `\x1b[2J`, `\x1b[3J` and RIS each wipe part or all of the history this replay restores.
-const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[0m";
-
-/// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
-/// trim to a line boundary, then append. Only the length bound is guaranteed; the line
-/// alignment is best effort, because the boundary scan is capped and can find nothing. Its
-/// outcome is recorded in `aligned` and enforced at the attach seed instead (#1458).
-///
-/// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
-/// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
-/// which leaves that console dead for the rest of the process.
-fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bool, data: &[u8]) {
-    // A chunk larger than the whole ring keeps only its tail. Unreachable in production
-    // (the local backend reads 4 KiB buffers, the container backend rejects frames over
-    // 64 KiB) but it is where the trim arithmetic gets written wrong.
-    let tail = &data[data.len().saturating_sub(UI_HISTORY_LIMIT_BYTES)..];
-    let over = (history.len() + tail.len()).saturating_sub(UI_HISTORY_LIMIT_BYTES);
-    if over > 0 {
-        history.drain(..over.min(history.len()));
-        // The scan stays capped: this runs per chunk inside the parser mutex the whole
-        // backend shares. What #1458 changes is only that its failure is now RECORDED
-        // instead of assumed away, so the cold attach path knows it has work to do.
-        match history
-            .iter()
-            .take(UI_HISTORY_LINE_SCAN_BYTES)
-            .position(|byte| *byte == b'\n')
-        {
-            Some(newline) => {
-                history.drain(..=newline);
-                *aligned = true;
-            }
-            None => *aligned = false,
-        }
-    }
-    // #1458: the one path on which the front changes without `over` ever being positive.
-    // When `tail` becomes the WHOLE ring the front is `tail[0]`, and a chunk larger than the
-    // ring was truncated at an arbitrary byte, so that front is not a line start and nothing
-    // above recorded it. The `<` is load bearing: `tail.len() == data.len()` means the chunk
-    // was NOT truncated, so `tail[0]` is a real stream boundary and `true` is correct.
-    if history.is_empty() && tail.len() < data.len() {
-        *aligned = false;
-    }
-    history.extend(tail);
-}
-
-/// The ring sliced from the byte after its first `\n`, or `None` when the ring holds no `\n`
-/// at all or holds nothing after it.
-///
-/// Only the cold attach path calls this, so the scan is unbounded on purpose. `\n` is the one
-/// resync point a replay can trust: a parser reading the ring from an arbitrary byte offset
-/// renders the tail of whatever escape sequence that offset falls inside as literal text
-/// (#1458), and no in-band cancel undoes it, because that parser is already in ground state.
-fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
-    if let Some(newline) = front.iter().position(|byte| *byte == b'\n') {
-        let aligned_front = &front[newline + 1..];
-        if aligned_front.is_empty() && back.is_empty() {
-            return None;
-        }
-        return Some((aligned_front, back));
-    }
-    let newline = back.iter().position(|byte| *byte == b'\n')?;
-    let aligned_back = &back[newline + 1..];
-    if aligned_back.is_empty() {
-        return None;
-    }
-    Some((&[], aligned_back))
-}
 
 /// The private result surface of the Tauri output effect. It deliberately carries no
 /// underlying Tauri error because output bytes and event errors are both sensitive at this
@@ -597,6 +2114,11 @@ struct AttachmentState {
     accumulators: HashMap<Uuid, Arc<Mutex<SessionAccumulator>>>,
 }
 
+struct AttachmentFlush {
+    accumulator: Arc<Mutex<SessionAccumulator>>,
+    labels: Vec<WindowLabel>,
+}
+
 /// One session's pending batch.
 ///
 /// Two emitters drain it, the 64 KiB threshold flush on the ingest thread and the 16 ms timer
@@ -726,7 +2248,7 @@ impl TerminalOutputAttachments {
     /// silent hole in that window's output. The accumulator only ever holds bytes for a session
     /// that already has an attachment, so on a first attach there is nothing here at all and
     /// this costs nothing.
-    fn attach(&self, session_id: Uuid, label: &str) {
+    fn attach(&self, session_id: Uuid, label: &str) -> Option<AttachmentFlush> {
         let mut state = self.lock_state();
         let pending = state.accumulators.get(&session_id).map(Arc::clone);
         let labels = Self::labels_of(&state, session_id);
@@ -736,8 +2258,15 @@ impl TerminalOutputAttachments {
             .or_default()
             .insert(label.to_string());
         drop(state);
-        if let Some(pending) = pending {
-            Self::lock_accumulator(&pending).flush(&labels);
+        pending.map(|accumulator| AttachmentFlush {
+            accumulator,
+            labels,
+        })
+    }
+
+    fn flush_attachment(flush: Option<AttachmentFlush>) {
+        if let Some(flush) = flush {
+            Self::lock_accumulator(&flush.accumulator).flush(&flush.labels);
         }
     }
 
@@ -832,14 +2361,12 @@ impl TerminalOutputAttachments {
             if labels.is_empty() {
                 return Accumulated::Unattached;
             }
-            let accumulator = Arc::clone(
-                state
-                    .accumulators
-                    .entry(session_id)
-                    .or_insert_with(|| {
-                        Arc::new(Mutex::new(SessionAccumulator::new(Arc::clone(registration))))
-                    }),
-            );
+            let accumulator =
+                Arc::clone(state.accumulators.entry(session_id).or_insert_with(|| {
+                    Arc::new(Mutex::new(SessionAccumulator::new(Arc::clone(
+                        registration,
+                    ))))
+                }));
             (accumulator, labels)
         };
 
@@ -916,11 +2443,57 @@ pub(crate) enum FanoutTraceEvent {
 #[cfg(test)]
 type FanoutTraceRecorder = Arc<Mutex<Vec<FanoutTraceEvent>>>;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct SemanticActivationTiming {
+    clone_micros: u64,
+    lock_micros: u64,
+    encode_micros: u64,
+    activation_micros: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct SemanticCaptureBarrier {
+    captured: Arc<std::sync::Barrier>,
+    release: Arc<std::sync::Barrier>,
+}
+
 impl SessionIoFanout {
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+    ) -> Self {
+        #[cfg(not(test))]
+        let replay_budget = process_replay_budget();
+        // Unit backends run concurrently in one process and must not consume one
+        // another's production admission allowance. Shared-budget behavior is
+        // exercised explicitly below with an injected isolated budget.
+        #[cfg(test)]
+        let replay_budget = ReplayResourceBudget::new();
+        Self::new_with_budget(output_senders, idle_detector, ws_broadcaster, replay_budget)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_isolated_replay_budget(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+    ) -> Self {
+        Self::new_with_budget(
+            output_senders,
+            idle_detector,
+            ws_broadcaster,
+            ReplayResourceBudget::new(),
+        )
+    }
+
+    fn new_with_budget(
+        output_senders: OutputSenderMap,
+        idle_detector: Arc<IdleDetector>,
+        ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
+        replay_budget: Arc<ReplayResourceBudget>,
     ) -> Self {
         Self {
             output_senders,
@@ -931,8 +2504,13 @@ impl SessionIoFanout {
             attachments: TerminalOutputAttachments::new(),
             output_timer_enabled: Arc::new(AtomicBool::new(!cfg!(test))),
             fanout_identity: Arc::new(()),
+            replay_budget,
             #[cfg(test)]
             trace: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            activation_timings: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            capture_barrier: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -954,17 +2532,46 @@ impl SessionIoFanout {
             identity: Arc::clone(&identity),
             target,
         });
+        let grid_valid = valid_semantic_grid(rows, cols);
+        let steady_bytes = grid_valid
+            .then(|| semantic_cell_storage_bytes(rows, cols))
+            .flatten();
+        let mut semantic_reservation =
+            steady_bytes.and_then(|bytes| self.replay_budget.try_admit(bytes));
+        let mut semantic_unavailable = if !grid_valid {
+            Some(PtyTerminalSeedlessReason::SeedlessInvalidGrid)
+        } else if semantic_reservation.is_none() {
+            Some(PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded)
+        } else {
+            None
+        };
+        let (parser_rows, parser_cols) = if grid_valid { (rows, cols) } else { (1, 1) };
+        let scrollback = if semantic_reservation.is_some() {
+            SEMANTIC_SCROLLBACK_ROWS
+        } else {
+            0
+        };
+        let parser = match crate::logging::catch_payload_unwind(|| {
+            vt100::Parser::new(parser_rows, parser_cols, scrollback)
+        }) {
+            Ok(parser) => parser,
+            Err(_) => {
+                semantic_reservation = None;
+                semantic_unavailable = Some(PtyTerminalSeedlessReason::SeedlessCaptureFailed);
+                vt100::Parser::new(1, 1, 0)
+            }
+        };
         let replay = ScreenReplayState {
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser,
             output_sequence: 0,
             registration,
             reader_gate: ReaderOperationGate::new(),
             parser_availability: ParserAvailability::Available,
-            // Reserved up front, outside the parser mutex, so the ring never reallocates and
-            // its ceiling is a property of construction. `VecDeque` growth is amortized, so
-            // reserving later cannot pin the ceiling: the doubling already overshot by then.
-            history: std::collections::VecDeque::with_capacity(UI_HISTORY_LIMIT_BYTES),
-            history_aligned: true,
+            semantic_unavailable,
+            tracker: ReplayBoundaryTracker::new(),
+            normal_checkpoint: None,
+            semantic_reservation,
+            poison_warned: false,
             conpty_size: (rows, cols),
         };
         let mut parsers = self
@@ -998,7 +2605,10 @@ impl SessionIoFanout {
         if !Arc::ptr_eq(&token.identity.fanout_identity, &self.fanout_identity) {
             return None;
         }
-        let parsers = self.screen_parsers.lock().ok()?;
+        let parsers = self
+            .screen_parsers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let state = parsers.get(&token.identity.session_id)?;
         if !state
             .registration
@@ -1028,6 +2638,44 @@ impl SessionIoFanout {
     #[cfg(test)]
     pub(crate) fn take_trace_for_test(&self) -> Vec<FanoutTraceEvent> {
         std::mem::take(&mut *self.trace.lock().expect("trace recorder"))
+    }
+
+    #[cfg(test)]
+    fn take_activation_timings_for_test(&self) -> Vec<SemanticActivationTiming> {
+        std::mem::take(
+            &mut *self
+                .activation_timings
+                .lock()
+                .expect("activation timing recorder"),
+        )
+    }
+
+    #[cfg(test)]
+    fn install_capture_barrier_for_test(
+        &self,
+        captured: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    ) {
+        *self.capture_barrier.lock().expect("capture barrier") =
+            Some(SemanticCaptureBarrier { captured, release });
+    }
+
+    #[cfg(test)]
+    fn clear_capture_barrier_for_test(&self) {
+        *self.capture_barrier.lock().expect("capture barrier") = None;
+    }
+
+    #[cfg(test)]
+    fn wait_at_capture_barrier_for_test(&self) {
+        let barrier = self
+            .capture_barrier
+            .lock()
+            .expect("capture barrier")
+            .clone();
+        if let Some(barrier) = barrier {
+            barrier.captured.wait();
+            barrier.release.wait();
+        }
     }
 
     #[cfg(test)]
@@ -1088,9 +2736,10 @@ impl SessionIoFanout {
             let _ = sender.try_send(data.clone());
         }
 
-        let accumulated = {
-            let Ok(mut parsers) = self.screen_parsers.lock() else {
-                return;
+        let (accumulated, poison_transition, semantic_transition) = {
+            let (mut parsers, parser_lock_poisoned) = match self.screen_parsers.lock() {
+                Ok(parsers) => (parsers, false),
+                Err(error) => (error.into_inner(), true),
             };
             let Some(state) = parsers.get_mut(&id) else {
                 return;
@@ -1111,50 +2760,79 @@ impl SessionIoFanout {
             // of the process, so the `Unavailable` arm below carries the real `ui_open` rather
             // than the `false` the delivery contract used to hardcode there.
             let ui_open = state.reader_gate.is_open();
+            let mut poison_transition = false;
+            let mut semantic_transition = None;
+            if parser_lock_poisoned {
+                poison_transition = !state.poison_warned;
+                state.poison_warned = true;
+                state.parser_availability = ParserAvailability::Unavailable;
+                if state
+                    .mark_semantic_unavailable(PtyTerminalSeedlessReason::SeedlessParserPoisoned)
+                {
+                    semantic_transition = Some(PtyTerminalSeedlessReason::SeedlessParserPoisoned);
+                }
+            }
             let (sequence, parser_fault) = match state.parser_availability {
-                ParserAvailability::Unavailable => (None, false),
+                ParserAvailability::Unavailable => (None, semantic_transition.is_some()),
                 ParserAvailability::Available => {
                     let processed = crate::logging::catch_payload_unwind(|| {
-                        state.parser.process(&data);
-                        let sequence = state.output_sequence.checked_add(1).ok_or(())?;
-                        state.output_sequence = sequence;
-                        // Order matters, and these two lines must stay contiguous. The ring
-                        // may only grow once `output_sequence` has advanced: on overflow the
-                        // line above returns `Err` and the parser goes `Unavailable`, and a
-                        // ring that grew anyway would make the attach snapshot carry bytes
-                        // that `sequence` does not represent. The frontend reconciles by
-                        // watermark and only skips what is at or below the snapshot sequence,
-                        // so those bytes would be seeded and then written again when they
-                        // arrive live: a duplicated block of history.
-                        append_history(&mut state.history, &mut state.history_aligned, &data);
-                        Ok::<u64, ()>(sequence)
+                        state.process_output(&data, &self.replay_budget);
                     });
                     match processed {
-                        Ok(Ok(sequence)) => {
+                        Ok(()) if state.semantic_unavailable.is_some() => (None, false),
+                        Ok(()) if state.output_sequence >= MAX_JAVASCRIPT_SEQUENCE => {
+                            let transitioned = state.mark_semantic_unavailable(
+                                PtyTerminalSeedlessReason::SeedlessSequenceUnsafe,
+                            );
+                            if transitioned {
+                                semantic_transition =
+                                    Some(PtyTerminalSeedlessReason::SeedlessSequenceUnsafe);
+                            }
+                            (None, transitioned)
+                        }
+                        Ok(()) => {
+                            let sequence = state.output_sequence + 1;
+                            state.output_sequence = sequence;
                             #[cfg(test)]
                             self.trace(FanoutTraceEvent::ParserProcessed(sequence));
                             (Some(sequence), false)
                         }
-                        Ok(Err(())) | Err(_) => {
+                        Err(_) => {
                             state.parser_availability = ParserAvailability::Unavailable;
-                            (None, true)
+                            let transitioned = state.mark_semantic_unavailable(
+                                PtyTerminalSeedlessReason::SeedlessParserUnavailable,
+                            );
+                            if transitioned {
+                                semantic_transition =
+                                    Some(PtyTerminalSeedlessReason::SeedlessParserUnavailable);
+                            }
+                            (None, transitioned)
                         }
                     }
                 }
             };
-            if parser_fault {
-                log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            }
             // Appending under the parser lock is what keeps the batch boundary atomic with the
             // sequence assignment, so no coalesced batch can straddle an attach's snapshot.
             // The emit it may ask for is run below, after the lock is dropped.
-            if ui_open {
+            let accumulated = if ui_open {
                 self.attachments
                     .accumulate(&registration, sequence, &data, parser_fault)
             } else {
                 Accumulated::Unattached
-            }
+            };
+            (accumulated, poison_transition, semantic_transition)
         };
+
+        if poison_transition {
+            log::warn!(
+                "[terminal-snapshot] event=semantic_unavailable reason=seedlessParserPoisoned session={id}"
+            );
+        } else if let Some(reason) = semantic_transition {
+            log::warn!(
+                "[terminal-snapshot] event=semantic_unavailable reason={} session={id}",
+                reason.code()
+            );
+        }
 
         if let Some(ref broadcaster) = self.ws_broadcaster {
             #[cfg(test)]
@@ -1177,161 +2855,185 @@ impl SessionIoFanout {
         lease.complete();
     }
 
-    /// Attaches `label`'s window to this session's output and returns the seed for it.
-    ///
-    /// The whole body runs inside one `screen_parsers` hold and does three things, in this
-    /// order: drain the session's pending batch, read the snapshot at `state.output_sequence`,
-    /// insert the label. Because no chunk can be processed while that lock is held, the three
-    /// are atomic with respect to the ingest, and that removes three hazards at once. No
-    /// coalesced batch can straddle the snapshot, so a scalar `sequence` carrying the batch's
-    /// last sequence is sufficient and no first-sequence field is needed. There is no window
-    /// between reading the snapshot and becoming attached in which chunks are neither seeded
-    /// nor emitted. And an attach racing `remove_session` cannot leave a label behind for a
-    /// session that no longer exists, because the insert only happens with the session present.
-    ///
-    /// The insert is the last step, on a path that has already decided to succeed, so the
-    /// attach is transactional by construction: no guard, no compensating release.
-    ///
-    /// Only two conditions fail, and both mean there is nothing to attach to: the session is
-    /// absent, or the registration identity does not match. Every other condition attaches
-    /// without a snapshot and lets the client write live (see `TerminalOutputAttachError`).
-    ///
-    /// `include_history` asks for the retained ring instead of the mirrored viewport. It is
-    /// safe on every attach because the client applies the snapshot through a reset first:
-    /// replaying the ring over a terminal that still holds scrollback would append a duplicate
-    /// block, and the reset is what makes that impossible. The ring also keeps filling while a
-    /// session is detached, which is what makes a re-attach gap free, so the frontend always
-    /// asks for it; the parameter stays so the mirrored viewport remains addressable.
+    /// Registers one output attachment at the same sequence boundary as the semantic capture.
+    /// Screen cloning is the only retained-cell work under the parser mutex. Row encoding,
+    /// allocation, logging, and pending-batch flush all run after that mutex is released.
     pub(crate) fn activate_terminal_output(
         &self,
         id: Uuid,
         label: &str,
         include_history: bool,
-    ) -> Result<Option<PtyScreenSnapshot>, TerminalOutputAttachError> {
-        let Ok(mut parsers) = self.screen_parsers.lock() else {
-            // Nothing can be read through a poisoned parser lock, but that is not "nothing to
-            // attach to": the window attaches and writes live, exactly as it would for a
-            // faulted parser.
-            self.attachments.attach(id, label);
-            return Ok(None);
-        };
-        let Some(state) = parsers.get_mut(&id) else {
-            return Err(TerminalOutputAttachError::SessionUnavailable);
-        };
-        if state.registration.session_id != id
-            || !Arc::ptr_eq(&state.registration.fanout_identity, &self.fanout_identity)
-        {
-            return Err(TerminalOutputAttachError::OutputTargetUnavailable);
-        }
-        let mut reconcile_fault = false;
-        // #1458: carried out of the parser lock exactly like `reconcile_fault`. `Some` only
-        // when the ring was flagged unaligned; the pair is (ring length, bytes kept).
-        let mut history_unaligned: Option<(usize, usize)> = None;
-        let snapshot = if state.parser_availability == ParserAvailability::Available {
-            let (parser_rows, parser_cols) = state.parser.screen().size();
-            if (parser_rows, parser_cols) != state.conpty_size {
-                // #1439: the parser grid diverged from the grid the ConPTY took
-                // (a skipped follow, or any path that resized one without the
-                // other). A seed rendered off this parser adopts the stale grid
-                // in the attaching window and replays other-grid bytes into it:
-                // the garbled re-attach. Converge the grid now, seed nothing;
-                // the frontend attaches live (the no-snapshot path), and the
-                // next attach after the child's next repaint seeds cleanly.
-                let (conpty_rows, conpty_cols) = state.conpty_size;
-                log::warn!(
-                    "[terminal-snapshot] stage=attach_grid_mismatch session={id} parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} (#1439)"
+        document_epoch: u64,
+        attach_generation: u32,
+    ) -> Result<PtyTerminalOutputActivation, TerminalOutputAttachError> {
+        let activation_started = Instant::now();
+        let lock_wait_finished;
+        let mut clone_micros = 0;
+        let mut reconciled = false;
+        let mut transitioned_unsequenced = false;
+        let (capture, attachment_flush, lock_micros) = {
+            let (mut parsers, poisoned) = match self.screen_parsers.lock() {
+                Ok(parsers) => (parsers, false),
+                Err(error) => (error.into_inner(), true),
+            };
+            lock_wait_finished = Instant::now();
+            let Some(state) = parsers.get_mut(&id) else {
+                drop(parsers);
+                log_terminal_attach_decision(
+                    ActivationDecisionLevel::Error,
+                    id,
+                    label,
+                    document_epoch,
+                    attach_generation,
+                    None,
+                    Some("sessionUnavailable"),
+                    0,
+                    elapsed_micros(lock_wait_finished),
+                    0,
+                    elapsed_micros(activation_started),
+                    self.replay_budget.snapshot(),
                 );
-                let resized = crate::logging::catch_payload_unwind(|| {
-                    state.parser.set_size(conpty_rows, conpty_cols)
-                });
-                if resized.is_err() {
-                    state.parser_availability = ParserAvailability::Unavailable;
-                    reconcile_fault = true;
-                }
-                None
-            } else {
-                let copied = {
-                    let uses_history = include_history && !state.history.is_empty();
-                    // `as_slices` keeps this a read: `make_contiguous` needs `&mut` and
-                    // rotates the buffer during what is otherwise a copy out.
-                    let replay = if uses_history {
-                        let (front, back) = state.history.as_slices();
-                        // #1458: the hot-path realignment is capped at 4 KiB and stays failed
-                        // for as long as the front sits in a newline-free region, so it can
-                        // leave the front inside an escape sequence. Attach is cold: pay the
-                        // full scan here rather than seed a literal sequence tail.
-                        if state.history_aligned {
-                            Some((front, back))
-                        } else {
-                            history_from_first_line(front, back)
-                        }
-                    } else {
-                        None
-                    };
-                    if uses_history && !state.history_aligned {
-                        history_unaligned = Some((
-                            state.history.len(),
-                            replay.map_or(0, |(front, back)| front.len() + back.len()),
-                        ));
-                    }
-                    crate::logging::catch_payload_unwind(|| {
-                        let screen = state.parser.screen();
-                        let (rows, cols) = screen.size();
-                        let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
-                        if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
-                            return Err(());
-                        }
-                        let data = match replay {
-                            Some((front, back)) => {
-                                let mut bytes = Vec::with_capacity(
-                                    UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
-                                );
-                                bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
-                                bytes.extend_from_slice(front);
-                                bytes.extend_from_slice(back);
-                                bytes
-                            }
-                            // No line start with content behind it. The ring cannot be
-                            // replayed from any offset, and in the observed incident it holds
-                            // nothing but spinner frames anyway. The mirror is a consistent
-                            // full repaint on a grid the #1439 branch above already validated.
-                            None => screen.contents_formatted(),
-                        };
-                        Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
-                            data,
-                            rows,
-                            cols,
-                            sequence: state.output_sequence,
-                        })
-                    })
-                };
-                match copied {
-                    Ok(Ok(snapshot)) => Some(snapshot),
-                    Ok(Err(())) => None,
-                    Err(_) => {
-                        state.parser_availability = ParserAvailability::Unavailable;
-                        None
-                    }
-                }
+                return Err(TerminalOutputAttachError::SessionUnavailable);
+            };
+            if state.registration.session_id != id
+                || !Arc::ptr_eq(&state.registration.fanout_identity, &self.fanout_identity)
+            {
+                drop(parsers);
+                log_terminal_attach_decision(
+                    ActivationDecisionLevel::Error,
+                    id,
+                    label,
+                    document_epoch,
+                    attach_generation,
+                    None,
+                    Some("outputTargetUnavailable"),
+                    0,
+                    elapsed_micros(lock_wait_finished),
+                    0,
+                    elapsed_micros(activation_started),
+                    self.replay_budget.snapshot(),
+                );
+                return Err(TerminalOutputAttachError::OutputTargetUnavailable);
             }
-        } else {
-            None
+
+            let capture = if poisoned {
+                if !state.poison_warned {
+                    state.poison_warned = true;
+                }
+                state.parser_availability = ParserAvailability::Unavailable;
+                transitioned_unsequenced = state
+                    .mark_semantic_unavailable(PtyTerminalSeedlessReason::SeedlessParserPoisoned);
+                Err(PtyTerminalSeedlessReason::SeedlessParserPoisoned)
+            } else {
+                let parser_grid = state.parser.screen().size();
+                if parser_grid != state.conpty_size {
+                    reconciled = true;
+                    let (rows, cols) = state.conpty_size;
+                    let before = state.semantic_unavailable;
+                    let resized = crate::logging::catch_payload_unwind(|| state.resize(rows, cols));
+                    match resized {
+                        Ok(Ok(())) => {}
+                        Ok(Err(reason)) => {
+                            transitioned_unsequenced = before.is_none();
+                            state.semantic_unavailable = Some(reason);
+                        }
+                        Err(_) => {
+                            state.parser_availability = ParserAvailability::Unavailable;
+                            transitioned_unsequenced = state.mark_semantic_unavailable(
+                                PtyTerminalSeedlessReason::SeedlessResizeFailed,
+                            );
+                        }
+                    }
+                }
+                let captured = crate::logging::catch_payload_unwind(|| {
+                    state.capture_snapshot_material(include_history, &self.replay_budget)
+                });
+                match captured {
+                    Ok(result) => result,
+                    Err(_) => Err(PtyTerminalSeedlessReason::SeedlessCaptureFailed),
+                }
+            };
+            if let Ok(material) = &capture {
+                clone_micros = material.clone_micros;
+            }
+            let attachment_flush = self.attachments.attach(id, label);
+            let lock_micros = elapsed_micros(lock_wait_finished);
+            (capture, attachment_flush, lock_micros)
         };
-        self.attachments.attach(id, label);
-        drop(parsers);
-        if let Some((ring, kept)) = history_unaligned {
-            log::warn!(
-                "[terminal-snapshot] stage=attach_history_unaligned session={id} ring={ring} kept={kept} (#1458)"
-            );
-        }
-        if reconcile_fault {
-            log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            // #1439 R2: flush at the transition, OUTSIDE the parser lock. An
-            // emit under that lock stalls the PTY reader on its next chunk;
-            // both existing fault sites flush only after releasing the lock.
+
+        #[cfg(test)]
+        self.wait_at_capture_barrier_for_test();
+
+        TerminalOutputAttachments::flush_attachment(attachment_flush);
+        if transitioned_unsequenced {
             self.attachments.flush(id, false);
         }
-        Ok(snapshot)
+
+        let encode_started = Instant::now();
+        let activation = match capture {
+            Ok(material) => {
+                let encoded =
+                    crate::logging::catch_payload_unwind(|| encode_snapshot_material(material));
+                match encoded {
+                    Ok(Ok(snapshot)) => PtyTerminalOutputActivation::snapshot(
+                        snapshot,
+                        document_epoch,
+                        attach_generation,
+                    ),
+                    Ok(Err(reason)) => PtyTerminalOutputActivation::seedless(
+                        reason,
+                        document_epoch,
+                        attach_generation,
+                    ),
+                    Err(_) => PtyTerminalOutputActivation::seedless(
+                        PtyTerminalSeedlessReason::SeedlessEncodeFailed,
+                        document_epoch,
+                        attach_generation,
+                    ),
+                }
+            }
+            Err(reason) => {
+                PtyTerminalOutputActivation::seedless(reason, document_epoch, attach_generation)
+            }
+        };
+        let encode_micros = elapsed_micros(encode_started);
+        let reason = activation
+            .seedless_reason
+            .map(PtyTerminalSeedlessReason::code);
+        let level = if reconciled
+            || reason.is_some()
+            || activation.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.replay_stage == PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable
+            }) {
+            ActivationDecisionLevel::Warn
+        } else {
+            ActivationDecisionLevel::Debug
+        };
+        log_terminal_attach_decision(
+            level,
+            id,
+            label,
+            document_epoch,
+            attach_generation,
+            activation.snapshot.as_ref(),
+            reason,
+            clone_micros,
+            lock_micros,
+            encode_micros,
+            elapsed_micros(activation_started),
+            self.replay_budget.snapshot(),
+        );
+        #[cfg(test)]
+        self.activation_timings
+            .lock()
+            .expect("activation timing recorder")
+            .push(SemanticActivationTiming {
+                clone_micros,
+                lock_micros,
+                encode_micros,
+                activation_micros: elapsed_micros(activation_started),
+            });
+        Ok(activation)
     }
 
     /// Releases `label`'s attachment. Detaching a session this window never attached, and
@@ -1421,37 +3123,58 @@ impl SessionIoFanout {
             return;
         }
 
-        let parser_fault = {
-            let Ok(mut parsers) = self.screen_parsers.lock() else {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parsers_lock_poisoned session={id} cols={cols} rows={rows} (#1439)");
-                return;
+        let (resize_reason, transitioned_unsequenced) = {
+            let (mut parsers, poisoned) = match self.screen_parsers.lock() {
+                Ok(parsers) => (parsers, false),
+                Err(error) => (error.into_inner(), true),
             };
             let Some(state) = parsers.get_mut(&id) else {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=no_parser_entry session={id} cols={cols} rows={rows} (#1439)");
+                drop(parsers);
+                log::warn!("[terminal-snapshot] event=terminal_resize reason=noParserEntry session={id} cols={cols} rows={rows}");
                 return;
             };
             // #1439 record-first: the ConPTY took this size whether or not the
             // parser can follow it; the attach reconcile compares against this.
             state.conpty_size = (rows, cols);
-            if state.parser_availability != ParserAvailability::Available {
-                log::warn!("[terminal-snapshot] stage=resize_skipped reason=parser_unavailable session={id} cols={cols} rows={rows} (#1439)");
-                return;
-            }
-            let resized =
-                crate::logging::catch_payload_unwind(|| state.parser.set_size(rows, cols));
-            if resized.is_err() {
+            if poisoned {
                 state.parser_availability = ParserAvailability::Unavailable;
-                true
+                let transitioned = state
+                    .mark_semantic_unavailable(PtyTerminalSeedlessReason::SeedlessParserPoisoned);
+                (
+                    Some(PtyTerminalSeedlessReason::SeedlessParserPoisoned),
+                    transitioned,
+                )
+            } else if state.parser_availability != ParserAvailability::Available {
+                (
+                    Some(PtyTerminalSeedlessReason::SeedlessParserUnavailable),
+                    false,
+                )
             } else {
-                false
+                let was_available = state.semantic_unavailable.is_none();
+                match crate::logging::catch_payload_unwind(|| state.resize(rows, cols)) {
+                    Ok(Ok(())) => (None, false),
+                    Ok(Err(reason)) => (Some(reason), was_available),
+                    Err(_) => {
+                        state.parser_availability = ParserAvailability::Unavailable;
+                        let transitioned = state.mark_semantic_unavailable(
+                            PtyTerminalSeedlessReason::SeedlessResizeFailed,
+                        );
+                        (
+                            Some(PtyTerminalSeedlessReason::SeedlessResizeFailed),
+                            transitioned,
+                        )
+                    }
+                }
             }
         };
-        if parser_fault {
-            log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            // Flush at the transition: from here every batch carries no sequence, and one
-            // batch cannot describe both with a single scalar.
+        if let Some(reason) = resize_reason {
+            log::warn!(
+                "[terminal-snapshot] event=terminal_resize reason={} session={id} cols={cols} rows={rows}",
+                reason.code()
+            );
+        }
+        if transitioned_unsequenced {
             self.attachments.flush(id, false);
-            return;
         }
 
         if let Some(ref bc) = self.ws_broadcaster {
@@ -1621,8 +3344,10 @@ impl SessionIoFanout {
                 .map_err(|_| CaptureFailure::Unavailable)?;
             let captured_at_millis = Utc::now().timestamp_millis();
             let (cursor_row, cursor_column) = screen.cursor_position();
-            let parser_errors =
-                u64::try_from(screen.errors()).map_err(|_| CaptureFailure::Unavailable)?;
+            // vt100 0.16 removed the public unhandled-sequence counter. The fixed-cell copy
+            // remains authoritative for the state the parser exposes, so its compatibility
+            // field is now zero rather than inferred from unavailable internal state.
+            let parser_errors = 0;
             for row in 0..rows {
                 wraps.push(screen.row_wrapped(row));
                 for column in 0..columns {
@@ -1788,6 +3513,7 @@ impl SessionIoFanout {
             .get_mut(&id)
             .expect("registered session")
             .parser
+            .screen_mut()
             .set_size(rows, cols);
     }
 
@@ -2025,10 +3751,11 @@ mod tests {
     use super::*;
 
     fn fanout() -> SessionIoFanout {
-        SessionIoFanout::new(
+        SessionIoFanout::new_with_budget(
             Arc::new(Mutex::new(HashMap::new())),
             IdleDetector::new(|_| {}, |_| {}),
             None,
+            ReplayResourceBudget::new(),
         )
     }
 
@@ -2261,10 +3988,15 @@ mod tests {
         id
     }
 
-    fn attach(fanout: &SessionIoFanout, id: Uuid, label: &str) -> Option<PtyScreenSnapshot> {
+    fn attach(
+        fanout: &SessionIoFanout,
+        id: Uuid,
+        label: &str,
+    ) -> Option<PtyTerminalReplaySnapshot> {
         fanout
-            .activate_terminal_output(id, label, true)
+            .activate_terminal_output(id, label, true, 1, 1)
             .expect("attach")
+            .snapshot
     }
 
     /// Drives the flush by hand. Nothing on this path emits synchronously except the 64 KiB
@@ -2510,11 +4242,18 @@ mod tests {
         // A wide grapheme in a one-column grid removes this session's parser for good.
         fanout.handle_output(&token, &id.to_string(), "界".as_bytes().to_vec());
 
-        assert!(matches!(
-            fanout.activate_terminal_output(id, WINDOW, true),
-            Ok(None)
-        ));
-        assert_eq!(fanout.attached_labels_for_test(id), vec![WINDOW.to_string()]);
+        let activation = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("seedless attach");
+        assert!(activation.snapshot.is_none());
+        assert_eq!(
+            activation.seedless_reason,
+            Some(PtyTerminalSeedlessReason::SeedlessParserUnavailable)
+        );
+        assert_eq!(
+            fanout.attached_labels_for_test(id),
+            vec![WINDOW.to_string()]
+        );
 
         fanout.handle_output(&token, &id.to_string(), b"after the fault".to_vec());
         flush(&fanout, id);
@@ -2525,7 +4264,7 @@ mod tests {
 
         let absent = Uuid::new_v4();
         assert!(matches!(
-            fanout.activate_terminal_output(absent, WINDOW, true),
+            fanout.activate_terminal_output(absent, WINDOW, true, 1, 1),
             Err(TerminalOutputAttachError::SessionUnavailable)
         ));
         assert!(fanout.attached_labels_for_test(absent).is_empty());
@@ -2625,10 +4364,14 @@ mod tests {
 
         let snapshot = attach(&fanout, id, SECOND_WINDOW).expect("snapshot on attach");
         assert_eq!(snapshot.sequence, 1);
-        assert!(String::from_utf8_lossy(&snapshot.data).contains("before"));
+        assert!(String::from_utf8_lossy(&snapshot.replay_data).contains("before"));
         assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
         let seeded = events(&sink);
-        assert_eq!(seeded.len(), 1, "the window already watching keeps its bytes");
+        assert_eq!(
+            seeded.len(),
+            1,
+            "the window already watching keeps its bytes"
+        );
         assert_eq!(seeded[0].1, b"before\r\n");
         assert_eq!(seeded[0].2, Some(1));
 
@@ -2640,9 +4383,8 @@ mod tests {
         assert_eq!(emitted[1].2, Some(2));
     }
 
-    /// #1439. A parser grid that diverged from the grid the ConPTY last took must never seed
-    /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
-    /// grid, and the next attach seeds cleanly at that grid with the current sequence.
+    /// #1439. A parser grid that diverged from the grid the ConPTY last took is reconciled
+    /// before the capture, so the same attach seeds at the recorded grid.
     ///
     /// Grid constraints are load-bearing: registration R0=30x120 (from `session_with_sink`),
     /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
@@ -2650,7 +4392,7 @@ mod tests {
     /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
     /// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
     #[test]
-    fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
+    fn a_grid_divergence_is_reconciled_before_the_attach_seed() {
         let fanout = fanout();
         let sink = new_sink();
         let id = session_with_sink(&fanout, &sink);
@@ -2663,22 +4405,26 @@ mod tests {
         // The divergence class: the parser grid moves, the record does not.
         fanout.desync_screen_size_for_test(id, 50, 132);
 
-        let seed = attach(&fanout, id, WINDOW);
-        assert!(seed.is_none(), "a diverged grid must not seed the attach");
-        // No batch entry exists yet: the only chunk so far arrived unattached, and a
-        // seedless attach creates none (same `None` the detach test observes).
+        let seed = attach(&fanout, id, WINDOW).expect("reconciled attach seed");
+        assert_eq!((seed.rows, seed.cols), (24, 80));
+        assert_eq!(seed.sequence, 1);
+        assert!(String::from_utf8_lossy(&seed.replay_data).contains("seed me"));
+        // No batch entry exists yet: the only chunk so far arrived unattached.
         assert_eq!(fanout.pending_output_bytes_for_test(id), None);
 
-        // The seedless window still attached: live bytes keep flowing to it, sequenced.
+        // The window is attached at the capture boundary, so later bytes keep flowing.
         fanout.handle_output(&token, &id.to_string(), b"after divergence".to_vec());
         flush(&fanout, id);
         let emitted = events(&sink);
-        assert_eq!(emitted.len(), 1, "the attached window keeps receiving its bytes");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "the attached window keeps receiving its bytes"
+        );
         assert_eq!(emitted[0].1, b"after divergence");
         assert_eq!(emitted[0].2, Some(2));
 
-        let reseeded =
-            attach(&fanout, id, SECOND_WINDOW).expect("the attach after convergence seeds");
+        let reseeded = attach(&fanout, id, SECOND_WINDOW).expect("second attach seed");
         assert_eq!(
             (reseeded.rows, reseeded.cols),
             (24, 80),
@@ -2744,7 +4490,11 @@ mod tests {
         }
 
         let emitted = events(&sink);
-        assert_eq!(emitted.len(), 1, "no timer, no explicit flush: the ceiling did it");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "no timer, no explicit flush: the ceiling did it"
+        );
         assert_eq!(emitted[0].1.len(), UI_BATCH_LIMIT_BYTES);
         assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
     }
@@ -2809,12 +4559,22 @@ mod tests {
             .expect("register app-handle session");
 
         attach(&fanout, id, WINDOW);
-        fanout.handle_output(&token, &id.to_string(), b"only the attached window".to_vec());
+        fanout.handle_output(
+            &token,
+            &id.to_string(),
+            b"only the attached window".to_vec(),
+        );
         flush(&fanout, id);
 
         assert_eq!(attached_events.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(unattached_events.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(any_target_events.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            unattached_events.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            any_target_events.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     /// 3.4.1's no-zombie invariant, at the one interleaving that broke it: an attach that
@@ -3256,10 +5016,11 @@ mod tests {
 
     fn activation_data(fanout: &SessionIoFanout, id: Uuid, include_history: bool) -> Vec<u8> {
         fanout
-            .activate_terminal_output(id, WINDOW, include_history)
+            .activate_terminal_output(id, WINDOW, include_history, 1, 1)
             .expect("attach")
+            .snapshot
             .expect("snapshot on attach")
-            .data
+            .replay_data
     }
 
     fn mirrored_screen(fanout: &SessionIoFanout, id: Uuid) -> Vec<u8> {
@@ -3272,222 +5033,630 @@ mod tests {
             .contents_formatted()
     }
 
-    /// The ring stays under its limit, keeps the reserved capacity it was built with, and
-    /// starts on a line boundary. The capacity assert is the point: `len` is bounded by the
-    /// trim under every reserve variant, so without it this test passes just as happily with
-    /// a ring that quietly grew to twice its ceiling.
-    ///
-    /// The oversized chunk covers the one case where the trim arithmetic gets written as a
-    /// plain subtraction. That panic would not be local: the caller flips the parser to
-    /// `Unavailable`, which leaves the console dead for the rest of the process.
-    ///
-    /// The line length is load bearing and must stay a non divisor of the limit. With lines
-    /// of 128 bytes against a 65 536 byte ceiling the space trim lands on a line boundary by
-    /// arithmetic alone, so the front assert passes just as happily with the line-boundary
-    /// trim deleted: verified by mutation, both variants passed.
-    #[test]
-    fn history_ring_is_bounded_and_line_aligned() {
-        let fanout = fanout();
-        let id = session(&fanout);
-        let mut line = [b'-'; 100];
-        line[0] = b'>';
-        line[99] = b'\n';
-        let chunk: Vec<u8> = line.repeat(3);
-        for _ in 0..512 {
-            feed(&fanout, id, &[&chunk]);
+    fn synthetic_row(bytes: usize, wrapped: bool) -> EncodedPhysicalRow {
+        EncodedPhysicalRow {
+            bytes: vec![b'x'; bytes],
+            wrapped,
         }
-        {
-            let parsers = fanout.screen_parsers.lock().expect("parser state");
-            let state = parsers.get(&id).expect("registered session");
-            assert!(state.history.len() <= UI_HISTORY_LIMIT_BYTES);
-            assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
-            assert_eq!(state.history.front().copied(), Some(b'>'));
-        }
-
-        let oversized = vec![b'x'; UI_HISTORY_LIMIT_BYTES + 4_096];
-        feed(&fanout, id, &[&oversized]);
-        let parsers = fanout.screen_parsers.lock().expect("parser state");
-        let state = parsers.get(&id).expect("registered session");
-        assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
-        assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
-        assert_eq!(state.parser_availability, ParserAvailability::Available);
     }
 
-    /// #1458. A ring saturated by a newline-free stream (a coding agent's spinner rewriting one
-    /// line with `\r`) leaves the ring's front at an arbitrary byte offset, which lands inside an
-    /// escape sequence most of the time. The seed must never emit that sequence's literal tail;
-    /// with no `\n` anywhere in the ring there is nothing to realign to, so the attach takes the
-    /// parser mirror.
     #[test]
-    fn a_newline_free_ring_seeds_the_mirror_instead_of_a_partial_sequence() {
-        let fanout = fanout();
-        let id = session(&fanout);
-        // A realistic spinner frame: truecolor SGR, label, carriage return. No `\n`. 33 bytes, so
-        // the steady-state front lands 2 bytes into the SGR, exactly where the incident cut.
-        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
-            feed(&fanout, id, &[frame]);
-        }
-        {
-            // The precondition of the defect, asserted rather than assumed.
-            let parsers = fanout.screen_parsers.lock().expect("parser state");
-            let state = parsers.get(&id).expect("registered session");
-            assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
-            assert!(!state.history_aligned);
-        }
+    fn semantic_history_selection_keeps_only_whole_newest_rows() {
+        let mut history = VecDeque::new();
+        let mut history_bytes = 0;
+        let mut byte_limit = false;
+        let mut hardened = false;
 
-        let expected = mirrored_screen(&fanout, id);
-        let data = activation_data(&fanout, id, true);
+        push_history_row(
+            &mut history,
+            &mut history_bytes,
+            synthetic_row(SEMANTIC_HISTORY_REPLAY_BYTES - 2, false),
+            &mut byte_limit,
+            &mut hardened,
+        )
+        .expect("exact-fit row");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history_bytes, SEMANTIC_HISTORY_REPLAY_BYTES);
+        assert!(!byte_limit);
 
-        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
-        assert_eq!(data, expected);
+        push_history_row(
+            &mut history,
+            &mut history_bytes,
+            synthetic_row(SEMANTIC_HISTORY_REPLAY_BYTES - 1, false),
+            &mut byte_limit,
+            &mut hardened,
+        )
+        .expect("one-over row");
+        assert!(history.is_empty());
+        assert_eq!(history_bytes, 0);
+        assert!(byte_limit);
+
+        history.clear();
+        history_bytes = 0;
+        byte_limit = false;
+        hardened = false;
+        push_history_row(
+            &mut history,
+            &mut history_bytes,
+            synthetic_row(40_000, true),
+            &mut byte_limit,
+            &mut hardened,
+        )
+        .expect("old row");
+        push_history_row(
+            &mut history,
+            &mut history_bytes,
+            synthetic_row(40_000, false),
+            &mut byte_limit,
+            &mut hardened,
+        )
+        .expect("new row");
+        assert_eq!(history.len(), 1, "the oldest whole row is omitted");
+        assert_eq!(history_bytes, 40_002);
+        assert!(byte_limit);
+        assert!(
+            hardened,
+            "a wrapped omitted predecessor hardens the boundary"
+        );
+
+        history.clear();
+        history_bytes = 0;
+        byte_limit = false;
+        hardened = false;
+        push_history_row(
+            &mut history,
+            &mut history_bytes,
+            synthetic_row(SEMANTIC_HISTORY_REPLAY_BYTES + 1, false),
+            &mut byte_limit,
+            &mut hardened,
+        )
+        .expect("oversized row");
+        assert!(history.is_empty());
+        assert_eq!(history_bytes, 0);
+        assert!(byte_limit);
     }
 
-    /// #1458. The healthy path must stay byte identical: when the capped trim did realign the
-    /// ring, the seed is the ring verbatim, from its very first byte. Asserting the whole body
-    /// against the ring is the point. An alignment scan applied unconditionally would silently
-    /// drop the ring's first line here, and a `starts_with` on the line's prefix would still pass,
-    /// because every line of such a replay begins with the same SGR bytes.
-    #[test]
-    fn a_line_aligned_ring_still_seeds_the_whole_ring() {
-        let fanout = fanout();
-        let id = session(&fanout);
-        // 102 bytes per line, not a divisor of the 65 536 byte ring, so the space trim lands off a
-        // line boundary and the realignment has to do real work: 50 bytes drained for space and 52
-        // more to realign, on every overflow.
-        for index in 0..2_000 {
-            feed(
-                &fanout,
-                id,
-                &[format!("\x1b[38;2;153;153;153m>{index:081}\n").as_bytes()],
-            );
+    #[derive(Debug, PartialEq, Eq)]
+    struct CellFingerprint {
+        text: String,
+        foreground: vt100::Color,
+        background: vt100::Color,
+        bold: bool,
+        dim: bool,
+        italic: bool,
+        underline: bool,
+        inverse: bool,
+        wide: bool,
+        continuation: bool,
+    }
+
+    fn replay_cell_text(cell: &vt100::Cell) -> String {
+        if cell.contents().is_empty() {
+            " ".to_string()
+        } else {
+            cell.contents().to_string()
         }
-        let expected = {
-            let parsers = fanout.screen_parsers.lock().expect("parser state");
-            let state = parsers.get(&id).expect("registered session");
-            assert!(state.history_aligned);
-            let (front, back) = state.history.as_slices();
-            [front, back].concat()
-        };
+    }
 
-        let data = activation_data(&fanout, id, true);
+    fn current_cells(screen: &vt100::Screen) -> Vec<CellFingerprint> {
+        let (rows, cols) = screen.size();
+        let mut cells = Vec::with_capacity(usize::from(rows) * usize::from(cols));
+        for row in 0..rows {
+            for col in 0..cols {
+                let cell = screen.cell(row, col).expect("cell in grid");
+                cells.push(CellFingerprint {
+                    text: replay_cell_text(cell),
+                    foreground: cell.fgcolor(),
+                    background: cell.bgcolor(),
+                    bold: cell.bold(),
+                    dim: cell.dim(),
+                    italic: cell.italic(),
+                    underline: cell.underline(),
+                    inverse: cell.inverse(),
+                    wide: cell.is_wide(),
+                    continuation: cell.is_wide_continuation(),
+                });
+            }
+        }
+        cells
+    }
 
-        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+    fn assert_current_screen_equivalent(expected: &vt100::Screen, actual: &vt100::Screen) {
+        assert_eq!(actual.size(), expected.size());
+        assert_eq!(actual.alternate_screen(), expected.alternate_screen());
+        assert_eq!(actual.cursor_position(), expected.cursor_position());
+        assert_eq!(actual.hide_cursor(), expected.hide_cursor());
         assert_eq!(
-            &data[UI_HISTORY_REPLAY_PROLOGUE.len()..],
-            expected.as_slice()
+            actual.input_mode_formatted(),
+            expected.input_mode_formatted()
+        );
+        assert_eq!(
+            actual.attributes_formatted(),
+            expected.attributes_formatted()
+        );
+        assert_eq!(current_cells(actual), current_cells(expected));
+        let (rows, _) = expected.size();
+        assert_eq!(
+            (0..rows)
+                .map(|row| actual.row_wrapped(row))
+                .collect::<Vec<_>>(),
+            (0..rows)
+                .map(|row| expected.row_wrapped(row))
+                .collect::<Vec<_>>()
         );
     }
 
-    /// #1458 edge case. A ring whose only `\n` is its last byte does have a line start, but has
-    /// nothing after it: aligning to it would seed the prologue and zero bytes of content, which
-    /// blanks the attaching terminal. That case must take the mirror, exactly like a ring with no
-    /// `\n` at all.
+    fn replay_parser(snapshot: &PtyTerminalReplaySnapshot) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(snapshot.rows, snapshot.cols, SEMANTIC_SCROLLBACK_ROWS);
+        if snapshot.alternate_entry_mode == Some(PtyTerminalAlternateEntryMode::Mode1047) {
+            // vt100 does not model DECSET 1047, while xterm does. Production preserves the
+            // exact 1047 entry for xterm; this test parser needs the same 47 normalization
+            // used by the production mirror.
+            let entry = PtyTerminalAlternateEntryMode::Mode1047.entry_bytes();
+            let at = snapshot
+                .replay_data
+                .windows(entry.len())
+                .position(|window| window == entry)
+                .expect("1047 replay entry");
+            parser.process(&snapshot.replay_data[..at]);
+            parser.process(b"\x1b[?47h");
+            parser.process(&snapshot.replay_data[at + entry.len()..]);
+        } else {
+            parser.process(&snapshot.replay_data);
+        }
+        parser
+    }
+
+    fn physical_screen_fingerprint(
+        mut screen: vt100::Screen,
+    ) -> (usize, Vec<(Vec<CellFingerprint>, bool)>) {
+        screen.set_scrollback(usize::MAX);
+        let retained = screen.scrollback();
+        let (_, cols) = screen.size();
+        let row = |screen: &vt100::Screen, row: u16| {
+            (0..cols)
+                .map(|col| {
+                    let cell = screen.cell(row, col).expect("cell in grid");
+                    CellFingerprint {
+                        text: replay_cell_text(cell),
+                        foreground: cell.fgcolor(),
+                        background: cell.bgcolor(),
+                        bold: cell.bold(),
+                        dim: cell.dim(),
+                        italic: cell.italic(),
+                        underline: cell.underline(),
+                        inverse: cell.inverse(),
+                        wide: cell.is_wide(),
+                        continuation: cell.is_wide_continuation(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut rows = Vec::new();
+        for offset in (1..=retained).rev() {
+            screen.set_scrollback(offset);
+            rows.push((row(&screen, 0), screen.row_wrapped(0)));
+        }
+        screen.set_scrollback(0);
+        for index in 0..screen.size().0 {
+            rows.push((row(&screen, index), screen.row_wrapped(index)));
+        }
+        (retained, rows)
+    }
+
+    const SANITIZED_CODEX_CHUNKS: &[&[u8]] = &[
+        b"\x1b[?25l\x1b[2J\x1b[H",
+        b"\x1b[38;5;39mCodex\x1b[0m ready\r\n",
+        b"\x1b]0;agent-session\x07",
+        b"\x1b[?2004h\x1b[?25h",
+    ];
+
+    const SANITIZED_PI_CHUNKS: &[&[u8]] = &[
+        b"\x1b[1;34mPi\x1b[0m workspace\r\n",
+        b"tool result: sanitized\r\n",
+        b"assistant> ",
+    ];
+
+    struct ActivationDecisionCaptureReset;
+
+    impl Drop for ActivationDecisionCaptureReset {
+        fn drop(&mut self) {
+            CAPTURED_ACTIVATION_DECISIONS.with(|captured| {
+                captured.borrow_mut().take();
+            });
+        }
+    }
+
+    fn capture_activation_decisions<T>(
+        operation: impl FnOnce() -> T,
+    ) -> (T, Vec<CapturedActivationDecision>) {
+        let previous = CAPTURED_ACTIVATION_DECISIONS
+            .with(|captured| captured.borrow_mut().replace(Vec::new()));
+        assert!(
+            previous.is_none(),
+            "activation decision capture is not nested"
+        );
+        let _reset = ActivationDecisionCaptureReset;
+        let result = operation();
+        let records = CAPTURED_ACTIVATION_DECISIONS.with(|captured| {
+            captured
+                .borrow_mut()
+                .take()
+                .expect("active activation decision capture")
+        });
+        (result, records)
+    }
+
     #[test]
-    fn a_ring_whose_only_newline_is_its_last_byte_seeds_the_mirror() {
+    fn semantic_activation_diagnostics_are_cardinal_typed_and_content_free() {
+        const CONTENT_CANARY: &[u8] =
+            b"privacy-canary prompt=hidden cwd=hidden command=hidden secret=hidden";
+
         let fanout = fanout();
         let id = session(&fanout);
-        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
-            feed(&fanout, id, &[frame]);
+        feed(&fanout, id, &[CONTENT_CANARY]);
+
+        let (activation, records) = capture_activation_decisions(|| {
+            fanout.activate_terminal_output(id, WINDOW, true, 41, 7)
+        });
+        let activation = activation.expect("successful diagnostic activation");
+        assert_ne!(
+            activation.snapshot.is_some(),
+            activation.seedless_reason.is_some()
+        );
+        let snapshot = activation.snapshot.expect("diagnostic snapshot");
+        assert!(snapshot.rows != 0 && snapshot.cols != 0);
+        assert!(snapshot.sequence <= MAX_JAVASCRIPT_SEQUENCE);
+        assert_eq!(snapshot.replay_bytes as usize, snapshot.replay_data.len());
+        assert_eq!(records.len(), 1, "one success decision");
+        assert_eq!(records[0].level, ActivationDecisionLevel::Debug);
+        assert!(records[0]
+            .message
+            .contains("event=terminal_attach_backend stage=activation_decision"));
+        assert!(records[0].message.contains(&format!("session={id}")));
+        assert!(records[0].message.contains("epoch=41 generation=7"));
+        for forbidden in [
+            "privacy-canary",
+            "data=",
+            "contents=",
+            "prompt=",
+            "command=",
+            "title=",
+            "path=",
+            "cwd=",
+            "arguments=",
+            "environment=",
+            "secret=",
+        ] {
+            assert!(
+                !records[0].message.contains(forbidden),
+                "content-bearing diagnostic field {forbidden}"
+            );
         }
-        // One frame that ends in the ring's only newline. The capped trim scan still sees no `\n`
-        // in the first 4 KiB, so the ring stays flagged unaligned.
-        feed(&fanout, id, &[b"\x1b[38;2;153;153;153m* Drizzling..\n"]);
-        {
+
+        feed(&fanout, id, &[b"\x1b[?6h"]);
+        let (seedless, records) = capture_activation_decisions(|| {
+            fanout.activate_terminal_output(id, SECOND_WINDOW, true, 41, 8)
+        });
+        let seedless = seedless.expect("typed seedless diagnostic activation");
+        assert!(seedless.snapshot.is_none());
+        assert_eq!(
+            seedless.seedless_reason,
+            Some(PtyTerminalSeedlessReason::SeedlessContinuationUnsafe)
+        );
+        assert_eq!(records.len(), 1, "one seedless decision");
+        assert_eq!(records[0].level, ActivationDecisionLevel::Warn);
+        assert!(records[0]
+            .message
+            .contains("reason=seedlessContinuationUnsafe"));
+
+        let absent = Uuid::new_v4();
+        let (failure, records) = capture_activation_decisions(|| {
+            fanout.activate_terminal_output(absent, WINDOW, true, 41, 9)
+        });
+        assert!(matches!(
+            failure,
+            Err(TerminalOutputAttachError::SessionUnavailable)
+        ));
+        assert_eq!(records.len(), 1, "one error decision");
+        assert_eq!(records[0].level, ActivationDecisionLevel::Error);
+        assert!(records[0].message.contains("reason=sessionUnavailable"));
+    }
+
+    #[test]
+    fn semantic_normal_history_replays_into_a_fresh_parser() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 81)
+            .expect("register semantic session");
+        feed(&fanout, id, SANITIZED_CODEX_CHUNKS);
+        for index in 0..96 {
+            let line = format!("semantic history {index:03}\r\n");
+            feed(&fanout, id, &[line.as_bytes()]);
+        }
+        feed(&fanout, id, SANITIZED_PI_CHUNKS);
+
+        let (expected, expected_sequence) = {
             let parsers = fanout.screen_parsers.lock().expect("parser state");
             let state = parsers.get(&id).expect("registered session");
-            assert!(!state.history_aligned);
-            assert_eq!(state.history.back().copied(), Some(b'\n'));
+            (state.parser.screen().clone(), state.output_sequence)
+        };
+        let activation = fanout
+            .activate_terminal_output(id, WINDOW, true, 7, 9)
+            .expect("semantic activation");
+        assert_eq!(activation.document_epoch, 7);
+        assert_eq!(activation.attach_generation, 9);
+        assert!(activation.seedless_reason.is_none());
+        let snapshot = activation.snapshot.expect("semantic snapshot");
+        assert_eq!((snapshot.rows, snapshot.cols), (24, 81));
+        assert_eq!(snapshot.sequence, expected_sequence);
+        assert_eq!(snapshot.active_buffer, PtyTerminalActiveBuffer::Normal);
+        assert_eq!(
+            snapshot.replay_stage,
+            PtyTerminalReplayStage::SemanticHistory
+        );
+        assert!(snapshot.history_included);
+        assert!(snapshot.active_screen_has_text);
+        assert!(snapshot.active_bottom_line_has_text);
+        assert_eq!(snapshot.replay_bytes as usize, snapshot.replay_data.len());
+
+        let replayed = replay_parser(&snapshot);
+        assert_current_screen_equivalent(&expected, replayed.screen());
+        assert_eq!(
+            physical_screen_fingerprint(expected),
+            physical_screen_fingerprint(replayed.screen().clone())
+        );
+    }
+
+    #[test]
+    fn semantic_row_encoding_preserves_styles_unicode_hard_lines_and_soft_wraps() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 5, 12)
+            .expect("register styled session");
+        feed(
+            &fanout,
+            id,
+            &[
+                b"\x1b[1;2;3;4;7;38;5;201;48;2;4;5;6m ",
+                "e\u{301}界".as_bytes(),
+                b"\x1b[0m hard\r\n",
+                b"abcdefghijklmnopqrstuvwx",
+                b"\r\nlast",
+                b"\x1b[1;1H\x1b[1;2;3;4;7;38;5;201;48;2;4;5;6m ",
+                b"\x1b[1;2H\x1b[1mB\x1b[0m",
+            ],
+        );
+
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers
+                .get(&id)
+                .expect("registered session")
+                .parser
+                .screen()
+                .clone()
+        };
+        assert!(current_cells(&expected).iter().any(|cell| {
+            cell.text.chars().all(char::is_whitespace)
+                && cell.foreground == vt100::Color::Idx(201)
+                && cell.background == vt100::Color::Rgb(4, 5, 6)
+                && cell.dim
+                && cell.italic
+                && cell.underline
+                && cell.inverse
+        }));
+        assert!(current_cells(&expected).iter().any(|cell| cell.bold));
+        assert!(current_cells(&expected).iter().any(|cell| cell.wide));
+        assert!(current_cells(&expected)
+            .iter()
+            .any(|cell| cell.continuation));
+        assert!((0..expected.size().0).any(|row| expected.row_wrapped(row)));
+
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("activation")
+            .snapshot
+            .expect("snapshot");
+        let replayed = replay_parser(&snapshot);
+        assert_current_screen_equivalent(&expected, replayed.screen());
+        assert!(snapshot.replay_data.starts_with(b"\x1b[0m"));
+    }
+
+    fn alternate_round_trip(mode: PtyTerminalAlternateEntryMode) {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 6, 20)
+            .expect("register alternate session");
+        for index in 0..12 {
+            let line = format!("normal {index:02}\r\n");
+            feed(&fanout, id, &[line.as_bytes()]);
+        }
+        feed(&fanout, id, &[b"\x1b[3;5H\x1b[33mN"]);
+        feed(&fanout, id, &[mode.entry_bytes()]);
+        feed(&fanout, id, SANITIZED_PI_CHUNKS);
+        feed(&fanout, id, &[b"\x1b[2;4H\x1b[1;35mALT"]);
+
+        let expected_alternate = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert!(state.normal_checkpoint.is_some());
+            state.parser.screen().clone()
+        };
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, true, 11, 12)
+            .expect("alternate activation")
+            .snapshot
+            .expect("alternate snapshot");
+        assert_eq!(snapshot.active_buffer, PtyTerminalActiveBuffer::Alternate);
+        assert_eq!(snapshot.alternate_entry_mode, Some(mode));
+        assert!(snapshot.normal_screen_included);
+        assert_eq!(
+            snapshot.replay_stage,
+            PtyTerminalReplayStage::SemanticHistory
+        );
+
+        let mut replayed = replay_parser(&snapshot);
+        assert_current_screen_equivalent(&expected_alternate, replayed.screen());
+        let exit = match mode {
+            PtyTerminalAlternateEntryMode::Mode47 => b"\x1b[?47l".as_slice(),
+            PtyTerminalAlternateEntryMode::Mode1047 => b"\x1b[?1047l".as_slice(),
+            PtyTerminalAlternateEntryMode::Mode1049 => b"\x1b[?1049l".as_slice(),
+        };
+        feed(&fanout, id, &[exit]);
+        let expected_normal = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers.get(&id).unwrap().parser.screen().clone()
+        };
+        if mode == PtyTerminalAlternateEntryMode::Mode1047 {
+            // vt100 normalizes 1047 entry but does not model its exit like xterm. The
+            // production tracker uses this same parser-only 47 normalization.
+            replayed.process(b"\x1b[2J\x1b[?47l");
+        } else {
+            replayed.process(exit);
+        }
+        assert_current_screen_equivalent(&expected_normal, replayed.screen());
+        assert_eq!(
+            physical_screen_fingerprint(expected_normal),
+            physical_screen_fingerprint(replayed.screen().clone())
+        );
+    }
+
+    #[test]
+    fn semantic_alternate_entry_modes_restore_normal_state() {
+        for mode in [
+            PtyTerminalAlternateEntryMode::Mode47,
+            PtyTerminalAlternateEntryMode::Mode1047,
+            PtyTerminalAlternateEntryMode::Mode1049,
+        ] {
+            alternate_round_trip(mode);
+        }
+    }
+
+    fn seedless_reason(fanout: &SessionIoFanout, id: Uuid) -> PtyTerminalSeedlessReason {
+        let activation = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("seedless activation");
+        assert!(activation.snapshot.is_none());
+        activation.seedless_reason.expect("seedless reason")
+    }
+
+    #[test]
+    fn semantic_continuation_safety_is_typed_and_exact_resets_recover() {
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"\x1b[2;20r", b"\x1b[r"),
+            (b"\x1b[?6h", b"\x1b[?6l"),
+            (b"\x1b[4h", b"\x1b[4l"),
+            (b"\x1b[?7l", b"\x1b[?7h"),
+            (b"\x1b(A", b"\x1b(B"),
+            (b"\x0e", b"\x0f"),
+            (b"\x1b%@", b"\x1b%G"),
+        ];
+        for (unsafe_sequence, reset) in cases {
+            let fanout = fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[*unsafe_sequence]);
             assert_eq!(
-                state.history.iter().filter(|byte| **byte == b'\n').count(),
-                1
+                seedless_reason(&fanout, id),
+                PtyTerminalSeedlessReason::SeedlessContinuationUnsafe
             );
+            feed(&fanout, id, &[*reset]);
+            assert!(fanout
+                .activate_terminal_output(id, SECOND_WINDOW, true, 1, 2)
+                .expect("recovered activation")
+                .snapshot
+                .is_some());
         }
 
-        let expected = mirrored_screen(&fanout, id);
-        let data = activation_data(&fanout, id, true);
+        for unsafe_sequence in [
+            b"\x1bH".as_slice(),
+            b"\x1b[?7777h".as_slice(),
+            b"\x1b[3g".as_slice(),
+            b"\x1bPopaque".as_slice(),
+            b"\x1b7\x1b8".as_slice(),
+            b"\x1b[s\x1b[u".as_slice(),
+        ] {
+            let fanout = fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[unsafe_sequence]);
+            assert_eq!(
+                seedless_reason(&fanout, id),
+                PtyTerminalSeedlessReason::SeedlessContinuationUnsafe
+            );
+            feed(&fanout, id, &[b"\x1b\\\x1bc"]);
+            assert!(fanout
+                .activate_terminal_output(id, SECOND_WINDOW, true, 1, 2)
+                .expect("RIS recovery")
+                .snapshot
+                .is_some());
+        }
 
-        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
-        assert_eq!(data, expected);
-    }
-
-    /// #1458. The recovering case, and the only one that exercises `history_from_first_line`'s
-    /// `Some` arm: an unaligned ring that still holds lines must seed from the byte after its
-    /// first `\n`, not fall back to the mirror. Asserting the whole body is the point; a stub
-    /// helper that always returns `None` passes every other test in this file.
-    #[test]
-    fn an_unaligned_ring_with_a_later_newline_seeds_from_that_line() {
         let fanout = fanout();
         let id = session(&fanout);
-        let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r"; // 33 bytes, no `\n`
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
-            feed(&fanout, id, &[frame]);
-        }
-        for index in 0..40 {
-            feed(
-                &fanout,
-                id,
-                &[format!("\x1b[38;2;153;153;153mrecovered line {index:03}\n").as_bytes()],
-            );
-        }
-        let expected = {
-            let parsers = fanout.screen_parsers.lock().expect("parser state");
-            let state = parsers.get(&id).expect("registered session");
-            // The 4 KiB hot scan still sees only spinner at the front, so the flag stays false
-            // even though the ring now holds 40 newlines further in.
-            assert!(!state.history_aligned);
-            let (front, back) = state.history.as_slices();
-            let ring = [front, back].concat();
-            let newline = ring
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .expect("a newline");
-            ring[newline + 1..].to_vec()
-        };
-
-        let data = activation_data(&fanout, id, true);
-
-        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        feed(&fanout, id, &[b"\x1b)0\x1b(B"]);
         assert_eq!(
-            &data[UI_HISTORY_REPLAY_PROLOGUE.len()..],
-            expected.as_slice()
+            seedless_reason(&fanout, id),
+            PtyTerminalSeedlessReason::SeedlessContinuationUnsafe
         );
+        feed(&fanout, id, &[b"\x1b)B"]);
+        assert!(fanout
+            .activate_terminal_output(id, SECOND_WINDOW, true, 1, 2)
+            .expect("all charset registers reset")
+            .snapshot
+            .is_some());
     }
 
-    /// #1458. The helper's four decided branches, pinned without a fixture because which half of
-    /// the ring holds the first `\n` is a `VecDeque` layout detail no fanout test can choose.
-    /// Covers 7.2 rows 8, 9 and 10 and the both-halves emptiness check.
     #[test]
-    fn history_from_first_line_decides_every_branch() {
-        // A newline in `front`, content behind it: seed from the byte after it, keep all of `back`.
-        assert_eq!(
-            history_from_first_line(b"ab\ncd", b""),
-            Some((&b"cd"[..], &b""[..]))
-        );
-        // The newline is `front`'s last byte but `back` is not empty: still a normal seed. The
-        // emptiness check is on BOTH halves for exactly this row.
-        assert_eq!(
-            history_from_first_line(b"ab\n", b"cd"),
-            Some((&b""[..], &b"cd"[..]))
-        );
-        // No newline in `front`, one in `back` with content behind it: the whole of `front` is
-        // unreplayable and is dropped. Deleting the second scan makes this row dead.
-        assert_eq!(
-            history_from_first_line(b"ab", b"cd\nef"),
-            Some((&b""[..], &b"ef"[..]))
-        );
-        // The ring's only newline is its last byte: nothing survives it, so the caller must take
-        // the mirror rather than seed a prologue and zero bytes.
-        assert_eq!(history_from_first_line(b"ab", b"cd\n"), None);
-        // No newline anywhere: the reported incident.
-        assert_eq!(history_from_first_line(b"ab", b"cd"), None);
+    fn semantic_feed_differential_future_state_classes_match_or_are_seedless() {
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"\x1b[2;20r\x1b[?6h", b"\x1b[1;1Hmargin-origin"),
+            (b"\x1b[4h\x1b[?7l", b"insert-autowrap"),
+            (b"\x1b[1;3;4m", b"attributes"),
+            (b"\x1b[?2004h", b"input-mode"),
+            (b"\x1b7", b"saved-cursor"),
+            (b"\x1b(0\x0e", b"charset"),
+            (b"\x1b[3g", b"tabs"),
+        ];
+        for (prefix, suffix) in cases {
+            let fanout = fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[prefix]);
+            let activation = fanout.activate_terminal_output(id, WINDOW, true, 1, 1);
+            if activation
+                .as_ref()
+                .expect("activation decision")
+                .seedless_reason
+                == Some(PtyTerminalSeedlessReason::SeedlessContinuationUnsafe)
+            {
+                feed(&fanout, id, &[suffix]);
+                continue;
+            }
+            let snapshot = activation
+                .expect("snapshot decision")
+                .snapshot
+                .expect("safe class snapshot");
+            let mut replayed = replay_parser(&snapshot);
+            feed(&fanout, id, &[suffix]);
+            let expected = {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                parsers
+                    .get(&id)
+                    .expect("session parser")
+                    .parser
+                    .screen()
+                    .clone()
+            };
+            replayed.process(suffix);
+            assert_current_screen_equivalent(&expected, replayed.screen());
+        }
     }
 
-    /// The regression the issue reports: a session that produced output while another one was
-    /// selected must come back with history, not with a single viewport.
+    /// The issue regression: a background session returns semantic history, not one viewport.
     #[test]
-    fn activation_payload_replays_history_for_background_session() {
+    fn semantic_activation_replays_background_history() {
         let fanout = fanout();
         let foreground = session(&fanout);
         let background = session(&fanout);
@@ -3498,46 +5667,1032 @@ mod tests {
             feed(&fanout, background, &[line.as_bytes()]);
         }
 
-        // The first line scrolled out of the 30 row mirror, so it is only reachable through
-        // the ring. Without this the payload assert could pass on the viewport alone.
         let mirror = String::from_utf8_lossy(&mirrored_screen(&fanout, background)).into_owned();
         assert!(!mirror.contains("history line 0\r\n"));
 
-        let data = activation_data(&fanout, background, true);
-        // Asserting the prologue keeps a silent fallback to `contents_formatted()` from
-        // passing this test for the wrong reason.
-        assert!(data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
-        let replayed = String::from_utf8_lossy(&data);
-        assert!(replayed.contains("history line 0\r\n"));
+        let activation = fanout
+            .activate_terminal_output(background, WINDOW, true, 1, 1)
+            .expect("background activation");
+        let snapshot = activation.snapshot.expect("background snapshot");
+        assert!(snapshot.history_included);
+        assert!(snapshot.included_history_rows > 0);
+        let replayed = String::from_utf8_lossy(&snapshot.replay_data);
+        assert!(replayed.contains("history line 0"));
         assert!(replayed.contains("history line 199"));
     }
 
     #[test]
-    fn activation_payload_falls_back_to_screen_when_history_empty() {
+    fn semantic_activation_with_empty_history_replays_the_current_screen() {
         let fanout = fanout();
         let id = session(&fanout);
-        let expected = mirrored_screen(&fanout, id);
+        feed(&fanout, id, &[b"current"]);
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers.get(&id).unwrap().parser.screen().clone()
+        };
 
-        let data = activation_data(&fanout, id, true);
-        assert_eq!(data, expected);
-        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("activation")
+            .snapshot
+            .expect("snapshot");
+        assert!(!snapshot.history_included);
+        assert_eq!(snapshot.included_history_rows, 0);
+        assert_current_screen_equivalent(&expected, replay_parser(&snapshot).screen());
     }
 
-    /// Pins the parameter's contract: `false` is the mirrored viewport, never the ring. The
-    /// frontend asks for the ring on every attach and applies it after a reset, which is what
-    /// makes the replay safe there, but the viewport-only read stays addressable.
     #[test]
-    fn activation_payload_ignores_history_when_not_requested() {
+    fn semantic_history_disabled_reports_screen_only_without_truncation() {
         let fanout = fanout();
         let id = session(&fanout);
         for index in 0..200 {
             let line = format!("history line {index}\r\n");
             feed(&fanout, id, &[line.as_bytes()]);
         }
-        let expected = mirrored_screen(&fanout, id);
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers.get(&id).unwrap().parser.screen().clone()
+        };
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, false, 1, 1)
+            .expect("history-disabled activation")
+            .snapshot
+            .expect("history-disabled snapshot");
+        assert_eq!(
+            snapshot.replay_stage,
+            PtyTerminalReplayStage::ScreenOnlyHistoryDisabled
+        );
+        assert!(!snapshot.history_included);
+        assert!(!snapshot.history_truncated);
+        assert_eq!(
+            snapshot.history_truncation_reason,
+            PtyTerminalHistoryTruncationReason::None
+        );
+        assert_eq!(snapshot.included_history_rows, 0);
+        assert_current_screen_equivalent(&expected, replay_parser(&snapshot).screen());
+    }
 
-        let data = activation_data(&fanout, id, false);
-        assert_eq!(data, expected);
-        assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+    #[test]
+    fn semantic_pending_prefix_handoff_completes_for_seven_bit_and_c1_csi() {
+        let candidates = [
+            b"\x1b[?1049h".to_vec(),
+            vec![0x9b, b'?', b'1', b'0', b'4', b'9', b'h'],
+        ];
+        for candidate in candidates {
+            for split in 1..candidate.len() {
+                let fanout = fanout();
+                let id = Uuid::new_v4();
+                fanout
+                    .register_session_for_test(id, IdleTuning::DEFAULT, 4, 12)
+                    .expect("register prefix session");
+                feed(&fanout, id, &[b"normal"]);
+                for byte in &candidate[..split] {
+                    feed(&fanout, id, &[std::slice::from_ref(byte)]);
+                }
+                let snapshot = fanout
+                    .activate_terminal_output(id, WINDOW, true, 3, 4)
+                    .expect("prefix activation")
+                    .snapshot
+                    .expect("prefix snapshot");
+                assert_eq!(snapshot.pending_parser_bytes as usize, split);
+                assert_eq!(
+                    &snapshot.replay_data[snapshot.replay_data.len() - split..],
+                    &candidate[..split]
+                );
+
+                let mut replayed = if candidate[0] == 0x9b {
+                    // vt100 does not consume C1 CSI. Preserve and assert the original C1
+                    // payload above, then normalize only this differential test parser.
+                    let mut parser =
+                        vt100::Parser::new(snapshot.rows, snapshot.cols, SEMANTIC_SCROLLBACK_ROWS);
+                    parser.process(
+                        &snapshot.replay_data
+                            [..snapshot.replay_data.len() - snapshot.pending_parser_bytes as usize],
+                    );
+                    parser.process(b"\x1b[");
+                    parser.process(&candidate[1..split]);
+                    parser
+                } else {
+                    replay_parser(&snapshot)
+                };
+                replayed.process(&candidate[split..]);
+                feed(&fanout, id, &[&candidate[split..]]);
+                let expected = {
+                    let parsers = fanout.screen_parsers.lock().expect("parser state");
+                    parsers.get(&id).unwrap().parser.screen().clone()
+                };
+                assert_current_screen_equivalent(&expected, replayed.screen());
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_tracker_handles_mixed_modes_exit_entry_ris_and_disagreement() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 5, 16)
+            .expect("register tracker session");
+        feed(&fanout, id, &[b"normal\x1b[?25l"]);
+        for byte in b"\x1b[?1049;2004h" {
+            feed(&fanout, id, &[std::slice::from_ref(byte)]);
+        }
+        feed(&fanout, id, &[b"alternate"]);
+        let first = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("mixed activation")
+            .snapshot
+            .expect("mixed snapshot");
+        assert_eq!(
+            first.alternate_entry_mode,
+            Some(PtyTerminalAlternateEntryMode::Mode1049)
+        );
+
+        feed(&fanout, id, &[b"\x1b[?1049l\x1b[2;2Hbetween\x1b[?47h"]);
+        let second = fanout
+            .activate_terminal_output(id, SECOND_WINDOW, true, 1, 2)
+            .expect("exit-entry activation")
+            .snapshot
+            .expect("exit-entry snapshot");
+        assert_eq!(
+            second.alternate_entry_mode,
+            Some(PtyTerminalAlternateEntryMode::Mode47)
+        );
+        assert!(second.normal_screen_included);
+
+        feed(&fanout, id, &[b"\x1bc"]);
+        let reset = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 3)
+            .expect("RIS activation")
+            .snapshot
+            .expect("RIS snapshot");
+        assert_eq!(reset.active_buffer, PtyTerminalActiveBuffer::Normal);
+        assert_eq!(reset.alternate_entry_mode, None);
+
+        {
+            let mut parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers.get_mut(&id).unwrap().parser.process(b"\x1b[?1049h");
+        }
+        feed(&fanout, id, &[b"desync"]);
+        let fallback = fanout
+            .activate_terminal_output(id, SECOND_WINDOW, true, 1, 4)
+            .expect("disagreement activation")
+            .snapshot
+            .expect("screen-only fallback");
+        assert_eq!(fallback.active_buffer, PtyTerminalActiveBuffer::Alternate);
+        assert_eq!(
+            fallback.replay_stage,
+            PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable
+        );
+        assert_eq!(
+            fallback.alternate_entry_mode,
+            Some(PtyTerminalAlternateEntryMode::Mode47)
+        );
+        assert!(!fallback.normal_screen_included);
+    }
+
+    #[test]
+    fn semantic_tracker_rejects_malformed_and_overlong_controls_until_ris() {
+        for hostile in [
+            b"\x1b[?1049:h".to_vec(),
+            [
+                b"\x1b[?".as_slice(),
+                vec![b'1'; ALT_SEQUENCE_MAX_BYTES].as_slice(),
+            ]
+            .concat(),
+        ] {
+            let fanout = fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[&hostile]);
+            assert_eq!(
+                seedless_reason(&fanout, id),
+                PtyTerminalSeedlessReason::SeedlessContinuationUnsafe
+            );
+            feed(&fanout, id, &[b"m\x1bc"]);
+            assert!(fanout
+                .activate_terminal_output(id, SECOND_WINDOW, true, 1, 2)
+                .expect("RIS recovery")
+                .snapshot
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn semantic_missing_checkpoint_uses_the_typed_screen_only_fallback() {
+        let fanout = fanout();
+        let blocker = fanout
+            .replay_budget
+            .try_reserve(
+                ReplayResourceKind::Checkpoint,
+                SEMANTIC_CHECKPOINT_BUDGET_BYTES,
+            )
+            .expect("checkpoint budget blocker");
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 8, 24)
+            .expect("register checkpoint session");
+        feed(&fanout, id, &[b"normal\x1b[?1049halt"]);
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("fallback activation")
+            .snapshot
+            .expect("fallback snapshot");
+        assert_eq!(
+            snapshot.replay_stage,
+            PtyTerminalReplayStage::ScreenOnlyCheckpointUnavailable
+        );
+        assert!(!snapshot.normal_screen_included);
+        assert_eq!(
+            snapshot.alternate_entry_mode,
+            Some(PtyTerminalAlternateEntryMode::Mode47)
+        );
+        drop(blocker);
+        assert_eq!(fanout.replay_budget.snapshot().checkpoint_bytes, 0);
+    }
+
+    #[test]
+    fn semantic_resource_budget_admission_resize_and_raii_are_bounded() {
+        assert!(Arc::ptr_eq(
+            &process_replay_budget(),
+            &process_replay_budget()
+        ));
+        let budget = ReplayResourceBudget::new();
+        for (kind, limit) in [
+            (
+                ReplayResourceKind::Sessions,
+                SUPPORTED_SEMANTIC_REPLAY_SESSIONS,
+            ),
+            (ReplayResourceKind::Steady, SEMANTIC_STEADY_BUDGET_BYTES),
+            (
+                ReplayResourceKind::Checkpoint,
+                SEMANTIC_CHECKPOINT_BUDGET_BYTES,
+            ),
+            (ReplayResourceKind::Attach, SEMANTIC_ATTACH_BUDGET_BYTES),
+        ] {
+            let mut exact = budget.try_reserve(kind, limit).expect("exact reservation");
+            assert!(budget.try_reserve(kind, 1).is_none());
+            assert!(exact.try_resize(limit));
+            assert!(exact.try_resize(limit - 1));
+            assert!(exact.try_resize(limit));
+            drop(exact);
+        }
+        let empty = budget.snapshot();
+        assert_eq!(empty.sessions, 0);
+        assert_eq!(empty.steady_bytes, 0);
+        assert_eq!(empty.checkpoint_bytes, 0);
+        assert_eq!(empty.attach_bytes, 0);
+
+        let first = SessionIoFanout::new_with_budget(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+            Arc::clone(&budget),
+        );
+        let second = SessionIoFanout::new_with_budget(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+            Arc::clone(&budget),
+        );
+        let mut shared_ids = Vec::new();
+        for index in 0..SUPPORTED_SEMANTIC_REPLAY_SESSIONS {
+            let id = Uuid::new_v4();
+            let target = if index % 2 == 0 { &first } else { &second };
+            target
+                .register_session_for_test(id, IdleTuning::DEFAULT, 27, 81)
+                .expect("shared-budget admitted session");
+            shared_ids.push((index % 2 == 0, id));
+        }
+        let shared_refused = Uuid::new_v4();
+        second
+            .register_session_for_test(shared_refused, IdleTuning::DEFAULT, 27, 81)
+            .expect("shared-budget live-only session");
+        assert_eq!(
+            seedless_reason(&second, shared_refused),
+            PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded
+        );
+        for (in_first, id) in shared_ids {
+            if in_first {
+                first.remove_session(id);
+            } else {
+                second.remove_session(id);
+            }
+        }
+        second.remove_session(shared_refused);
+        assert_eq!(budget.snapshot().sessions, 0);
+
+        let fanout = SessionIoFanout::new_with_budget(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            None,
+            Arc::clone(&budget),
+        );
+        let mut ids = Vec::new();
+        for _ in 0..SUPPORTED_SEMANTIC_REPLAY_SESSIONS {
+            let id = Uuid::new_v4();
+            fanout
+                .register_session_for_test(id, IdleTuning::DEFAULT, 27, 81)
+                .expect("admitted session");
+            ids.push(id);
+        }
+        let refused = Uuid::new_v4();
+        fanout
+            .register_session_for_test(refused, IdleTuning::DEFAULT, 27, 81)
+            .expect("live-only session");
+        assert_eq!(
+            seedless_reason(&fanout, refused),
+            PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded
+        );
+        assert_eq!(
+            budget.snapshot().sessions,
+            SUPPORTED_SEMANTIC_REPLAY_SESSIONS
+        );
+
+        fanout.remove_session(ids.remove(0));
+        let replacement = Uuid::new_v4();
+        fanout
+            .register_session_for_test(replacement, IdleTuning::DEFAULT, 80, 240)
+            .expect("wide replacement session");
+        let snapshot = fanout
+            .activate_terminal_output(replacement, SECOND_WINDOW, true, 1, 2)
+            .expect("replacement activation")
+            .snapshot
+            .expect("replacement snapshot");
+        assert_eq!((snapshot.rows, snapshot.cols), (80, 240));
+        assert!(budget.snapshot().attach_bytes > 0);
+        drop(snapshot);
+        assert_eq!(budget.snapshot().attach_bytes, 0);
+
+        for id in ids.into_iter().chain([refused, replacement]) {
+            fanout.remove_session(id);
+        }
+        let released = budget.snapshot();
+        assert_eq!(released.sessions, 0);
+        assert_eq!(released.steady_bytes, 0);
+        assert_eq!(released.checkpoint_bytes, 0);
+    }
+
+    #[test]
+    fn semantic_invalid_huge_and_resource_refused_grids_fail_closed() {
+        for (rows, cols) in [(0, 80), (24, 0), (u16::MAX, u16::MAX)] {
+            let fanout = fanout();
+            let id = Uuid::new_v4();
+            fanout
+                .register_session_for_test(id, IdleTuning::DEFAULT, rows, cols)
+                .expect("live-only invalid-grid session");
+            assert_eq!(
+                seedless_reason(&fanout, id),
+                PtyTerminalSeedlessReason::SeedlessInvalidGrid
+            );
+        }
+
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 8, 24)
+            .expect("register resize session");
+        let current = fanout.replay_budget.snapshot().steady_bytes;
+        let blocker = fanout
+            .replay_budget
+            .try_reserve(
+                ReplayResourceKind::Steady,
+                SEMANTIC_STEADY_BUDGET_BYTES - current,
+            )
+            .expect("fill steady budget");
+        fanout.resize_screen_and_broadcast(id, 24, 9);
+        assert_eq!(
+            seedless_reason(&fanout, id),
+            PtyTerminalSeedlessReason::SeedlessResourceLimitExceeded
+        );
+        drop(blocker);
+        fanout.remove_session(id);
+        assert_eq!(fanout.replay_budget.snapshot().steady_bytes, 0);
+    }
+
+    #[test]
+    fn semantic_resize_keeps_alternate_and_checkpoint_grids_in_sync() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 81)
+            .expect("register resize session");
+        for index in 0..40 {
+            let line = format!("resize history {index}\r\n");
+            feed(&fanout, id, &[line.as_bytes()]);
+        }
+        feed(&fanout, id, &[b"\x1b[?1049halt"]);
+
+        for rows in [27, 24] {
+            fanout.resize_screen_and_broadcast(id, 81, rows);
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).unwrap();
+            assert_eq!(state.parser.screen().size(), (rows, 81));
+            assert_eq!(
+                state.normal_checkpoint.as_ref().unwrap().screen.size(),
+                (rows, 81)
+            );
+            drop(parsers);
+            let snapshot = fanout
+                .activate_terminal_output(id, WINDOW, true, 1, u32::from(rows))
+                .expect("resized activation")
+                .snapshot
+                .expect("resized snapshot");
+            assert_eq!((snapshot.rows, snapshot.cols), (rows, 81));
+        }
+    }
+
+    #[test]
+    fn semantic_sequence_and_parser_poison_preserve_original_live_bytes() {
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        let broadcaster = crate::web::broadcast::WsBroadcaster::new();
+        let mut websocket = broadcaster.subscribe();
+        let sink = new_sink();
+        let poisoned_fanout = SessionIoFanout::new_with_budget(
+            Arc::clone(&output_senders),
+            IdleDetector::new(|_| {}, |_| {}),
+            Some(broadcaster),
+            ReplayResourceBudget::new(),
+        );
+        let id = Uuid::new_v4();
+        let token = poisoned_fanout
+            .register_session(
+                id,
+                IdleTuning::DEFAULT,
+                8,
+                24,
+                PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
+            )
+            .expect("register poison session");
+        output_senders.lock().unwrap().insert(id, sender);
+        poisoned_fanout.poison_screen_parsers_for_test();
+        let activation = poisoned_fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("poisoned activation");
+        assert_eq!(
+            activation.seedless_reason,
+            Some(PtyTerminalSeedlessReason::SeedlessParserPoisoned)
+        );
+        let poison_bytes = b"poison-live-original".to_vec();
+        poisoned_fanout.handle_output(&token, &id.to_string(), poison_bytes.clone());
+        flush(&poisoned_fanout, id);
+        assert_eq!(events(&sink)[0].1, poison_bytes);
+        assert_eq!(events(&sink)[0].2, None);
+        assert_eq!(receiver.try_recv().expect("raw output"), poison_bytes);
+        match websocket.try_recv().expect("websocket output") {
+            crate::web::broadcast::WsOutMsg::Binary(frame) => {
+                assert_eq!(&frame[36..], poison_bytes.as_slice());
+            }
+            other => panic!("expected websocket output, got {other:?}"),
+        }
+
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let token = fanout.registration_token_for_test(id);
+        attach(&fanout, id, WINDOW);
+        fanout.exhaust_output_sequence_for_test(id);
+        fanout.handle_output(&token, &id.to_string(), b"sequence-live".to_vec());
+        flush(&fanout, id);
+        assert_eq!(events(&sink)[0].2, None);
+        assert_eq!(
+            seedless_reason(&fanout, id),
+            PtyTerminalSeedlessReason::SeedlessSequenceUnsafe
+        );
+    }
+
+    #[test]
+    fn semantic_replay_cap_never_truncates_the_authoritative_viewport() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 80, 240)
+            .expect("register wide session");
+        let mut styled = Vec::new();
+        for index in 0..(80usize * 240) {
+            if index % 2 == 0 {
+                styled.extend_from_slice(b"\x1b[1;3;4;7;38;2;250;251;252;48;2;100;101;102mX");
+            } else {
+                styled.extend_from_slice(b"\x1b[2;38;2;1;2;3;48;2;240;241;242mY");
+            }
+        }
+        feed(&fanout, id, &[&styled]);
+        assert_eq!(
+            seedless_reason(&fanout, id),
+            PtyTerminalSeedlessReason::SeedlessReplayCapExceeded
+        );
+        assert_eq!(fanout.replay_budget.snapshot().attach_bytes, 0);
+        assert_eq!(fanout.get_pty_size(id), Some((80, 240)));
+    }
+
+    #[test]
+    fn semantic_snapshot_output_boundary_has_no_loss_or_duplication() {
+        for iteration in 0..64 {
+            let fanout = fanout();
+            let sink = new_sink();
+            let id = session_with_sink(&fanout, &sink);
+            let token = fanout.registration_token_for_test(id);
+            let marker = format!("boundary-{iteration:02}").into_bytes();
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let activation = std::thread::scope(|scope| {
+                let activation_fanout = fanout.clone();
+                let activation_barrier = Arc::clone(&barrier);
+                let activation = scope.spawn(move || {
+                    activation_barrier.wait();
+                    activation_fanout
+                        .activate_terminal_output(id, WINDOW, true, 1, 1)
+                        .expect("racing activation")
+                });
+                let output_fanout = fanout.clone();
+                let output_barrier = Arc::clone(&barrier);
+                let output_marker = marker.clone();
+                scope.spawn(move || {
+                    output_barrier.wait();
+                    output_fanout.handle_output(&token, &id.to_string(), output_marker);
+                });
+                barrier.wait();
+                activation.join().expect("activation thread")
+            });
+            flush(&fanout, id);
+            let snapshot = activation.snapshot.expect("racing snapshot");
+            let in_snapshot = snapshot
+                .replay_data
+                .windows(marker.len())
+                .any(|window| window == marker);
+            let in_live = events(&sink)
+                .iter()
+                .any(|event| event.1.windows(marker.len()).any(|window| window == marker));
+            assert_ne!(in_snapshot, in_live, "iteration {iteration}");
+            assert_eq!(snapshot.sequence == 1, in_snapshot);
+        }
+    }
+
+    #[test]
+    fn semantic_history_metadata_reports_row_and_byte_clamping() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 81)
+            .expect("register clamping session");
+        for index in 0..1_100 {
+            let line = format!("clamped {index:04} {}\r\n", "x".repeat(70));
+            feed(&fanout, id, &[line.as_bytes()]);
+        }
+        let expected = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            parsers.get(&id).unwrap().parser.screen().clone()
+        };
+        let snapshot = fanout
+            .activate_terminal_output(id, WINDOW, true, 1, 1)
+            .expect("clamped activation")
+            .snapshot
+            .expect("clamped snapshot");
+        assert_eq!(snapshot.retained_history_rows, 1024);
+        assert!(snapshot.included_history_rows < snapshot.retained_history_rows);
+        assert!(snapshot.history_truncated);
+        assert_eq!(
+            snapshot.history_truncation_reason,
+            PtyTerminalHistoryTruncationReason::RowAndByteLimitReached
+        );
+        assert!(snapshot.semantic_history_bytes as usize <= SEMANTIC_HISTORY_REPLAY_BYTES);
+        assert!(snapshot.replay_bytes as usize <= SEMANTIC_REPLAY_MAX_BYTES);
+        assert_current_screen_equivalent(&expected, replay_parser(&snapshot).screen());
+    }
+
+    fn nearest_rank(values: &mut [u64], percentile: usize) -> u64 {
+        values.sort_unstable();
+        let rank = percentile
+            .checked_mul(values.len())
+            .and_then(|value| value.checked_add(99))
+            .expect("percentile rank")
+            / 100;
+        values[rank.saturating_sub(1)]
+    }
+
+    fn assert_latency_percentiles(
+        name: &str,
+        mut values: Vec<u64>,
+        p95_limit_micros: u64,
+        p99_limit_micros: u64,
+    ) {
+        assert!(!values.is_empty(), "{name} samples");
+        let p95 = nearest_rank(&mut values, 95);
+        let p99 = nearest_rank(&mut values, 99);
+        eprintln!("{name}: p95={p95}us p99={p99}us samples={}", values.len());
+        assert!(p95 <= p95_limit_micros, "{name} p95 {p95}us");
+        assert!(p99 <= p99_limit_micros, "{name} p99 {p99}us");
+        assert!(
+            values.iter().all(|value| *value < 5_000_000),
+            "{name} contained a five-second sample"
+        );
+    }
+
+    #[cfg(windows)]
+    fn current_private_bytes() -> u64 {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let read = unsafe {
+            K32GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+                counters.cb,
+            )
+        };
+        assert_ne!(read, 0, "read release-gate process private bytes");
+        counters.PrivateUsage as u64
+    }
+
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "release-only Windows x64 semantic replay resource and latency gate"]
+    fn semantic_replay_resource_and_latency_gate() {
+        const { assert!(cfg!(all(windows, target_arch = "x86_64"))) };
+        assert_eq!(
+            unsafe { windows_sys::Win32::System::Diagnostics::Debug::IsDebuggerPresent() },
+            0,
+            "release latency gate must not run under a debugger"
+        );
+        let private_baseline = current_private_bytes();
+        let fanout = fanout();
+        let mut sessions = Vec::new();
+        for session_index in 0..SUPPORTED_SEMANTIC_REPLAY_SESSIONS {
+            let id = Uuid::new_v4();
+            let token = fanout
+                .register_session_for_test(id, IdleTuning::DEFAULT, 27, 81)
+                .expect("register latency session");
+            let mut history = Vec::new();
+            for row in 0..1_100 {
+                history.extend_from_slice(
+                    format!("s{session_index:02} row {row:04} {}\r\n", "h".repeat(61)).as_bytes(),
+                );
+            }
+            fanout.handle_output(&token, &id.to_string(), history);
+            {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                let state = parsers.get(&id).unwrap();
+                let mut screen = state.parser.screen().clone();
+                screen.set_scrollback(usize::MAX);
+                assert_eq!(screen.scrollback(), SEMANTIC_SCROLLBACK_ROWS);
+            }
+            sessions.push((id, token));
+        }
+        let resources = fanout.replay_budget.snapshot();
+        assert_eq!(resources.sessions, SUPPORTED_SEMANTIC_REPLAY_SESSIONS);
+        assert!(resources.steady_bytes <= SEMANTIC_STEADY_BUDGET_BYTES);
+        let steady_private_delta = current_private_bytes().saturating_sub(private_baseline);
+        assert!(
+            steady_private_delta <= SEMANTIC_STEADY_BUDGET_BYTES as u64,
+            "steady private-byte delta {steady_private_delta}"
+        );
+
+        for (id, token) in &sessions {
+            fanout.handle_output(token, &id.to_string(), b"\x1b[?1049halt".to_vec());
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            assert!(parsers.get(id).unwrap().normal_checkpoint.is_some());
+        }
+        let resources = fanout.replay_budget.snapshot();
+        assert!(resources.checkpoint_bytes <= SEMANTIC_CHECKPOINT_BUDGET_BYTES);
+        let checkpoint_private_delta = current_private_bytes().saturating_sub(private_baseline);
+        assert!(
+            checkpoint_private_delta <= SEMANTIC_CHECKPOINT_BUDGET_BYTES as u64,
+            "checkpoint private-byte delta {checkpoint_private_delta}"
+        );
+        eprintln!(
+            "private bytes: steady_delta={steady_private_delta} checkpoint_delta={checkpoint_private_delta}"
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let missed_cadence = Arc::new(AtomicUsize::new(0));
+        let scheduled = sessions
+            .iter()
+            .map(|_| Arc::new(AtomicUsize::new(0)))
+            .collect::<Vec<_>>();
+        let produced = sessions
+            .iter()
+            .map(|_| Arc::new(AtomicUsize::new(0)))
+            .collect::<Vec<_>>();
+        let producer_start = Arc::new(std::sync::Barrier::new(sessions.len() + 1));
+        let producer_count = sessions.len();
+        let producers = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, (id, token))| {
+                let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+                let reader_fanout = fanout.clone();
+                let reader_produced = Arc::clone(&produced[index]);
+                let reader_session_id = id.to_string();
+                let reader_token = token.clone();
+                let reader = std::thread::spawn(move || {
+                    while let Ok(chunk) = receiver.recv() {
+                        reader_fanout.handle_output(&reader_token, &reader_session_id, chunk);
+                        reader_produced.fetch_add(1, Ordering::AcqRel);
+                    }
+                });
+
+                let stop = Arc::clone(&stop);
+                let missed_cadence = Arc::clone(&missed_cadence);
+                let scheduled = Arc::clone(&scheduled[index]);
+                let producer_start = Arc::clone(&producer_start);
+                let producer = std::thread::spawn(move || {
+                    let mut chunk = b"\x1b[H".to_vec();
+                    chunk.extend(std::iter::repeat_n(b'x', 77));
+                    let cadence = Duration::from_millis(10);
+                    producer_start.wait();
+                    let phase = Duration::from_nanos(
+                        (cadence.as_nanos() * index as u128 / producer_count as u128) as u64,
+                    );
+                    let mut deadline = Instant::now() + phase;
+                    while !stop.load(Ordering::Acquire) {
+                        let now = Instant::now();
+                        if now < deadline {
+                            std::thread::sleep(deadline - now);
+                        }
+                        if stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let started = Instant::now();
+                        if started > deadline + cadence {
+                            missed_cadence.fetch_add(1, Ordering::AcqRel);
+                        }
+                        match sender.try_send(chunk.clone()) {
+                            Ok(()) => {}
+                            Err(std::sync::mpsc::TrySendError::Full(bytes)) => {
+                                missed_cadence.fetch_add(1, Ordering::AcqRel);
+                                sender
+                                    .send(bytes)
+                                    .expect("latency reader remains connected");
+                            }
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                                panic!("latency reader disconnected")
+                            }
+                        }
+                        scheduled.fetch_add(1, Ordering::AcqRel);
+                        deadline += cadence;
+                        if deadline < started {
+                            deadline = started + cadence;
+                        }
+                    }
+                });
+                (producer, reader)
+            })
+            .collect::<Vec<_>>();
+        producer_start.wait();
+
+        let cadence_ready_deadline = Instant::now() + Duration::from_secs(5);
+        while produced
+            .iter()
+            .any(|count| count.load(Ordering::Acquire) < 10)
+        {
+            assert!(
+                Instant::now() < cadence_ready_deadline,
+                "latency readers did not process ten cadence chunks: {:?}",
+                produced
+                    .iter()
+                    .map(|count| count.load(Ordering::Acquire))
+                    .collect::<Vec<_>>()
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            missed_cadence.load(Ordering::Acquire),
+            0,
+            "producer cadence failed before latency timing"
+        );
+        eprintln!("producer cadence precondition: all readers processed at least 10 chunks");
+
+        for index in 0..100 {
+            let id = sessions[index % sessions.len()].0;
+            let activation = fanout
+                .activate_terminal_output(id, "latency", true, 1, index as u32 + 1)
+                .expect("warmup activation");
+            assert!(activation.snapshot.is_some());
+        }
+        eprintln!(
+            "producer cadence: after_warmup={}",
+            missed_cadence.load(Ordering::Acquire)
+        );
+        fanout.take_activation_timings_for_test();
+
+        for index in 0..1_000 {
+            let id = sessions[index % sessions.len()].0;
+            let activation = fanout
+                .activate_terminal_output(id, "latency", true, 1, index as u32 + 101)
+                .expect("measured activation");
+            assert!(activation.snapshot.is_some());
+        }
+        let normal = fanout.take_activation_timings_for_test();
+        eprintln!(
+            "producer cadence: after_normal={}",
+            missed_cadence.load(Ordering::Acquire)
+        );
+        assert_eq!(normal.len(), 1_000);
+        assert_latency_percentiles(
+            "normal clone",
+            normal.iter().map(|sample| sample.clone_micros).collect(),
+            5_000,
+            12_000,
+        );
+        assert_latency_percentiles(
+            "normal parser lock",
+            normal.iter().map(|sample| sample.lock_micros).collect(),
+            8_000,
+            20_000,
+        );
+        assert_latency_percentiles(
+            "normal encode",
+            normal.iter().map(|sample| sample.encode_micros).collect(),
+            25_000,
+            75_000,
+        );
+        assert_latency_percentiles(
+            "normal activation",
+            normal
+                .iter()
+                .map(|sample| sample.activation_micros)
+                .collect(),
+            50_000,
+            150_000,
+        );
+
+        let barrier = Arc::new(std::sync::Barrier::new(sessions.len() + 1));
+        let captures_ready = Arc::new(std::sync::Barrier::new(sessions.len() + 1));
+        let capture_release = Arc::new(std::sync::Barrier::new(sessions.len() + 1));
+        fanout.install_capture_barrier_for_test(
+            Arc::clone(&captures_ready),
+            Arc::clone(&capture_release),
+        );
+        let burst = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, (id, _))| {
+                let fanout = fanout.clone();
+                let barrier = Arc::clone(&barrier);
+                let id = *id;
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let activation = fanout
+                        .activate_terminal_output(
+                            id,
+                            &format!("burst-{index}"),
+                            true,
+                            1,
+                            2_000 + index as u32,
+                        )
+                        .expect("burst activation");
+                    assert!(activation.snapshot.is_some());
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        captures_ready.wait();
+        let burst_resources = fanout.replay_budget.snapshot();
+        assert_eq!(burst_resources.sessions, SUPPORTED_SEMANTIC_REPLAY_SESSIONS);
+        assert!(burst_resources.attach_bytes > 0);
+        assert!(burst_resources.attach_bytes <= SEMANTIC_ATTACH_BUDGET_BYTES);
+        let burst_private_delta = current_private_bytes().saturating_sub(private_baseline);
+        assert!(
+            burst_private_delta <= SEMANTIC_ATTACH_BUDGET_BYTES as u64,
+            "burst private-byte delta {burst_private_delta}"
+        );
+        eprintln!(
+            "private bytes: simultaneous_capture_delta={burst_private_delta} attach_reserved={}",
+            burst_resources.attach_bytes
+        );
+        fanout.clear_capture_barrier_for_test();
+        capture_release.wait();
+        for thread in burst {
+            thread.join().expect("burst thread");
+        }
+        eprintln!(
+            "producer cadence: after_burst={}",
+            missed_cadence.load(Ordering::Acquire)
+        );
+        let burst = fanout.take_activation_timings_for_test();
+        assert_eq!(burst.len(), SUPPORTED_SEMANTIC_REPLAY_SESSIONS);
+        assert_latency_percentiles(
+            "burst clone",
+            burst.iter().map(|sample| sample.clone_micros).collect(),
+            8_000,
+            20_000,
+        );
+        assert_latency_percentiles(
+            "burst parser lock",
+            burst.iter().map(|sample| sample.lock_micros).collect(),
+            10_000,
+            25_000,
+        );
+        assert_latency_percentiles(
+            "burst encode",
+            burst.iter().map(|sample| sample.encode_micros).collect(),
+            100_000,
+            300_000,
+        );
+        assert_latency_percentiles(
+            "burst activation",
+            burst
+                .iter()
+                .map(|sample| sample.activation_micros)
+                .collect(),
+            1_000_000,
+            2_000_000,
+        );
+
+        stop.store(true, Ordering::Release);
+        for (producer, reader) in producers {
+            producer.join().expect("producer thread");
+            reader.join().expect("latency reader thread");
+        }
+        assert_eq!(missed_cadence.load(Ordering::Acquire), 0);
+
+        let wide_private_baseline = current_private_bytes();
+        let wide_fanout = self::fanout();
+        let wide_id = Uuid::new_v4();
+        let wide_token = wide_fanout
+            .register_session_for_test(wide_id, IdleTuning::DEFAULT, 80, 240)
+            .expect("register styled wide-glyph session");
+        let mut styled_wide = Vec::new();
+        for index in 0..(80usize * 120) {
+            if index % 2 == 0 {
+                styled_wide.extend_from_slice(
+                    "\x1b[1;3;4;7;38;2;250;251;252;48;2;100;101;102m界".as_bytes(),
+                );
+            } else {
+                styled_wide.extend_from_slice("\x1b[2;38;2;1;2;3;48;2;240;241;242m界".as_bytes());
+            }
+        }
+        wide_fanout.handle_output(&wide_token, &wide_id.to_string(), styled_wide);
+        {
+            let parsers = wide_fanout
+                .screen_parsers
+                .lock()
+                .expect("wide parser state");
+            let screen = parsers.get(&wide_id).unwrap().parser.screen();
+            assert_eq!(screen.size(), (80, 240));
+            let lead = screen.cell(0, 0).expect("wide lead cell");
+            let continuation = screen.cell(0, 1).expect("wide continuation cell");
+            assert_eq!(lead.contents(), "界");
+            assert!(lead.is_wide());
+            assert!(continuation.is_wide_continuation());
+        }
+        let wide_capture_ready = Arc::new(std::sync::Barrier::new(2));
+        let wide_capture_release = Arc::new(std::sync::Barrier::new(2));
+        wide_fanout.install_capture_barrier_for_test(
+            Arc::clone(&wide_capture_ready),
+            Arc::clone(&wide_capture_release),
+        );
+        let activation_fanout = wide_fanout.clone();
+        let wide_activation = std::thread::spawn(move || {
+            activation_fanout
+                .activate_terminal_output(wide_id, "wide-resource", true, 1, 1)
+                .expect("styled wide-glyph activation")
+        });
+        wide_capture_ready.wait();
+        let wide_resources = wide_fanout.replay_budget.snapshot();
+        assert_eq!(wide_resources.sessions, 1);
+        assert!(wide_resources.attach_bytes > 0);
+        assert!(wide_resources.attach_bytes <= SEMANTIC_ATTACH_BUDGET_BYTES);
+        let wide_private_delta = current_private_bytes().saturating_sub(wide_private_baseline);
+        assert!(
+            wide_private_delta <= SEMANTIC_STEADY_BUDGET_BYTES as u64,
+            "styled wide-glyph private-byte delta {wide_private_delta}"
+        );
+        eprintln!(
+            "private bytes: styled_wide_240x80_capture_delta={wide_private_delta} attach_reserved={}",
+            wide_resources.attach_bytes
+        );
+        wide_fanout.clear_capture_barrier_for_test();
+        wide_capture_release.wait();
+        let wide_activation = wide_activation.join().expect("wide activation thread");
+        assert!(wide_activation.snapshot.is_some());
+        drop(wide_activation);
+        assert_eq!(wide_fanout.replay_budget.snapshot().attach_bytes, 0);
+
+        let parsers = fanout.screen_parsers.lock().expect("parser state");
+        for (index, (id, _)) in sessions.iter().enumerate() {
+            assert_eq!(
+                scheduled[index].load(Ordering::Acquire),
+                produced[index].load(Ordering::Acquire),
+                "session {index} producer/reader count"
+            );
+            assert_eq!(
+                parsers.get(id).unwrap().output_sequence,
+                2 + produced[index].load(Ordering::Acquire) as u64
+            );
+        }
+        drop(parsers);
+        let final_resources = fanout.replay_budget.snapshot();
+        assert!(final_resources.steady_bytes <= SEMANTIC_STEADY_BUDGET_BYTES);
+        assert!(final_resources.checkpoint_bytes <= SEMANTIC_CHECKPOINT_BUDGET_BYTES);
+        assert_eq!(final_resources.attach_bytes, 0);
+        let final_private_delta = current_private_bytes().saturating_sub(private_baseline);
+        assert!(
+            final_private_delta <= SEMANTIC_ATTACH_BUDGET_BYTES as u64,
+            "final private-byte delta {final_private_delta}"
+        );
     }
 }

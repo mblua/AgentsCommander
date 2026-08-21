@@ -24,7 +24,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TerminalApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
-import type { PtyScreenSnapshot } from "../../shared/types";
+import {
+  TEST_TERMINAL_DOCUMENT_EPOCH,
+  terminalActivationWire,
+  terminalSeedlessActivationWire,
+  type TerminalSnapshotWireOptions,
+} from "../../shared/testing/terminal-output";
 import {
   baseSettings,
   installBrowserDomStubs,
@@ -34,6 +39,25 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { initialSelection, liveSelection, SESSION_A } from "../../shared/testing/session-selection";
+
+vi.mock("../../sidebar/stores/sessions", () => ({
+  sessionsStore: {
+    resetContextReadingsForTests: () => undefined,
+    setSessions: () => undefined,
+    resetSelectionForTests: () => undefined,
+    setTeams: () => undefined,
+    setRepos: () => undefined,
+    setAlwaysShowSelectedWorkgroup: () => undefined,
+    setCoordSortByActivity: () => undefined,
+    clearDetached: () => undefined,
+  },
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ onCloseRequested: async () => () => undefined }),
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "terminal" }),
+}));
 
 interface FakeTerminalInstance {
   cols: number;
@@ -46,6 +70,17 @@ interface FakeTerminalInstance {
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
   reset(): void;
+  readonly buffer: {
+    readonly active: {
+      readonly type: "normal";
+      readonly viewportY: number;
+      readonly baseY: number;
+      readonly length: number;
+      readonly getLine: (index: number) =>
+        | { readonly getCell: (col: number) => { readonly getChars: () => string } | undefined }
+        | undefined;
+    };
+  };
 }
 
 const xterm = vi.hoisted(() => ({
@@ -66,6 +101,8 @@ vi.mock("@xterm/xterm", () => ({
     screen: unknown[] = [];
     resets = 0;
     resizes: { cols: number; rows: number }[] = [];
+    private viewportY = 0;
+    private baseY = 0;
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     constructor() {
@@ -76,7 +113,21 @@ vi.mock("@xterm/xterm", () => ({
       addon?.activate?.(this);
     }
 
-    open(element: HTMLElement): void {
+    open(container: HTMLElement): void {
+      const element = document.createElement("div");
+      element.className = "xterm";
+      const screen = document.createElement("div");
+      screen.className = "xterm-screen";
+      const canvas = document.createElement("canvas");
+      canvas.width = 880;
+      canvas.height = 520;
+      screen.appendChild(canvas);
+      element.appendChild(screen);
+      container.appendChild(element);
+      const rect = () => new DOMRect(0, 0, 880, 520);
+      container.getBoundingClientRect = rect;
+      element.getBoundingClientRect = rect;
+      screen.getBoundingClientRect = rect;
       this.element = element;
     }
 
@@ -86,9 +137,14 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
 
-    write(data: unknown): void {
+    write(data: unknown, callback?: () => void): void {
+      if (data instanceof Uint8Array && data.length === 0) {
+        callback?.();
+        return;
+      }
       this.writes.push(data);
       this.screen.push(data);
+      callback?.();
     }
 
     /** Real xterm RIS: clears the screen and scrollback. */
@@ -97,7 +153,32 @@ vi.mock("@xterm/xterm", () => ({
       this.screen.length = 0;
     }
 
-    scrollToBottom(): void {}
+    scrollToBottom(): void {
+      this.viewportY = this.baseY;
+    }
+
+    get buffer() {
+      return {
+        active: {
+          type: "normal" as const,
+          viewportY: this.viewportY,
+          baseY: this.baseY,
+          length: this.baseY + this.rows,
+          getLine: (index: number) => {
+            if (index < this.baseY || index >= this.baseY + this.rows) return undefined;
+            return {
+              getCell: (col: number) => {
+                if (col < 0 || col >= this.cols) return undefined;
+                const hasText = this.screen.some(
+                  (value) => value instanceof Uint8Array && value.length > 0,
+                );
+                return { getChars: () => (hasText && index === this.baseY && col === 0 ? "x" : "") };
+              },
+            };
+          },
+        },
+      };
+    }
 
     paste(): void {}
 
@@ -148,6 +229,10 @@ vi.mock("@xterm/addon-fit", () => ({
     fit = vi.fn(() => {
       this.terminal?.resize(fitViewport.cols, fitViewport.rows);
     });
+
+    proposeDimensions(): { cols: number; rows: number } {
+      return { ...fitViewport };
+    }
   },
 }));
 
@@ -178,8 +263,11 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
   fake.onInvoke("list_sessions", () => sessions);
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
-  fake.resolve("activate_terminal_output", null);
+  fake.resolve("terminal_output_document_epoch", TEST_TERMINAL_DOCUMENT_EPOCH);
+  fake.onInvoke("activate_terminal_output", (args) => terminalSeedlessActivationWire(args));
   fake.resolve("detach_terminal_output", undefined);
+  fake.resolve("cancel_terminal_output_activation", undefined);
+  fake.resolve("record_terminal_attach_observation", undefined);
   fake.resolve("set_last_prompt", undefined);
 }
 
@@ -195,6 +283,23 @@ function deferred<T>(): {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+}
+
+function deferSnapshotActivation(fake: FakeTransport): {
+  readonly resolve: (options: TerminalSnapshotWireOptions) => void;
+} {
+  const pending = deferred<unknown>();
+  let request: Record<string, unknown> | null = null;
+  fake.onInvoke("activate_terminal_output", (args) => {
+    request = args;
+    return pending.promise;
+  });
+  return {
+    resolve: (options) => {
+      if (request === null) throw new Error("activation request has not started");
+      pending.resolve(terminalActivationWire(request, options));
+    },
+  };
 }
 
 async function flushPromises(): Promise<void> {
@@ -241,7 +346,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // the black tile. Green with the gate removed.
   it("renders live PTY output while the snapshot round-trip is still in flight", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
+    const snapshot = deferred<unknown>();
     setupTerminalTransport(fake, [onlySession()]);
     // Never settles: exactly the state the Trace capture proved.
     fake.onInvoke("activate_terminal_output", () => snapshot.promise);
@@ -263,7 +368,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
       expect(bytes(terminal.screen)).toEqual([LIVE]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -271,7 +376,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // must reach the screen while the round-trip is still outstanding.
   it("keeps rendering every live chunk while the snapshot never settles", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
+    const snapshot = deferred<unknown>();
     setupTerminalTransport(fake, [onlySession()]);
     fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
@@ -294,42 +399,48 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(5));
       expect(bytes(terminal.screen)).toEqual([[65], [66], [67], [68], [69]]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
   // Safety net, not a gate: a terminal that has rendered nothing at all says so
   // instead of sitting black and silent. Red against main (no status is ever
   // surfaced while the promise is outstanding).
-  it("surfaces the unavailable status when the snapshot stalls with nothing rendered", async () => {
+  it("surfaces the unavailable status when the attachment deadline expires with nothing rendered", async () => {
+    vi.useFakeTimers();
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
+    const snapshot = deferred<unknown>();
     setupTerminalTransport(fake, [onlySession()]);
     fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
-      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(0);
+      await flushPromises();
+      await flushPromises();
+      expect(xterm.instances).toHaveLength(1);
 
-      await waitFor(() => {
-        const status = rendered.root.querySelector<HTMLDivElement>(
-          '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
-        );
-        expect(status?.hidden).toBe(false);
-      }, 3000);
+      await vi.advanceTimersByTimeAsync(5_001);
+      await flushPromises();
 
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("still pending after 500ms")
+      const status = rendered.root.querySelector<HTMLDivElement>(
+        '[data-ac-testid="terminal.replay-status.11111111-1111-4111-8111-111111111111"]'
+      );
+      expect(status?.hidden).toBe(false);
+
+      expect(fake.lastCall("record_terminal_attach_observation")?.args.observation).toMatchObject(
+        { stage: "aborted", outcome: "timeout" },
       );
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
+      vi.useRealTimers();
     }
   });
 
   // ...but a terminal that IS rendering live output has nothing to report.
   it("does not surface the unavailable status while live output is rendering", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
+    const snapshot = deferred<unknown>();
     setupTerminalTransport(fake, [onlySession()]);
     fake.onInvoke("activate_terminal_output", () => snapshot.promise);
 
@@ -353,7 +464,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       expect(status?.hidden).toBe(true);
       expect(bytes(terminal.screen)).toEqual([LIVE]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -364,9 +475,8 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // chunk must NOT be replayed on top of it: no duplication.
   it("rebuilds from the snapshot without duplicating live output it already contains", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+    const snapshot = deferSnapshotActivation(fake);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -386,10 +496,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(1));
 
       snapshot.resolve({
-        sessionId: SESSION_A,
-        data: [...SNAP, ...LIVE],
-        rows: null,
-        cols: null,
+        replayData: [...SNAP, ...LIVE],
         sequence: 1, // the snapshot's screen already includes event #1
       });
 
@@ -403,7 +510,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       // snapshot arrived — that is the whole point of the fix.
       expect(bytes(terminal.writes)).toEqual([LIVE, [...SNAP, ...LIVE]]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -412,9 +519,8 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // no missing output.
   it("replays the live output the late snapshot does not cover", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+    const snapshot = deferSnapshotActivation(fake);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -438,10 +544,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
 
       snapshot.resolve({
-        sessionId: SESSION_A,
-        data: SNAP,
-        rows: null,
-        cols: null,
+        replayData: SNAP,
         sequence: 1, // covers event #1 only
       });
 
@@ -452,7 +555,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       // (already in the snapshot), event #2 is replayed (it was not).
       expect(bytes(terminal.screen)).toEqual([SNAP, NEXT]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -462,9 +565,8 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // 64 KiB history ring safe (plan 3.4.2 / 3.3 rule 2).
   it("seeds a clean terminal from the snapshot with exactly one reset", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+    const snapshot = deferSnapshotActivation(fake);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -475,10 +577,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       const terminal = xterm.instances[0];
       snapshot.resolve({
-        sessionId: SESSION_A,
-        data: SNAP,
-        rows: null,
-        cols: null,
+        replayData: SNAP,
         sequence: 1,
       });
 
@@ -495,7 +594,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
       expect(terminal.resets).toBe(1);
       expect(bytes(terminal.screen)).toEqual([SNAP, NEXT]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 
@@ -505,9 +604,8 @@ describe("TerminalView snapshot render gate (#955)", () => {
   // and the live screen kept.
   it("discards a snapshot that lands after the reconcile budget is spent", async () => {
     const fake = new FakeTransport();
-    const snapshot = deferred<PtyScreenSnapshot | null>();
     setupTerminalTransport(fake, [onlySession()]);
-    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+    const snapshot = deferSnapshotActivation(fake);
 
     const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
@@ -517,27 +615,26 @@ describe("TerminalView snapshot render gate (#955)", () => {
       );
 
       const terminal = xterm.instances[0];
-      // One chunk larger than the 2 MiB retention budget.
-      const flood = new Array<number>(2 * 1024 * 1024 + 1).fill(65);
-      fake.emitFromBackend("pty_output", {
-        sessionId: SESSION_A,
-        data: flood,
-        sequence: 1,
-      });
+      // Five individually valid chunks cross the 2 MiB reconcile budget.
+      const flood = new Array<number>(512 * 1024).fill(65);
+      for (let sequence = 1; sequence <= 5; sequence += 1) {
+        fake.emitFromBackend("pty_output", {
+          sessionId: SESSION_A,
+          data: flood,
+          sequence,
+        });
+      }
       fake.emitFromBackend("pty_output", {
         sessionId: SESSION_A,
         data: NEXT,
-        sequence: 2,
+        sequence: 6,
       });
 
-      await waitFor(() => expect(terminal.writes).toHaveLength(2));
+      await waitFor(() => expect(terminal.writes).toHaveLength(6));
 
       snapshot.resolve({
-        sessionId: SESSION_A,
-        data: SNAP,
-        rows: null,
-        cols: null,
-        sequence: 1,
+        replayData: SNAP,
+        sequence: 5,
       });
 
       await flushPromises();
@@ -545,12 +642,9 @@ describe("TerminalView snapshot render gate (#955)", () => {
 
       // No reset: the live screen survives intact, snapshot dropped.
       expect(terminal.resets).toBe(0);
-      expect(bytes(terminal.screen.slice(1))).toEqual([NEXT]);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("outran the reconcile budget")
-      );
+      expect(bytes(terminal.screen.slice(-1))).toEqual([NEXT]);
     } finally {
-      rendered.cleanup();
+      await rendered.cleanupAsync();
     }
   });
 });

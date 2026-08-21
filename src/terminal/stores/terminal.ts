@@ -1,11 +1,17 @@
 import { createSignal } from "solid-js";
-import type { Session, SessionSelection, SessionSelectionMode } from "../../shared/types";
+import type {
+  Session,
+  SessionSelection,
+  SessionSelectionMode,
+  SessionSelectionSource,
+} from "../../shared/types";
 import type { TransportConnectionState } from "../../shared/transport";
 
 export type TerminalBindingState = "pending" | "bound" | "unavailable";
 
 const [selectionId, setSelectionId] = createSignal<string | null>(null);
 const [selectionMode, setSelectionMode] = createSignal<SessionSelectionMode>("none");
+const [selectionSource, setSelectionSource] = createSignal<SessionSelectionSource | null>(null);
 const [selectionEpoch, setSelectionEpoch] = createSignal<string | null>(null);
 const [appliedRevision, setAppliedRevision] = createSignal(-1);
 const [retiredEpochs, setRetiredEpochs] = createSignal<ReadonlySet<string>>(new Set());
@@ -85,7 +91,8 @@ function matchesCurrentSelection(
     selectionEpoch() === selection.epoch &&
     appliedRevision() === selection.revision &&
     selectionId() === selection.id &&
-    selectionMode() === selection.mode
+    selectionMode() === selection.mode &&
+    selectionSource() === selection.source
   );
 }
 
@@ -95,6 +102,9 @@ export const terminalStore = {
   },
   get selectionMode() {
     return selectionMode();
+  },
+  get selectionSource() {
+    return selectionSource();
   },
   get selectionEpoch() {
     return selectionEpoch();
@@ -199,6 +209,7 @@ export const terminalStore = {
     setAppliedRevision(selection.revision);
     setSelectionId(selection.id);
     setSelectionMode(selection.mode);
+    setSelectionSource(selection.source);
     setAwaitingHydrationGeneration(null);
     clearLiveMetadata();
     setBindingState(selection.mode === "live" ? "pending" : "unavailable");
@@ -263,6 +274,7 @@ export const terminalStore = {
   bindLockedSession(session: Session, expectedTaskSeq: number): void {
     setSelectionId(session.id);
     setSelectionMode("live");
+    setSelectionSource("attach");
     setActiveSessionId(session.id);
     setActiveSessionName(session.name);
     setActiveShell(session.shell);
@@ -279,6 +291,7 @@ export const terminalStore = {
   clearLockedSession(): void {
     setSelectionId(null);
     setSelectionMode("none");
+    setSelectionSource(null);
     clearLiveMetadata();
     setBindingState("unavailable");
   },
@@ -318,6 +331,7 @@ export const terminalStore = {
     lastLocalTaskWrite = null;
     setSelectionId(null);
     setSelectionMode("none");
+    setSelectionSource(null);
     setSelectionEpoch(null);
     setAppliedRevision(-1);
     setRetiredEpochs(new Set<string>());
@@ -328,12 +342,16 @@ export const terminalStore = {
     setBindingState("unavailable");
   },
 
-  setActiveSessionForTests(id: string | null): void {
+  setActiveSessionForTests(
+    id: string | null,
+    source: SessionSelectionSource = "restore",
+  ): void {
     if (import.meta.env.MODE !== "test") {
       throw new Error("setActiveSessionForTests is test-only");
     }
     setSelectionId(id);
     setSelectionMode(id ? "live" : "none");
+    setSelectionSource(id ? source : null);
     setActiveSessionId(id);
     setBindingState(id ? "bound" : "unavailable");
     if (!id) clearLiveMetadata();

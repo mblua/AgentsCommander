@@ -2913,8 +2913,11 @@ pub fn run(
             commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
+            commands::pty::terminal_output_document_epoch,
             commands::pty::activate_terminal_output,
             commands::pty::detach_terminal_output,
+            commands::pty::cancel_terminal_output_activation,
+            commands::pty::record_terminal_attach_observation,
             commands::pty::get_session_context,
             commands::pty::get_watcher_activity,
             commands::pty::preview_watcher_pattern,
@@ -3040,6 +3043,32 @@ pub fn run(
             commands::screenshot::screenshot_get_hotkey_status,
             commands::screenshot::screenshot_reload_hotkey,
         ])
+        .on_page_load(|webview, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Started {
+                return;
+            }
+            let label = webview.label().to_string();
+            let Some(pty_mgr) = webview
+                .app_handle()
+                .try_state::<Arc<Mutex<crate::pty::manager::PtyManager>>>()
+                .map(|state| Arc::clone(state.inner()))
+            else {
+                log::error!(
+                    "[terminal-snapshot] event=document_begin label={label:?} reason=managerUnavailable"
+                );
+                return;
+            };
+            let coordinator = pty_mgr
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .terminal_output_coordinator();
+            if let Err(error) = coordinator.begin_document(&label) {
+                log::error!(
+                    "[terminal-snapshot] event=document_begin label={label:?} reason={}",
+                    error.code()
+                );
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building application")
         .run({
@@ -3060,13 +3089,16 @@ pub fn run(
                         .try_state::<Arc<Mutex<crate::pty::manager::PtyManager>>>()
                         .map(|state| Arc::clone(state.inner()))
                     {
-                        let destroyed = label.clone();
-                        tauri::async_runtime::spawn(async move {
-                            pty_mgr
-                                .lock()
-                                .unwrap_or_else(|error| error.into_inner())
-                                .release_window_attachments(&destroyed);
-                        });
+                        let coordinator = pty_mgr
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .terminal_output_coordinator();
+                        if let Err(error) = coordinator.release_window(&label) {
+                            log::warn!(
+                                "[terminal-snapshot] event=document_release label={label:?} reason={}",
+                                error.code()
+                            );
+                        }
                     }
                     if label == "spec-board" {
                         let state = spec_board_state.clone();

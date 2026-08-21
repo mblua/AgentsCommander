@@ -28,17 +28,33 @@
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import type { Terminal } from "@xterm/xterm";
-import type { PtyOutputEvent, PtyViewport } from "../../shared/types";
+import type {
+  PtyOutputEvent,
+  PtyTerminalAttachContextState,
+  PtyTerminalAttachRenderer,
+  PtyViewport,
+} from "../../shared/types";
 
 /** Plan 5.5 / Section 9: at most four retained terminal instances. */
 export const TERMINAL_RETENTION_LIMIT = 4;
 
+export interface TerminalResizeOperation {
+  readonly token: number;
+  readonly generation: number | null;
+  readonly viewport: PtyViewport;
+}
+
+export type TerminalObservationProgress = "none" | "postWrite" | "postFit" | "terminal";
+
 export interface SessionTerminalEntry {
   readonly sessionId: string;
+  readonly xtermInstanceId: number;
   readonly container: HTMLDivElement;
   readonly terminal: Terminal;
   readonly fitAddon: FitAddon;
   webglAddon: WebglAddon | null;
+  renderer: PtyTerminalAttachRenderer;
+  contextState: PtyTerminalAttachContextState;
   readonly replayStatus: HTMLDivElement;
   /** True once snapshot or live output reached xterm (drives status text). */
   hasRenderedOutput: boolean;
@@ -46,18 +62,31 @@ export interface SessionTerminalEntry {
   snapshotResizeSuppressed: boolean;
   inputBuffer: string;
   spawnViewport: PtyViewport | null;
-  lastSentViewport: PtyViewport | null;
+  /** Last viewport whose backend resize promise actually resolved. */
+  confirmedViewport: PtyViewport | null;
+  resizeOperationToken: number;
+  inFlightResize: TerminalResizeOperation | null;
   spawnDriftReported: boolean;
   resizeRetryTimer: ReturnType<typeof setTimeout> | null;
   resizeRetryAttempts: number;
-  /** Seed settle warning timer; cancelled at disposal. */
-  snapshotSettleTimer: ReturnType<typeof setTimeout> | null;
+  attachmentDeadlineTimer: ReturnType<typeof setTimeout> | null;
+  firstAttachmentRaf: number | null;
+  secondAttachmentRaf: number | null;
+  ordinaryViewportRaf: number | null;
+  attachGeneration: number | null;
+  attachmentAbortController: AbortController | null;
+  bottomSettledGeneration: number | null;
+  attachmentSettlePending: boolean;
+  deferredViewportSync: boolean;
+  observationProgress: TerminalObservationProgress;
+  observationChain: Promise<void>;
   /** #961 seed/reconcile state. While an attach is in flight the live events
    *  are BOTH written and retained, so the seed that lands afterwards can be
    *  applied by reset-then-replay instead of gating the live bytes behind it. */
   snapshotReplayPending: boolean;
   pendingSnapshotEvents: PtyOutputEvent[];
   pendingSnapshotBytes: number;
+  snapshotReconcileDiscarded: boolean;
   /** Watermark: the highest sequence already on screen. `null` until the first
    *  sequenced write (browser mode never sets it). */
   lastAppliedSequence: number | null;
@@ -90,7 +119,7 @@ export interface TerminalRegistry {
     sessionId: string,
     create: (sessionId: string, container: HTMLDivElement) => Omit<
       SessionTerminalEntry,
-      "sessionId" | "container" | "lastActivatedAt" | "destroyed"
+      "sessionId" | "xtermInstanceId" | "container" | "lastActivatedAt" | "destroyed"
     >
   ): SessionTerminalEntry;
   get(sessionId: string): SessionTerminalEntry | undefined;
@@ -102,7 +131,7 @@ export interface TerminalRegistry {
     sessionId: string,
     create: (sessionId: string, container: HTMLDivElement) => Omit<
       SessionTerminalEntry,
-      "sessionId" | "container" | "lastActivatedAt" | "destroyed"
+      "sessionId" | "xtermInstanceId" | "container" | "lastActivatedAt" | "destroyed"
     >
   ): SessionTerminalEntry;
   getVisible(): string | null;
@@ -120,6 +149,7 @@ export function createTerminalSessionRegistry(
   const entries = new Map<string, SessionTerminalEntry>();
   let visibleSessionId: string | null = null;
   let lruClock = 0;
+  let instanceClock = 0;
   let webglContextLosses = 0;
   let lruEvictions = 0;
 
@@ -131,14 +161,35 @@ export function createTerminalSessionRegistry(
     entry.destroyed = true;
 
     // 1. scheduled work / listener cleanup: cancel every per-entry timer.
-    if (entry.snapshotSettleTimer !== null) {
-      clearTimeout(entry.snapshotSettleTimer);
-      entry.snapshotSettleTimer = null;
-    }
     if (entry.resizeRetryTimer !== null) {
       clearTimeout(entry.resizeRetryTimer);
       entry.resizeRetryTimer = null;
     }
+    if (entry.attachmentDeadlineTimer !== null) {
+      clearTimeout(entry.attachmentDeadlineTimer);
+      entry.attachmentDeadlineTimer = null;
+    }
+    if (entry.firstAttachmentRaf !== null) {
+      cancelAnimationFrame(entry.firstAttachmentRaf);
+      entry.firstAttachmentRaf = null;
+    }
+    if (entry.secondAttachmentRaf !== null) {
+      cancelAnimationFrame(entry.secondAttachmentRaf);
+      entry.secondAttachmentRaf = null;
+    }
+    if (entry.ordinaryViewportRaf !== null) {
+      cancelAnimationFrame(entry.ordinaryViewportRaf);
+      entry.ordinaryViewportRaf = null;
+    }
+    entry.attachmentAbortController?.abort();
+    entry.attachmentAbortController = null;
+    entry.resizeOperationToken += 1;
+    entry.inFlightResize = null;
+    entry.attachmentSettlePending = false;
+    entry.deferredViewportSync = false;
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
 
     // 2. the orchestrator's pre-dispose hook, BEFORE any resource disposal.
     options.beforeResourceDispose(sessionId);
@@ -201,8 +252,15 @@ export function createTerminalSessionRegistry(
       container.hidden = true;
       options.host().appendChild(container);
 
+      if (instanceClock >= 4_294_967_295) {
+        container.remove();
+        throw new Error("Terminal xterm instance id space exhausted");
+      }
+      instanceClock += 1;
+
       const entry: SessionTerminalEntry = {
         sessionId,
+        xtermInstanceId: instanceClock,
         container,
         lastActivatedAt: 0,
         destroyed: false,
@@ -245,7 +303,7 @@ export function createTerminalSessionRegistry(
     metrics() {
       let webglContexts = 0;
       for (const entry of entries.values()) {
-        if (entry.webglAddon !== null) {
+        if (entry.renderer === "webgl" && entry.contextState === "active") {
           webglContexts += 1;
         }
       }

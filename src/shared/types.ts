@@ -330,9 +330,9 @@ export type UnrecognizedWatcherEntry = JsonValue;
  * is written live with no reconcile (PR #961: live PTY bytes are never gated).
  */
 export interface PtyOutputEvent {
-  sessionId: string;
-  data: number[];
-  sequence?: number;
+  readonly sessionId: string;
+  readonly data: readonly number[];
+  readonly sequence?: number;
 }
 
 export interface PtyViewport {
@@ -340,12 +340,174 @@ export interface PtyViewport {
   rows: number;
 }
 
+/** Compatibility response for the legacy diagnostic `get_screen_snapshot` command. */
+export interface PtyLegacyScreenSnapshot {
+  readonly sessionId: string;
+  readonly data: readonly number[];
+  readonly rows: number | null;
+  readonly cols: number | null;
+  readonly sequence: number;
+}
+
+export type PtyTerminalActiveBuffer = "normal" | "alternate";
+export type PtyTerminalAlternateEntryMode = "mode47" | "mode1047" | "mode1049";
+export type PtyTerminalReplayStage =
+  | "semanticHistory"
+  | "screenOnlyHistoryDisabled"
+  | "screenOnlyCheckpointUnavailable";
+export type PtyTerminalHistoryTruncationReason =
+  | "none"
+  | "rowLimitReached"
+  | "byteLimitReached"
+  | "rowAndByteLimitReached";
+export type PtyTerminalSeedlessReason =
+  | "seedlessParserUnavailable"
+  | "seedlessParserPoisoned"
+  | "seedlessContinuationUnsafe"
+  | "seedlessInvalidGrid"
+  | "seedlessResizeFailed"
+  | "seedlessResourceLimitExceeded"
+  | "seedlessReplayCapExceeded"
+  | "seedlessSequenceUnsafe"
+  | "seedlessCaptureFailed"
+  | "seedlessEncodeFailed";
+export type PtyTerminalLocalSeedlessReason = PtyTerminalSeedlessReason | "snapshotDiscarded";
+
+/** Canonical semantic replay seed after the IPC trust boundary. */
 export interface PtyScreenSnapshot {
-  sessionId: string;
-  data: number[];
-  rows: number | null;
-  cols: number | null;
-  sequence: number;
+  readonly replayData: readonly number[];
+  readonly rows: number;
+  readonly cols: number;
+  readonly sequence: number;
+  readonly activeBuffer: PtyTerminalActiveBuffer;
+  readonly alternateEntryMode: PtyTerminalAlternateEntryMode | null;
+  readonly replayStage: PtyTerminalReplayStage;
+  readonly historyIncluded: boolean;
+  readonly historyTruncated: boolean;
+  readonly historyTruncationReason: PtyTerminalHistoryTruncationReason;
+  readonly historyBoundaryHardened: boolean;
+  readonly normalScreenIncluded: boolean;
+  readonly retainedHistoryRows: number;
+  readonly includedHistoryRows: number;
+  readonly semanticHistoryBytes: number;
+  readonly replayBytes: number;
+  readonly pendingParserBytes: number;
+  readonly activeScreenHasText: boolean;
+  readonly activeBottomLineHasText: boolean;
+}
+
+export type PtyTerminalOutputActivation =
+  | {
+      readonly snapshot: PtyScreenSnapshot;
+      readonly seedlessReason: null;
+      readonly attachGeneration: number;
+      readonly documentEpoch: string;
+    }
+  | {
+      readonly snapshot: null;
+      readonly seedlessReason: PtyTerminalLocalSeedlessReason;
+      readonly attachGeneration: number;
+      readonly documentEpoch: string;
+    };
+
+export type PtyTerminalAttachObservationStage =
+  | "postWrite"
+  | "postFit"
+  | "settled"
+  | "aborted";
+export type PtyTerminalAttachViewKind = "embedded" | "externalized";
+export type PtyTerminalAttachTransitionKind = "initial" | "switch" | "reattach";
+export type PtyTerminalAttachRenderer = "webgl" | "dom";
+export type PtyTerminalAttachContextState = "active" | "lost" | "unavailable";
+export type PtyTerminalAttachOutcome =
+  | "success"
+  | "stale"
+  | "timeout"
+  | "disposed"
+  | "resizeFailed"
+  | "invariantFailed"
+  | "snapshotDiscarded"
+  | PtyTerminalSeedlessReason
+  | "screenOnlyHistoryDisabled"
+  | "screenOnlyCheckpointUnavailable";
+
+/** Content-free frontend observation accepted by `record_terminal_attach_observation`. */
+export interface PtyTerminalAttachObservation {
+  readonly sessionId: string;
+  readonly stage: PtyTerminalAttachObservationStage;
+  readonly documentEpoch: string;
+  readonly xtermInstanceId: number;
+  readonly viewKind: PtyTerminalAttachViewKind;
+  readonly transitionKind: PtyTerminalAttachTransitionKind;
+  readonly attachGeneration: number;
+  readonly sequence: number;
+  readonly outcome: PtyTerminalAttachOutcome;
+  readonly parserRows?: number;
+  readonly parserCols?: number;
+  readonly conptyRows?: number;
+  readonly conptyCols?: number;
+  readonly snapshotRows?: number;
+  readonly snapshotCols?: number;
+  readonly xtermRows?: number;
+  readonly xtermCols?: number;
+  readonly historyRequested?: boolean;
+  readonly historyIncluded?: boolean;
+  readonly historyTruncated?: boolean;
+  readonly historyTruncationReason?: PtyTerminalHistoryTruncationReason;
+  readonly historyBoundaryHardened?: boolean;
+  readonly retainedHistoryRows?: number;
+  readonly includedHistoryRows?: number;
+  readonly semanticHistoryBytes?: number;
+  readonly replayBytes?: number;
+  readonly normalScreenIncluded?: boolean;
+  readonly activeBuffer?: PtyTerminalActiveBuffer;
+  readonly alternateEntryMode?: PtyTerminalAlternateEntryMode;
+  readonly replayStage?: PtyTerminalReplayStage;
+  readonly retainedEventCount?: number;
+  readonly retainedByteCount?: number;
+  readonly resourceSessions?: number;
+  readonly resourceSteadyBytes?: number;
+  readonly resourceCheckpointBytes?: number;
+  readonly resourceAttachBytes?: number;
+  readonly viewportY?: number;
+  readonly baseY?: number;
+  readonly bufferLength?: number;
+  readonly visibleRowCount?: number;
+  readonly missingVisibleRowCount?: number;
+  readonly renderer?: PtyTerminalAttachRenderer;
+  readonly contextState?: PtyTerminalAttachContextState;
+  readonly containerConnected?: boolean;
+  readonly xtermConnected?: boolean;
+  readonly screenConnected?: boolean;
+  readonly elementWidth?: number;
+  readonly elementHeight?: number;
+  readonly screenWidth?: number;
+  readonly screenHeight?: number;
+  readonly canvasWidth?: number;
+  readonly canvasHeight?: number;
+  readonly routeWaitMicros?: number;
+  readonly ownershipWaitMicros?: number;
+  readonly parserLockHoldMicros?: number;
+  readonly cloneMicros?: number;
+  readonly encodeMicros?: number;
+  readonly backendActivationMicros?: number;
+  readonly fetchMicros?: number;
+  readonly writeMicros?: number;
+  readonly fitMicros?: number;
+  readonly resizeMicros?: number;
+  readonly settleMicros?: number;
+  readonly totalMicros?: number;
+  readonly parserPrefixIncluded?: boolean;
+  readonly replayBarrierCompleted?: boolean;
+  readonly retainedBarrierCompleted?: boolean;
+  readonly gridAgreement?: boolean;
+  readonly resizeConfirmed?: boolean;
+  readonly visibleRowsPresent?: boolean;
+  readonly bottomPositionSatisfied?: boolean;
+  readonly expectedActiveScreenHasText?: boolean;
+  readonly observedActiveScreenHasText?: boolean;
+  readonly expectedBottomLineHasText?: boolean;
+  readonly observedBottomLineHasText?: boolean;
 }
 
 export interface ConfigSeedConfig {

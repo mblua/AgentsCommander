@@ -2177,12 +2177,19 @@ impl PtyBackend for LocalProcessBackend {
         id: Uuid,
         label: &str,
         include_history: bool,
+        document_epoch: u64,
+        attach_generation: u32,
     ) -> Result<
-        Option<crate::pty::output::PtyScreenSnapshot>,
+        crate::pty::output::PtyTerminalOutputActivation,
         crate::pty::output::TerminalOutputAttachError,
     > {
-        self.fanout
-            .activate_terminal_output(id, label, include_history)
+        self.fanout.activate_terminal_output(
+            id,
+            label,
+            include_history,
+            document_epoch,
+            attach_generation,
+        )
     }
 
     fn detach_terminal_output(&self, id: Uuid, label: &str) {
@@ -3802,6 +3809,7 @@ mod adapter_spawn_sync_tests {
     use super::*;
     use crate::pty::backend::ResolvedAgentHostShell;
     use crate::session::manager::SessionManager;
+    use crate::session::profile::IdleTuning;
     use std::sync::atomic::Ordering;
 
     fn test_backend() -> (LocalProcessBackend, tauri::App) {
@@ -3818,6 +3826,22 @@ mod adapter_spawn_sync_tests {
             LocalProcessBackend::new(output_senders, idle_detector, git_watcher, None),
             app,
         )
+    }
+
+    #[test]
+    fn terminal_output_forwarding_preserves_epoch_and_generation() {
+        let (backend, _app) = test_backend();
+        let id = Uuid::new_v4();
+        backend
+            .fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 81)
+            .expect("register terminal-output session");
+        let activation = backend
+            .activate_terminal_output(id, "main", true, 17, 23)
+            .expect("activate terminal output");
+        assert_eq!(activation.document_epoch, 17);
+        assert_eq!(activation.attach_generation, 23);
+        assert!(activation.snapshot.is_some());
     }
 
     fn spawn_spec(

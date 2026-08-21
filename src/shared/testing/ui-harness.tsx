@@ -31,19 +31,39 @@ export function renderWithFakeTransport(
   fake: FakeTransport;
   root: HTMLDivElement;
   cleanup: () => void;
+  cleanupAsync: () => Promise<void>;
 } {
   const restoreTransport = __setTransportForTests(fake);
   const root = document.createElement("div");
   document.body.appendChild(root);
   const dispose = render(component, root);
+  let disposed = false;
+  let transportRestored = false;
+  const disposeRoot = (): void => {
+    if (disposed) return;
+    disposed = true;
+    dispose();
+    root.remove();
+  };
+  const restore = (): void => {
+    if (transportRestored) return;
+    transportRestored = true;
+    restoreTransport();
+  };
 
   return {
     fake,
     root,
     cleanup: () => {
-      dispose();
-      restoreTransport();
-      root.remove();
+      disposeRoot();
+      restore();
+    },
+    cleanupAsync: async () => {
+      disposeRoot();
+      for (let pass = 0; pass < 8; pass += 1) {
+        await Promise.resolve();
+      }
+      restore();
     },
   };
 }
