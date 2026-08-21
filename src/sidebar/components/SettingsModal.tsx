@@ -51,8 +51,8 @@ import {
 } from "./settings-watchers";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
+  AC_PROJECT_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
-  AC_WORKSPACE_ROOT_PLACEHOLDER,
   commandExecutableBasename,
   defaultInstructionsFilename,
   executableTokenBasename,
@@ -76,7 +76,7 @@ type ProfileCellEnvRow = { key: string; value: string };
 const AC_PLACEHOLDER_HELP = [
   "AC path placeholders (expand at launch):",
   `${AC_REPLICA_ROOT_PLACEHOLDER} — this replica's working dir`,
-  `${AC_WORKSPACE_ROOT_PLACEHOLDER} — the .ac workspace root`,
+  `${AC_PROJECT_ROOT_PLACEHOLDER} — the project's .ac root`,
   `${AC_MATRIX_ROOT_PLACEHOLDER} — the canonical _agent_<name> dir`,
   "Full details: docs/agent-matrix-conventions.md §5",
 ].join("\n");
@@ -3389,7 +3389,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <Show when={hasAcPlaceholder(command())}>
             <div class="settings-profile-ph-hint" data-ac-testid={`${cardId}.command.placeholder`}>
               <span class="settings-profile-ph-token">%AC_REPLICA_ROOT%</span>,{" "}
-              <span class="settings-profile-ph-token">%AC_WORKSPACE_ROOT%</span>, and{" "}
+              <span class="settings-profile-ph-token">%AC_PROJECT_ROOT%</span>, and{" "}
               <span class="settings-profile-ph-token">%AC_MATRIX_ROOT%</span> expand at
               launch; the backend validates the result.
             </div>

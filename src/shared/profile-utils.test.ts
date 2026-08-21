@@ -175,21 +175,21 @@ describe("profile utils", () => {
     expect(isWgReplicaPath(null)).toBe(false);
   });
 
-  it("previews AC placeholder expansion for display only (3 tokens, #576)", () => {
+  it("previews canonical AC placeholder expansion for display only (3 tokens, #576)", () => {
     expect(hasAcPlaceholder("%AC_REPLICA_ROOT%\\.codex")).toBe(true);
-    expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true);
+    expect(hasAcPlaceholder("%AC_PROJECT_ROOT%\\.claude")).toBe(true);
     expect(hasAcPlaceholder("%AC_MATRIX_ROOT%\\.codex")).toBe(true);
     expect(hasAcPlaceholder("D:\\manual\\codex")).toBe(false);
     // Old %AC_ROOT% token is no longer recognized (breaking rename, no alias).
     expect(hasAcPlaceholder("%AC_ROOT%\\.codex")).toBe(false);
 
-    // %AC_REPLICA_ROOT% → replica root; %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%
+    // %AC_REPLICA_ROOT% → replica root; %AC_PROJECT_ROOT% and %AC_MATRIX_ROOT%
     // derive from a full replica path (…\.ac\wg-*\__agent_<name>).
     const replica = "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex";
     expect(expandAcPlaceholdersPreview("%AC_REPLICA_ROOT%\\.codex\\agents\\codex", replica)).toBe(
       "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex\\.codex\\agents\\codex",
     );
-    expect(expandAcPlaceholdersPreview("%AC_WORKSPACE_ROOT%\\.claude", replica)).toBe(
+    expect(expandAcPlaceholdersPreview("%AC_PROJECT_ROOT%\\.claude", replica)).toBe(
       "C:\\proj\\.ac\\.claude",
     );
     expect(expandAcPlaceholdersPreview("%AC_MATRIX_ROOT%\\.codex", replica)).toBe(
@@ -199,6 +199,17 @@ describe("profile utils", () => {
     // No root context → returned unchanged (backend expands authoritatively at launch).
     expect(expandAcPlaceholdersPreview("%AC_REPLICA_ROOT%\\.codex", null)).toBe(
       "%AC_REPLICA_ROOT%\\.codex",
+    );
+  });
+
+  it("recognizes the legacy AC workspace root placeholder", () => {
+    expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true);
+  });
+
+  it("expands the legacy AC workspace root placeholder to the project .ac root", () => {
+    const replica = "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex";
+    expect(expandAcPlaceholdersPreview("%AC_WORKSPACE_ROOT%\\.claude", replica)).toBe(
+      "C:\\proj\\.ac\\.claude",
     );
   });
 
@@ -329,9 +340,13 @@ describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
   it("classifies an AgentsCommander-managed home path as system", () => {
     expect(profileEnvOrigin("CODEX_HOME", "%AC_REPLICA_ROOT%\\.codex\\agents\\codex")).toBe("system");
     expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_REPLICA_ROOT%/.claude")).toBe("system");
-    // Any of the three AC placeholders on a managed home key is system-managed.
-    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_WORKSPACE_ROOT%/.claude")).toBe("system");
+    // Any of the three canonical AC placeholders on a managed home key is system-managed.
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_PROJECT_ROOT%/.claude")).toBe("system");
     expect(profileEnvOrigin("CODEX_HOME", "%AC_MATRIX_ROOT%\\.codex")).toBe("system");
+  });
+
+  it("classifies the legacy AC workspace root placeholder as system", () => {
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_WORKSPACE_ROOT%/.claude")).toBe("system");
   });
 
   it("classifies a literal absolute path on a managed home key as accepted", () => {

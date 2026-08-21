@@ -6,8 +6,8 @@ import type { AppSettings, SettingsSnapshot } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
+  AC_PROJECT_ROOT_PLACEHOLDER,
   AC_REPLICA_ROOT_PLACEHOLDER,
-  AC_WORKSPACE_ROOT_PLACEHOLDER,
   PI_CONTEXT_REGEX,
 } from "../../shared/profile-utils";
 
@@ -960,7 +960,7 @@ describe("SettingsModal automation hooks", () => {
     expect(help.getAttribute("type")).toBe("button");
     for (const token of [
       AC_REPLICA_ROOT_PLACEHOLDER,
-      AC_WORKSPACE_ROOT_PLACEHOLDER,
+      AC_PROJECT_ROOT_PLACEHOLDER,
       AC_MATRIX_ROOT_PLACEHOLDER,
     ]) {
       expect(help.getAttribute("title")).toContain(token);

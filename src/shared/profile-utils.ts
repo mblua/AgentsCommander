@@ -24,11 +24,13 @@ export interface ArgvParseResult {
 }
 
 export const AC_REPLICA_ROOT_PLACEHOLDER = "%AC_REPLICA_ROOT%";
-export const AC_WORKSPACE_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
+export const AC_PROJECT_ROOT_PLACEHOLDER = "%AC_PROJECT_ROOT%";
+export const LEGACY_AC_PROJECT_ROOT_PLACEHOLDER = "%AC_WORKSPACE_ROOT%";
 export const AC_MATRIX_ROOT_PLACEHOLDER = "%AC_MATRIX_ROOT%";
 export const AC_PLACEHOLDERS = [
   AC_REPLICA_ROOT_PLACEHOLDER,
-  AC_WORKSPACE_ROOT_PLACEHOLDER,
+  AC_PROJECT_ROOT_PLACEHOLDER,
+  LEGACY_AC_PROJECT_ROOT_PLACEHOLDER,
   AC_MATRIX_ROOT_PLACEHOLDER,
 ] as const;
 
@@ -134,7 +136,7 @@ export function expandAcPlaceholdersPreview(
   if (!replicaRoot || !hasAcPlaceholder(value)) return value;
   let out = value.split(AC_REPLICA_ROOT_PLACEHOLDER).join(replicaRoot);
   const acRoot = deriveAcRoot(replicaRoot);
-  if (acRoot) out = out.split(AC_WORKSPACE_ROOT_PLACEHOLDER).join(acRoot);
+  if (acRoot) out = out.split(AC_PROJECT_ROOT_PLACEHOLDER).join(acRoot).split(LEGACY_AC_PROJECT_ROOT_PLACEHOLDER).join(acRoot);
   const matrix = deriveMatrixRoot(replicaRoot);
   if (matrix) out = out.split(AC_MATRIX_ROOT_PLACEHOLDER).join(matrix);
   return out;
