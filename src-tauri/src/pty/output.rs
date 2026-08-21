@@ -1309,6 +1309,7 @@ impl SessionIoFanout {
                     Ok(Ok(snapshot)) => Some(snapshot),
                     Ok(Err(())) => None,
                     Err(_) => {
+                        log::warn!("[terminal-snapshot] stage=render_panic reason=payload_panic session={id} (#1452)");
                         state.parser_availability = ParserAvailability::Unavailable;
                         None
                     }
