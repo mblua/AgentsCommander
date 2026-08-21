@@ -1,29 +1,17 @@
 //! Activated project seed-manifest recorder.
 //!
-//! Stage F introduces the sole production [`ManifestActivationToken`] constructor
-//! ([`ManifestActivationToken::production`]) and threads it through every
-//! publisher and lifecycle hook named in [`V1_COVERAGE_BOUNDARIES`], so a
-//! production build now emits `.ac/seed-manifest.toml`. Stages A through E kept
-//! the module reachable only from `#[cfg(test)]` builds; that dormancy ends here.
-//! The coverage declaration is the exhaustive compile-time checklist; it is not
-//! by itself wiring evidence. Real-boundary coverage lives in
-//! `tests/seed_manifest_activation.rs` plus the CLI integration suites:
-//! boundaries reachable from a plain entry point are driven end-to-end through
-//! the library compiled in non-test mode and assert the resulting manifest
-//! mutation, while the `#[cfg(not(test))]`-gated and GUI-only boundaries are
-//! guarded by source-scrape wiring assertions that red if a boundary's
-//! `ManifestActivationToken::production()` threading (or its recording adapter)
-//! is removed. Either way, removing an actual adapter call turns a test red
-//! while this list stays green.
+//! [`ManifestActivationToken::production`] is the sole production activation
+//! constructor for supported publications and lifecycle cleanup. The historical
+//! names in [`V1_COVERAGE_BOUNDARIES`] remain a stable compatibility vocabulary;
+//! they are not a list of current publishers and do not imply recorder wiring.
 //!
 //! #1318 - coverage grew to v2 (`coding_agent_catalog` kind): an existing v1
 //! manifest is upgraded IN PLACE on the first writer/reader acquire (see
-//! [`ProjectSeedManifestGuard::try_upgrade_v1_to_v2`]) with every row and
-//! timestamp preserved verbatim; a v2 manifest written by this build is NOT
-//! readable by an old build (writer strictness is a one-way door; an old build
-//! preserves its bytes exactly). [`V1CoverageBoundary::CatalogSeed`] is the
-//! first coverage-v2-era publisher; the declaration remains the exhaustive
-//! production-publisher checklist across coverage versions.
+//! [`ProjectSeedManifestGuard::try_upgrade_v1_to_v2`]). Supported rows and their
+//! timestamps are preserved on disk, while legacy replica-config rows remain in
+//! the held state but are omitted from canonical output. A v2 manifest written by
+//! this build is NOT readable by an old build (writer strictness is a one-way
+//! door; an old build preserves its bytes exactly).
 
 #![allow(dead_code)]
 
@@ -386,6 +374,14 @@ impl ManifestFileKind {
             Self::ProjectContextTemplate => "project_context_template",
             Self::ReplicaConfigFile => "replica_config_file",
             Self::CodingAgentCatalog => "coding_agent_catalog",
+        }
+    }
+
+    fn is_canonical_output(self) -> bool {
+        match self {
+            Self::ProjectContextTemplate => true,
+            Self::ReplicaConfigFile => false,
+            Self::CodingAgentCatalog => true,
         }
     }
 }
@@ -955,6 +951,7 @@ impl PublishedManifestRow {
         Ok(row)
     }
 
+    #[cfg(test)]
     pub(crate) fn replica_config(
         path: ManifestPathIdentity,
         scope: String,
@@ -1098,14 +1095,19 @@ impl ManifestState {
         Ok(Self { rows })
     }
 
+    fn canonical_rows(&self) -> impl Iterator<Item = &PublishedManifestRow> {
+        self.rows
+            .values()
+            .filter(|row| row.kind.is_canonical_output())
+    }
+
     fn to_wire(&self) -> SeedManifestWire {
         SeedManifestWire {
             schema_version: SCHEMA_VERSION,
             coverage_version: COVERAGE_VERSION,
             coverage: COVERAGE.map(str::to_string).to_vec(),
             files: self
-                .rows
-                .values()
+                .canonical_rows()
                 .map(PublishedManifestRow::to_wire)
                 .collect(),
         }
@@ -1117,6 +1119,7 @@ impl ManifestState {
         RowMutationJournal { key, previous }
     }
 
+    #[cfg(test)]
     fn replace_scope(
         &mut self,
         scope: &str,
@@ -1192,12 +1195,14 @@ impl RowMutationJournal {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct ScopeMutationJournal {
     removed: Vec<(ManifestPathKey, PublishedManifestRow)>,
     inserted: Vec<ManifestPathKey>,
 }
 
+#[cfg(test)]
 impl ScopeMutationJournal {
     fn changed(&self, state: &ManifestState) -> bool {
         if self.removed.len() != self.inserted.len() {
@@ -1443,11 +1448,12 @@ fn exact_serialized_len_with_limit(
     state: &ManifestState,
     output_limit: u64,
 ) -> Result<usize, SeedManifestError> {
-    if state.rows.len() > MAX_MANIFEST_ROWS {
+    let canonical_row_count = state.canonical_rows().count();
+    if canonical_row_count > MAX_MANIFEST_ROWS {
         return Err(SeedManifestError::resource_bound(
             ResourceBoundKind::Rows,
             MAX_MANIFEST_ROWS,
-            state.rows.len(),
+            canonical_row_count,
         ));
     }
 
@@ -1458,10 +1464,10 @@ fn exact_serialized_len_with_limit(
         &mut length,
         "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n".len(),
     )?;
-    if state.rows.is_empty() {
+    if canonical_row_count == 0 {
         checked_add(&mut length, "files = []\n".len())?;
     } else {
-        for row in state.rows.values() {
+        for row in state.canonical_rows() {
             checked_add(&mut length, "\n[[files]]\n".len())?;
             checked_add(&mut length, "path = \"\"\n".len())?;
             checked_add(
@@ -2424,10 +2430,12 @@ impl ProjectSeedManifestGuard {
 
     /// #1318 - one-shot v1 -> v2 coverage upgrade, run under the held lock on
     /// the first acquire of an exact-shape v1 manifest. Deterministic and
-    /// lossless: the v2 state is built by SUBSTITUTION from the parsed v1 wire
-    /// (`coverage_version` and the coverage list only), so every existing strict
-    /// row check and bound runs verbatim and no timestamp is invented. The
-    /// atomic write goes through [`Self::write_canonical`] DIRECTLY (not
+    /// strict: the v2 state is built by SUBSTITUTION from the parsed v1 wire
+    /// (`coverage_version` and the coverage list only), so every existing row
+    /// check and bound runs verbatim and no timestamp is invented. Canonical
+    /// output preserves supported rows and retains legacy replica-config rows
+    /// only in the held state. The atomic write goes through
+    /// [`Self::write_canonical`] DIRECTLY (not
     /// `persist_current_state`, whose `Unchanged` fast path and `Recorded`
     /// classification are publication semantics, not migration semantics):
     /// `verify_canonical_unchanged` stream-compares the CURRENT disk file
@@ -2545,7 +2553,8 @@ impl ProjectSeedManifestGuard {
             }
         };
 
-        // e. Serialize and write under the held lock. `write_canonical` updates
+        // e. Serialize canonical output and write under the held lock. The held
+        // state still retains every validated v1 row. `write_canonical` updates
         // the snapshot itself on success; on failure its temp is cleaned and the
         // pre-migration degraded snapshot is restored (bytes preserved exactly,
         // writer disabled, published-unrecorded).
@@ -3191,14 +3200,12 @@ impl ManifestActivationToken {
         Self { _private: () }
     }
 
-    /// Stage F: the sole production activation constructor.
+    /// The sole production activation constructor.
     ///
-    /// Constructing this token is what activates v1 seed-manifest emission. Every
-    /// production publisher and lifecycle hook enumerated in
-    /// [`V1_COVERAGE_BOUNDARIES`] threads the resulting token into the recorder;
-    /// there is deliberately no other non-test way to obtain one, so a build that
-    /// never calls this constructor cannot mutate a manifest. The struct's private
-    /// unit field keeps this the only construction path.
+    /// Supported publishers and lifecycle hooks thread this token into the
+    /// recorder. Historical entries in [`V1_COVERAGE_BOUNDARIES`] need not remain
+    /// active publishers. There is deliberately no other non-test construction
+    /// path, so code without this token cannot mutate a manifest.
     pub(crate) fn production() -> Self {
         Self { _private: () }
     }
@@ -3206,22 +3213,17 @@ impl ManifestActivationToken {
     fn authorize(&self) {}
 }
 
-/// Exhaustive Stage F activation coverage (plan section 9 item 6, acceptance
-/// item 22).
+/// Historical Stage F coverage-boundary declaration.
 ///
-/// Every production publisher and lifecycle hook that threads a real
-/// [`ManifestActivationToken`] is named here exactly once, next to the module
-/// and adapter that wires it. This declaration is the compile-time checklist; it
-/// is NOT by itself wiring evidence. Real-boundary coverage in
-/// `tests/seed_manifest_activation.rs` and the CLI integration suites reds if
-/// any variant's production `ManifestActivationToken::production()` threading (or
-/// its recording adapter) is removed, so a declaration cannot silently stay green
-/// after its adapter call was removed (which would be insufficient).
+/// These stable names preserve the compatibility vocabulary established by the
+/// original activation rollout. They include historical publication boundaries
+/// that no longer emit canonical rows, so this declaration is not a checklist of
+/// current production publishers or wiring evidence.
 ///
 /// #1318 - [`V1CoverageBoundary::CatalogSeed`] is the first coverage-v2-era
 /// publisher; the enum keeps its historical name (minimal diff) while the
-/// declaration remains the exhaustive production-publisher checklist across
-/// coverage versions.
+/// declaration remains the exhaustive historical coverage-boundary checklist
+/// across coverage versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V1CoverageBoundary {
     /// `commands::ac_discovery::create_ac_project` fresh-root context creation.
@@ -3241,11 +3243,11 @@ pub(crate) enum V1CoverageBoundary {
     CoordinatorStatelessV3ToV4,
     /// Coordinator seeded v3 -> v4 recognized update with state-version bump.
     CoordinatorSeededV3ToV4,
-    /// `config::config_seed` exact replica config publish (whole-scope replace).
+    /// Historical stable coverage-boundary name for exact config publication.
     ConfigExactPublish,
-    /// `config::config_seed` over-bound replica config publish (scope removal only).
+    /// Historical stable coverage-boundary name for over-bound config publication.
     ConfigOverBoundPublish,
-    /// `config::config_seed` `FailedAfterLogicalRemoval` prior-scope removal.
+    /// Historical stable coverage-boundary name for failed config restoration.
     ConfigFailedRestore,
     /// `commands::entity_creation`/`cli::team` replica removal prune.
     LifecycleReplicaRemoval,
@@ -3381,12 +3383,14 @@ where
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct PublishedScopeBatch {
     scope: String,
     rows: Vec<PublishedManifestRow>,
 }
 
+#[cfg(test)]
 impl PublishedScopeBatch {
     pub(crate) fn new(
         scope: String,
@@ -3552,6 +3556,7 @@ impl<'a> ProjectPublicationPermit<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn replace_scope(
         self,
         activation: &ManifestActivationToken,
@@ -3566,6 +3571,7 @@ impl<'a> ProjectPublicationPermit<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_unrecordable_scope(
         self,
         activation: &ManifestActivationToken,
@@ -3587,35 +3593,6 @@ impl<'a> ProjectPublicationPermit<'a> {
             ProjectPublicationPermitState::Tracked(guard) => {
                 guard.remove_scope_as_unrecorded(&scope, bound)
             }
-            ProjectPublicationPermitState::DegradedUntracked { reason, .. } => {
-                ManifestRecordOutcome::PublishedUnrecorded(reason)
-            }
-        }
-    }
-
-    /// #1065 Stage F failed-restore path (plan sections 5.3/5.4): remove an entire
-    /// config scope's rows without adding a row or timestamp. The old destination
-    /// was renamed away and not restored, so its prior rows no longer describe
-    /// reality; this is a pure removal, never a publication and never a resource
-    /// bound. Unlike `remove_unrecordable_scope` it carries no `ResourceBoundKind`.
-    pub(crate) fn remove_config_scope(
-        self,
-        activation: &ManifestActivationToken,
-        scope: String,
-    ) -> ManifestRecordOutcome {
-        activation.authorize();
-        if let Err(error) = parse_config_scope(&scope) {
-            log::warn!(
-                "[seed_manifest] rejected invalid removal scope={} error={}",
-                scope,
-                error
-            );
-            return ManifestRecordOutcome::PublishedUnrecorded(
-                ManifestDegradedReason::InvalidCanonical,
-            );
-        }
-        match self.state {
-            ProjectPublicationPermitState::Tracked(guard) => guard.remove_config_scope(&scope),
             ProjectPublicationPermitState::DegradedUntracked { reason, .. } => {
                 ManifestRecordOutcome::PublishedUnrecorded(reason)
             }
@@ -3677,6 +3654,7 @@ impl ProjectSeedManifestGuard {
         }
     }
 
+    #[cfg(test)]
     fn replace_scope(&mut self, batch: PublishedScopeBatch) -> ManifestRecordOutcome {
         let Some(state) = self.writable_state_mut() else {
             return ManifestRecordOutcome::PublishedUnrecorded(
@@ -3731,30 +3709,6 @@ impl ProjectSeedManifestGuard {
             }
         }
         ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::ResourceBound(bound))
-    }
-
-    fn remove_config_scope(&mut self, scope: &str) -> ManifestRecordOutcome {
-        let Some(state) = self.writable_state_mut() else {
-            return ManifestRecordOutcome::PublishedUnrecorded(
-                self.snapshot
-                    .reason()
-                    .unwrap_or(ManifestDegradedReason::InvalidCanonical),
-            );
-        };
-        let journal = state.remove_scope(scope);
-        if !journal.changed() {
-            return ManifestRecordOutcome::Unchanged;
-        }
-        match self.persist_current_state() {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if let Some(state) = self.writable_state_mut() {
-                    journal.rollback(state);
-                }
-                log_record_failure(scope, &error);
-                ManifestRecordOutcome::PublishedUnrecorded(error.degraded_reason())
-            }
-        }
     }
 
     fn apply_lifecycle_filter(&mut self, filter: ManifestLifecycleFilter) -> ManifestRecordOutcome {
@@ -3949,6 +3903,28 @@ mod tests {
     fn read_disk_state(project: &Path) -> ManifestState {
         let bytes = std::fs::read(canonical_path(project)).expect("read canonical manifest");
         parse_manifest_bytes(&bytes).expect("parse canonical manifest")
+    }
+
+    fn serialize_raw_legacy_fixture(state: &ManifestState) -> Vec<u8> {
+        let wire = SeedManifestWire {
+            schema_version: SCHEMA_VERSION,
+            coverage_version: COVERAGE_VERSION,
+            coverage: COVERAGE.map(str::to_string).to_vec(),
+            files: state
+                .rows
+                .values()
+                .map(PublishedManifestRow::to_wire)
+                .collect(),
+        };
+        let body = toml::to_string(&wire).expect("serialize raw current metadata");
+        let body = body.trim_end_matches('\n');
+        let mut bytes = Vec::with_capacity(MANAGED_HEADER.len() + body.len() + 1);
+        bytes.extend_from_slice(MANAGED_HEADER.as_bytes());
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.push(b'\n');
+        assert!(bytes.ends_with(b"\n"));
+        assert!(!bytes.ends_with(b"\n\n"));
+        bytes
     }
 
     fn exact_temp_paths(project: &Path) -> Vec<PathBuf> {
@@ -4204,7 +4180,17 @@ mod tests {
             timestamp("2026-07-16T19:41:12.456Z"),
         )
         .expect("config row");
+        let catalog = PublishedManifestRow::coding_agent_catalog(
+            ManifestPathIdentity::parse(
+                ManifestPathEncoding::Utf8,
+                ".ac/coding-agents/agents.json".to_string(),
+            )
+            .expect("catalog path"),
+            timestamp("2026-07-16T19:42:00.789Z"),
+        )
+        .expect("catalog row");
         let _ = state.upsert(config);
+        let _ = state.upsert(catalog);
         let _ = state.upsert(context);
         state
     }
@@ -4229,8 +4215,11 @@ mod tests {
     }
 
     #[test]
-    fn golden_populated_manifest_is_exact_and_sorted() {
-        let bytes = serialize_state(&populated_state()).expect("serialize populated");
+    fn golden_populated_manifest_is_exact_sorted_and_omits_legacy_config() {
+        let state = populated_state();
+        assert_eq!(state.rows.len(), 3);
+        assert_eq!(state.canonical_rows().count(), 2);
+        let bytes = serialize_state(&state).expect("serialize populated");
         let expected = concat!(
             "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
             "schema_version = 1\n",
@@ -4246,19 +4235,94 @@ mod tests {
             "last_seeded_at = \"2026-07-16T19:40:07.123Z\"\n",
             "\n",
             "[[files]]\n",
-            "path = \".ac/wg-14-dev-team/__agent_architect/.claude/settings.json\"\n",
+            "path = \".ac/coding-agents/agents.json\"\n",
             "path_encoding = \"utf8\"\n",
-            "kind = \"replica_config_file\"\n",
-            "scope = \"config:.ac/wg-14-dev-team/__agent_architect/.claude\"\n",
-            "source = \"workspace_base\"\n",
-            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+            "kind = \"coding_agent_catalog\"\n",
+            "scope = \"catalog:coding-agents\"\n",
+            "source = \"builtin\"\n",
+            "last_seeded_at = \"2026-07-16T19:42:00.789Z\"\n"
         );
         assert_eq!(bytes, expected.as_bytes());
-        assert_eq!(
-            exact_serialized_len(&populated_state()).unwrap(),
-            bytes.len()
+        assert_eq!(exact_serialized_len(&state).unwrap(), bytes.len());
+        assert!(bytes.ends_with(b"\n"));
+        assert!(!bytes.ends_with(b"\n\n"));
+        assert!(!bytes
+            .windows(b"replica_config_file".len())
+            .any(|window| { window == b"replica_config_file" }));
+        assert!(!String::from_utf8_lossy(&bytes)
+            .contains(".ac/wg-14-dev-team/__agent_architect/.claude/settings.json"));
+        let parsed = parse_manifest_bytes(&bytes).unwrap();
+        assert_eq!(parsed.rows.len(), 2);
+        assert!(parsed
+            .rows
+            .values()
+            .all(|row| row.kind.is_canonical_output()));
+        assert_eq!(serialize_state(&parsed).unwrap(), bytes);
+    }
+
+    #[test]
+    fn legacy_only_state_serializes_as_empty_canonical_manifest() {
+        let mut legacy = ManifestState::default();
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+                config_scope("wg-1-team", "alpha", ".claude"),
+                ManifestSource::WorkspaceBase,
+                timestamp("2026-07-16T19:41:12.456Z"),
+            )
+            .unwrap(),
         );
-        assert_eq!(parse_manifest_bytes(&bytes).unwrap(), populated_state());
+        assert_eq!(legacy.rows.len(), 1);
+        assert_eq!(legacy.canonical_rows().count(), 0);
+        let canonical = serialize_state(&legacy).expect("serialize canonical output");
+        assert_eq!(
+            canonical,
+            serialize_state(&ManifestState::default()).unwrap()
+        );
+        assert_eq!(exact_serialized_len(&legacy).unwrap(), canonical.len());
+        let parsed = parse_manifest_bytes(&canonical).unwrap();
+        assert!(parsed.rows.is_empty());
+        assert_eq!(serialize_state(&parsed).unwrap(), canonical);
+    }
+
+    #[test]
+    fn valid_legacy_replica_config_rows_remain_readable() {
+        let scope = config_scope("wg-1-team", "alpha", ".claude");
+        let source = ManifestSource::WorkspaceBase;
+        let at = timestamp("2026-07-16T19:41:12.456Z");
+        let mut legacy = ManifestState::default();
+        for suffix in ["settings.json", "hooks.json"] {
+            let _ = legacy.upsert(
+                PublishedManifestRow::replica_config(
+                    config_path("wg-1-team", "alpha", ".claude", suffix),
+                    scope.clone(),
+                    source,
+                    at,
+                )
+                .unwrap(),
+            );
+        }
+        let raw = serialize_raw_legacy_fixture(&legacy);
+        let parsed = parse_manifest_bytes(&raw).expect("valid legacy rows remain readable");
+        assert_eq!(parsed.rows.len(), 2);
+        let paths = parsed
+            .rows
+            .values()
+            .map(|row| row.path.serialized().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                ".ac/wg-1-team/__agent_alpha/.claude/hooks.json".to_string(),
+                ".ac/wg-1-team/__agent_alpha/.claude/settings.json".to_string(),
+            ]
+        );
+        for row in parsed.rows.values() {
+            assert_eq!(row.kind, ManifestFileKind::ReplicaConfigFile);
+            assert_eq!(row.scope, scope);
+            assert_eq!(row.source, source);
+            assert_eq!(row.published_at, at);
+        }
     }
 
     #[test]
@@ -4363,6 +4427,28 @@ mod tests {
         };
         assert!(matches!(
             ManifestState::from_wire(mixed_wire),
+            Err(SeedManifestError::Validation(_))
+        ));
+
+        let first = PublishedManifestRow::replica_config(
+            config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+            config_scope("wg-1-team", "alpha", ".claude"),
+            ManifestSource::WorkspaceBase,
+            timestamp("2026-07-16T19:41:12.456Z"),
+        )
+        .unwrap()
+        .to_wire();
+        let mut different_time = first.clone();
+        different_time.path = ".ac/wg-1-team/__agent_alpha/.claude/later.json".to_string();
+        different_time.last_seeded_at = "2026-07-16T19:41:12.457Z".to_string();
+        let mixed_time_wire = SeedManifestWire {
+            schema_version: 1,
+            coverage_version: 2,
+            coverage: COVERAGE.map(str::to_string).to_vec(),
+            files: vec![first, different_time],
+        };
+        assert!(matches!(
+            ManifestState::from_wire(mixed_time_wire),
             Err(SeedManifestError::Validation(_))
         ));
     }
@@ -4479,7 +4565,16 @@ mod tests {
         .unwrap();
         let mut state = ManifestState::default();
         let _ = state.upsert(escaped);
+        let _ = state.upsert(
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
         let serialized = serialize_state(&state).unwrap();
+        assert!(!serialized.is_empty());
         assert_eq!(exact_serialized_len(&state).unwrap(), serialized.len());
         let output_limit = u64::try_from(serialized.len() - 1).unwrap();
         assert!(matches!(
@@ -4669,10 +4764,19 @@ mod tests {
         let (_temp, project) = setup_project();
         std::fs::write(
             canonical_path(&project),
-            serialize_state(&populated_state()).unwrap(),
+            serialize_raw_legacy_fixture(&populated_state()),
         )
         .unwrap();
         let guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let held = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(held.rows.len(), 3);
+        assert!(held
+            .rows
+            .values()
+            .any(|row| row.kind == ManifestFileKind::ReplicaConfigFile));
         let debug = format!("{guard:?}");
         assert!(debug.contains("raw_len"));
         assert!(debug.contains("row_count"));
@@ -4895,7 +4999,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_manifest_upgrades_to_v2_preserving_rows_and_timestamps() {
+    fn v1_manifest_upgrades_to_v2_preserving_supported_rows_and_omitting_legacy_config() {
         let (_temp, project) = setup_project();
         let path = canonical_path(&project);
         let v1 = v1_manifest_fixture();
@@ -4914,34 +5018,70 @@ mod tests {
             ),
             "upgraded manifest must carry the 3-item v2 coverage: {disk}"
         );
-        // Rows and timestamps preserved verbatim.
+        // Supported rows and timestamps remain on disk; the legacy config row is
+        // retained only in the held state.
         let state = read_disk_state(&project);
-        assert_eq!(state.rows.len(), 2);
+        assert_eq!(state.rows.len(), 1);
         assert!(disk.contains("2026-07-16T19:40:07.123Z"));
-        assert!(disk.contains("2026-07-16T19:41:12.456Z"));
+        assert!(!disk.contains("replica_config_file"));
+        assert!(!disk.contains(".ac/wg-1-dev-team/__agent_alpha/.claude/settings.json"));
+        assert!(!disk.contains("2026-07-16T19:41:12.456Z"));
+        let held = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(held.rows.len(), 2);
+        assert!(held
+            .rows
+            .values()
+            .any(|row| row.kind == ManifestFileKind::ReplicaConfigFile));
         // The guard is a fully writable tracked snapshot: publications record.
         assert_eq!(
             guard.publication_permit().record_file(
                 &ManifestActivationToken::for_test(),
-                context_row(
-                    "Context.coordinator.md",
-                    "context:coordinator",
-                    "2026-07-16T19:42:00.000Z",
+                PublishedManifestRow::coding_agent_catalog(
+                    ManifestPathIdentity::parse(
+                        ManifestPathEncoding::Utf8,
+                        ".ac/coding-agents/agents.json".to_string(),
+                    )
+                    .unwrap(),
+                    timestamp("2026-07-16T19:42:00.000Z"),
                 )
                 .unwrap(),
             ),
             ManifestRecordOutcome::Recorded
         );
+        let held_after_record = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(held_after_record.rows.len(), 3);
+        assert!(held_after_record
+            .rows
+            .values()
+            .any(|row| row.kind == ManifestFileKind::ReplicaConfigFile));
         guard.release();
 
         // Runs exactly once: a second acquire parses v2 strictly and never
-        // re-enters the migration (bytes only change by the recorded row).
+        // re-enters the migration.
         let after_first = std::fs::read(&path).unwrap();
         let guard2 = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let reacquired = match &guard2.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(reacquired.rows.len(), 2);
+        assert!(reacquired
+            .rows
+            .values()
+            .all(|row| row.kind.is_canonical_output()));
         guard2.release();
         assert_eq!(std::fs::read(&path).unwrap(), after_first);
         let state = read_disk_state(&project);
-        assert_eq!(state.rows.len(), 3);
+        assert_eq!(state.rows.len(), 2);
+        let disk = String::from_utf8(after_first).unwrap();
+        assert!(disk.contains("coding_agent_catalog"));
+        assert!(!disk.contains("replica_config_file"));
     }
 
     #[test]
@@ -5307,7 +5447,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_scope_replacement_removes_omitted_rows_and_empty_scope() {
+    fn config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics() {
         let (_temp, project) = setup_project();
         let activation = ManifestActivationToken::for_test();
         let scope = config_scope("wg-1-team", "alpha", ".claude");
@@ -5333,15 +5473,23 @@ mod tests {
         .unwrap();
         let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
         assert_eq!(
-            guard.publication_permit().replace_scope(&activation, first),
+            guard.publication_permit().record_file(
+                &activation,
+                context_row(
+                    "Context.AgentsCommander.md",
+                    "context:agentscommander",
+                    "2026-07-16T19:40:07.123Z",
+                )
+                .unwrap(),
+            ),
             ManifestRecordOutcome::Recorded
         );
+        let canonical = std::fs::read(canonical_path(&project)).unwrap();
         assert_eq!(
-            guard
-                .publication_permit()
-                .replace_scope(&activation, second),
-            ManifestRecordOutcome::Recorded
+            guard.publication_permit().replace_scope(&activation, first),
+            ManifestRecordOutcome::Unchanged
         );
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), canonical);
         let paths = match &guard.snapshot {
             CanonicalSnapshot::Writable { state, .. } => state
                 .rows
@@ -5353,6 +5501,30 @@ mod tests {
         assert_eq!(
             paths,
             vec![
+                ".ac/Context.AgentsCommander.md".to_string(),
+                ".ac/wg-1-team/__agent_alpha/.claude/a".to_string(),
+                ".ac/wg-1-team/__agent_alpha/.claude/b".to_string(),
+            ]
+        );
+        assert_eq!(
+            guard
+                .publication_permit()
+                .replace_scope(&activation, second),
+            ManifestRecordOutcome::Unchanged
+        );
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), canonical);
+        let paths = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state
+                .rows
+                .values()
+                .map(|row| row.path.serialized().to_string())
+                .collect::<Vec<_>>(),
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(
+            paths,
+            vec![
+                ".ac/Context.AgentsCommander.md".to_string(),
                 ".ac/wg-1-team/__agent_alpha/.claude/b".to_string(),
                 ".ac/wg-1-team/__agent_alpha/.claude/c".to_string(),
             ]
@@ -5366,10 +5538,23 @@ mod tests {
         .unwrap();
         assert_eq!(
             guard.publication_permit().replace_scope(&activation, empty),
-            ManifestRecordOutcome::Recorded
+            ManifestRecordOutcome::Unchanged
+        );
+        let final_paths = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state
+                .rows
+                .values()
+                .map(|row| row.path.serialized().to_string())
+                .collect::<Vec<_>>(),
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(
+            final_paths,
+            vec![".ac/Context.AgentsCommander.md".to_string()]
         );
         guard.release();
-        assert!(read_disk_state(&project).rows.is_empty());
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), canonical);
+        assert_eq!(read_disk_state(&project).rows.len(), 1);
     }
 
     #[test]
@@ -5394,27 +5579,26 @@ mod tests {
     }
 
     #[test]
-    fn overbound_publication_removes_prior_scope_without_partial_rows() {
+    fn overbound_removal_from_raw_legacy_scope_writes_canonical_without_partial_rows() {
         let (_temp, project) = setup_project();
         let activation = ManifestActivationToken::for_test();
         let scope = config_scope("wg-1-team", "alpha", ".claude");
-        let batch = PublishedScopeBatch::new(
-            scope.clone(),
-            ManifestSource::WorkspaceBase,
-            vec![config_path(
-                "wg-1-team",
-                "alpha",
-                ".claude",
-                "settings.json",
-            )],
-            timestamp("2026-07-16T19:41:12.456Z"),
+        let mut legacy = ManifestState::default();
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+                scope.clone(),
+                ManifestSource::WorkspaceBase,
+                timestamp("2026-07-16T19:41:12.456Z"),
+            )
+            .unwrap(),
+        );
+        std::fs::write(
+            canonical_path(&project),
+            serialize_raw_legacy_fixture(&legacy),
         )
         .unwrap();
         let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
-        assert_eq!(
-            guard.publication_permit().replace_scope(&activation, batch),
-            ManifestRecordOutcome::Recorded
-        );
         assert_eq!(
             guard.publication_permit().remove_unrecordable_scope(
                 &activation,
@@ -5434,26 +5618,21 @@ mod tests {
         let (_temp, project) = setup_project();
         let activation = ManifestActivationToken::for_test();
         let scope = config_scope("wg-1-team", "alpha", ".claude");
-        let batch = PublishedScopeBatch::new(
-            scope.clone(),
-            ManifestSource::WorkspaceBase,
-            vec![config_path(
-                "wg-1-team",
-                "alpha",
-                ".claude",
-                "settings.json",
-            )],
-            timestamp("2026-07-16T19:41:12.456Z"),
+        let mut legacy = ManifestState::default();
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+                scope.clone(),
+                ManifestSource::WorkspaceBase,
+                timestamp("2026-07-16T19:41:12.456Z"),
+            )
+            .unwrap(),
+        );
+        std::fs::write(
+            canonical_path(&project),
+            serialize_raw_legacy_fixture(&legacy),
         )
         .unwrap();
-        let mut initial = ProjectSeedManifestGuard::acquire(&project).unwrap();
-        assert_eq!(
-            initial
-                .publication_permit()
-                .replace_scope(&activation, batch),
-            ManifestRecordOutcome::Recorded
-        );
-        initial.release();
 
         let external = b"lock-unaware external edit".to_vec();
         let hook_bytes = external.clone();
@@ -5474,6 +5653,14 @@ mod tests {
             ),
             ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::ExternalEdit)
         );
+        let restored = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(restored.rows.len(), 1);
+        assert!(restored.rows.values().any(|row| {
+            row.path.serialized() == ".ac/wg-1-team/__agent_alpha/.claude/settings.json"
+        }));
         guard.release();
         assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), external);
     }
@@ -5525,6 +5712,144 @@ mod tests {
             .path
             .serialized()
             .contains("wg-2-team"));
+    }
+
+    #[test]
+    fn lifecycle_filter_prunes_legacy_config_and_writes_canonical_supported_rows() {
+        let (_temp, project) = setup_project();
+        let mut legacy = ManifestState::default();
+        let _ = legacy.upsert(
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+                config_scope("wg-1-team", "alpha", ".claude"),
+                ManifestSource::WorkspaceBase,
+                timestamp("2026-07-16T19:41:12.456Z"),
+            )
+            .unwrap(),
+        );
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-2-team", "beta", ".claude", "settings.json"),
+                config_scope("wg-2-team", "beta", ".claude"),
+                ManifestSource::MatrixBase,
+                timestamp("2026-07-16T19:42:12.456Z"),
+            )
+            .unwrap(),
+        );
+        let raw = serialize_raw_legacy_fixture(&legacy);
+        std::fs::write(canonical_path(&project), &raw).unwrap();
+        let activation = ManifestActivationToken::for_test();
+        let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
+        let absent =
+            ManifestLifecycleFilter::replica_component("__agent_absent".to_string()).unwrap();
+        assert_eq!(
+            guard
+                .publication_permit()
+                .apply_lifecycle_filter(&activation, absent),
+            ManifestRecordOutcome::Unchanged
+        );
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), raw);
+        let unchanged = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(unchanged, &legacy);
+
+        let alpha =
+            ManifestLifecycleFilter::replica_component("__agent_alpha".to_string()).unwrap();
+        assert_eq!(
+            guard
+                .publication_permit()
+                .apply_lifecycle_filter(&activation, alpha),
+            ManifestRecordOutcome::Recorded
+        );
+        let held = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(held.rows.len(), 2);
+        assert!(held
+            .rows
+            .values()
+            .any(|row| row.path.serialized().contains("wg-2-team")));
+        assert!(!held
+            .rows
+            .values()
+            .any(|row| row.path.serialized().contains("wg-1-team")));
+        let disk = std::fs::read(canonical_path(&project)).unwrap();
+        assert!(!String::from_utf8_lossy(&disk).contains("replica_config_file"));
+        guard.release();
+        let parsed = parse_manifest_bytes(&disk).unwrap();
+        assert_eq!(parsed.rows.len(), 1);
+        let context = parsed.rows.values().next().unwrap();
+        assert_eq!(context.kind, ManifestFileKind::ProjectContextTemplate);
+        assert_eq!(context.path.serialized(), ".ac/Context.AgentsCommander.md");
+        assert_eq!(context.scope, "context:agentscommander");
+        assert_eq!(context.source, ManifestSource::Builtin);
+        assert_eq!(context.published_at, timestamp("2026-07-16T19:40:07.123Z"));
+        assert_eq!(serialize_state(&parsed).unwrap(), disk);
+    }
+
+    #[test]
+    fn lifecycle_filter_persistence_failure_rolls_back_and_preserves_external_bytes() {
+        let (_temp, project) = setup_project();
+        let mut legacy = ManifestState::default();
+        let _ = legacy.upsert(
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        );
+        let _ = legacy.upsert(
+            PublishedManifestRow::replica_config(
+                config_path("wg-1-team", "alpha", ".claude", "settings.json"),
+                config_scope("wg-1-team", "alpha", ".claude"),
+                ManifestSource::WorkspaceBase,
+                timestamp("2026-07-16T19:41:12.456Z"),
+            )
+            .unwrap(),
+        );
+        std::fs::write(
+            canonical_path(&project),
+            serialize_raw_legacy_fixture(&legacy),
+        )
+        .unwrap();
+        let external = b"lock-unaware lifecycle edit".to_vec();
+        let hook_bytes = external.clone();
+        let hooks = TestFilesystemHooks {
+            before_raw_conflict_check: Some(Arc::new(move |canonical| {
+                std::fs::write(canonical, &hook_bytes).expect("write external edit");
+            })),
+            ..TestFilesystemHooks::default()
+        };
+        let filter =
+            ManifestLifecycleFilter::replica_component("__agent_alpha".to_string()).unwrap();
+        let mut guard =
+            ProjectSeedManifestGuard::acquire_with_hooks(&project, DEFAULT_LOCK_TIMEOUT, hooks)
+                .unwrap();
+        assert_eq!(
+            guard
+                .publication_permit()
+                .apply_lifecycle_filter(&ManifestActivationToken::for_test(), filter,),
+            ManifestRecordOutcome::PublishedUnrecorded(ManifestDegradedReason::ExternalEdit)
+        );
+        let restored = match &guard.snapshot {
+            CanonicalSnapshot::Writable { state, .. } => state,
+            CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+        };
+        assert_eq!(restored, &legacy);
+        guard.release();
+        assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), external);
     }
 
     #[test]
@@ -7466,17 +7791,12 @@ fn atomic_publish_manifest(
 }
 
 // ---------------------------------------------------------------------------
-// Stage E (#1064) conformance, scale, and adversarial-memory harness.
-//
-// These are dormant, test-only additions: they exercise the same DORMANT APIs
-// used by the Stage A/C unit tests (`ManifestActivationToken::for_test`,
-// `ProjectSeedManifestGuard`, `PublishedScopeBatch`) and never touch a
-// production manifest. The scale benchmarks and the adversarial parser-memory
-// case are `#[ignore]` (registered in `test-debt.allowlist.json`): they are run
-// in an isolated release-mode child as Stage F acceptance evidence (plan
-// sections 7.4, 10.1 item 4, 10.5 items 6-8). The hard 10 s / 512 MiB gates
-// (plan section 7.4) are asserted only in a release build on the reference
-// machine; a debug run records the measurements without gating.
+/// Stage E (#1064) adversarial-memory harness.
+///
+/// The retained adversarial parser-memory case is `#[ignore]` (registered in
+/// `test-debt.allowlist.json`) and runs in an isolated release-mode child. Its
+/// 512 MiB working-set gate is asserted only in a release build on the reference
+/// machine; a debug run records the measurement without gating.
 #[cfg(test)]
 mod stage_e_conformance {
     use super::*;
@@ -7484,12 +7804,9 @@ mod stage_e_conformance {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    // Plan section 7.4 hard per-operation gates for the 100k cases.
-    const HARD_ELAPSED_LIMIT: Duration = Duration::from_secs(10);
     const HARD_WORKING_SET_LIMIT: u64 = 512 * 1024 * 1024;
-    const BENCH_SIZES: [usize; 3] = [1_000, 10_000, 100_000];
 
     // ---- small local fixtures (kept independent of `mod tests`) ----
 
@@ -7514,28 +7831,6 @@ mod stage_e_conformance {
         format!("config:.ac/wg-1-dev-team/__agent_{agent}/{dest}")
     }
 
-    fn config_file(agent: &str, dest: &str, suffix: &str) -> ManifestPathIdentity {
-        ManifestPathIdentity::parse(
-            ManifestPathEncoding::Utf8,
-            format!(".ac/wg-1-dev-team/__agent_{agent}/{dest}/{suffix}"),
-        )
-        .expect("valid config path")
-    }
-
-    fn scope_files(agent: &str, dest: &str, n: usize) -> Vec<ManifestPathIdentity> {
-        (0..n)
-            .map(|i| config_file(agent, dest, &format!("file-{i:07}")))
-            .collect()
-    }
-
-    fn parsed_row_count(project: &Path) -> usize {
-        let bytes = std::fs::read(canonical_path(project)).expect("read canonical");
-        match parse_manifest_bytes(&bytes) {
-            Ok(state) => state.rows.len(),
-            Err(error) => panic!("canonical must parse: {error}"),
-        }
-    }
-
     fn temp_leftovers(project: &Path) -> usize {
         let dir = project.join(".ac");
         std::fs::read_dir(&dir)
@@ -7549,34 +7844,6 @@ mod stage_e_conformance {
                     .unwrap_or(false)
             })
             .count()
-    }
-
-    /// Write an N-row manifest directly (fixture generation is outside the
-    /// measured interval per plan section 7.4). Rows spread across
-    /// `rows_per_scope`-sized config scopes so the small-scope benchmark can
-    /// mutate one scope inside a whole N-row file.
-    fn seed_whole_manifest(project: &Path, total_rows: usize, rows_per_scope: usize) {
-        let mut state = ManifestState::default();
-        let scopes = total_rows.div_ceil(rows_per_scope);
-        let mut remaining = total_rows;
-        for s in 0..scopes {
-            let agent = format!("a{s:06}");
-            let scope = config_scope(&agent, ".claude");
-            let count = remaining.min(rows_per_scope);
-            remaining -= count;
-            for i in 0..count {
-                let row = PublishedManifestRow::replica_config(
-                    config_file(&agent, ".claude", &format!("file-{i:05}")),
-                    scope.clone(),
-                    ManifestSource::WorkspaceBase,
-                    timestamp("2026-07-16T19:41:12.456Z"),
-                )
-                .expect("config row");
-                let _ = state.upsert(row);
-            }
-        }
-        let bytes = serialize_state(&state).expect("serialize whole manifest");
-        std::fs::write(canonical_path(project), bytes).expect("write whole manifest");
     }
 
     // ---- working-set sampling (plan section 7.4 additional-working-set) ----
@@ -7646,199 +7913,6 @@ mod stage_e_conformance {
                 let _ = handle.join();
             }
             self.peak.load(Ordering::Relaxed)
-        }
-    }
-
-    fn enforce_hard_gate(label: &str, rows: usize, elapsed: Duration, working_set_delta: u64) {
-        // The 10 s / 512 MiB gate is a release-mode reference-machine contract
-        // (plan section 7.4). A debug run records only; it never gates.
-        if rows == 100_000 && !cfg!(debug_assertions) {
-            assert!(
-                elapsed <= HARD_ELAPSED_LIMIT,
-                "{label}: 100k op took {elapsed:?}, over the 10 s gate"
-            );
-            assert!(
-                working_set_delta <= HARD_WORKING_SET_LIMIT,
-                "{label}: 100k op used {working_set_delta} bytes additional working set, over 512 MiB"
-            );
-        }
-    }
-
-    // -- plan section 10.5 item 6: whole-scope replacement at 1k/10k/100k --
-    #[test]
-    #[ignore = "release-mode scale benchmark (plan 7.4/10.5); run manually or as Stage F acceptance"]
-    fn bench_whole_scope_replacement_1k_10k_100k() {
-        for &n in &BENCH_SIZES {
-            let (_temp, project) = setup_project();
-            let activation = ManifestActivationToken::for_test();
-            let scope = config_scope("alpha", ".claude");
-            {
-                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
-                let batch = PublishedScopeBatch::new(
-                    scope.clone(),
-                    ManifestSource::WorkspaceBase,
-                    scope_files("alpha", ".claude", n),
-                    timestamp("2026-07-16T19:41:12.456Z"),
-                )
-                .expect("seed batch");
-                assert_eq!(
-                    guard.publication_permit().replace_scope(&activation, batch),
-                    ManifestRecordOutcome::Recorded
-                );
-                guard.release();
-            }
-
-            let baseline = working_set_bytes();
-            let sampler = WorkingSetSampler::start();
-            let started = Instant::now();
-            {
-                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
-                let batch = PublishedScopeBatch::new(
-                    scope.clone(),
-                    ManifestSource::MatrixBase,
-                    scope_files("alpha", ".claude", n),
-                    timestamp("2026-07-16T19:42:12.456Z"),
-                )
-                .expect("replacement batch");
-                assert_eq!(
-                    guard.publication_permit().replace_scope(&activation, batch),
-                    ManifestRecordOutcome::Recorded
-                );
-                guard.release();
-            }
-            let elapsed = started.elapsed();
-            let peak = sampler.finish();
-            let delta = peak.saturating_sub(baseline);
-            let canonical_bytes = std::fs::metadata(canonical_path(&project))
-                .map(|m| m.len())
-                .unwrap_or(0);
-
-            // One transaction produced the whole N-row result: no leftover temp
-            // and exactly N rows on disk (plan section 10.5 item 5, observational).
-            assert_eq!(
-                temp_leftovers(&project),
-                0,
-                "one transaction, no leftover temp"
-            );
-            assert_eq!(
-                parsed_row_count(&project),
-                n,
-                "whole scope replaced to N rows"
-            );
-            eprintln!(
-                "[stage-e bench whole-scope] rows={n} elapsed={elapsed:?} \
-                 working_set_delta_bytes={delta} canonical_bytes={canonical_bytes}"
-            );
-            enforce_hard_gate("whole-scope replacement", n, elapsed, delta);
-        }
-    }
-
-    // -- plan section 10.5 item 6: small-scope mutation inside a whole N-row manifest --
-    #[test]
-    #[ignore = "release-mode scale benchmark (plan 7.4/10.5); run manually or as Stage F acceptance"]
-    fn bench_small_scope_mutation_in_whole_manifest_1k_10k_100k() {
-        for &n in &BENCH_SIZES {
-            let (_temp, project) = setup_project();
-            let activation = ManifestActivationToken::for_test();
-            // Whole manifest of N rows across many scopes; mutate one small scope.
-            seed_whole_manifest(&project, n, 100);
-            let target_scope = config_scope("a000000", ".claude");
-
-            let baseline = working_set_bytes();
-            let sampler = WorkingSetSampler::start();
-            let started = Instant::now();
-            {
-                let mut guard = ProjectSeedManifestGuard::acquire(&project).expect("acquire");
-                let batch = PublishedScopeBatch::new(
-                    target_scope,
-                    ManifestSource::MatrixBase,
-                    scope_files("a000000", ".claude", 2),
-                    timestamp("2026-07-16T20:00:00.000Z"),
-                )
-                .expect("small batch");
-                assert_eq!(
-                    guard.publication_permit().replace_scope(&activation, batch),
-                    ManifestRecordOutcome::Recorded
-                );
-                guard.release();
-            }
-            let elapsed = started.elapsed();
-            let peak = sampler.finish();
-            let delta = peak.saturating_sub(baseline);
-            let canonical_bytes = std::fs::metadata(canonical_path(&project))
-                .map(|m| m.len())
-                .unwrap_or(0);
-
-            assert_eq!(
-                temp_leftovers(&project),
-                0,
-                "one transaction, no leftover temp"
-            );
-            eprintln!(
-                "[stage-e bench small-scope] rows={n} elapsed={elapsed:?} \
-                 working_set_delta_bytes={delta} canonical_bytes={canonical_bytes}"
-            );
-            enforce_hard_gate("small-scope mutation", n, elapsed, delta);
-        }
-    }
-
-    // -- plan section 10.5 item 8: git diff --numstat / byte / time evidence --
-    #[test]
-    #[ignore = "release-mode scale benchmark; records git diff evidence (plan 7.4/10.5 item 8)"]
-    fn bench_git_diff_numstat_1k_10k_100k() {
-        if std::process::Command::new("git")
-            .arg("--version")
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
-        {
-            eprintln!("[stage-e bench git-diff] git unavailable; recording skip");
-            return;
-        }
-        for &n in &BENCH_SIZES {
-            let (_temp, project) = setup_project();
-            let git = |args: &[&str]| {
-                let status = std::process::Command::new("git")
-                    .args(args)
-                    .current_dir(&project)
-                    .output()
-                    .expect("run git");
-                assert!(
-                    status.status.success(),
-                    "git {args:?} failed: {}",
-                    String::from_utf8_lossy(&status.stderr)
-                );
-                status
-            };
-            git(&["init", "--quiet"]);
-            git(&["config", "user.email", "stage-e@example.test"]);
-            git(&["config", "user.name", "stage-e"]);
-
-            // Baseline: empty valid manifest committed.
-            let empty = serialize_state(&ManifestState::default()).expect("serialize empty");
-            std::fs::write(canonical_path(&project), empty).expect("write empty manifest");
-            git(&["add", "-A"]);
-            git(&["commit", "--quiet", "-m", "baseline"]);
-
-            // Publish an N-row scope, then measure the git diff.
-            seed_whole_manifest(&project, n, 100);
-            let canonical_bytes = std::fs::metadata(canonical_path(&project))
-                .map(|m| m.len())
-                .unwrap_or(0);
-            let started = Instant::now();
-            let numstat = std::process::Command::new("git")
-                .args(["diff", "--numstat", "--", ".ac/seed-manifest.toml"])
-                .current_dir(&project)
-                .output()
-                .expect("git diff");
-            let diff_time = started.elapsed();
-            assert!(numstat.status.success(), "git diff --numstat must succeed");
-            let numstat_text = String::from_utf8_lossy(&numstat.stdout);
-            eprintln!(
-                "[stage-e bench git-diff] rows={n} canonical_bytes={canonical_bytes} \
-                 diff_time={diff_time:?} numstat={}",
-                numstat_text.trim()
-            );
         }
     }
 
