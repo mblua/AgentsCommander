@@ -1359,8 +1359,8 @@ mod tests {
         assert!(!replica.join(".claude.acseed-old-sfx1").exists());
     }
 
-    // Replica config seeding still runs under the project gate, but its report and
-    // installed target no longer create seed-manifest rows.
+    /// Replica config seeding still runs under the project gate, but its report and
+    /// installed target no longer create seed-manifest rows.
     #[test]
     fn config_seed_exact_publish_preserves_report_without_creating_manifest() {
         let temp = tempfile::tempdir().unwrap();

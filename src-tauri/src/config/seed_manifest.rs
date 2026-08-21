@@ -7791,12 +7791,12 @@ fn atomic_publish_manifest(
 }
 
 // ---------------------------------------------------------------------------
-// Stage E (#1064) adversarial-memory harness.
-//
-// The retained adversarial parser-memory case is `#[ignore]` (registered in
-// `test-debt.allowlist.json`) and runs in an isolated release-mode child. Its
-// 512 MiB working-set gate is asserted only in a release build on the reference
-// machine; a debug run records the measurement without gating.
+/// Stage E (#1064) adversarial-memory harness.
+///
+/// The retained adversarial parser-memory case is `#[ignore]` (registered in
+/// `test-debt.allowlist.json`) and runs in an isolated release-mode child. Its
+/// 512 MiB working-set gate is asserted only in a release build on the reference
+/// machine; a debug run records the measurement without gating.
 #[cfg(test)]
 mod stage_e_conformance {
     use super::*;

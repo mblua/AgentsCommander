@@ -6039,8 +6039,8 @@ mod tests {
         assert!(replica.is_dir(), "replica must be restored after the block");
     }
 
-    // With a `#[cfg(test)]` activation token, workgroup deletion still prunes
-    // legacy replica-config rows read from current metadata.
+    /// With a `#[cfg(test)]` activation token, workgroup deletion still prunes
+    /// legacy replica-config rows read from current metadata.
     #[test]
     fn gated_workgroup_delete_prunes_scope_with_activation_token() {
         use crate::config::seed_manifest::ManifestActivationToken;
