@@ -339,8 +339,10 @@ The tokens map onto the matrix layout from the sections above: a replica is a `_
 | Token | Resolves to | Valid when |
 |---|---|---|
 | `%AC_REPLICA_ROOT%` | The **replica** dir — the launch working directory, canonicalized | A WG replica (`__agent_*` under `wg-*`) **or** the `ac-root-agent` launch root |
-| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `wg-*` dir, an `_agent_*` matrix dir) |
+| `%AC_PROJECT_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `wg-*` dir, an `_agent_*` matrix dir) |
 | `%AC_MATRIX_ROOT%` | The **matrix** dir `<workspace>\_agent_<name>` (the agent's canonical Agent Matrix) | **Only** a WG replica launch |
+
+For compatibility, `%AC_WORKSPACE_ROOT%` remains accepted as a deprecated alias for `%AC_PROJECT_ROOT%`.
 
 ### Example resolutions
 
@@ -349,7 +351,7 @@ For a WG replica launched at `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_t
 | Token | Expands to |
 |---|---|
 | `%AC_REPLICA_ROOT%` | `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_tech-lead` |
-| `%AC_WORKSPACE_ROOT%` | `…\AgentsCommander_ac\.ac` |
+| `%AC_PROJECT_ROOT%` | `…\AgentsCommander_ac\.ac` |
 | `%AC_MATRIX_ROOT%` | `…\AgentsCommander_ac\.ac\_agent_tech-lead` |
 
 ### Validity rules and the workspace/replica asymmetry
@@ -357,14 +359,14 @@ For a WG replica launched at `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_t
 The three tokens have **different** validity gates. A value is rejected only when it uses a token that does not apply to the current launch root:
 
 - **WG replica** (`__agent_*` under `wg-*`): all three tokens resolve.
-- **Root agent** (`ac-root-agent`): only `%AC_REPLICA_ROOT%` resolves (to the root-agent dir). `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are unavailable — the root agent has no `.ac` workspace and no Agent Matrix — and error if used.
-- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\wg-6\repo-X`, a bare `wg-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
+- **Root agent** (`ac-root-agent`): only `%AC_REPLICA_ROOT%` resolves (to the root-agent dir). `%AC_PROJECT_ROOT%` and `%AC_MATRIX_ROOT%` are unavailable — the root agent has no `.ac` workspace and no Agent Matrix — and error if used.
+- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\wg-6\repo-X`, a bare `wg-*` dir, or an `_agent_*` matrix dir): **only** `%AC_PROJECT_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
 - **Launch root outside any `.ac`** (a normal repo): none of the tokens resolve.
 
 When a token is used where it does not apply, the launch fails with a specific error:
 
 - `%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root`
-- `%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace`
+- `%AC_PROJECT_ROOT% requires a launch root inside an AC (.ac) workspace`
 - `%AC_MATRIX_ROOT% requires an AC workgroup replica launch root`
 
 ### Breaking change: `%AC_ROOT%` was removed

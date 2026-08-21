@@ -195,7 +195,7 @@ describe("ArchivedProjectsModal (#881)", () => {
   it("renders a rejected unarchive under its own row and keeps the row present", async () => {
     const fake = new FakeTransport();
     fake.resolve("list_archived_projects", [row("C:\\Archive\\Blocked")]);
-    fake.reject("unarchive_project", "Workspace missing");
+    fake.reject("unarchive_project", "Project AC Root missing");
 
     const rendered = renderWithFakeTransport(() => <ArchivedProjectsModal onClose={vi.fn()} />, fake);
     try {
@@ -205,7 +205,7 @@ describe("ArchivedProjectsModal (#881)", () => {
       click(byTestId(`archivedProjects.unarchive.${id}`));
 
       await waitFor(() =>
-        expect(byTestId(`archivedProjects.rowError.${id}`).textContent).toContain("Workspace missing"),
+        expect(byTestId(`archivedProjects.rowError.${id}`).textContent).toContain("Project AC Root missing"),
       );
       expect(byTestId(`archivedProjects.row.${id}`)).toBeTruthy();
     } finally {

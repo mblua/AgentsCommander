@@ -2964,8 +2964,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </label>
               <div class="settings-hint">
                 {"AC seeds this folder from the first template present: " +
-                  "<workspace>/default_profile_<letter><dest>, " +
-                  "<workspace>/default<dest>, " +
+                  "<ac-root>/default_profile_<letter><dest>, " +
+                  "<ac-root>/default<dest>, " +
                   "<matrix>/default_profile_<letter><dest>, then " +
                   "<matrix>/default<dest>. " +
                   "It is overwritten on every spawn. Leave the folder blank to disable."}

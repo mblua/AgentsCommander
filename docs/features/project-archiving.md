@@ -49,7 +49,7 @@ Archived projects live in the **Archived projects** modal. Each row shows the pr
 Two things a row can tell you before you restore it:
 
 - `Folder missing` means the folder the registration points at is gone.
-- `Workspace missing` means the folder is there but its workspace is not.
+- `Project AC Root missing` means the folder is there but its Project AC Root is missing.
 
 A row in either state gains a second button, `Remove from list`, which drops the registration entirely. **That button removes the project from AC, not from disk**, and it is offered only for rows AC could not validate.
 

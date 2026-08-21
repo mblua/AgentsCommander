@@ -52,7 +52,7 @@ path = ".ac/wg-14-dev-team/__agent_architect/.claude/settings.json"
 path_encoding = "utf8"
 kind = "replica_config_file"
 scope = "config:.ac/wg-14-dev-team/__agent_architect/.claude"
-source = "workspace_base"
+source = "ac_root_base"
 last_seeded_at = "2026-07-16T19:41:12.456Z"
 
 [[files]]
@@ -75,9 +75,11 @@ path)`, so re-serialization is deterministic and Git-friendly.
   out through Git is preserved verbatim and is never turned into a filesystem
   target.
 - `kind`, `scope`, `source`, and `path_encoding` are closed enums. `source` is one
-  of `builtin`, `workspace_profile`, `workspace_base`, `matrix_profile`,
+  of `builtin`, `ac_root_profile`, `ac_root_base`, `matrix_profile`,
   `matrix_base`, or `catalog_default`.
 - `last_seeded_at` is a millisecond-precision RFC 3339 UTC timestamp ending in `Z`.
+
+Pre-#1451 manifests are read transparently and rewritten with the new source values on the next manifest write.
 
 The schema intentionally omits content hashes, file size, source paths, host, user,
 process id, and any operation history.

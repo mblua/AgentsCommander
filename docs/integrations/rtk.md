@@ -301,7 +301,7 @@ So the symptom is not a low command count, it is `rtk gain` failing outright. Wh
 Agent '<label>' env settings: unknown placeholder marker in value
 ```
 
-Only `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are recognized. Use one of those, or a literal absolute path.
+Only `%AC_REPLICA_ROOT%`, `%AC_PROJECT_ROOT%` and `%AC_MATRIX_ROOT%` are recognized. Use one of those, or a literal absolute path.
 
 ## When `%AC_MATRIX_ROOT%` does not resolve
 
@@ -311,7 +311,7 @@ Only `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are recog
 %AC_MATRIX_ROOT% requires an AC workgroup replica launch root
 ```
 
-For those roots use `%AC_WORKSPACE_ROOT%\rtk-history.db` instead, which gives one database per project with no per-agent split, or a literal absolute path. `%AC_WORKSPACE_ROOT%` resolves for any launch root inside a `.ac` workspace; the root agent resolves only `%AC_REPLICA_ROOT%`.
+For those roots use `%AC_PROJECT_ROOT%\rtk-history.db` instead, which gives one database per project with no per-agent split, or a literal absolute path. `%AC_PROJECT_ROOT%` resolves for any launch root inside a `.ac` workspace; the root agent resolves only `%AC_REPLICA_ROOT%`.
 
 ## See also
 

@@ -181,7 +181,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                       </div>
                       <Show when={!row.exists || !row.hasAcRoot}>
                         <div class="archived-projects-warning">
-                          {!row.exists ? "Folder missing" : "Workspace missing"}
+                          {!row.exists ? "Folder missing" : "Project AC Root missing"}
                         </div>
                       </Show>
                     </div>

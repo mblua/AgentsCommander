@@ -105,7 +105,7 @@ Use it when you have edited a factory master and want AC's original default back
 AC substitutes the three AC path tokens inside the **content** of seeded files, so a template can refer to its own replica, workspace, or matrix path and have it resolve correctly per replica:
 
 - `%AC_REPLICA_ROOT%`
-- `%AC_WORKSPACE_ROOT%`
+- `%AC_PROJECT_ROOT%`
 - `%AC_MATRIX_ROOT%`
 
 These are the same tokens documented in [Agent Matrix conventions, section 5](../agent-matrix-conventions.md#5-profile-path-placeholders). The substitution rules:

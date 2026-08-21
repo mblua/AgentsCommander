@@ -96,7 +96,7 @@ A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, an
 
 ## Project AC Root
 
-The `.ac/` container folder at the project root holding origin agent state, configuration, and team structures. *(Note: Previously called "Workspace" or "AC Workspace". CLI flags and internal files may still contain "workspace" during the transition).*
+The `.ac/` container folder at the project root holding origin agent state, configuration, and team structures. The `%AC_WORKSPACE_ROOT%` token remains accepted as a deprecated placeholder alias for `%AC_PROJECT_ROOT%`.
 
 ## PTY
 
