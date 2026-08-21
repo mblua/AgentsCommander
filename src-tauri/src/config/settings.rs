@@ -5785,7 +5785,7 @@ mod tests {
     fn codex_home_template_accepts_each_token_alone_and_as_leading_segment() {
         for token in [
             "%AC_REPLICA_ROOT%",
-            "%AC_WORKSPACE_ROOT%",
+            "%AC_PROJECT_ROOT%",
             "%AC_MATRIX_ROOT%",
         ] {
             super::validate_codex_home_template_value(token, "ctx")
@@ -5794,6 +5794,18 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{token}\\.codex should be accepted: {e}"));
             super::validate_codex_home_template_value(&format!("{token}/.codex"), "ctx")
                 .unwrap_or_else(|e| panic!("{token}/.codex should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn legacy_codex_home_template_still_validates() {
+        for value in [
+            "%AC_WORKSPACE_ROOT%",
+            r"%AC_WORKSPACE_ROOT%\.codex",
+            "%AC_WORKSPACE_ROOT%/.codex",
+        ] {
+            super::validate_codex_home_template_value(value, "ctx")
+                .unwrap_or_else(|e| panic!("legacy template {value} should be accepted: {e}"));
         }
     }
 

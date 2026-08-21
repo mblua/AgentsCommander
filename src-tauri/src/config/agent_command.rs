@@ -1441,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_and_matrix_placeholders_expand_in_profile_env_for_replica_launch() {
+    fn ac_root_and_matrix_placeholders_expand_in_profile_env_for_replica_launch() {
         let temp = tempfile::tempdir().unwrap();
         let replica = temp
             .path()
@@ -1467,7 +1467,7 @@ mod tests {
                     env: BTreeMap::from([
                         (
                             "CLAUDE_CONFIG_DIR".to_string(),
-                            "%AC_WORKSPACE_ROOT%\\.claude".to_string(),
+                            "%AC_PROJECT_ROOT%\\.claude".to_string(),
                         ),
                         (
                             "CLAUDE_MATRIX_DIR".to_string(),

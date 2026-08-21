@@ -2,7 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub const AC_REPLICA_ROOT_PLACEHOLDER: &str = "%AC_REPLICA_ROOT%";
-pub const AC_WORKSPACE_ROOT_PLACEHOLDER: &str = "%AC_WORKSPACE_ROOT%";
+pub const AC_PROJECT_ROOT_PLACEHOLDER: &str = "%AC_PROJECT_ROOT%";
+/// LEGACY-ALIAS(#1451). The pre-#1451 spelling of [`AC_PROJECT_ROOT_PLACEHOLDER`].
+/// Expands identically and forever: users hand-write it into profile env rows and
+/// it is persisted in `settings.json`, which AC never rewrites, so there is no
+/// migration path other than keeping the token alive. Never advertised in the UI
+/// (see `SettingsModal.tsx` `AC_PLACEHOLDER_HELP`), never emitted by AC.
+pub const LEGACY_AC_PROJECT_ROOT_PLACEHOLDER: &str = "%AC_WORKSPACE_ROOT%";
 pub const AC_MATRIX_ROOT_PLACEHOLDER: &str = "%AC_MATRIX_ROOT%";
 
 /// The current user's home directory (#924). Deliberately NOT a member of
@@ -18,16 +24,23 @@ pub const USER_HOME_PLACEHOLDER: &str = "%USER_HOME%";
 /// Expansion in `expand_placeholders` stays as explicit per-token `if` blocks: each
 /// token has its own root field + error and fails closed if forgotten, so a loop
 /// there would obscure more than it saves.
+/// LEGACY-ALIAS(#1451) is APPENDED, never inserted: `settings.rs`'s
+/// "must start with X as a complete path segment" error reports the FIRST array
+/// token it finds in a bad value, and the canonical token has to win that race.
 pub const AC_PLACEHOLDER_TOKENS: &[&str] = &[
     AC_REPLICA_ROOT_PLACEHOLDER,
-    AC_WORKSPACE_ROOT_PLACEHOLDER,
+    AC_PROJECT_ROOT_PLACEHOLDER,
     AC_MATRIX_ROOT_PLACEHOLDER,
+    LEGACY_AC_PROJECT_ROOT_PLACEHOLDER,
 ];
 
 const AC_REPLICA_ROOT_ERROR: &str =
     "%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root";
-const AC_WORKSPACE_ROOT_ERROR: &str =
-    "%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace";
+/// Serves BOTH `AC_PROJECT_ROOT_PLACEHOLDER` and its legacy alias by design: the
+/// pair shares one root field, so it shares one error. A user who typed the legacy
+/// token and hits the failure gets a message naming the new one, which is the nudge.
+const AC_PROJECT_ROOT_ERROR: &str =
+    "%AC_PROJECT_ROOT% requires a launch root inside an AC project root (.ac)";
 const AC_MATRIX_ROOT_ERROR: &str = "%AC_MATRIX_ROOT% requires an AC workgroup replica launch root";
 const AC_PLACEHOLDER_LAUNCH_ROOT_ERROR: &str = "AC path placeholders require an AC launch root";
 
@@ -116,12 +129,19 @@ pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<
         );
     }
 
-    if expanded.contains(AC_WORKSPACE_ROOT_PLACEHOLDER) {
+    // One block for the pair, deliberately: the canonical token and its
+    // LEGACY-ALIAS(#1451) share the same root field and the same error, so the
+    // file's per-token doctrine is satisfied by one branch, not two.
+    if expanded.contains(AC_PROJECT_ROOT_PLACEHOLDER)
+        || expanded.contains(LEGACY_AC_PROJECT_ROOT_PLACEHOLDER)
+    {
         let ac_root = context
             .ac_root
             .as_ref()
-            .ok_or_else(|| AC_WORKSPACE_ROOT_ERROR.to_string())?;
-        expanded = expanded.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &ac_root.to_string_lossy());
+            .ok_or_else(|| AC_PROJECT_ROOT_ERROR.to_string())?;
+        let text = ac_root.to_string_lossy();
+        expanded = expanded.replace(AC_PROJECT_ROOT_PLACEHOLDER, &text);
+        expanded = expanded.replace(LEGACY_AC_PROJECT_ROOT_PLACEHOLDER, &text);
     }
 
     if expanded.contains(AC_MATRIX_ROOT_PLACEHOLDER) {
@@ -164,7 +184,8 @@ fn user_home() -> Option<&'static Path> {
         .as_deref()
 }
 
-/// Expand the 3 known AC tokens plus `%USER_HOME%` inside file CONTENT
+/// Expand the 3 known AC tokens (4 spellings, counting the legacy alias) plus
+/// `%USER_HOME%` inside file CONTENT
 /// (#598 config-folder seed, #924 user home).
 /// Unlike [`expand_placeholders`] this does NOT fail-closed on unknown `%...%`:
 /// a seeded template may legitimately contain other `%VAR%` text the tool reads
@@ -177,7 +198,10 @@ pub fn expand_placeholders_in_content(value: &str, context: &PlaceholderContext)
         out = out.replace(AC_REPLICA_ROOT_PLACEHOLDER, &fwd(&context.replica_root));
     }
     if let Some(ws) = &context.ac_root {
-        out = out.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &fwd(ws));
+        // Same pairing as `expand_placeholders`: LEGACY-ALIAS(#1451) resolves from
+        // the same root, best-effort.
+        out = out.replace(AC_PROJECT_ROOT_PLACEHOLDER, &fwd(ws));
+        out = out.replace(LEGACY_AC_PROJECT_ROOT_PLACEHOLDER, &fwd(ws));
     }
     if let Some(mx) = &context.matrix_root {
         out = out.replace(AC_MATRIX_ROOT_PLACEHOLDER, &fwd(mx));
@@ -374,7 +398,7 @@ mod tests {
             format!(r"{}\x", expected_replica.to_string_lossy())
         );
         assert_eq!(
-            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap(),
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &ctx).unwrap(),
             format!(r"{}\x", expected_ac_root.to_string_lossy())
         );
         assert_eq!(
@@ -399,8 +423,8 @@ mod tests {
             AC_REPLICA_ROOT_ERROR
         );
         assert_eq!(
-            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap_err(),
-            AC_WORKSPACE_ROOT_ERROR
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &ctx).unwrap_err(),
+            AC_PROJECT_ROOT_ERROR
         );
         assert_eq!(
             expand_placeholders(r"%AC_MATRIX_ROOT%\x", &ctx).unwrap_err(),
@@ -428,7 +452,7 @@ mod tests {
             .to_string_lossy()
             .replace('\\', "/");
         let out = expand_placeholders_in_content(
-            "root=%AC_REPLICA_ROOT%/x and %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%",
+            "root=%AC_REPLICA_ROOT%/x and %AC_PROJECT_ROOT% and %AC_MATRIX_ROOT%",
             &ctx,
         );
         assert!(
@@ -461,12 +485,12 @@ mod tests {
             matrix_root: None,
         };
         let out = expand_placeholders_in_content(
-            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%",
+            "%AC_REPLICA_ROOT% %AC_PROJECT_ROOT% %AC_MATRIX_ROOT%",
             &normal,
         );
         assert_eq!(
             out,
-            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT%"
+            "%AC_REPLICA_ROOT% %AC_PROJECT_ROOT% %AC_MATRIX_ROOT%"
         );
     }
 
@@ -515,7 +539,7 @@ mod tests {
         let ctx = placeholder_context_for_launch_root(&replica).unwrap();
 
         let out = expand_placeholders_in_content(
-            "%AC_REPLICA_ROOT% %AC_WORKSPACE_ROOT% %AC_MATRIX_ROOT% %USER_HOME%",
+            "%AC_REPLICA_ROOT% %AC_PROJECT_ROOT% %AC_MATRIX_ROOT% %USER_HOME%",
             &ctx,
         );
         let expected_replica = canonical_stripped(&replica)
@@ -556,10 +580,68 @@ mod tests {
         assert!(err.contains("unknown placeholder"), "{err}");
     }
 
+    /// AC-5 (#1451). LEGACY-ALIAS(#1451): the pre-#1451 token is user-typed and
+    /// persisted in `settings.json`, which AC never rewrites, so it has to keep
+    /// expanding exactly like the canonical one, forever and at every site.
+    #[test]
+    fn legacy_placeholder_expands_identically_to_canonical() {
+        let temp = tempfile::tempdir().unwrap();
+        let replica = make_replica(temp.path());
+        let ctx = placeholder_context_for_launch_root(&replica).unwrap();
+
+        assert_eq!(
+            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap(),
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &ctx).unwrap()
+        );
+        assert_eq!(
+            expand_placeholders_in_content(r"%AC_WORKSPACE_ROOT%\x", &ctx),
+            expand_placeholders_in_content(r"%AC_PROJECT_ROOT%\x", &ctx)
+        );
+
+        // Edge case 6.3: a value carrying both spellings expands both, and
+        // `reject_unexpanded_markers` finds nothing left behind.
+        let ac_root = ctx.ac_root.clone().expect("replica has an ac root");
+        let ac_root = ac_root.to_string_lossy();
+        assert_eq!(
+            expand_placeholders("%AC_PROJECT_ROOT%/a/%AC_WORKSPACE_ROOT%/b", &ctx).unwrap(),
+            format!("{ac_root}/a/{ac_root}/b")
+        );
+
+        // Both spellings share one root field, so they share one error.
+        let no_ac_root = PlaceholderContext {
+            replica_root: replica,
+            root_kind: PlaceholderRootKind::AcReplicaOrRootAgent,
+            ac_root: None,
+            matrix_root: None,
+        };
+        assert_eq!(
+            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &no_ac_root).unwrap_err(),
+            AC_PROJECT_ROOT_ERROR
+        );
+        assert_eq!(
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &no_ac_root).unwrap_err(),
+            AC_PROJECT_ROOT_ERROR
+        );
+    }
+
+    /// AC-5 (#1451). LEGACY-ALIAS(#1451) must sit in the gate array, or a saved
+    /// profile whose only AC token is the legacy one silently stops requiring an
+    /// AC launch root and its CODEX_HOME template stops validating. The `last()`
+    /// assertion is what pins append-not-insert: `settings.rs` names the FIRST
+    /// array token it finds in a bad value, and the canonical one must win.
+    #[test]
+    fn legacy_placeholder_is_in_the_gate_array() {
+        assert!(value_contains_ac_placeholder(r"%AC_WORKSPACE_ROOT%\x"));
+        assert_eq!(
+            AC_PLACEHOLDER_TOKENS.last(),
+            Some(&LEGACY_AC_PROJECT_ROOT_PLACEHOLDER)
+        );
+    }
+
     #[test]
     fn value_contains_ac_placeholder_matches_only_known_tokens() {
         assert!(value_contains_ac_placeholder(r"%AC_REPLICA_ROOT%\x"));
-        assert!(value_contains_ac_placeholder(r"%AC_WORKSPACE_ROOT%\x"));
+        assert!(value_contains_ac_placeholder(r"%AC_PROJECT_ROOT%\x"));
         assert!(value_contains_ac_placeholder(r"%AC_MATRIX_ROOT%\x"));
         assert!(!value_contains_ac_placeholder(r"%AC_ROOT%\x"));
         assert!(!value_contains_ac_placeholder("%UNKNOWN%"));
@@ -582,8 +664,8 @@ mod tests {
         };
         assert!(expand_placeholders(r"%AC_REPLICA_ROOT%\x", &root_agent).is_ok());
         assert_eq!(
-            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &root_agent).unwrap_err(),
-            AC_WORKSPACE_ROOT_ERROR
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &root_agent).unwrap_err(),
+            AC_PROJECT_ROOT_ERROR
         );
         assert_eq!(
             expand_placeholders(r"%AC_MATRIX_ROOT%\x", &root_agent).unwrap_err(),
@@ -651,7 +733,7 @@ mod tests {
         assert_eq!(ctx.ac_root.as_deref(), Some(expected_ac_root));
 
         assert_eq!(
-            expand_placeholders(r"%AC_WORKSPACE_ROOT%\x", &ctx).unwrap(),
+            expand_placeholders(r"%AC_PROJECT_ROOT%\x", &ctx).unwrap(),
             format!(r"{}\x", expected_ac_root.to_string_lossy())
         );
         assert_eq!(
