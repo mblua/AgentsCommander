@@ -202,13 +202,13 @@ describe("profile utils", () => {
     );
   });
 
-  it("recognizes the legacy AC workspace root placeholder", () => {
-    expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true);
+  it("recognizes the legacy Project AC Root placeholder", () => {
+    expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true); // LEGACY-ALIAS(#1451)
   });
 
-  it("expands the legacy AC workspace root placeholder to the project .ac root", () => {
+  it("expands the legacy Project AC Root placeholder to the project .ac root", () => {
     const replica = "C:\\proj\\.ac\\wg-6-dev-team\\__agent_codex";
-    expect(expandAcPlaceholdersPreview("%AC_WORKSPACE_ROOT%\\.claude", replica)).toBe(
+    expect(expandAcPlaceholdersPreview("%AC_WORKSPACE_ROOT%\\.claude", replica)).toBe( // LEGACY-ALIAS(#1451)
       "C:\\proj\\.ac\\.claude",
     );
   });
@@ -340,13 +340,12 @@ describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
   it("classifies an AgentsCommander-managed home path as system", () => {
     expect(profileEnvOrigin("CODEX_HOME", "%AC_REPLICA_ROOT%\\.codex\\agents\\codex")).toBe("system");
     expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_REPLICA_ROOT%/.claude")).toBe("system");
-    // Any of the three canonical AC placeholders on a managed home key is system-managed.
     expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_PROJECT_ROOT%/.claude")).toBe("system");
     expect(profileEnvOrigin("CODEX_HOME", "%AC_MATRIX_ROOT%\\.codex")).toBe("system");
   });
 
-  it("classifies the legacy AC workspace root placeholder as system", () => {
-    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_WORKSPACE_ROOT%/.claude")).toBe("system");
+  it("classifies the legacy Project AC Root placeholder as system", () => {
+    expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_WORKSPACE_ROOT%/.claude")).toBe("system"); // LEGACY-ALIAS(#1451)
   });
 
   it("classifies a literal absolute path on a managed home key as accepted", () => {

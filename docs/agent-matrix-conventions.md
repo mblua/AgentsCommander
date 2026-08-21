@@ -366,7 +366,7 @@ The three tokens have **different** validity gates. A value is rejected only whe
 When a token is used where it does not apply, the launch fails with a specific error:
 
 - `%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root`
-- `%AC_PROJECT_ROOT% requires a launch root inside an AC (.ac) workspace`
+- `%AC_PROJECT_ROOT% requires a launch root inside an AC project root (.ac)`
 - `%AC_MATRIX_ROOT% requires an AC workgroup replica launch root`
 
 ### Breaking change: `%AC_ROOT%` was removed
