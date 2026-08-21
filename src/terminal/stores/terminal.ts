@@ -9,6 +9,8 @@ import type { TransportConnectionState } from "../../shared/transport";
 
 export type TerminalBindingState = "pending" | "bound" | "unavailable";
 
+const U32_MAX = 4_294_967_295;
+
 const [selectionId, setSelectionId] = createSignal<string | null>(null);
 const [selectionMode, setSelectionMode] = createSignal<SessionSelectionMode>("none");
 const [selectionSource, setSelectionSource] = createSignal<SessionSelectionSource | null>(null);
@@ -35,6 +37,8 @@ const [activeIsRootAgent, setActiveIsRootAgent] = createSignal(false);
 // memo would be a subscription nobody wants.
 let taskWriteSeq = 0;
 let lastLocalTaskWrite: { workgroupRoot: string; seq: number } | null = null;
+let attachmentGenerationEpoch: string | null = null;
+let attachmentGenerationClock = 0;
 
 // #1455 - TASK.md is per-WORKGROUP, not per-session: `find_workgroup_task_path_for_cwd`
 // (src-tauri/src/session/session.rs:242-256) walks up from a session's cwd to the first
@@ -147,6 +151,18 @@ export const terminalStore = {
   },
   get activeIsRootAgent() {
     return activeIsRootAgent();
+  },
+
+  allocateAttachmentGeneration(documentEpoch: string): number | null {
+    if (attachmentGenerationEpoch !== documentEpoch) {
+      attachmentGenerationEpoch = documentEpoch;
+      attachmentGenerationClock = 0;
+    }
+    if (attachmentGenerationClock >= U32_MAX) {
+      return null;
+    }
+    attachmentGenerationClock += 1;
+    return attachmentGenerationClock;
   },
 
   observeConnection(state: TransportConnectionState): boolean {
@@ -329,6 +345,8 @@ export const terminalStore = {
   resetForTests(): void {
     taskWriteSeq = 0;
     lastLocalTaskWrite = null;
+    attachmentGenerationEpoch = null;
+    attachmentGenerationClock = 0;
     setSelectionId(null);
     setSelectionMode("none");
     setSelectionSource(null);

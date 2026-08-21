@@ -183,6 +183,7 @@ function createFactory(h: Harness) {
       spawnDriftReported: false,
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
+      resizeRetryExhaustion: null,
       attachmentDeadlineTimer: null,
       firstAttachmentRaf: null,
       secondAttachmentRaf: null,

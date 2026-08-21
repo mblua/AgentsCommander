@@ -634,6 +634,64 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
+  it("reports ordinary resize retry exhaustion exactly once without terminal content", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake);
+    fake.onInvoke("pty_resize", (args) => {
+      if (args.sessionId === SPAWNED && args.rows === 24) {
+        throw new Error("test permanent ordinary resize rejection");
+      }
+      return undefined;
+    });
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await createWhileOnScreen(fake);
+      const spawned = await attachSpawnedSession();
+      await driveFramesUntil(
+        frames,
+        "the settle send landed",
+        () => resizesFor(fake, SPAWNED).length > 0,
+      );
+      await frames.flush();
+
+      spawned.emitResize(74, 24);
+      await waitFor(
+        () =>
+          expect(
+            resizesFor(fake, SPAWNED).filter((call) => call.args.rows === 24),
+          ).toHaveLength(4),
+        3_000,
+      );
+      await waitFor(() =>
+        expect(
+          warn.mock.calls.filter(
+            (call) =>
+              typeof call[0] === "string" && call[0].includes("event=pty_resize_retry"),
+          ),
+        ).toHaveLength(1),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const diagnostics = warn.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (message): message is string =>
+            typeof message === "string" && message.includes("event=pty_resize_retry"),
+        );
+      expect(diagnostics).toEqual([
+        `[terminal-snapshot] event=pty_resize_retry outcome=exhausted ` +
+          `sessionId=${SPAWNED} attachGeneration=2 cols=74 rows=24 attempts=3`,
+      ]);
+      expect(diagnostics[0]).not.toMatch(
+        /replayData|terminalBytes|prompt|command|workingDirectory|cwd|argv|environment|userText|error/i,
+      );
+    } finally {
+      await rendered.cleanupAsync();
+    }
+  });
+
   it("aborts boundedly with resizeFailed when the authoritative resize cannot land", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});

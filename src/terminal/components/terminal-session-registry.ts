@@ -69,6 +69,10 @@ export interface SessionTerminalEntry {
   spawnDriftReported: boolean;
   resizeRetryTimer: ReturnType<typeof setTimeout> | null;
   resizeRetryAttempts: number;
+  resizeRetryExhaustion: {
+    readonly generation: number | null;
+    readonly viewport: PtyViewport;
+  } | null;
   attachmentDeadlineTimer: ReturnType<typeof setTimeout> | null;
   firstAttachmentRaf: number | null;
   secondAttachmentRaf: number | null;

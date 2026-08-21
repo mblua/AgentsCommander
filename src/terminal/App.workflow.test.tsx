@@ -744,6 +744,54 @@ describe("TerminalApp workflow", () => {
     }
   });
 
+  it("keeps one document-epoch generation clock across live terminal remounts", async () => {
+    const fake = new FakeTransport();
+    setupTerminalTransport(fake, [session({ id: SESSION_A })]);
+    let backendHighWater = 0;
+    const acceptedGenerations: number[] = [];
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const generation = Number(args.attachGeneration);
+      if (!Number.isInteger(generation) || generation <= backendHighWater) {
+        throw new Error("backend rejected a reused attachment generation");
+      }
+      backendHighWater = generation;
+      acceptedGenerations.push(generation);
+      const instance = xterm.instances.find(
+        (candidate) =>
+          candidate.element?.parentElement?.getAttribute("data-ac-session-id") ===
+          String(args.sessionId),
+      );
+      return terminalActivationWire(args, {
+        replayData: [],
+        rows: instance?.rows ?? 24,
+        cols: instance?.cols ?? 80,
+      });
+    });
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(acceptedGenerations).toEqual([1]));
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(3),
+      );
+
+      fake.emitFromBackend("session_switched", noneSelection(2));
+      await waitFor(() =>
+        expect(rendered.root.querySelector("[data-ac-testid='terminal.host']")).toBeNull(),
+      );
+
+      fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
+      await waitFor(() => expect(acceptedGenerations).toEqual([1, 2]));
+      await waitFor(() =>
+        expect(fake.callsFor("record_terminal_attach_observation")).toHaveLength(6),
+      );
+      expect(xterm.instances).toHaveLength(2);
+      expect(xterm.instances[0].disposed).toBe(true);
+    } finally {
+      await rendered.cleanupAsync();
+    }
+  });
+
   it("recovers output dropped during the async session switch list gap via the attach snapshot", async () => {
     const sessionOne = session({
       id: SESSION_A,

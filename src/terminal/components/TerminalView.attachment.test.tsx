@@ -760,6 +760,73 @@ describe("TerminalView deterministic attachment transaction (#1478)", () => {
     }
   });
 
+  it("retains the newest of more than eight late activations when exact cleanup keeps rejecting", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const activationGates = Array.from({ length: 10 }, () => deferred<unknown>());
+    const activationArgs: Array<Record<string, unknown> | null> = Array.from(
+      { length: activationGates.length },
+      () => null,
+    );
+    let rejectLateCleanup = false;
+    const rejectedCleanupGenerations: number[] = [];
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const generation = Number(args.attachGeneration);
+      const gate = activationGates[generation - 1];
+      if (!gate) throw new Error(`Unexpected attachment generation ${generation}`);
+      activationArgs[generation - 1] = args;
+      return gate.promise;
+    });
+    fake.onInvoke("cancel_terminal_output_activation", (args) => {
+      if (!rejectLateCleanup) return undefined;
+      rejectedCleanupGenerations.push(Number(args.attachGeneration));
+      throw new Error("test permanent late cleanup rejection");
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(fake.callsFor("activate_terminal_output")).toHaveLength(1));
+      for (let generation = 2; generation <= activationGates.length; generation += 1) {
+        terminalStore.setActiveSessionForTests(
+          generation % 2 === 0 ? SESSION_B : SESSION_A,
+        );
+        await waitFor(() =>
+          expect(fake.callsFor("activate_terminal_output")).toHaveLength(generation),
+        );
+      }
+
+      terminalStore.setActiveSessionForTests(null);
+      await flushPromises();
+      rejectLateCleanup = true;
+      for (const [index, gate] of activationGates.entries()) {
+        const args = activationArgs[index];
+        if (!args) throw new Error(`Missing activation args for generation ${index + 1}`);
+        gate.resolve(terminalActivationWire(args, { replayData: SNAP }));
+      }
+
+      await waitFor(
+        () =>
+          expect(
+            rejectedCleanupGenerations.filter(
+              (generation) => generation === activationGates.length,
+            ),
+          ).toHaveLength(3),
+        2_000,
+      );
+      const capacityDiagnostics = warn.mock.calls
+        .map((call: unknown[]) => call[0])
+        .filter(
+          (message: unknown): message is string =>
+            typeof message === "string" && message.includes("outcome=capacity_exceeded"),
+        );
+      expect(capacityDiagnostics).toEqual([]);
+    } finally {
+      rejectLateCleanup = false;
+      await rendered.cleanup();
+    }
+  });
+
   it("aborts before postWrite when a replay-barrier visible line is undefined", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);

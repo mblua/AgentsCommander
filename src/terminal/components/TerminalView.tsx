@@ -53,7 +53,6 @@ const ATTACHMENT_CLEANUP_MAX_PENDING = 8;
 
 const PTY_RESIZE_RETRY_DELAY_MS = 120;
 const PTY_RESIZE_MAX_RETRIES = 3;
-const U32_MAX = 4_294_967_295;
 
 interface AttachmentOwner {
   readonly sessionId: string;
@@ -74,6 +73,7 @@ type ExactOwnerCleanupKind = "detach" | "cancel";
 interface ExactOwnerCleanupState {
   readonly kind: ExactOwnerCleanupKind;
   readonly owner: AttachmentOwner;
+  generationDominanceProven: boolean;
   attempts: number;
   diagnosticReported: boolean;
   active: Promise<boolean> | null;
@@ -135,7 +135,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   let unlistenTerminalDetached: UnlistenFn | null = null;
   let unlistenCloseRequested: UnlistenFn | null = null;
   const [documentEpoch, setDocumentEpoch] = createSignal<string | null>(null);
-  let generationClock = 0;
   let lastSelectedSessionId: string | null = null;
   let viewDisposed = false;
 
@@ -146,9 +145,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // order, so a fast A -> B -> A switch could otherwise land the first
   // detach(A) after the final attach(A) and leave this window rendering a
   // session it is no longer attached to: a silent freeze indistinguishable
-  // from #1363 itself. Every transition therefore runs on one promise chain,
-  // re-checks the desired state after each await, and is the ONLY writer of
-  // `attachedOwner`.
+  // from #1363 itself. Every normal ownership transition therefore runs on
+  // one promise chain and re-checks the desired state after each await.
+  // Exact-owner cleanup may also clear `attachedOwner`, but only behind its
+  // exact same-owner guard.
   let attachedOwner: AttachmentOwner | null = null;
   let desiredOwner: AttachmentOwner | null = null;
   let attachChain: Promise<void> = Promise.resolve();
@@ -387,6 +387,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       spawnDriftReported: false,
       resizeRetryTimer: null,
       resizeRetryAttempts: 0,
+      resizeRetryExhaustion: null,
       attachmentDeadlineTimer: null,
       firstAttachmentRaf: null,
       secondAttachmentRaf: null,
@@ -501,8 +502,29 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   const reconcileExactOwnerCleanup = (
     kind: ExactOwnerCleanupKind,
     owner: AttachmentOwner,
+    generationDominanceProven: boolean,
   ): Promise<boolean> => {
     const key = ownerCleanupKey(kind, owner);
+    const dominatedByRetainedState = [...exactOwnerCleanupStates.values()].some(
+      (candidate) =>
+        candidate.generationDominanceProven &&
+        candidate.owner.documentEpoch === owner.documentEpoch &&
+        candidate.owner.generation > owner.generation,
+    );
+    if (dominatedByRetainedState) {
+      exactOwnerCleanupStates.delete(key);
+      return Promise.resolve(true);
+    }
+    if (generationDominanceProven) {
+      for (const [candidateKey, candidate] of exactOwnerCleanupStates) {
+        if (
+          candidate.owner.documentEpoch === owner.documentEpoch &&
+          candidate.owner.generation < owner.generation
+        ) {
+          exactOwnerCleanupStates.delete(candidateKey);
+        }
+      }
+    }
     let state = exactOwnerCleanupStates.get(key);
     if (!state) {
       if (exactOwnerCleanupStates.size >= ATTACHMENT_CLEANUP_MAX_PENDING) {
@@ -516,11 +538,14 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       state = {
         kind,
         owner,
+        generationDominanceProven,
         attempts: 0,
         diagnosticReported: false,
         active: null,
       };
       exactOwnerCleanupStates.set(key, state);
+    } else if (generationDominanceProven) {
+      state.generationDominanceProven = true;
     }
     if (state.active) {
       return state.active;
@@ -569,7 +594,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       return true;
     }
     const results = await Promise.all(
-      pending.map((state) => reconcileExactOwnerCleanup(state.kind, state.owner)),
+      pending.map((state) =>
+        reconcileExactOwnerCleanup(
+          state.kind,
+          state.owner,
+          state.generationDominanceProven,
+        ),
+      ),
     );
     return results.every(Boolean);
   };
@@ -619,6 +650,31 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  const reportResizeRetryExhaustion = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    viewport: PtyViewport,
+    generation: number | null,
+  ): void => {
+    const reported = entry.resizeRetryExhaustion;
+    if (
+      reported !== null &&
+      reported.generation === generation &&
+      sameViewport(reported.viewport, viewport)
+    ) {
+      return;
+    }
+    entry.resizeRetryExhaustion = {
+      generation,
+      viewport: { ...viewport },
+    };
+    console.warn(
+      `[terminal-snapshot] event=pty_resize_retry outcome=exhausted ` +
+        `sessionId=${sessionId} attachGeneration=${generation} ` +
+        `cols=${viewport.cols} rows=${viewport.rows} attempts=${entry.resizeRetryAttempts}`,
+    );
+  };
+
   const scheduleResizeRetry = (
     sessionId: string,
     entry: SessionTerminalEntry,
@@ -628,10 +684,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   ): void => {
     if (
       entry.resizeRetryTimer !== null ||
-      entry.resizeRetryAttempts >= PTY_RESIZE_MAX_RETRIES ||
       !isCurrentResizeOwner(sessionId, entry, generation) ||
       entry.attachmentSettlePending
     ) {
+      return;
+    }
+    if (entry.resizeRetryAttempts >= PTY_RESIZE_MAX_RETRIES) {
+      reportResizeRetryExhaustion(sessionId, entry, viewport, generation);
       return;
     }
     entry.resizeRetryAttempts += 1;
@@ -704,6 +763,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.inFlightResize = null;
     entry.confirmedViewport = viewport;
     entry.resizeRetryAttempts = 0;
+    entry.resizeRetryExhaustion = null;
     clearResizeRetry(entry);
     return "confirmed";
   };
@@ -1298,8 +1358,11 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     return operation;
   };
 
-  const cancelBackendActivation = (owner: AttachmentOwner): Promise<boolean> =>
-    reconcileExactOwnerCleanup("cancel", owner);
+  const cancelBackendActivation = (
+    owner: AttachmentOwner,
+    generationDominanceProven = false,
+  ): Promise<boolean> =>
+    reconcileExactOwnerCleanup("cancel", owner, generationDominanceProven);
 
   const abortAttachmentGeneration = async (
     entry: SessionTerminalEntry,
@@ -1336,7 +1399,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       buffer,
       geometry,
     );
-    await cancelBackendActivation(transaction.owner);
+    await cancelBackendActivation(
+      transaction.owner,
+      sameOwner(attachedOwner, transaction.owner),
+    );
     if (!entry.hasRenderedOutput) {
       setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
     }
@@ -1683,7 +1749,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     epoch: string,
     transitionKind: PtyTerminalAttachTransitionKind,
   ): AttachmentTransaction | null => {
-    if (generationClock >= U32_MAX) {
+    const generation = terminalStore.allocateAttachmentGeneration(epoch);
+    if (generation === null) {
       if (currentTransaction !== null) {
         const previousEntry = registry.get(currentTransaction.owner.sessionId);
         if (previousEntry) {
@@ -1709,11 +1776,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       currentTransaction = null;
     }
     retireEntryGeneration(entry);
-    generationClock += 1;
     const owner: AttachmentOwner = {
       sessionId,
       documentEpoch: epoch,
-      generation: generationClock,
+      generation,
     };
     const transaction: AttachmentTransaction = {
       owner,
@@ -1786,7 +1852,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           previous !== null &&
           (target === null || !sameOwner(previous, target.transaction.owner))
         ) {
-          const detached = await reconcileExactOwnerCleanup("detach", previous);
+          const detached = await reconcileExactOwnerCleanup("detach", previous, true);
           if (!detached) {
             if (
               target !== null &&
@@ -1836,7 +1902,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         void activationPromise.then(
           () => {
             if (!isCurrentAttachment(entry, owner)) {
-              void cancelBackendActivation(owner);
+              void cancelBackendActivation(owner, true);
             }
           },
           () => undefined,
@@ -1854,7 +1920,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           return;
         }
         if (!isCurrentAttachment(entry, owner)) {
-          void cancelBackendActivation(owner);
+          void cancelBackendActivation(owner, true);
           return;
         }
         transaction.fetchMicros = elapsedMicros(fetchStartedAt);
