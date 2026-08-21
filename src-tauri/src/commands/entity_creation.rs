@@ -6039,44 +6039,42 @@ mod tests {
         assert!(replica.is_dir(), "replica must be restored after the block");
     }
 
-    // #1063: with a `#[cfg(test)]` activation token, the workgroup delete's prune
-    // actually removes the workgroup's replica config rows; production threads
-    // `None` and never mutates the manifest (dormant). Proves the recorder wiring.
+    // With a `#[cfg(test)]` activation token, workgroup deletion still prunes
+    // legacy replica-config rows read from current metadata.
     #[test]
     fn gated_workgroup_delete_prunes_scope_with_activation_token() {
-        use crate::config::seed_manifest::{
-            ManifestActivationToken, ManifestPathIdentity, ManifestRecordOutcome, ManifestSource,
-            ProjectSeedManifestGuard, PublishedScopeBatch,
-        };
+        use crate::config::seed_manifest::ManifestActivationToken;
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("proj");
         let ac = project.join(".ac");
         std::fs::create_dir_all(ac.join("wg-1-team")).unwrap();
 
-        // Seed a replica config row under wg-1-team using the test token.
+        // Seed a raw current-metadata legacy row under wg-1-team. Canonical
+        // writers intentionally omit this row kind.
         let token = ManifestActivationToken::for_test();
-        {
-            let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
-            let files = vec![
-                ManifestPathIdentity::from_relative_path(std::path::Path::new(
-                    ".ac/wg-1-team/__agent_x/.claude/settings.json",
-                ))
-                .unwrap(),
-            ];
-            let batch = PublishedScopeBatch::new(
-                "config:.ac/wg-1-team/__agent_x/.claude".to_string(),
-                ManifestSource::WorkspaceBase,
-                files,
-                chrono::Utc::now(),
-            )
-            .unwrap();
-            assert_eq!(
-                guard.publication_permit().replace_scope(&token, batch),
-                ManifestRecordOutcome::Recorded
-            );
-            guard.release();
-        }
         let manifest_path = ac.join("seed-manifest.toml");
+        let wg1_legacy = concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 2\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/wg-1-team/__agent_x/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/wg-1-team/__agent_x/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+        )
+        .as_bytes()
+        .to_vec();
+        assert!(wg1_legacy.starts_with(
+            b"# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n"
+        ));
+        assert!(wg1_legacy.ends_with(b"\n"));
+        assert!(!wg1_legacy.ends_with(b"\n\n"));
+        std::fs::write(&manifest_path, &wg1_legacy).unwrap();
         assert!(
             std::fs::read_to_string(&manifest_path)
                 .unwrap()
@@ -6094,31 +6092,43 @@ mod tests {
         )
         .unwrap();
 
-        let after = std::fs::read_to_string(&manifest_path).unwrap();
-        assert!(
-            !after.contains("wg-1-team"),
-            "the workgroup scope must be pruned; manifest still contains it:\n{after}"
+        let after = std::fs::read(&manifest_path).unwrap();
+        assert_eq!(
+            after,
+            concat!(
+                "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+                "schema_version = 1\n",
+                "coverage_version = 2\n",
+                "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+                "files = []\n"
+            )
+            .as_bytes(),
+            "Deleted must write the canonical empty manifest"
         );
 
         // A Blocked outcome (logical path intact) must NOT prune.
-        {
-            let mut guard = ProjectSeedManifestGuard::acquire(&project).unwrap();
-            let files = vec![
-                ManifestPathIdentity::from_relative_path(std::path::Path::new(
-                    ".ac/wg-2-team/__agent_y/.claude/settings.json",
-                ))
-                .unwrap(),
-            ];
-            let batch = PublishedScopeBatch::new(
-                "config:.ac/wg-2-team/__agent_y/.claude".to_string(),
-                ManifestSource::WorkspaceBase,
-                files,
-                chrono::Utc::now(),
-            )
-            .unwrap();
-            guard.publication_permit().replace_scope(&token, batch);
-            guard.release();
-        }
+        let wg2_legacy = concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 2\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/wg-2-team/__agent_y/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/wg-2-team/__agent_y/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:42:12.456Z\"\n"
+        )
+        .as_bytes()
+        .to_vec();
+        assert!(wg2_legacy.starts_with(
+            b"# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n"
+        ));
+        assert!(wg2_legacy.ends_with(b"\n"));
+        assert!(!wg2_legacy.ends_with(b"\n\n"));
+        std::fs::write(&manifest_path, &wg2_legacy).unwrap();
         gated_workgroup_delete_with(
             &project,
             "wg-2-team",
@@ -6127,11 +6137,10 @@ mod tests {
             || WgDeleteOutcome::Blocked(std::io::Error::other("held")),
         )
         .unwrap();
-        assert!(
-            std::fs::read_to_string(&manifest_path)
-                .unwrap()
-                .contains("wg-2-team"),
-            "a Blocked delete must preserve its rows"
+        assert_eq!(
+            std::fs::read(&manifest_path).unwrap(),
+            wg2_legacy,
+            "a Blocked delete must preserve raw current metadata exactly"
         );
     }
 
