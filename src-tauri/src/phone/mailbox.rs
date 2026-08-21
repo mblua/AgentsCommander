@@ -867,6 +867,31 @@ fn wake_claim_origin(claim: &Path) -> Option<PathBuf> {
     Some(claim.with_file_name(origin))
 }
 
+fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, String> {
+    let Some(outbox_dir) = origin.parent() else {
+        return Ok(false);
+    };
+    let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(false);
+    };
+    let delivered = outbox_dir.join("delivered").join(format!("{}.json", id));
+    if delivered.try_exists().map_err(|error| {
+        format!(
+            "could not inspect delivered payload receipt {:?}: {}",
+            delivered, error
+        )
+    })? {
+        return Ok(true);
+    }
+    let rejected = outbox_dir.join("rejected").join(format!("{}.json", id));
+    rejected.try_exists().map_err(|error| {
+        format!(
+            "could not inspect rejected payload receipt {:?}: {}",
+            rejected, error
+        )
+    })
+}
+
 /// (#1399) Return a claim to its outbox path after a failed delivery. On
 /// failure the claim stays on disk and unowned once its outcome drains, so
 /// every-cycle reclamation retries the rename until it succeeds; the message is
@@ -923,10 +948,52 @@ fn outbox_message_send_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>
 fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
     outbox_dirs.retain(|dir| dir.is_dir());
     let mut seen = std::collections::HashSet::new();
-    outbox_dirs.retain(|dir| match crate::path_identity::verify_directory(dir) {
-        Ok(identity) => seen.insert(identity.object_id),
+    outbox_dirs.retain_mut(|dir| match crate::path_identity::verify_directory(dir) {
+        Ok(identity) => {
+            let canonical = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &identity.canonical_path,
+            );
+            let is_new = seen.insert(identity.object_id);
+            if is_new {
+                *dir = canonical;
+            }
+            is_new
+        }
         // Unverifiable: keep it, and let the existing `is_dir()` guard decide.
         Err(_) => true,
+    });
+}
+
+/// (#1399) Drop retry state only after both durable source spellings were
+/// successfully observed absent. An observation error is pending state, not
+/// evidence that an already-counted delivery attempt disappeared.
+fn prune_retry_tracker(
+    retry_tracker: &mut std::collections::HashMap<PathBuf, RetryState>,
+) {
+    retry_tracker.retain(|path, _| match path.try_exists() {
+        Ok(true) => true,
+        Ok(false) => {
+            let claim = wake_claim_path(path);
+            match claim.try_exists() {
+                Ok(claim_present) => claim_present,
+                Err(error) => {
+                    log::warn!(
+                        "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining retry state",
+                        claim,
+                        error
+                    );
+                    true
+                }
+            }
+        }
+        Err(error) => {
+            log::warn!(
+                "[mailbox] #1399 could not inspect retry origin {:?}: {}; retaining retry state",
+                path,
+                error
+            );
+            true
+        }
     });
 }
 
@@ -2683,18 +2750,18 @@ pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
     snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
-    /// (#1399) Claim paths this process has handed to a worker whose outcome
-    /// has not yet been drained. Membership is the EXACT definition of "a live
-    /// delivery owns this claim"; anything else on disk is unowned and must be
-    /// returned to its outbox.
+    /// (#1399) Claim paths this process has handed off whose outcome has not yet
+    /// been successfully settled by `drain_wake_outcomes`. Membership includes
+    /// running workers, queued reports, and reports requeued after filesystem
+    /// observation or mutation failed. Anything else on disk is unowned.
     live_claims: std::collections::HashSet<PathBuf>,
     /// (#1399) Per-target delivery lanes shared with every spawned worker.
     wake_lanes: Arc<crate::phone::wake_lanes::WakeLanes>,
     wake_workers: tokio::task::JoinSet<()>,
-    /// (#1399) Unbounded is safe by construction: at most `WAKE_WORKER_LIMIT`
-    /// workers exist and each sends exactly once, so at most 8 messages are
-    /// ever pending, and the worker's send is provably non-blocking while it
-    /// still holds its lane.
+    /// (#1399) Unbounded is safe by construction: admission caps both running
+    /// workers and owned claims at `WAKE_WORKER_LIMIT`. Each owned claim has at
+    /// most one report, and a failed settlement requeues that same report, so
+    /// at most 8 reports are pending while worker sends remain non-blocking.
     wake_outcomes_tx: tokio::sync::mpsc::UnboundedSender<(PathBuf, Result<(), String>)>,
     wake_outcomes_rx: tokio::sync::mpsc::UnboundedReceiver<(PathBuf, Result<(), String>)>,
     #[cfg(test)]
@@ -3024,7 +3091,7 @@ impl MailboxPoller {
     /// Assumes one daemon per outbox (different builds never share one, because
     /// `config::agent_local_dir_name()` derives the outbox from the binary
     /// stem).
-    fn reclaim_unowned_wake_claims(&self, outbox_dir: &Path, claims: &[PathBuf]) {
+    fn reclaim_unowned_wake_claims(&self, _outbox_dir: &Path, claims: &[PathBuf]) {
         for claim in claims {
             if self.live_claims.contains(claim) {
                 continue;
@@ -3039,17 +3106,20 @@ impl MailboxPoller {
             let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            // The receipt is the proof the delivery already completed. Deleting
-            // the claim in that case is what makes reclamation unable to
-            // deliver twice.
-            let settled = outbox_dir
-                .join("delivered")
-                .join(format!("{}.json", id))
-                .exists()
-                || outbox_dir
-                    .join("rejected")
-                    .join(format!("{}.json", id))
-                    .exists();
+            // The receipt is the proof the delivery already completed. Share
+            // this predicate with the owned-outcome drain so both paths treat
+            // a failed observation as pending rather than absence.
+            let settled = match wake_claim_has_settled_receipt(&origin) {
+                Ok(settled) => settled,
+                Err(error) => {
+                    log::warn!(
+                        "[mailbox] #1399 could not inspect receipts for unowned claim {}: {}",
+                        id,
+                        error
+                    );
+                    continue;
+                }
+            };
             if settled {
                 // (#1399 R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
@@ -3098,7 +3168,9 @@ impl MailboxPoller {
         // Both caps checked, mirroring the dispatcher: `try_reserve` alone
         // would suffice today; the `JoinSet::len()` check keeps the cap true
         // if a reservation ever outlives its worker.
-        if self.wake_workers.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT {
+        if self.wake_workers.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+            || self.live_claims.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
+        {
             return WakeHandoff::LaneBusy;
         }
         let Some(reservation) = self
@@ -3163,18 +3235,92 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) Record every outcome a worker has reported since the last
-    /// cycle. The ONLY place `live_claims` ownership is released, and
-    /// therefore the only place that must not be duplicated: any future helper
-    /// that needs to process outcomes must go through this method rather than
-    /// re-open the receiver.
+    /// (#1399) Settle one finite snapshot of worker reports. Ownership ends only
+    /// after the corresponding on-disk state is settled and the outcome can be
+    /// recorded without racing reclamation or an absent terminal-rejection input.
     async fn drain_wake_outcomes(&mut self) {
-        while let Ok((path, outcome)) = self.wake_outcomes_rx.try_recv() {
-            // Ownership ends here, not when the worker task ends. The claim
-            // becomes reclaimable on the next cycle, which is what un-wedges a
-            // failed rename-back and a panicking worker.
-            self.live_claims.remove(&wake_claim_path(&path));
-            self.record_message_outcome(path, outcome).await;
+        let mut reports = Vec::new();
+        while let Ok(report) = self.wake_outcomes_rx.try_recv() {
+            reports.push(report);
+        }
+
+        for (path, outcome) in reports {
+            let claim = wake_claim_path(&path);
+            // Observation is part of settlement. `Path::exists()` would turn every
+            // metadata/access failure into `false`, release the ledger, and either
+            // count against an absent origin or resurrect an unreadable receipt.
+            let settlement = (|| -> Result<(bool, bool, bool), String> {
+                let claim_present = claim.try_exists().map_err(|error| {
+                    format!("could not inspect owned claim {:?}: {}", claim, error)
+                })?;
+                let origin_present = path.try_exists().map_err(|error| {
+                    format!("could not inspect owned origin {:?}: {}", path, error)
+                })?;
+                let payload_receipt_present = wake_claim_has_settled_receipt(&path)?;
+                let claim_has_receipt = claim_present && payload_receipt_present;
+
+                if claim_present {
+                    let (action, disk_result) = if claim_has_receipt {
+                        // Claim plus receipt is authoritative. Never resurrect it.
+                        ("delete", std::fs::remove_file(&claim))
+                    } else {
+                        // `record_message_outcome` requires the origin to exist on
+                        // every retry/reject path, including panic attempt 10.
+                        ("restore", std::fs::rename(&claim, &path))
+                    };
+                    disk_result.map_err(|error| {
+                        format!("could not {} owned claim {:?}: {}", action, claim, error)
+                    })?;
+                }
+
+                Ok((claim_present, origin_present, payload_receipt_present))
+            })();
+
+            let (claim_present, origin_present, payload_receipt_present) = match settlement {
+                Ok(state) => state,
+                Err(error) => {
+                    log::warn!(
+                        "[mailbox] #1399 could not settle owned claim {:?}: {}; outcome remains pending",
+                        claim,
+                        error
+                    );
+                    // The receiver snapshot is already finite, so this report is
+                    // not observed again until a later drain and cannot spin here.
+                    if self.wake_outcomes_tx.send((path, outcome)).is_err() {
+                        // Structurally unreachable while `self` owns the receiver.
+                        // Keep ledger ownership; durable disk state is the restart fallback.
+                        log::error!(
+                            "[mailbox] #1399 could not requeue outcome for owned claim {:?}",
+                            claim
+                        );
+                    }
+                    continue;
+                }
+            };
+            // Receipt-wins recovery applies only while the claimed payload still
+            // exists. A receipt plus a restored origin is the existing
+            // `move_to_delivered` cleanup-failure state and must keep its Err.
+            let claim_has_receipt = claim_present && payload_receipt_present;
+
+            if !claim_present && !origin_present && !payload_receipt_present {
+                // No in-scope worker path produces this state. Do not retain an
+                // owner/report pair with no durable payload, but make external
+                // deletion or corruption visible before preserving today's
+                // outcome-recording behavior.
+                log::error!(
+                    "[mailbox] #1399 outcome has no claim, origin, or payload receipt: {:?}",
+                    path
+                );
+            }
+
+            self.live_claims.remove(&claim);
+            if claim_has_receipt {
+                // Receipt-wins recovery is already the contract of general
+                // reclamation. Clear retry state and do not redeliver.
+                self.record_message_outcome(path, Ok(())).await;
+            } else {
+                self.record_message_outcome(path, outcome).await;
+            }
         }
     }
 
@@ -3476,12 +3622,10 @@ impl MailboxPoller {
 
         self.snapshot_scanner.finish_cycle();
 
-        // (#1399) A claimed message no longer exists at its outbox path; its
-        // claim marker does. Prune only when the message is genuinely gone
-        // (delivered/, rejected/), otherwise the attempt count restarts on
-        // every cycle and the attempt ceiling is never reached.
-        self.retry_tracker
-            .retain(|path, _| path.exists() || wake_claim_path(path).exists());
+        // (#1399) Prune only after fallible probes prove both the origin and
+        // claim are absent. Observation failure retains the counted attempt
+        // so MAX_DELIVERY_ATTEMPTS remains reachable.
+        prune_retry_tracker(&mut self.retry_tracker);
 
         // Poll project-refresh-requests directory from create-agent-matrix CLI.
         self.poll_project_refresh_requests(app).await;
@@ -21595,38 +21739,48 @@ mod tests {
         assert!(outbox_message_send_time(&malformed) < Some(early_key));
     }
 
-    /// (#1399 T8) Two spellings of one physical outbox collapse to one entry,
-    /// so one directory can never be scanned (or reclaimed) twice.
+    /// (#1399 T8) Both alias orders retain the same canonical spelling, so a
+    /// later cycle cannot change the path-keyed ownership ledger key.
     #[test]
     fn outbox_dir_spellings_collapse_to_one_physical_entry() {
         let temp = tempfile::TempDir::new().unwrap();
         let dir = temp.path().join("outbox");
         std::fs::create_dir_all(&dir).unwrap();
-        let alternate = PathBuf::from(dir.to_string_lossy().replace('\\', "/"));
+        let Ok(identity) = crate::path_identity::verify_directory(&dir) else {
+            return;
+        };
+        let alternate = identity.canonical_path.clone();
 
         // Not `#[ignore]`: skip at runtime where the platform cannot express
-        // the aliasing under test (the two spellings resolve to different
-        // objects or one of them does not verify).
-        let same_object = match (
-            crate::path_identity::verify_directory(&dir),
-            crate::path_identity::verify_directory(&alternate),
-        ) {
-            (Ok(a), Ok(b)) => a.object_id == b.object_id,
-            _ => false,
+        // a distinct raw spelling that verifies as the same physical object.
+        if dir.as_os_str() == alternate.as_os_str() {
+            return;
+        }
+        let same_object = match crate::path_identity::verify_directory(&alternate) {
+            Ok(alternate_identity) => alternate_identity.object_id == identity.object_id,
+            Err(_) => false,
         };
         if !same_object {
             return;
         }
 
-        let mut dirs = vec![dir.clone(), alternate];
-        dedup_outbox_dirs_by_object_id(&mut dirs);
-        assert_eq!(dirs, vec![dir.clone()]);
+        let expected =
+            crate::path_utils::normalize_windows_verbatim_path_buf(&identity.canonical_path);
+        for mut dirs in [
+            vec![dir.clone(), alternate.clone()],
+            vec![alternate, dir.clone()],
+        ] {
+            dedup_outbox_dirs_by_object_id(&mut dirs);
+            assert_eq!(dirs.len(), 1);
+            assert_eq!(dirs[0].as_os_str(), expected.as_os_str());
+        }
 
         // A nonexistent path is unverifiable and must be dropped by the
         // `is_dir()` prefilter, not passed to `verify_directory`.
         let mut with_missing = vec![dir.clone(), temp.path().join("no-such-outbox")];
         dedup_outbox_dirs_by_object_id(&mut with_missing);
-        assert_eq!(with_missing, vec![dir]);
+        assert_eq!(with_missing.len(), 1);
+        assert_eq!(with_missing[0].as_os_str(), expected.as_os_str());
     }
 
     /// (#1399 T5) The split preserves the retry ledger, twice over: the prune
@@ -21726,46 +21880,283 @@ mod tests {
         assert!(source.exists());
         assert!(!wake_claim_path(&source).exists());
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
-    }
 
-    /// (#1399 T7 / G4) A failed rename-back cannot wedge the message: draining
-    /// the worker's Err releases ownership and records the attempt, and the
-    /// next reclamation pass returns the claim to the outbox.
-    #[tokio::test]
-    async fn drained_error_releases_ownership_and_reclamation_heals_the_claim() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let outbox = temp.path().join("outbox");
-        std::fs::create_dir_all(&outbox).unwrap();
-        let origin = outbox.join("locked-message.json");
-        let claim = wake_claim_path(&origin);
-        // The observable state a failed release_wake_claim produces: the claim
-        // still on disk, the origin missing, the Err outcome still reported.
-        std::fs::write(&claim, "{}").unwrap();
+        let capped_hooks = MailboxTestHooks::default();
+        let mut capped_poller = MailboxPoller::new_with_test_hooks(capped_hooks.clone());
+        let capped_source = write_wake_message(
+            &fixture.sender_cwd,
+            "outstanding-ledger-cap",
+            "2026-07-15T00:00:02+00:00",
+        );
+        for index in 0..crate::phone::wake_lanes::WAKE_WORKER_LIMIT {
+            assert!(capped_poller.live_claims.insert(
+                fixture
+                    .sender_cwd
+                    .join(format!("dummy-{index}.json.in-flight"))
+            ));
+        }
 
-        let mut poller = MailboxPoller::new();
-        poller.live_claims.insert(claim.clone());
-        poller
-            .wake_outcomes_tx
-            .send((
-                origin.clone(),
-                Err("delivery failed and rename-back failed".to_string()),
-            ))
-            .unwrap();
-
-        poller.settle_wake_workers().await;
-
-        assert!(poller.live_claims.is_empty());
-        assert_eq!(
-            poller
-                .retry_tracker
-                .get(&origin)
-                .map(|state| state.attempt_count),
-            Some(1)
+        let capped_handoff = capped_poller.claim_and_spawn_wake(
+            &app,
+            &capped_source,
+            wake_message_to_target(),
         );
 
-        poller.reclaim_unowned_wake_claims(&outbox, std::slice::from_ref(&claim));
-        assert!(!claim.exists());
-        assert!(origin.exists());
+        assert!(matches!(capped_handoff, WakeHandoff::LaneBusy));
+        assert_eq!(capped_poller.wake_workers.len(), 0);
+        assert_eq!(capped_poller.wake_lanes.len(), 0);
+        assert!(capped_source.exists());
+        assert!(!wake_claim_path(&capped_source).exists());
+        assert!(capped_hooks.spawn_calls.lock().unwrap().is_empty());
+    }
+
+    /// (#1399 T7 / G4) The shared drain settles the full owned disk-state
+    /// matrix directly and requeues each failed settlement exactly once.
+    #[tokio::test]
+    async fn drained_error_releases_ownership_and_reclamation_heals_the_claim() {
+        // Restore succeeds: the origin is actionable before the Err is counted.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            std::fs::create_dir_all(&outbox).unwrap();
+            let origin = outbox.join("restore-success.json");
+            let claim = wake_claim_path(&origin);
+            std::fs::write(&claim, "{}").unwrap();
+            let mut poller = MailboxPoller::new();
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), Err("restore success".to_string())))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(!claim.exists());
+            assert!(origin.exists());
+            assert!(poller.live_claims.is_empty());
+            assert_eq!(
+                poller
+                    .retry_tracker
+                    .get(&origin)
+                    .map(|state| state.attempt_count),
+                Some(1)
+            );
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Claim plus receipt is authoritative and clears existing retry state.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            let delivered_dir = outbox.join("delivered");
+            std::fs::create_dir_all(&delivered_dir).unwrap();
+            let origin = outbox.join("claim-with-receipt.json");
+            let claim = wake_claim_path(&origin);
+            let receipt = delivered_dir.join("claim-with-receipt.json");
+            std::fs::write(&claim, "{}").unwrap();
+            std::fs::write(&receipt, "{}").unwrap();
+            let mut poller = MailboxPoller::new();
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 4,
+                    logged: true,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), Err("receipt wins".to_string())))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(receipt.exists());
+            assert!(!claim.exists());
+            assert!(!origin.exists());
+            assert!(poller.live_claims.is_empty());
+            assert!(!poller.retry_tracker.contains_key(&origin));
+            assert!(!outbox
+                .join("rejected")
+                .join("claim-with-receipt.json")
+                .exists());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // A receipt beside an already-restored origin does not broaden the
+        // receipt-wins rule; the original Err is still counted.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            let delivered_dir = outbox.join("delivered");
+            std::fs::create_dir_all(&delivered_dir).unwrap();
+            let origin = outbox.join("restored-with-receipt.json");
+            let claim = wake_claim_path(&origin);
+            let receipt = delivered_dir.join("restored-with-receipt.json");
+            std::fs::write(&origin, "{}").unwrap();
+            std::fs::write(&receipt, "{}").unwrap();
+            let mut poller = MailboxPoller::new();
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), Err("origin still actionable".to_string())))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(origin.exists());
+            assert!(receipt.exists());
+            assert!(!claim.exists());
+            assert!(poller.live_claims.is_empty());
+            assert_eq!(
+                poller
+                    .retry_tracker
+                    .get(&origin)
+                    .map(|state| state.attempt_count),
+                Some(1)
+            );
+            assert!(!outbox
+                .join("rejected")
+                .join("restored-with-receipt.json")
+                .exists());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Restore failure keeps ownership, retry fields, and one pending report.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            std::fs::create_dir_all(&outbox).unwrap();
+            let origin = outbox.join("restore-failure.json");
+            let claim = wake_claim_path(&origin);
+            std::fs::create_dir_all(&origin).unwrap();
+            std::fs::write(&claim, "{}").unwrap();
+            let outcome = Err("restore remains pending".to_string());
+            let mut poller = MailboxPoller::new();
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 5,
+                    logged: true,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), outcome.clone()))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(claim.is_file());
+            assert!(origin.is_dir());
+            assert!(poller.live_claims.contains(&claim));
+            let state = poller.retry_tracker.get(&origin).unwrap();
+            assert_eq!(state.attempt_count, 5);
+            assert!(state.logged);
+            assert_eq!(
+                poller.wake_outcomes_rx.try_recv().unwrap(),
+                (origin.clone(), outcome)
+            );
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Receipt-claim deletion failure has the same exact retry semantics.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            let delivered_dir = outbox.join("delivered");
+            std::fs::create_dir_all(&delivered_dir).unwrap();
+            let origin = outbox.join("delete-failure.json");
+            let claim = wake_claim_path(&origin);
+            let receipt = delivered_dir.join("delete-failure.json");
+            std::fs::create_dir_all(&claim).unwrap();
+            std::fs::write(&receipt, "{}").unwrap();
+            let outcome = Err("delete remains pending".to_string());
+            let mut poller = MailboxPoller::new();
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 6,
+                    logged: false,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), outcome.clone()))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(claim.is_dir());
+            assert!(receipt.exists());
+            assert!(!origin.exists());
+            assert!(poller.live_claims.contains(&claim));
+            let state = poller.retry_tracker.get(&origin).unwrap();
+            assert_eq!(state.attempt_count, 6);
+            assert!(!state.logged);
+            assert_eq!(
+                poller.wake_outcomes_rx.try_recv().unwrap(),
+                (origin.clone(), outcome)
+            );
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Observation failure is pending state, not evidence of absence.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            std::fs::create_dir_all(&outbox).unwrap();
+            let origin = outbox.join("settlement-observation\0.json");
+            let claim = wake_claim_path(&origin);
+            assert!(claim.try_exists().is_err());
+            assert!(wake_claim_has_settled_receipt(&origin).is_err());
+            let outcome = Err("observation remains pending".to_string());
+            let mut poller = MailboxPoller::new();
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 8,
+                    logged: true,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), outcome.clone()))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+
+            assert!(poller.live_claims.contains(&claim));
+            let state = poller.retry_tracker.get(&origin).unwrap();
+            assert_eq!(state.attempt_count, 8);
+            assert!(state.logged);
+            assert_eq!(
+                poller.wake_outcomes_rx.try_recv().unwrap(),
+                (origin.clone(), outcome)
+            );
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
     }
 
     /// (#1399 T9 / R1) A panicking worker cannot strand its claim: the
@@ -21813,11 +22204,129 @@ mod tests {
                 .map(|state| state.attempt_count),
             Some(1)
         );
-        // The unwind skipped the rename-back, so the claim is still on disk
-        // and now unowned; the next cycle's reclamation returns it (T3 covers
-        // that branch).
-        assert!(wake_claim_path(&source).exists());
-        assert!(!source.exists());
+        assert!(!wake_claim_path(&source).exists());
+        assert!(source.exists());
+    }
+
+    /// (#1399 T10) Ten real guard drops from claim-only state restore the
+    /// origin before counting and reach the unchanged terminal rejection path.
+    #[tokio::test]
+    async fn ten_guard_drops_reach_terminal_rejection() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let origin = write_wake_message(
+            temp.path(),
+            "ten-guard-drops",
+            "2026-07-15T00:00:03+00:00",
+        );
+        let expected: OutboxMessage = serde_json::from_str(
+            &std::fs::read_to_string(&origin).expect("read token-bearing source"),
+        )
+        .expect("parse token-bearing source");
+        assert!(expected.token.is_some());
+
+        let outbox = origin.parent().unwrap();
+        let rejected_payload = outbox
+            .join("rejected")
+            .join(format!("{}.json", expected.id));
+        let rejected_reason = outbox
+            .join("rejected")
+            .join(format!("{}.reason.txt", expected.id));
+        let delivered_payload = outbox
+            .join("delivered")
+            .join(format!("{}.json", expected.id));
+        let mut poller = MailboxPoller::new();
+
+        for attempt in 1..=10u32 {
+            let claim = wake_claim_path(&origin);
+            std::fs::rename(&origin, &claim).unwrap();
+            assert!(poller.live_claims.insert(claim.clone()));
+            assert!(!origin.exists());
+            assert!(claim.exists());
+
+            let report =
+                WakeOutcomeReport::new(poller.wake_outcomes_tx.clone(), origin.clone());
+            drop(report);
+            poller.drain_wake_outcomes().await;
+
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(poller.live_claims.is_empty());
+            assert!(!claim.exists());
+            assert!(!delivered_payload.exists());
+
+            if attempt < MAX_DELIVERY_ATTEMPTS {
+                assert!(origin.exists());
+                assert_eq!(
+                    poller
+                        .retry_tracker
+                        .get(&origin)
+                        .map(|state| state.attempt_count),
+                    Some(attempt)
+                );
+                assert!(!rejected_payload.exists());
+                assert!(!rejected_reason.exists());
+            } else {
+                assert!(!origin.exists());
+                assert!(!poller.retry_tracker.contains_key(&origin));
+                assert!(rejected_payload.exists());
+                assert!(rejected_reason.exists());
+
+                let rejected: OutboxMessage = serde_json::from_str(
+                    &std::fs::read_to_string(&rejected_payload).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(rejected.id, expected.id);
+                assert_eq!(rejected.from, expected.from);
+                assert_eq!(rejected.to, expected.to);
+                assert_eq!(rejected.body, expected.body);
+                assert_eq!(rejected.timestamp, expected.timestamp);
+                assert_eq!(rejected.token, None);
+
+                let reason = std::fs::read(&rejected_reason).unwrap();
+                assert_eq!(
+                    reason,
+                    b"Undeliverable after 10 attempts. Last error: wake worker ended without reporting an outcome"
+                );
+            }
+        }
+    }
+
+    /// (#1399 T11) Observation failure retains exact retry state, while a
+    /// successfully observed missing origin and claim are pruned.
+    #[test]
+    fn retry_prune_retains_state_when_presence_observation_fails() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let unobservable = temp.path().join("retry-observation\0.json");
+        assert!(unobservable.try_exists().is_err());
+        let missing = temp.path().join("definitely-missing.json");
+        assert!(matches!(missing.try_exists(), Ok(false)));
+        assert!(matches!(wake_claim_path(&missing).try_exists(), Ok(false)));
+
+        let mut retry_tracker = std::collections::HashMap::new();
+        retry_tracker.insert(
+            unobservable.clone(),
+            RetryState {
+                attempt_count: 7,
+                logged: true,
+            },
+        );
+        retry_tracker.insert(
+            missing.clone(),
+            RetryState {
+                attempt_count: 3,
+                logged: false,
+            },
+        );
+
+        prune_retry_tracker(&mut retry_tracker);
+
+        assert_eq!(retry_tracker.len(), 1);
+        let retained = retry_tracker.get(&unobservable).unwrap();
+        assert_eq!(retained.attempt_count, 7);
+        assert!(retained.logged);
+        assert!(!retry_tracker.contains_key(&missing));
     }
 
     /// (#1399 AC-2) Two messages to one target inside one cycle: the first is
