@@ -13,7 +13,7 @@ function update(
 ): ContextTemplateUpdate {
   return {
     projectPath,
-    workspacePath: `${projectPath}\\.ac`,
+    acRootPath: `${projectPath}\\.ac`,
     filePath: `${projectPath}\\.ac\\Context.coordinator.md`,
     filename: "Context.coordinator.md",
     label: "Coordinator context",

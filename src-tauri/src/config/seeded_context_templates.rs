@@ -270,7 +270,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 #[serde(rename_all = "camelCase")]
 pub struct ContextTemplateUpdate {
     pub project_path: String,
-    pub workspace_path: String,
+    pub ac_root_path: String,
     pub file_path: String,
     pub filename: String,
     pub label: String,
@@ -836,7 +836,7 @@ fn make_update(
 ) -> ContextTemplateUpdate {
     ContextTemplateUpdate {
         project_path: display_path(project_dir),
-        workspace_path: display_path(ac_root),
+        ac_root_path: display_path(ac_root),
         file_path: display_path(path),
         filename: spec.filename.to_string(),
         label: spec.label.to_string(),
@@ -1922,7 +1922,7 @@ pub fn dedupe_context_template_updates(updates: &mut Vec<ContextTemplateUpdate>)
     let mut seen = HashSet::new();
     updates.retain(|update| {
         seen.insert((
-            update.workspace_path.clone(),
+            update.ac_root_path.clone(),
             update.filename.clone(),
             update.current_file_sha256.clone(),
             update.current_default_sha256.clone(),
@@ -3174,7 +3174,7 @@ mod tests {
         let mut updates = vec![
             ContextTemplateUpdate {
                 project_path: "project".to_string(),
-                workspace_path: "workspace".to_string(),
+                ac_root_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Coordinator context".to_string(),
@@ -3184,7 +3184,7 @@ mod tests {
             },
             ContextTemplateUpdate {
                 project_path: "project".to_string(),
-                workspace_path: "workspace".to_string(),
+                ac_root_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Coordinator context".to_string(),
@@ -3194,7 +3194,7 @@ mod tests {
             },
             ContextTemplateUpdate {
                 project_path: "project".to_string(),
-                workspace_path: "workspace".to_string(),
+                ac_root_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Coordinator context".to_string(),

@@ -36,7 +36,7 @@ pub struct ArchivedProject {
     pub path: String,
     pub folder_name: String,
     pub exists: bool,
-    pub has_workspace: bool,
+    pub has_ac_root: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -619,7 +619,7 @@ pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<Ar
                     .unwrap_or(raw)
                     .to_string(),
                 exists: is_real_directory(path),
-                has_workspace: has_ac_root(path),
+                has_ac_root: has_ac_root(path),
             }
         })
         .collect()
@@ -2744,11 +2744,11 @@ mod tests {
         ]);
 
         assert!(rows[0].exists);
-        assert!(rows[0].has_workspace);
+        assert!(rows[0].has_ac_root);
         assert!(rows[1].exists);
-        assert!(!rows[1].has_workspace);
+        assert!(!rows[1].has_ac_root);
         assert!(!rows[2].exists);
-        assert!(!rows[2].has_workspace);
+        assert!(!rows[2].has_ac_root);
     }
 
     // ── absolutise: relative + dot-dot collapse (Round-1 G4 + G13) ────────
@@ -3000,7 +3000,7 @@ mod tests {
             path: "X".to_string(),
             folder_name: "X".to_string(),
             exists: true,
-            has_workspace: false,
+            has_ac_root: false,
         };
         let json = serde_json::to_string(&archived).unwrap();
         assert!(
@@ -3009,12 +3009,12 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"hasWorkspace\""),
-            "missing hasWorkspace field: {}",
+            json.contains("\"hasAcRoot\""),
+            "missing hasAcRoot field: {}",
             json
         );
         assert!(
-            !json.contains("folder_name") && !json.contains("has_workspace"),
+            !json.contains("folder_name") && !json.contains("has_ac_root"),
             "snake_case archived field leaked: {}",
             json
         );

@@ -15,7 +15,7 @@ function makeUpdate(
 ): ContextTemplateUpdate {
   return {
     projectPath: "C:\\Project",
-    workspacePath: "C:\\Project\\.ac",
+    acRootPath: "C:\\Project\\.ac",
     filePath: "C:\\Project\\.ac\\Context.coordinator.md",
     filename: "Context.coordinator.md",
     label: "Coordinator context",

@@ -260,7 +260,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
   it("keeps the desktop new-project flow unchanged", async () => {
     vi.mocked(projectStore.pickAndCheck).mockResolvedValue({
       picked: "C:\\Projects\\Example",
-      hasWorkspace: false,
+      hasAcRoot: false,
     });
 
     const { dispose } = renderActionBar();

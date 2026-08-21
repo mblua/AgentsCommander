@@ -486,15 +486,15 @@ export const projectStore = {
     );
   },
 
-  async pickAndCheck(): Promise<{ picked: string | null; hasWorkspace: boolean }> {
+  async pickAndCheck(): Promise<{ picked: string | null; hasAcRoot: boolean }> {
     const picked = await AgentCreatorAPI.pickFolder();
-    if (!picked) return { picked: null, hasWorkspace: false };
+    if (!picked) return { picked: null, hasAcRoot: false };
 
-    const hasWorkspace = await ProjectAPI.checkPath(picked);
-    if (hasWorkspace) {
+    const hasAcRoot = await ProjectAPI.checkPath(picked);
+    if (hasAcRoot) {
       await projectStore.loadProject(picked);
     }
-    return { picked, hasWorkspace };
+    return { picked, hasAcRoot };
   },
 
 

@@ -18,7 +18,7 @@ function row(path: string, overrides: Partial<ArchivedProject> = {}): ArchivedPr
     path,
     folderName: path.replace(/\\/g, "/").split("/").pop() ?? path,
     exists: true,
-    hasWorkspace: true,
+    hasAcRoot: true,
     ...overrides,
   };
 }

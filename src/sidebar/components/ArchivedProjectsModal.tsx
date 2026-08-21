@@ -168,7 +168,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                   <div
                     class="archived-projects-row"
                     classList={{
-                      "archived-projects-row-warning": !row.exists || !row.hasWorkspace,
+                      "archived-projects-row-warning": !row.exists || !row.hasAcRoot,
                     }}
                     data-ac-testid={`archivedProjects.row.${rowId()}`}
                   >
@@ -179,7 +179,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                       <div class="archived-projects-path" title={row.path}>
                         {row.path}
                       </div>
-                      <Show when={!row.exists || !row.hasWorkspace}>
+                      <Show when={!row.exists || !row.hasAcRoot}>
                         <div class="archived-projects-warning">
                           {!row.exists ? "Folder missing" : "Workspace missing"}
                         </div>
@@ -194,7 +194,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                       >
                         {busy() ? "Unarchiving..." : "Unarchive"}
                       </button>
-                      <Show when={!row.exists || !row.hasWorkspace}>
+                      <Show when={!row.exists || !row.hasAcRoot}>
                         <button
                           class="modal-btn modal-btn-cancel"
                           disabled={busy()}

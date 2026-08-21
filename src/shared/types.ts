@@ -1200,7 +1200,7 @@ export interface LoopEventPayload {
 
 export interface ContextTemplateUpdate {
   projectPath: string;
-  workspacePath: string;
+  acRootPath: string;
   filePath: string;
   filename: string;
   label: string;
@@ -1396,7 +1396,7 @@ export interface ArchivedProject {
   path: string;
   folderName: string;
   exists: boolean;
-  hasWorkspace: boolean;
+  hasAcRoot: boolean;
 }
 
 export type ArchiveChangeReason =

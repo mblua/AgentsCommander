@@ -525,13 +525,13 @@ impl DiscoveryBranchWatcher {
     pub fn update_replicas_for_project(&self, project_dir: &str, workgroups: &[AcWorkgroup]) {
         // Invariant guard: catch mistaken call-site passes (e.g. a `base_path` parent)
         // in dev builds. Release builds log a warn and return to prevent silent corruption.
-        let has_workspace = has_ac_root(Path::new(project_dir));
+        let project_has_ac_root = has_ac_root(Path::new(project_dir));
         debug_assert!(
-            has_workspace,
+            project_has_ac_root,
             "update_replicas_for_project: {} does not contain a Project AC Root",
             project_dir
         );
-        if !has_workspace {
+        if !project_has_ac_root {
             log::warn!(
                 "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no Project AC Root, ignoring",
                 project_dir
@@ -4465,7 +4465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keep_custom_context_template_rejects_workspace_path() {
+    async fn keep_custom_context_template_rejects_ac_root_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
