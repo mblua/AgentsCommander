@@ -124,10 +124,18 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // and reintroduces cumulative history duplication on re-attach. Write
   // through this function instead. Both transports traverse it: the Tauri
   // window and the browser/websocket fallback (#1363 criterion H').
-  const writeTerminalBytes = (entry: SessionTerminalEntry, data: Uint8Array) => {
+  // `onWritten` (#1489) is the xterm 6.0.0 parse-completion signal: it fires
+  // only after the chunk was parsed and applied. Callers must wrap it so it
+  // cannot throw — a throwing callback aborts xterm's parse loop and wedges
+  // the remaining queue.
+  const writeTerminalBytes = (
+    entry: SessionTerminalEntry,
+    data: Uint8Array,
+    onWritten?: () => void
+  ) => {
     entry.hasRenderedOutput = true;
     setReplayStatus(entry, null);
-    entry.terminal.write(data);
+    entry.terminal.write(data, onWritten);
   };
 
   const createSessionTerminal = (
@@ -242,8 +250,26 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      sendPtyResize(sessionId, entry, cols, rows);
+      void sendPtyResize(sessionId, entry, cols, rows);
     });
+
+    // #1489 user-scroll guard: an intentional wheel scroll in the
+    // post-replay/pre-settle window must never be overridden by the one-shot
+    // attach settlement. The marker is read by the settle and cleared by
+    // `beginSeed`. The entry is resolved by session id here because the entry
+    // object does not exist yet at registration time; the listener dies with
+    // the element on teardown.
+    terminal.element?.addEventListener(
+      "wheel",
+      () => {
+        const entry = registry.get(sessionId);
+        const drain = entry && attachDrains.get(entry);
+        if (drain) {
+          drain.userScrolled = true;
+        }
+      },
+      { passive: true }
+    );
 
     return {
       terminal,
@@ -312,19 +338,23 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
 
-      sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
+      void sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
     }, PTY_RESIZE_RETRY_DELAY_MS * attempt);
   };
 
-  const sendPtyResize = (
+  // #1489: awaitable typed resize. The settle awaits it so the viewport
+  // bottoms only after the fitted grid reached the PTY (or was deduplicated
+  // because the PTY already holds it). The three ordinary call sites ignore
+  // the outcome with `void`; only the attach settle consumes it.
+  const sendPtyResize = async (
     sessionId: string,
     entry: SessionTerminalEntry,
     cols: number,
     rows: number
-  ) => {
+  ): Promise<"sent" | "deduplicated" | "failed"> => {
     const previous = entry.lastSentViewport;
     if (previous && previous.cols === cols && previous.rows === rows) {
-      return;
+      return "deduplicated";
     }
 
     reportSpawnSizeDrift(sessionId, entry, cols, rows);
@@ -332,18 +362,19 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const sent: PtyViewport = { cols, rows };
     entry.lastSentViewport = sent;
 
-    void PtyAPI.resize(sessionId, cols, rows)
-      .then(() => {
-        entry.resizeRetryAttempts = 0;
-      })
-      .catch((err: unknown) => {
-        if (entry.lastSentViewport === sent) {
-          entry.lastSentViewport = previous;
-        }
-        console.warn(`[terminal] pty_resize ${sessionId} failed:`, err);
+    try {
+      await PtyAPI.resize(sessionId, cols, rows);
+      entry.resizeRetryAttempts = 0;
+      return "sent";
+    } catch (error: unknown) {
+      if (entry.lastSentViewport === sent) {
+        entry.lastSentViewport = previous;
+      }
+      console.warn(`[terminal] pty_resize ${sessionId} failed:`, error);
 
-        scheduleResizeRetry(sessionId, entry);
-      });
+      scheduleResizeRetry(sessionId, entry);
+      return "failed";
+    }
   };
 
   const syncViewport = (sessionId: string, skipPtyResize = false) => {
@@ -354,7 +385,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     entry.fitAddon.fit();
     if (!skipPtyResize) {
-      sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
+      void sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
     }
   };
 
@@ -483,6 +514,43 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
 
     if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
+      // A retained event dropped by the watermark never writes, so it must
+      // never count against the drain (#1489): counting it would hang the
+      // drain and the replay with it.
+      return;
+    }
+
+    // #1489 write fence: while the reconcile window is open, every byte this
+    // entry queues in xterm is counted in the shared per-entry drain, so the
+    // attach pipeline can prove that everything queued before the reset has
+    // parsed before it replays. The drain always exists from `beginSeed`; the
+    // 0->1 replacement is load-bearing: a write arriving between a drain
+    // resolve and the drain loop's continuation must present a fresh,
+    // unresolved promise for the loop to await.
+    const drain = entry.snapshotReplayPending ? attachDrains.get(entry) : undefined;
+    if (drain) {
+      if (drain.inFlight === 0) {
+        drain.promise = new Promise<void>((resolve) => {
+          drain.resolve = resolve;
+        });
+      }
+      drain.inFlight += 1;
+      const onWritten = () => {
+        drain.inFlight -= 1;
+        if (drain.inFlight === 0 && drain.resolve) {
+          drain.resolve();
+          drain.resolve = null;
+        }
+      };
+      try {
+        writeTerminalBytes(entry, new Uint8Array(event.data), onWritten);
+      } catch (error) {
+        // xterm's 50-MiB queue guard throws synchronously BEFORE queueing the
+        // chunk: the byte was never queued, so the drain must not wait for it.
+        onWritten();
+        throw error;
+      }
+      markAppliedSequence(entry, sequence);
       return;
     }
 
@@ -490,14 +558,139 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     markAppliedSequence(entry, sequence);
   };
 
-  const flushPendingEvents = (
+  // #1489: closes the reconcile window (retention, budget, and the pending
+  // flag). The drain is deliberately NOT deleted: it must keep fencing this
+  // entry's queued writes for the next generation, and the write path's
+  // `snapshotReplayPending` gate already prevents any post-close registration.
+  const closeSnapshotReconcile = (entry: SessionTerminalEntry) => {
+    entry.snapshotReplayPending = false;
+    entry.pendingSnapshotEvents = [];
+    entry.pendingSnapshotBytes = 0;
+  };
+
+  // #1489: awaits parse completion of every live write queued since the
+  // attach started. `reset()` does not discard xterm's pending queue, so the
+  // fence must prove the queue is empty before the reset runs — otherwise
+  // older bytes would parse into the fresh buffer and straddle the snapshot.
+  // Aborted (stale) drains leave the count intact for the next generation.
+  const drainPendingWrites = async (
     entry: SessionTerminalEntry,
-    events: PtyOutputEvent[]
-  ) => {
-    for (const event of events) {
-      writeLivePtyOutput(entry, event);
+    sessionId: string,
+    generation: number
+  ): Promise<void> => {
+    const drain = attachDrains.get(entry);
+    if (!drain) {
+      return;
+    }
+
+    while (drain.inFlight > 0) {
+      await drain.promise;
+      if (!isCurrentAttach(sessionId, entry, generation)) {
+        return;
+      }
     }
   };
+
+  const flushPendingEventsFenced = (
+    entry: SessionTerminalEntry,
+    events: PtyOutputEvent[],
+    sessionId: string,
+    generation: number,
+    snapshot: PtyScreenSnapshot
+  ) => {
+    // Same predicate as live arrivals: no divergent second source of truth.
+    // Events at or below the snapshot sequence are inside the snapshot and
+    // are not replayed; events above it are replayed exactly once.
+    const kept = events.filter(
+      (event) => !shouldDropAlreadyAppliedEvent(entry, eventSequence(event))
+    );
+
+    // Wrapped per #1489 4.2: a callback passed to `write` must not throw into
+    // xterm's parse loop. `beginAttachSettle` only registers an animation
+    // frame, so this cannot throw in practice; the guard keeps the contract.
+    const finalize = () => {
+      try {
+        if (isCurrentAttach(sessionId, entry, generation)) {
+          beginAttachSettle(sessionId, entry, generation, snapshot);
+        }
+      } catch (error) {
+        console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
+      }
+    };
+
+    if (kept.length === 0) {
+      finalize();
+      return;
+    }
+
+    // Every fenced replay write registers in the shared drain, unconditionally
+    // (4.4): the reconcile window is already closed here, so the registration
+    // must not reuse the `snapshotReplayPending` gate of 4.2. A later
+    // generation's fence awaits an older generation's still-queued replay
+    // bytes before its reset; without it, a fast re-attach could reset while
+    // the older replay bytes are still in the FIFO, and those bytes would
+    // parse into the fresh buffer ahead of the newer snapshot and duplicate
+    // it (the issue's own straddle class).
+    const drain = attachDrains.get(entry);
+    const releaseDrain = () => {
+      if (!drain) {
+        return;
+      }
+      drain.inFlight -= 1;
+      if (drain.inFlight === 0 && drain.resolve) {
+        drain.resolve();
+        drain.resolve = null;
+      }
+    };
+    for (let index = 0; index < kept.length; index += 1) {
+      const isLast = index === kept.length - 1;
+      if (drain) {
+        if (drain.inFlight === 0) {
+          drain.promise = new Promise<void>((resolve) => {
+            drain.resolve = resolve;
+          });
+        }
+        drain.inFlight += 1;
+      }
+      const onWritten = () => {
+        releaseDrain();
+        if (isLast) {
+          finalize();
+        }
+      };
+      try {
+        writeTerminalBytes(entry, new Uint8Array(kept[index].data), onWritten);
+      } catch (error) {
+        // xterm's 50-MiB queue guard throws synchronously BEFORE queueing the
+        // chunk: the byte was never queued, so the drain must not wait for it,
+        // and this generation's pipeline stops (live output continues; the
+        // next attach re-seeds) - never a rethrow, never an unhandled
+        // rejection.
+        releaseDrain();
+        console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
+        return;
+      }
+      markAppliedSequence(entry, eventSequence(kept[index]));
+    }
+  };
+
+  // #1489 generation guard: every async continuation of the attach
+  // transaction (drain loop, write callbacks, flush finalize, settle frame,
+  // resize continuation) validates that the capture that started it is still
+  // the current one. A switch away, a superseding attach, a detach, an
+  // unmount, or an entry disposal flips at least one clause, so late
+  // continuations become inert and can never mutate a newer replay.
+  const isCurrentAttach = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    generation: number
+  ): boolean =>
+    registry.get(sessionId) === entry &&
+    !entry.destroyed &&
+    attachGenerations.get(entry) === generation &&
+    desiredSessionId === sessionId &&
+    attachedSessionId === sessionId &&
+    visibleSessionId === sessionId;
 
   const clearSnapshotSettleTimer = (entry: SessionTerminalEntry) => {
     if (entry.snapshotSettleTimer !== null) {
@@ -511,6 +704,24 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     retainedEvents: PtyOutputEvent[];
   }
 
+  // #1489 attach state, keyed by the entry object: the generation counter
+  // (`attachGenerations`) and the shared write drain (`attachDrains`). The
+  // drain is per-entry, never replaced and never deleted: `inFlight` counts
+  // every byte still queued in this entry's xterm FIFO ACROSS generations,
+  // because `reset()` does not discard the queue — a newer generation's fence
+  // must also await an older generation's still-unparsed writes. `userScrolled`
+  // is the attach-window user-scroll marker read by the settle and cleared by
+  // `beginSeed`.
+  interface AttachDrain {
+    inFlight: number;
+    promise: Promise<void> | null;
+    resolve: (() => void) | null;
+    userScrolled: boolean;
+  }
+
+  const attachGenerations = new WeakMap<SessionTerminalEntry, number>();
+  const attachDrains = new WeakMap<SessionTerminalEntry, AttachDrain>();
+
   const concludeSnapshotFetch = (
     sessionId: string,
     entry: SessionTerminalEntry
@@ -521,14 +732,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     clearSnapshotSettleTimer(entry);
 
+    // #1489: the window (pending flag, retention, byte budget) is no longer
+    // cleared here — consumers close it explicitly via `closeSnapshotReconcile`
+    // once the reset/close decision is made.
     const settle: SnapshotSettle = {
       reconcilable: entry.snapshotReplayPending,
       retainedEvents: entry.pendingSnapshotEvents,
     };
-
-    entry.snapshotReplayPending = false;
-    entry.pendingSnapshotEvents = [];
-    entry.pendingSnapshotBytes = 0;
 
     return settle;
   };
@@ -554,17 +764,147 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // writing the seed on top of them would leave the earlier bytes on screen
   // twice; the reset is also what makes the #1355 history ring safe to replay
   // on every attach.
-  const rebuildFromSnapshot = (
+  //
+  // #1489 replaces `rebuildFromSnapshot`: the pipeline is now write-fenced and
+  // generation-scoped. Fire-and-forget (`void`) so the drain never blocks the
+  // attach chain; a switch issued during a drain proceeds immediately and the
+  // drain loop's own `isCurrentAttach` check aborts on the first interleaving.
+  const replaySnapshotFenced = async (
+    sessionId: string,
     entry: SessionTerminalEntry,
     snapshot: PtyScreenSnapshot,
-    retainedEvents: PtyOutputEvent[]
-  ) => {
+    generation: number
+  ): Promise<void> => {
+    // 1. Drain: every live byte queued since `beginSeed` must have parsed
+    //    BEFORE the reset, or it would parse into the fresh buffer after the
+    //    reset and before the snapshot (the straddle/duplication regression).
+    await drainPendingWrites(entry, sessionId, generation);
+    if (!isCurrentAttach(sessionId, entry, generation)) {
+      return;
+    }
+
+    // 2. Re-check the reconcile budget: the retention may have been abandoned
+    //    during the drain (live output outran the budget).
+    if (!entry.snapshotReplayPending) {
+      console.warn(
+        `[terminal] snapshot ${sessionId} discarded: live output outran the reconcile budget`
+      );
+      return;
+    }
+
+    // 3. Capture the retention, then close the window; reset and re-seed.
+    const retained = entry.pendingSnapshotEvents;
+    closeSnapshotReconcile(entry);
+
     entry.terminal.reset();
     entry.hasRenderedOutput = false;
     entry.lastAppliedSequence = snapshot.sequence;
 
-    writeTerminalBytes(entry, new Uint8Array(snapshot.data));
-    flushPendingEvents(entry, retainedEvents);
+    // 4. Snapshot bytes with a parse-completion callback, registered in the
+    //    shared drain (4.1) with the same shape as the replay-write
+    //    registration: the 0->1 promise replacement, the `inFlight`
+    //    increment, and the throw-safe release (4.2). The registration makes
+    //    a later generation's fence await an older generation's still-queued
+    //    snapshot bytes before its reset; without it, a fast re-attach could
+    //    reset while the older snapshot bytes are still in the FIFO and those
+    //    bytes would parse into the fresh buffer ahead of the newer snapshot.
+    //    The callback is throw-free by construction (4.2): it first releases
+    //    the drain and, if the generation is still current, runs the flush
+    //    trigger. A synchronous throw from `terminal.write` (the 50-MiB queue
+    //    guard throws before queueing) releases the drain, logs the warn, and
+    //    stops this generation's pipeline - never an unhandled rejection
+    //    (live output continues; the next attach re-seeds).
+    const drain = attachDrains.get(entry);
+    const releaseDrain = () => {
+      if (!drain) {
+        return;
+      }
+      drain.inFlight -= 1;
+      if (drain.inFlight === 0 && drain.resolve) {
+        drain.resolve();
+        drain.resolve = null;
+      }
+    };
+    if (drain) {
+      if (drain.inFlight === 0) {
+        drain.promise = new Promise<void>((resolve) => {
+          drain.resolve = resolve;
+        });
+      }
+      drain.inFlight += 1;
+    }
+    const onSnapshotWritten = () => {
+      releaseDrain();
+      if (!isCurrentAttach(sessionId, entry, generation)) {
+        return;
+      }
+      try {
+        flushPendingEventsFenced(entry, retained, sessionId, generation, snapshot);
+      } catch (error) {
+        console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
+      }
+    };
+    try {
+      writeTerminalBytes(entry, new Uint8Array(snapshot.data), onSnapshotWritten);
+    } catch (error) {
+      releaseDrain();
+      console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
+    }
+  };
+
+  // #1489 one-shot settle: one animation frame after the replay completed, so
+  // the fitted grid is applied before the viewport bottoms.
+  const beginAttachSettle = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    generation: number,
+    snapshot: PtyScreenSnapshot
+  ) => {
+    requestAnimationFrame(() => {
+      if (!isCurrentAttach(sessionId, entry, generation)) {
+        return;
+      }
+      void settleAttachViewport(sessionId, entry, generation, snapshot);
+    });
+  };
+
+  // #1489: the attach settle sequence. Fit first, then the awaitable typed
+  // resize, then (unless the user scrolled in the settle window) exactly one
+  // `scrollToBottom` — the only bottoming call site in the frontend — and one
+  // bounded, content-free instrumentation line covering the issue's in-scope
+  // evidence: viewport metrics, terminal grid, snapshot grid, seed size,
+  // buffer type, and the resize outcome.
+  const settleAttachViewport = async (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    generation: number,
+    snapshot: PtyScreenSnapshot
+  ): Promise<void> => {
+    entry.fitAddon.fit();
+    const resizeOutcome = await sendPtyResize(
+      sessionId,
+      entry,
+      entry.terminal.cols,
+      entry.terminal.rows
+    );
+    if (!isCurrentAttach(sessionId, entry, generation)) {
+      return;
+    }
+
+    const drain = attachDrains.get(entry);
+    if (drain && !drain.userScrolled) {
+      entry.terminal.scrollToBottom();
+    }
+
+    const buffer = entry.terminal.buffer.active;
+    console.debug(
+      `[terminal] attach ${sessionId} settled: viewportY=${buffer.viewportY} ` +
+        `baseY=${buffer.baseY} bufferLength=${buffer.length} ` +
+        `cols=${entry.terminal.cols} rows=${entry.terminal.rows} ` +
+        `type=${buffer.type} snapshotCols=${String(snapshot.cols)} ` +
+        `snapshotRows=${String(snapshot.rows)} seedBytes=${snapshot.data.length} ` +
+        `resize=${resizeOutcome}`
+    );
   };
 
   const applySnapshot = (
@@ -589,6 +929,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // no-op for sequenced events (the watermark drops them) and a duplicate
     // write for unsequenced ones, which is why this branch replays nothing.
     if (!snapshot || snapshot.data.length === 0) {
+      closeSnapshotReconcile(entry);
       if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
       }
@@ -605,8 +946,16 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       console.warn(
         `[terminal] snapshot ${sessionId} discarded: live output outran the reconcile budget`
       );
+      closeSnapshotReconcile(entry);
       return;
     }
+
+    // #1489 invariant: capturing the generation here is equivalent to
+    // capturing it at `beginSeed` time — `transitionAttachment` serializes
+    // every continuation on `attachChain`, and this function runs
+    // synchronously inside the seed's own continuation, so no later
+    // `beginSeed` (generation bump) can execute before the capture.
+    const generation = attachGenerations.get(entry) ?? 0;
 
     if (
       snapshot.rows !== null &&
@@ -619,17 +968,34 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // #1363 plan 3.4.2: EVERY attach re-seeds, reset first. Dropping the seed
     // on re-attach would preserve the retained xterm's deeper scrollback but
     // hide everything the session produced while this window was detached —
-    // a silent content gap, which is the worse failure.
-    rebuildFromSnapshot(entry, snapshot, settle.retainedEvents);
-
-    if (sessionId === visibleSessionId) {
-      scheduleViewportSync(sessionId);
-    }
+    // a silent content gap, which is the worse failure. The settle sequence
+    // replaces the snapshot path's `scheduleViewportSync` (the seedless path
+    // above keeps it).
+    void replaySnapshotFenced(sessionId, entry, snapshot, generation);
   };
 
   // ── #1363 attach / detach ─────────────────────────────────────────────────
 
   const beginSeed = (sessionId: string, entry: SessionTerminalEntry): number => {
+    // #1489: every attach bumps the generation (invalidating every async
+    // continuation of older attachments of this session) and resets the
+    // attach-window user-scroll marker. The drain itself is created once and
+    // reused across generations: it must keep fencing this entry's queued
+    // writes, because `reset()` does not discard xterm's pending queue.
+    attachGenerations.set(entry, (attachGenerations.get(entry) ?? 0) + 1);
+
+    const existing = attachDrains.get(entry);
+    if (existing) {
+      existing.userScrolled = false;
+    } else {
+      attachDrains.set(entry, {
+        inFlight: 0,
+        promise: null,
+        resolve: null,
+        userScrolled: false,
+      });
+    }
+
     entry.snapshotReplayPending = true;
     entry.pendingSnapshotEvents = [];
     entry.pendingSnapshotBytes = 0;
@@ -680,7 +1046,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     logSnapshotSettle(sessionId, requestedAt, settle.retainedEvents.length);
     console.warn(`[terminal] attach_terminal_output ${sessionId} failed:`, error);
     // No reset ran, so the retention is not replayed here either: see
-    // `applySnapshot`.
+    // `applySnapshot`. The reconcile window must still close.
+    closeSnapshotReconcile(entry);
 
     if (!entry.hasRenderedOutput) {
       setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
