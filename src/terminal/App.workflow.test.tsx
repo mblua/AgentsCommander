@@ -45,6 +45,14 @@ interface FakeTerminalInstance {
   screen: unknown[];
   resets: number;
   disposed: boolean;
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+      type: "normal" | "alternate";
+    };
+  };
   reset(): void;
   resizes: { cols: number; rows: number }[];
   emitData(data: string): void;
@@ -70,6 +78,14 @@ vi.mock("@xterm/xterm", () => ({
     screen: unknown[] = [];
     resets = 0;
     disposed = false;
+    buffer: {
+      active: {
+        viewportY: number;
+        baseY: number;
+        length: number;
+        type: "normal" | "alternate";
+      };
+    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
     resizes: { cols: number; rows: number }[] = [];
     private dataHandlers = new Set<(data: string) => void>();
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
