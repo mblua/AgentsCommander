@@ -755,6 +755,29 @@ fn configured_shell_kind(program: &str) -> WindowsHostShellKind {
     }
 }
 
+/// #1498 - Windows-only: `git-bash.exe` (the Git for Windows MinTTY launcher)
+/// and `mintty.exe` detach from the console, so a ConPTY host would acquire
+/// resources for a child that never attaches to them (blank PTY / detached
+/// window). Rejected before any resource acquisition, naming the program and
+/// the working alternative. Deliberately does NOT reuse `adapter_error`'s
+/// resolved-agent phrasing: this rejection also applies to bare terminals and
+/// direct launches, not only to resolved-agent sessions.
+fn reject_detached_launcher(program: &str) -> Result<(), AppError> {
+    let basename = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    if basename == "git-bash.exe" || basename == "mintty.exe" {
+        return Err(AppError::Other(format!(
+            "'{}' is a detached launcher and cannot host a ConPTY terminal; \
+             use Git for Windows bin\\bash.exe or a direct console shell",
+            program
+        )));
+    }
+    Ok(())
+}
+
 /// Standard #1271 error shape: names the configured default-shell program, the
 /// offending token, and the rejection category, and states that the agent
 /// adapter owns command execution (Section 4.3.1 item 6).
@@ -1250,6 +1273,19 @@ fn powershell_script(command: &str, args: &[String]) -> String {
 
 // --- Section 4.6 - custom POSIX-compatible shell ----------------------------
 
+/// #1498 - terminal-only flags a POSIX host may keep for a bare terminal but
+/// that never reach a resolved-agent launch: the login/interactive flags and
+/// the PowerShell `-NoLogo` relic that can ride along in migrated configs
+/// (today's Windows default shell argument; #1499 moves fresh defaults to Git
+/// Bash). Case-insensitive exact match only: payload and rc flags such as `-c`
+/// or `--norc` are NOT terminal-only and stay rejected.
+fn is_terminal_only_posix_arg(arg: &str) -> bool {
+    matches!(
+        arg.to_ascii_lowercase().as_str(),
+        "-l" | "--login" | "-i" | "-nologo"
+    )
+}
+
 /// Section 4.6 - one `exec` command, so the custom shell replaces itself with
 /// the agent and the agent owns the PTY child exit code directly.
 fn posix_script(command: &str, args: &[String]) -> String {
@@ -1312,6 +1348,15 @@ fn prepare_launch(
             args: wrapped,
         });
     }
+    // #1498 - bare terminals and direct `.exe` agents: a detached launcher
+    // would acquire ConPTY resources for a child that never attaches, so
+    // reject before any resource acquisition. The compile-time `cfg!(windows)`
+    // guard keeps non-Windows behavior byte-identical (the branch is dead
+    // at runtime on non-Windows but still compiled, so the helper must
+    // compile on every platform).
+    if cfg!(windows) {
+        reject_detached_launcher(command)?;
+    }
     Ok(PreparedLaunch {
         program: command.to_string(),
         args: args.to_vec(),
@@ -1324,6 +1369,10 @@ fn prepare_windows_resolved_agent_launch(
     host_shell: &ResolvedAgentHostShell,
 ) -> Result<PreparedLaunch, AppError> {
     validate_common_adapter_input(command, args, host_shell)?;
+    // #1498 - a configured host shell that is a detached launcher would
+    // spawn a detached MinTTY child on ConPTY resources; reject before
+    // `openpty` and before any spawn accounting.
+    reject_detached_launcher(&host_shell.program)?;
     let mut launch_args = host_shell.args.clone();
     match configured_shell_kind(&host_shell.program) {
         WindowsHostShellKind::PowerShell => {
@@ -1345,13 +1394,22 @@ fn prepare_windows_resolved_agent_launch(
             launch_args.push(cmd_payload(command, args));
         }
         WindowsHostShellKind::Posix => {
-            if let Some(first) = host_shell.args.first() {
-                return Err(adapter_error(
-                    &host_shell.program,
-                    first,
-                    "a conflicting/terminal configured option (custom shell accepts no arguments)",
-                ));
+            // #1498 - terminal-only configured flags (`-l`, `--login`, `-i`,
+            // `-NoLogo`) may configure a bare terminal but never reach a
+            // resolved-agent launch: the adapter owns only `-c` plus its
+            // `exec` payload. Any other configured argument keeps the
+            // historical conflicting/terminal rejection, naming the offending
+            // token.
+            for arg in &host_shell.args {
+                if !is_terminal_only_posix_arg(arg) {
+                    return Err(adapter_error(
+                        &host_shell.program,
+                        arg,
+                        "a conflicting/terminal configured option (custom shell accepts no arguments)",
+                    ));
+                }
             }
+            launch_args.clear();
             launch_args.push("-c".to_string());
             launch_args.push(posix_script(command, args));
         }
@@ -3380,6 +3438,156 @@ mod adapter_tests {
         assert_error_shape(&err, "bash.exe", "--norc", "conflicting/terminal");
     }
 
+    // --- #1498 - detached launchers and terminal-only POSIX args ------------
+
+    #[test]
+    fn reject_detached_launcher_matches_basename_case_insensitively() {
+        for program in [
+            "git-bash.exe",
+            "GIT-BASH.EXE",
+            r"C:\Program Files\Git\git-bash.exe",
+            "mintty.exe",
+            r"C:\tools\mintty.exe",
+            r"\\server\share\MINTTY.EXE",
+        ] {
+            let error = reject_detached_launcher(program)
+                .expect_err("launcher spelling must be rejected")
+                .to_string();
+            assert!(error.contains("detached launcher"), "{error}");
+            assert!(error.contains(r"bin\bash.exe"), "{error}");
+        }
+        for program in [
+            "bash.exe",
+            r"C:\Program Files\Git\bin\bash.exe",
+            "claude.exe",
+            "cmd.exe",
+            "powershell.exe",
+            "git-bash",
+            "mintty",
+            "sh",
+        ] {
+            reject_detached_launcher(program).expect("non-launcher must pass");
+        }
+    }
+
+    #[test]
+    fn bare_git_bash_terminal_args_pass_through_verbatim() {
+        let launch = prepare_launch(
+            r"C:\Program Files\Git\bin\bash.exe",
+            &["--login".to_string(), "-i".to_string()],
+            None,
+        )
+        .expect("bare Git Bash terminal must pass through verbatim");
+        assert_eq!(launch.program, r"C:\Program Files\Git\bin\bash.exe");
+        assert_eq!(launch.args, vec!["--login".to_string(), "-i".to_string()]);
+    }
+
+    #[test]
+    fn resolved_posix_host_drops_terminal_only_args_and_owns_c() {
+        let shell = host("bash.exe", &["--login", "-i", "-NoLogo"]);
+        let args = vec!["it's".to_string(), "a b".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("terminal-only configured args must be dropped");
+        assert_eq!(launch.program, "bash.exe");
+        assert_eq!(launch.args.len(), 2);
+        assert_eq!(launch.args[0], "-c");
+        assert_eq!(launch.args[1], "exec 'claude' 'it'\"'\"'s' 'a b'");
+
+        let shell = host("Bash.Exe", &["-L", "--LOGIN", "-NOlOgO"]);
+        let args = vec!["it's".to_string(), "a b".to_string()];
+        let launch = prepare_windows_resolved_agent_launch("claude", &args, &shell)
+            .expect("terminal-only configured args must be dropped case-insensitively");
+        assert_eq!(launch.program, "Bash.Exe");
+        assert_eq!(launch.args.len(), 2);
+        assert_eq!(launch.args[0], "-c");
+        assert_eq!(launch.args[1], "exec 'claude' 'it'\"'\"'s' 'a b'");
+    }
+
+    #[test]
+    fn resolved_posix_host_conflicting_args_still_rejected() {
+        for (shell_args, offending) in [
+            (&["-c"][..], "-c"),
+            (&["--login", "-c"][..], "-c"),
+            (&["--norc"][..], "--norc"),
+            (&["--login", "--norc"][..], "--norc"),
+        ] {
+            let shell = host("bash.exe", shell_args);
+            let err = launch_error(prepare_windows_resolved_agent_launch("claude", &[], &shell));
+            assert_error_shape(&err, "bash.exe", offending, "conflicting/terminal");
+        }
+    }
+
+    #[test]
+    fn resolved_posix_host_exec_payload_quotes_paths_with_spaces() {
+        let shell = host(r"C:\tools\bash.exe", &[]);
+        let program = r"C:\Program Files\Claude\claude.exe";
+        let args = vec![
+            "--config".to_string(),
+            r"C:\Program Files\Claude\config.toml".to_string(),
+        ];
+        let launch =
+            prepare_windows_resolved_agent_launch(program, &args, &shell).expect("posix host");
+        assert_eq!(
+            launch.args,
+            vec![
+                "-c".to_string(),
+                "exec 'C:\\Program Files\\Claude\\claude.exe' '--config' 'C:\\Program Files\\Claude\\config.toml'"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolved_agent_rejects_detached_launcher_host() {
+        for program in [
+            "git-bash.exe",
+            r"C:\Program Files\Git\git-bash.exe",
+            "mintty.exe",
+        ] {
+            let shell = host(program, &["--login", "-i"]);
+            let err =
+                launch_error(prepare_windows_resolved_agent_launch("claude", &[], &shell));
+            assert!(err.contains("detached launcher"), "{err}");
+            assert!(err.contains(r"bin\bash.exe"), "{err}");
+        }
+        let shell = host("bash.exe", &["--login", "-i"]);
+        let launch = prepare_windows_resolved_agent_launch("claude", &[], &shell)
+            .expect("bash host with terminal-only args");
+        assert_eq!(launch.args, vec!["-c".to_string(), "exec 'claude'".to_string()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detached_launcher_rejected_in_bare_and_direct_paths() {
+        let error = prepare_launch(
+            "git-bash.exe",
+            &["--login".to_string(), "-i".to_string()],
+            None,
+        )
+        .expect_err("bare git-bash terminal must be rejected on Windows")
+        .to_string();
+        assert!(error.contains("detached launcher"), "{error}");
+
+        let error = prepare_launch("mintty.exe", &[], None)
+            .expect_err("bare mintty terminal must be rejected on Windows")
+            .to_string();
+        assert!(error.contains("detached launcher"), "{error}");
+
+        let error = prepare_launch("git-bash.exe", &["--x".to_string()], Some(&host("bash.exe", &[])))
+            .expect_err("direct launcher agent must be rejected on Windows")
+            .to_string();
+        assert!(error.contains("detached launcher"), "{error}");
+
+        let launch = prepare_launch(
+            "claude.exe",
+            &["--x".to_string()],
+            Some(&host("git-bash.exe", &[])),
+        )
+        .expect("direct .exe agent must ignore its host shell");
+        assert_eq!(launch.program, "claude.exe");
+        assert_eq!(launch.args, vec!["--x".to_string()]);
+    }
+
     // --- Direct .exe and host-name extraction --------------------------------
 
     #[test]
@@ -3948,6 +4156,37 @@ mod adapter_spawn_sync_tests {
         assert_eq!(backend.pre_pty_attempts.load(Ordering::SeqCst), 0);
         assert!(backend.ptys.lock().unwrap().is_empty());
         assert!(crate::pty::spawn_diagnostics::record_for(id).is_none());
+    }
+
+    #[test]
+    fn detached_launcher_never_reaches_pty() {
+        let (backend, _app) = test_backend();
+        let specs = [
+            spawn_spec("git-bash.exe", &["--login", "-i"], None),
+            spawn_spec("claude", &[], Some(host("git-bash.exe", &["--login", "-i"]))),
+        ];
+        for spec in specs {
+            let id = spec.id;
+            let error = backend.spawn_sync(spec).expect_err("must reject before PTY");
+            assert!(error.to_string().contains("detached launcher"), "{error}");
+            assert_eq!(
+                backend.pre_pty_attempts.load(Ordering::SeqCst),
+                0,
+                "a rejected detached launcher must never count as a spawn attempt"
+            );
+            assert!(
+                backend.ptys.lock().unwrap().is_empty(),
+                "no PTY map entry may exist for a rejected launcher"
+            );
+            assert!(
+                crate::pty::spawn_diagnostics::record_for(id).is_none(),
+                "no launch provenance may be recorded for a rejected launcher"
+            );
+            assert!(
+                backend.fanout.get_pty_size(id).is_none(),
+                "no output task may be attached for a rejected launcher"
+            );
+        }
     }
 
     #[test]
