@@ -81,6 +81,13 @@ export interface TerminalRegistryOptions {
   /** Called synchronously BEFORE WebGL/Xterm/DOM disposal, so TerminalView can
    *  release this window's output attachment while the entry still exists. */
   beforeResourceDispose: (sessionId: string) => void;
+  /** Optional container-observation hooks, called exactly once per entry: on
+   *  creation (after the container is appended) and during the exact-once
+   *  teardown. The shared viewport ResizeObserver lives in the component; the
+   *  registry only needs to keep its observe/unobserve in lockstep with the
+   *  entry lifecycle (no observer survives disposal). */
+  observeContainer?: (container: HTMLDivElement) => void;
+  unobserveContainer?: (container: HTMLDivElement) => void;
 }
 
 export interface TerminalRegistry {
@@ -153,6 +160,7 @@ export function createTerminalSessionRegistry(
     entry.terminal.dispose();
 
     // 5. DOM removal.
+    options.unobserveContainer?.(entry.container);
     entry.container.remove();
 
     // 6. map deletion.
@@ -200,6 +208,7 @@ export function createTerminalSessionRegistry(
       container.setAttribute("data-ac-session-id", sessionId);
       container.hidden = true;
       options.host().appendChild(container);
+      options.observeContainer?.(container);
 
       const entry: SessionTerminalEntry = {
         sessionId,

@@ -632,10 +632,14 @@ describe("TerminalView PTY spawn size (#973)", () => {
   // hidden container has none, so xterm clamps the proposal to its own
   // MINIMUM_COLS = 2 / MINIMUM_ROWS = 1: measuring a hidden session does not
   // produce a stale size, it produces a WRONG one, and sending it is a 2x1
-  // resize into a live PTY — #973 in its worst form. That is why both callbacks
-  // in `scheduleViewportSync` are guarded on the session still being active
-  // (`TerminalView.tsx:191-193` and `:198`), and it is intended behaviour, not
-  // an oversight: a hidden session keeps its geometry until it is shown again.
+  // resize into a live PTY — #973 in its worst form. That is why every sync
+  // path re-validates the visible session before fitting: the ResizeObserver
+  // callback checks `sessionId === visibleSessionId` and the container's
+  // `hidden` flag (#1461), the attach chain re-checks the desired session
+  // after each await, and both `scheduleViewportSync` rAF callbacks (host
+  // resize + seedless resync) guard on the session still being active. It is
+  // intended behaviour, not an oversight: a hidden session keeps its geometry
+  // until it is shown again.
   //
   // The invariant is "never measure a hidden session; eventually fit once
   // visible" — and "eventually" is not "in the next frame". Requiring the
@@ -667,10 +671,10 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // regression names the size it wrongly sent.
       expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([]);
 
-      // --- Shown again, it is measured: the guard defers the sync, it does not
-      // cancel the session's right to one. However many frames the scheduler
-      // takes to get there, the loop stops at the first one, so the second frame
-      // of that double rAF is still queued.
+      // --- Shown again, it is measured: the attach chain's pre-seed pass fits
+      // the now-visible container and imposes the grid before the seed
+      // (#1528). However many frames the scheduler takes to get there, the
+      // loop stops at the first one, leaving the seedless resync frames queued.
       terminalStore.setActiveSessionForTests(ON_SCREEN);
       await waitFor(() => expect(containerFor(ON_SCREEN).hidden).toBe(false));
 
@@ -680,7 +684,13 @@ describe("TerminalView PTY spawn size (#973)", () => {
         () => resizesFor(fake, ON_SCREEN).length > 0
       );
 
+      // #1461: the re-selection sync is the attach chain's now (the container
+      // ResizeObserver never fires in this harness). The retained terminal was
+      // created at the xterm default (80x24) before any probe existed, so the
+      // pre-seed fit resizes it: the fit's `onResize` sends once, then the
+      // awaited imposition sends the same grid again (#1528).
       expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([
+        { sessionId: ON_SCREEN, cols: 74, rows: 23 },
         { sessionId: ON_SCREEN, cols: 74, rows: 23 },
       ]);
 
@@ -696,8 +706,12 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
       await frames.flush();
 
-      // Still the one resize it got while it was on screen: no 2x1 was sent.
+      // Still the same two re-selection sends: no 2x1 was sent. The hidden
+      // container is never measured — the seedless-resync frames queued by the
+      // re-attach are guarded on the visible session, exactly like the old
+      // double-rAF frames.
       expect(resizesFor(fake, ON_SCREEN).map((call) => call.args)).toEqual([
+        { sessionId: ON_SCREEN, cols: 74, rows: 23 },
         { sessionId: ON_SCREEN, cols: 74, rows: 23 },
       ]);
     } finally {

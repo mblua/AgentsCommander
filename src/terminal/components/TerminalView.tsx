@@ -110,6 +110,12 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   const registry: TerminalRegistry = createTerminalSessionRegistry({
     host: () => hostRef,
     beforeResourceDispose,
+    // #1461: the shared viewport ResizeObserver follows the entry lifecycle
+    // exactly once per entry — observe at creation, unobserve at the exact-once
+    // teardown (LRU evictions and destroy both route through it), so no
+    // observer survives disposal.
+    observeContainer: (container) => resizeObserver?.observe(container),
+    unobserveContainer: (container) => resizeObserver?.unobserve(container),
   });
 
   const setReplayStatus = (entry: SessionTerminalEntry, message: string | null) => {
@@ -1180,7 +1186,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     registry.setVisible(sessionId);
     entry.terminal.focus();
 
-    scheduleViewportSync(sessionId);
+    // #1461: no `scheduleViewportSync` here — un-hiding the entry container
+    // changes its content box, which the shared ResizeObserver observes and
+    // turns into `syncViewport`. The attach chain's own fit + awaited
+    // `sendPtyResize` still impose the grid before the snapshot (#1528).
     transitionAttachment(sessionId);
   };
 
@@ -1200,9 +1209,32 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   };
 
   onMount(async () => {
-    resizeObserver = new ResizeObserver(() => {
-      if (visibleSessionId) {
-        scheduleViewportSync(visibleSessionId);
+    // #1461: one shared observer for the host box (splitter/window resizes) and
+    // every entry container (re-selection toggles `hidden`, which changes the
+    // container's content box from 0x0 to the host size — that box change is
+    // what drives the re-selection viewport sync, replacing the double-rAF
+    // heuristic). Entry callbacks re-validate visibility, identity and the
+    // hidden flag before syncing, exactly like the existing rAF guards.
+    resizeObserver = new ResizeObserver((roEntries) => {
+      for (const roEntry of roEntries) {
+        if (roEntry.target === hostRef) {
+          if (visibleSessionId) {
+            scheduleViewportSync(visibleSessionId);
+          }
+          continue;
+        }
+        if (!(roEntry.target instanceof HTMLElement)) {
+          continue;
+        }
+        const sessionId = roEntry.target.dataset.sessionId;
+        if (!sessionId || sessionId !== visibleSessionId) {
+          continue;
+        }
+        const entry = registry.get(sessionId);
+        if (!entry || entry.destroyed || entry.container.hidden) {
+          continue; // stale or hidden: no sync (a hidden box is 0x0 anyway)
+        }
+        syncViewport(sessionId);
       }
     });
     resizeObserver.observe(hostRef);

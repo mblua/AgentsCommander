@@ -690,12 +690,13 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
       const terminal = instancesFor(SESSION_A)[0];
 
-      // The priming sync, pre-seed imposition, and the
-      // {second priming frame, settle} pair each contribute one send in the
-      // harness ordering. All carry this window's fitted grid.
+      // #1461: the re-selection viewport sync is the container ResizeObserver's
+      // job now, and it never fires in this harness. The sends are the pre-seed
+      // imposition and the settle re-imposition — the latter survives because
+      // `applySnapshot` clears the dedup key (#1439) and nothing re-primes it
+      // before the settle frame. All carry this window's fitted grid.
       await waitFor(() =>
         expect(resizesOfA()).toEqual([
-          { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
         ])
@@ -715,10 +716,10 @@ describe("TerminalView attachment (#1363)", () => {
         expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
       );
 
-      // The pre-seed imposition and the {second priming frame, seedless
-      // resync} pair each re-impose this window's grid. Without the dedup-key
-      // invalidation the refit equals the primed key and these sends disappear:
-      // the incident geometry returns, and this wait times out.
+      // The pre-seed imposition and the seedless resync each re-impose this
+      // window's grid. Without the dedup-key invalidation the refit equals the
+      // primed key and these sends disappear: the incident geometry returns,
+      // and this wait times out.
       await waitFor(() =>
         expect(resizesOfA().slice(resizesBeforeReattach)).toEqual([
           { cols: 80, rows: 24 },
@@ -854,20 +855,14 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
       const terminal = instancesFor(SESSION_A)[0];
 
-      // The priming sync and the awaited pre-seed imposition carry the
-      // pre-snapshot grid. The second sync frame deduplicates against the key
-      // re-primed by the pre-seed send.
+      // #1461: no priming sync — the awaited pre-seed imposition carries the
+      // pre-snapshot grid; the settle (after the gate) carries the snapshot
+      // grid. A frame later the count is unchanged: no leaked second sync.
       await waitFor(() =>
-        expect(resizesOfA()).toEqual([
-          { cols: 80, rows: 24 },
-          { cols: 80, rows: 24 },
-        ])
+        expect(resizesOfA()).toEqual([{ cols: 80, rows: 24 }])
       );
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      expect(resizesOfA()).toEqual([
-        { cols: 80, rows: 24 },
-        { cols: 80, rows: 24 },
-      ]);
+      expect(resizesOfA()).toEqual([{ cols: 80, rows: 24 }]);
 
       fitViewport.cols = 81;
       fitViewport.rows = 27;
@@ -1202,7 +1197,9 @@ describe("TerminalView attachment (#1363)", () => {
       expect(terminal.writes).toEqual([SNAP]);
       expect(terminal.scrollToBottomCalls).toBe(0);
 
-      // Let the re-attach's priming sync frames run before counting resizes.
+      // Let the re-attach's pre-seed imposition land before counting resizes
+      // (the priming sync that used to run here is the ResizeObserver's job
+      // now and never fires in this harness).
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
@@ -1214,15 +1211,18 @@ describe("TerminalView attachment (#1363)", () => {
       // Complete generation 1's held callback: the drain releases, generation
       // 2's snapshot write queues and settles once, and generation 1's later
       // continuation (its flush) is inert - no additional writes, no
-      // additional bottoming, no additional pty_resize, and no settled record
-      // for generation 1.
+      // additional bottoming, no pty_resize from the stale generation, and no
+      // settled record for generation 1. The single extra resize is generation
+      // 2's own settle re-imposition: `applySnapshot` clears the dedup key
+      // (#1439) and nothing re-primes it before the settle frame, so the
+      // settle's awaited send goes out exactly once.
       completeWriteCallbacks(terminal);
       await waitFor(() => expect(terminal.writes).toEqual([SNAP, SNAP]));
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
 
       expect(terminal.writes).toHaveLength(writesBefore + 1);
       expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1);
-      expect(resizesOfA()).toBe(resizesBefore);
+      expect(resizesOfA()).toBe(resizesBefore + 1);
       expect(settledRecordsOf(SESSION_A) + settledRecordsOf(SESSION_B)).toBe(
         recordsBefore + 1
       );

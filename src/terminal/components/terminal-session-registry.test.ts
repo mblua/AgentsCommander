@@ -119,7 +119,12 @@ const S3 = "33333333-3333-4333-8333-333333333333";
 const S4 = "44444444-4444-4444-8444-444444444444";
 const S5 = "55555555-5555-4555-8555-555555555555";
 
-function createHarness(): Harness {
+function createHarness(
+  hooks?: {
+    observeContainer?: (container: HTMLDivElement) => void;
+    unobserveContainer?: (container: HTMLDivElement) => void;
+  }
+): Harness {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const terminals = new Map<string, FakeTerminalImpl>();
@@ -131,6 +136,8 @@ function createHarness(): Harness {
     beforeResourceDispose: (sessionId) => {
       disposedAdmissions.push(sessionId);
     },
+    observeContainer: hooks?.observeContainer,
+    unobserveContainer: hooks?.unobserveContainer,
   });
 
   return {
@@ -192,6 +199,63 @@ describe("terminal-session-registry", () => {
   afterEach(() => {
     h.registry.disposeAll();
     h.host.remove();
+  });
+
+  it("#1461 unobserves each entry container exactly once across creation, eviction, remove and disposeAll", () => {
+    const observed = new Set<HTMLDivElement>();
+    const unobserveLog: string[] = [];
+    const hooked = createHarness({
+      observeContainer: (container) => {
+        observed.add(container);
+      },
+      unobserveContainer: (container) => {
+        unobserveLog.push(container.getAttribute("data-ac-session-id") ?? "?");
+        observed.delete(container);
+      },
+    });
+    const factory = createFactory(hooked);
+    const containerOf = (id: string) =>
+      document.querySelector<HTMLDivElement>(`[data-ac-session-id="${id}"]`);
+
+    try {
+      const order = [S1, S2, S3, S4, S5];
+      for (const sessionId of order) {
+        hooked.registry.activate(sessionId, factory);
+      }
+
+      // Five creations: the LRU eviction (S1) leaves four live entries, each
+      // observed exactly once and the evicted one unobserved exactly once.
+      expect(observed.size).toBe(TERMINAL_RETENTION_LIMIT);
+      expect(containerOf(S1)).toBeNull();
+      expect(unobserveLog.filter((id) => id === S1)).toHaveLength(1);
+      for (const id of [S2, S3, S4, S5]) {
+        expect(containerOf(id)).not.toBeNull();
+        expect(unobserveLog.filter((x) => x === id)).toHaveLength(0);
+        expect(observed.has(containerOf(id)!)).toBe(true);
+      }
+
+      // Re-activating an existing session never re-observes (the hook fires on
+      // creation only) and never unobserves.
+      const logBefore = unobserveLog.length;
+      hooked.registry.activate(S2, factory);
+      expect(unobserveLog.length).toBe(logBefore);
+      expect(observed.size).toBe(TERMINAL_RETENTION_LIMIT);
+
+      // Explicit remove: exact-once teardown, unobserved exactly once.
+      hooked.registry.remove(S2);
+      expect(unobserveLog.filter((id) => id === S2)).toHaveLength(1);
+      expect(observed.size).toBe(TERMINAL_RETENTION_LIMIT - 1);
+
+      // disposeAll: the rest, each exactly once total, nothing left observed.
+      hooked.registry.disposeAll();
+      expect(observed.size).toBe(0);
+      for (const id of [S3, S4, S5]) {
+        expect(unobserveLog.filter((x) => x === id)).toHaveLength(1);
+      }
+    } finally {
+      hooked.registry.disposeAll();
+      hooked.host.remove();
+    }
   });
 
   it("retains at most four entries and evicts the least recently activated hidden entry", () => {
