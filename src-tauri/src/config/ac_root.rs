@@ -46,6 +46,23 @@ pub fn find_ac_root_ancestor(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// The project path implied by a path that contains an `.ac`-root segment: the
+/// prefix BEFORE the first matching ac-root component (case-insensitive). Returns
+/// `None` when the path has no ac-root segment or the segment is the first
+/// component. E.g. `C:/p/.ac/foo` → `C:/p`; `C:/p/.ac/.ac/x` → `C:/p`.
+pub fn project_from_ac_path(path: &Path) -> Option<PathBuf> {
+    let parts: Vec<&str> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let idx = find_ac_root_segment(&parts)?;
+    if idx == 0 {
+        return None;
+    }
+    let prefix = parts[..idx].join(std::path::MAIN_SEPARATOR_STR);
+    Some(PathBuf::from(prefix))
+}
+
 fn same_existing_path(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -175,6 +192,33 @@ pub fn wg_replica_layout_from_agent_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_from_ac_path_resolves_the_prefix() {
+        assert_eq!(
+            project_from_ac_path(std::path::Path::new("C:/p/.ac/foo")),
+            Some(std::path::PathBuf::from("C:/p"))
+        );
+        assert_eq!(
+            project_from_ac_path(std::path::Path::new("C:/p/.ac/wg-1/x")),
+            Some(std::path::PathBuf::from("C:/p"))
+        );
+        assert_eq!(
+            project_from_ac_path(std::path::Path::new("C:/p")),
+            None,
+            "no ac-root segment"
+        );
+        assert_eq!(
+            project_from_ac_path(std::path::Path::new(".ac/x")),
+            None,
+            "ac-root as the first component"
+        );
+        // case-insensitive ac-root names
+        assert_eq!(
+            project_from_ac_path(std::path::Path::new("C:/p/.AC/x")),
+            Some(std::path::PathBuf::from("C:/p"))
+        );
+    }
 
     #[test]
     fn wg_replica_layout_resolves_all_pieces() {

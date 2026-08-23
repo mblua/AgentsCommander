@@ -11,6 +11,21 @@ pub const MAX_GROUP_REGEX_LEN: usize = 1024;
 const DEFAULT_NON_STOP_NAME: &str = "Alert me!";
 const LEGACY_NON_STOP_NAME: &str = "Non-stop";
 
+/// Project-settings key for the per-session terminal history ring size, in BYTES
+/// (not rows): the amount of raw output each session retains for the re-attach
+/// replay ring.
+pub const TERMINAL_HISTORY_LIMIT_KEY: &str = "terminalHistoryLimitBytes";
+/// Default ring size: 64 KiB, unchanged from the pre-configuration constant.
+pub const DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES: usize = 65_536;
+/// Lower bound (4 KiB): smaller rings would drop the newest line boundary on the
+/// very first chunk of a 4 KiB local read.
+pub const MIN_TERMINAL_HISTORY_LIMIT_BYTES: usize = 4_096;
+/// Upper bound (4 MiB): the re-attach seed stays far below xterm's 50 MiB write
+/// queue guard and the frontend's 2 MiB reconcile budget (which applies to retained
+/// LIVE events, not to the seed); the bound keeps a misconfiguration from turning an
+/// attach into a multi-megabyte write.
+pub const MAX_TERMINAL_HISTORY_LIMIT_BYTES: usize = 4_194_304;
+
 fn default_true() -> bool {
     true
 }
@@ -138,6 +153,100 @@ fn project_settings_path(project_path: &Path) -> Result<PathBuf, String> {
     let ac_root = crate::config::ac_root::existing_ac_root(project_path)
         .ok_or_else(|| format!("Project has no .ac directory: {}", project_path.display()))?;
     Ok(ac_root.join(PROJECT_SETTINGS_FILE))
+}
+
+/// Reads the per-project terminal history ring size (bytes) from
+/// `.ac/project-settings.json`, fail-safe: ANY I/O or parse error returns the
+/// default and never fails the caller (an attach must not depend on config I/O).
+///
+/// Policy decisions, documented:
+/// * **Clamp, not reject**: an out-of-range value (below 4 KiB or above 4 MiB) is
+///   clamped to the nearest bound AND the clamped value is written back
+///   (repair-in-place, like `normalize_groups_config`) — the session still gets a
+///   bounded, functional ring instead of being refused.
+/// * **Ensure-visible**: an absent file, an absent key or an invalid (non
+///   positive-integer) type repairs the file in place with the default so the
+///   effective value is always visible in the JSON for direct editing.
+/// * **Parse error / I/O error / no `.ac` root**: the file is left untouched and
+///   the default is returned (never a failure, never a surprise write).
+/// * **Re-read cadence, per backend**: the ring is sized at SESSION CREATION
+///   (construction-time — an existing session's ring cannot be resized), so the
+///   value applies to NEW sessions. Local backend: at each new session
+///   registration. Container backend: at each attach registration. There is NO hot
+///   reload and NO re-read for existing sessions.
+pub fn terminal_history_limit_bytes(project_path: &Path) -> usize {
+    let Ok(path) = project_settings_path(project_path) else {
+        return DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES;
+    };
+    let current = read_history_limit(&path);
+    match current {
+        Ok(Some(value)) if value < MIN_TERMINAL_HISTORY_LIMIT_BYTES => {
+            let clamped = MIN_TERMINAL_HISTORY_LIMIT_BYTES;
+            write_history_limit(&path, clamped);
+            clamped
+        }
+        Ok(Some(value)) if value > MAX_TERMINAL_HISTORY_LIMIT_BYTES => {
+            let clamped = MAX_TERMINAL_HISTORY_LIMIT_BYTES;
+            write_history_limit(&path, clamped);
+            clamped
+        }
+        Ok(Some(value)) => value,
+        // absent file/key, invalid type, or parse error: ensure-visible default
+        _ => {
+            write_history_limit(&path, DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+            DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES
+        }
+    }
+}
+
+fn read_history_limit(path: &Path) -> Result<Option<usize>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let root: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| format!("Project settings {} must be a JSON object", path.display()))?;
+    Ok(obj
+        .get(TERMINAL_HISTORY_LIMIT_KEY)
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize))
+}
+
+/// Merges the key into the project settings object (create-if-absent, preserves
+/// every other key). Best effort: the caller never depends on the write outcome.
+fn write_history_limit(path: &Path, value: usize) {
+    let _ = crate::config::local_config_io::update_config_json_object(path, true, |obj| {
+        obj.insert(
+            TERMINAL_HISTORY_LIMIT_KEY.to_string(),
+            Value::from(value),
+        );
+        Ok(())
+    });
+}
+
+/// Derives the effective history limit for a session whose working directory is
+/// `cwd`, covering BOTH layouts (single helper used by production and tests — no
+/// hand-duplicated expressions):
+///
+/// 1. `cwd == project root`: the `.ac` is a DIRECT child (`existing_ac_root`);
+/// 2. `cwd` nested under the project's `.ac` tree (WG replica layout): the `.ac`
+///    is an ANCESTOR (`find_ac_root_ancestor`).
+///
+/// The ac-root is then mapped back to the project (`project_from_ac_path`) and the
+/// settings are read. Any derivation failure falls back to the default — the
+/// session is never refused because of it.
+pub(crate) fn project_history_limit_bytes_for_cwd(cwd: &Path) -> usize {
+    let project = crate::config::ac_root::existing_ac_root(cwd)
+        .or_else(|| crate::config::ac_root::find_ac_root_ancestor(cwd))
+        .and_then(|root| crate::config::ac_root::project_from_ac_path(&root));
+    project
+        .as_deref()
+        .map(terminal_history_limit_bytes)
+        .unwrap_or(DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES)
 }
 
 fn normalize_groups_config(mut config: WorkgroupGroupsConfig) -> WorkgroupGroupsConfig {
@@ -293,6 +402,81 @@ mod tests {
 
     fn settings_path(project: &Path) -> PathBuf {
         project.join(".ac").join(PROJECT_SETTINGS_FILE)
+    }
+
+    #[test]
+    fn history_limit_absent_file_is_created_with_default() {
+        let project = project_with_ac_root();
+        let limit = terminal_history_limit_bytes(project.path());
+        assert_eq!(limit, DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+        // ensure-visible: the key is now in the JSON
+        let content = std::fs::read_to_string(settings_path(project.path())).expect("created file");
+        assert!(content.contains(TERMINAL_HISTORY_LIMIT_KEY));
+        assert!(content.contains(&DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES.to_string()));
+    }
+
+    #[test]
+    fn history_limit_custom_value_is_respected() {
+        let project = project_with_ac_root();
+        let path = settings_path(project.path());
+        std::fs::write(&path, format!("{{\"{TERMINAL_HISTORY_LIMIT_KEY}\": 8192}}")).expect("write");
+        assert_eq!(terminal_history_limit_bytes(project.path()), 8_192);
+    }
+
+    #[test]
+    fn history_limit_invalid_type_is_repaired_to_default() {
+        let project = project_with_ac_root();
+        let path = settings_path(project.path());
+        std::fs::write(&path, format!("{{\"{TERMINAL_HISTORY_LIMIT_KEY}\": \"lots\"}}")).expect("write");
+        assert_eq!(terminal_history_limit_bytes(project.path()), DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert!(content.contains(&DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES.to_string()), "repaired in place");
+    }
+
+    #[test]
+    fn history_limit_out_of_range_is_clamped_and_written() {
+        let project = project_with_ac_root();
+        let path = settings_path(project.path());
+        std::fs::write(&path, format!("{{\"{TERMINAL_HISTORY_LIMIT_KEY}\": 999999999}}")).expect("write");
+        assert_eq!(
+            terminal_history_limit_bytes(project.path()),
+            MAX_TERMINAL_HISTORY_LIMIT_BYTES
+        );
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert!(content.contains(&MAX_TERMINAL_HISTORY_LIMIT_BYTES.to_string()), "clamped value written");
+        std::fs::write(&path, format!("{{\"{TERMINAL_HISTORY_LIMIT_KEY}\": 1}}")).expect("write");
+        assert_eq!(
+            terminal_history_limit_bytes(project.path()),
+            MIN_TERMINAL_HISTORY_LIMIT_BYTES
+        );
+    }
+
+    #[test]
+    fn history_limit_parse_error_returns_default_and_does_not_write() {
+        let project = project_with_ac_root();
+        let path = settings_path(project.path());
+        std::fs::write(&path, "{ not json").expect("write");
+        assert_eq!(terminal_history_limit_bytes(project.path()), DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "{ not json", "parse errors leave the file untouched");
+    }
+
+    #[test]
+    fn history_limit_no_ac_root_returns_default() {
+        let temp = tempfile::tempdir().expect("tempdir"); // no .ac directory
+        assert_eq!(terminal_history_limit_bytes(temp.path()), DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn history_limit_preserves_other_keys() {
+        let project = project_with_ac_root();
+        let path = settings_path(project.path());
+        std::fs::write(&path, "{\"someOtherKey\": 42}").expect("write");
+        let limit = terminal_history_limit_bytes(project.path());
+        assert_eq!(limit, DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES);
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert!(content.contains("someOtherKey"), "other keys preserved");
+        assert!(content.contains(&DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES.to_string()));
     }
 
     fn group(id: &str, name: &str, regex: &str) -> WorkgroupGroup {

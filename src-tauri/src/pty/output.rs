@@ -79,6 +79,13 @@ struct ScreenReplayState {
     /// remote, not necessarily taken; the local backend's `if sent` gate is
     /// what keeps the record honest where #1439 lives.
     conpty_size: (u16, u16),
+    /// Lexical tail + persistent modes from session start (Route A): survives ring
+    /// rotation; feeds the fast-path eligibility and the open-suffix trim/restore.
+    tail: LexicalTailTracker,
+    /// Effective history ring size for this session (bytes), from the project
+    /// settings at attach (default when absent/invalid). The ring and the tracker's
+    /// front-states window are built at this size.
+    history_limit_bytes: usize,
 }
 
 enum CaptureFailure {
@@ -234,10 +241,13 @@ const UI_BATCH_INTERVAL_MS: u64 = 16;
 /// left on this path: a slow emit there blocks that session's reader, never the parser mutex
 /// the whole backend shares.
 const UI_BATCH_LIMIT_BYTES: usize = 65_536;
-/// Raw output bytes retained per session so a freshly created terminal can be rehydrated
-/// with history instead of a single viewport. Sized to keep the frontend replay peak close
-/// to its current value rather than to double the admission ceiling.
-const UI_HISTORY_LIMIT_BYTES: usize = 65_536;
+/// DEFAULT raw output bytes retained per session so a freshly created terminal can be
+/// rehydrated with history instead of a single viewport. Sized to keep the frontend
+/// replay peak close to its current value rather than to double the admission ceiling.
+/// Each session's effective limit comes from the project settings at attach
+/// (`terminalHistoryLimitBytes`, clamped to [4 KiB, 4 MiB]); this default applies when
+/// the settings are absent, invalid, or the project path cannot be derived.
+const DEFAULT_UI_HISTORY_LIMIT_BYTES: usize = 65_536;
 /// How far into the ring the line-boundary trim looks for a newline. A stream without
 /// newlines (progress bars redrawing with `\r`) would otherwise walk the whole ring on
 /// every chunk, inside the parser mutex shared by every session of the backend.
@@ -247,6 +257,19 @@ const UI_HISTORY_LINE_SCAN_BYTES: usize = 4_096;
 /// `\x1b[2J`, `\x1b[3J` and RIS each wipe part or all of the history this replay restores.
 const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[0m";
 
+/// Normalization seam between the replayed ring and the parser mirror, emitted on the
+/// fast path only (Route A). Grounds any pending sequence (`\x18` CAN — a no-op in ground,
+/// defensive), restores the full scroll region, G0 ASCII and origin-off. Deliberately does
+/// NOT touch DECAWM, IRM or the active buffer: forcing wrap/buffer semantics is what the
+/// pivot removed (counterexample pairs and the saved-cursor effect of `?1049l` re-entry),
+/// and eligibility guarantees those states are already default on this path.
+const UI_HISTORY_REPLAY_SEAM: &[u8] = b"\x18\x1b[r\x1b(B\x1b[?6l";
+
+/// Ceiling for the tracked open-sequence buffer. Covers the largest sequence the parsers
+/// admit (vte caps OSC payloads at 1024 bytes); a longer open sequence marks the tail
+/// indeterminate and the attach falls back to HEAD's bytes.
+const UI_TAIL_TRACKER_BOUND: usize = 4_096;
+
 /// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
 /// trim to a line boundary, then append. Only the length bound is guaranteed; the line
 /// alignment is best effort, because the boundary scan is capped and can find nothing. Its
@@ -255,14 +278,31 @@ const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[
 /// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
 /// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
 /// which leaves that console dead for the rest of the process.
-fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bool, data: &[u8]) {
+fn append_history(
+    history: &mut std::collections::VecDeque<u8>,
+    aligned: &mut bool,
+    tail: &mut LexicalTailTracker,
+    data: &[u8],
+    history_limit_bytes: usize,
+) {
+    // The tail tracker is stream-global: it must see every byte from session start,
+    // whether or not the ring kept them, so a pending sequence spanning the ring front
+    // stays recoverable. O(1) per byte beside the parser's own per-byte work. The
+    // pre-state of every byte is recorded so the ring's front-states mirror stays in
+    // lockstep with the ring's window (drains and extensions below use the same amounts).
+    let mut pre_states: Vec<u8> = Vec::with_capacity(data.len());
+    for &byte in data {
+        pre_states.push(tail.state as u8);
+        tail.push_byte(byte);
+    }
     // A chunk larger than the whole ring keeps only its tail. Unreachable in production
     // (the local backend reads 4 KiB buffers, the container backend rejects frames over
     // 64 KiB) but it is where the trim arithmetic gets written wrong.
-    let tail = &data[data.len().saturating_sub(UI_HISTORY_LIMIT_BYTES)..];
-    let over = (history.len() + tail.len()).saturating_sub(UI_HISTORY_LIMIT_BYTES);
+    let chunk_tail = &data[data.len().saturating_sub(history_limit_bytes)..];
+    let over = (history.len() + chunk_tail.len()).saturating_sub(history_limit_bytes);
     if over > 0 {
         history.drain(..over.min(history.len()));
+        tail.front_states.drain(..over.min(tail.front_states.len()));
         // The scan stays capped: this runs per chunk inside the parser mutex the whole
         // backend shares. What #1458 changes is only that its failure is now RECORDED
         // instead of assumed away, so the cold attach path knows it has work to do.
@@ -273,20 +313,31 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bo
         {
             Some(newline) => {
                 history.drain(..=newline);
+                tail.front_states.drain(..=newline.min(tail.front_states.len().saturating_sub(1)));
                 *aligned = true;
             }
             None => *aligned = false,
         }
     }
     // #1458: the one path on which the front changes without `over` ever being positive.
-    // When `tail` becomes the WHOLE ring the front is `tail[0]`, and a chunk larger than the
+    // When `chunk_tail` becomes the WHOLE ring the front is `chunk_tail[0]`, and a chunk larger than the
     // ring was truncated at an arbitrary byte, so that front is not a line start and nothing
-    // above recorded it. The `<` is load bearing: `tail.len() == data.len()` means the chunk
-    // was NOT truncated, so `tail[0]` is a real stream boundary and `true` is correct.
-    if history.is_empty() && tail.len() < data.len() {
+    // above recorded it. The `<` is load bearing: `chunk_tail.len() == data.len()` means the chunk
+    // was NOT truncated, so `chunk_tail[0]` is a real stream boundary and `true` is correct.
+    if history.is_empty() && chunk_tail.len() < data.len() {
         *aligned = false;
     }
-    history.extend(tail);
+    // The front-states for the appended bytes are the pre-states of the last
+    // `chunk_tail.len()` bytes of the chunk (the oversized prefix is discarded with its
+    // states — its first byte's pre-state becomes the new front state).
+    let states_start = pre_states.len() - chunk_tail.len();
+    tail.front_states.extend(pre_states.drain(states_start..));
+    history.extend(chunk_tail);
+    debug_assert_eq!(
+        tail.front_states.len(),
+        history.len(),
+        "front-states must stay in byte-for-byte lockstep with the ring (Root RIS gate)"
+    );
 }
 
 /// The ring sliced from the byte after its first `\n`, or `None` when the ring holds no `\n`
@@ -310,6 +361,856 @@ fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [
         return None;
     }
     Some((&[], aligned_back))
+}
+
+/// Lexical position of the stream tail, mirroring the sequence states the real client
+/// (xterm.js 6.x `EscapeSequenceParser`) and the backend parser (vte 0.11.1) share: the
+/// abort rules (ESC/CAN/SUB ground from any state) are identical in both parsers, so one
+/// state machine is faithful for the source and for the receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TailState {
+    Ground,
+    Escape,
+    EscapeIntermediate,
+    Csi,
+    Osc,
+    Dcs,
+    Sos,
+    Utf8,
+}
+
+/// Persistente per-session lexical tail and mode tracker, fed every chunk from session
+/// start so that neither the open-sequence state nor the terminal modes rotate with the
+/// 64 KiB history ring (Route A).
+///
+/// Two jobs, both on the ingest hot path inside `append_history` (same parser mutex,
+/// O(1) per byte, no allocations while in ground):
+///
+/// 1. **Tail state**: the current lexical position (Ground / ESC[-intermediate] / CSI /
+///    OSC / DCS / SOS-PM-APC / partial UTF-8) so the attach can trim the open suffix from
+///    the replay and re-emit it exactly once after the mirror, ending the seed in the same
+///    partial state as the source at sequence N. C1 forms (0x9b/0x9d/0x90/0x98/0x9e/0x9f)
+///    are recognized per the pipeline's raw-byte reality; C1 bytes inside string payloads
+///    are absorbed as data (xterm.js OscPut semantics).
+///
+/// 2. **Persistent modes**: DECAWM (`?7`), IRM (`4`), G0 charset (`ESC ( <final>`),
+///    DECOM (`?6`), scroll region (`CSI r`), active buffer (`?47`/`?1047`/`?1049`),
+///    SO/SI shift and LRMM (`?69`), applied only when a sequence completes — a pending
+///    toggle is part of the open suffix and must not affect eligibility at N. The sticky
+///    historical flag is set by any representation-affecting CHANGE of the modes vt100
+///    0.15.2 does not model (DECAWM, IRM, charset, shift, LRMM, alternate): cells formed
+///    under those semantics cannot be represented by the parser grid, so the attach stays
+///    fail-closed even when the mode returns to default. Only a proven checkpoint clears
+///    it: session start, or RIS (`ESC c`), which resets the screen and every mode in both
+///    parsers. DECSTBM and DECOM ARE modeled by vt100 and are not sticky: a
+///    used-and-restored region/origin leaves a faithful grid, admitted when the scratch
+///    certificate (cells, wrapped rows, cursor) agrees.
+///
+/// A pending sequence longer than `UI_TAIL_TRACKER_BOUND` marks the tail indeterminate
+/// (`lost`): the open suffix cannot be reconstructed, and because the lost bytes could
+/// carry a mode toggle the tracker also sets `sticky`, keeping the session fail-closed
+/// until a proven checkpoint.
+#[derive(Clone, Debug)]
+struct LexicalTailTracker {
+    state: TailState,
+    pending: Vec<u8>,
+    utf8_need: u8,
+    utf8_seen: u8,
+    /// Lead byte of the in-flight UTF-8 char (0xc2..=0xf4), so the completion can
+    /// detect C1-as-UTF-8 (`C2 9B` decodes to U+009B, which the real client EXECUTES
+    /// as an 8-bit CSI while a bare 0x9B is data on its Uint8Array path — A/B matrix F1).
+    utf8_lead: u8,
+    /// The source's REP preceding glyph at N (A/B matrix F2 final design + PGC exact
+    /// gate): the DECODED last graphic char (ASCII or the full multi-byte grapheme),
+    /// set by the last processed printable, reset to None by ANY valid intermediate
+    /// sequence and any C0 EXECUTE (xterm `precedingJoinState`). The certified seed
+    /// reparse compares this exactly against the candidate seed's own parsed tail.
+    last_graphic: Option<Vec<u8>>,
+    /// Whether the CURRENT open sequence was entered by an ESC that aborted a control
+    /// string (A/B matrix F4): the real client's continuation of such a sequence renders
+    /// literally, so the fast path must be excluded while this holds.
+    entered_via_string_abort: bool,
+    /// Lexical pre-state of every byte currently in the history ring, in ring order
+    /// (drained and extended in lockstep with the ring inside `append_history`). This is
+    /// what lets the attach PROVE the replay starts at a genuine Ground boundary instead
+    /// of trusting a raw `\n` that may sit inside a control string (Root blocking
+    /// review): a LF inside an OSC/DCS/APC/SOS/PM payload is not a lexical boundary.
+    /// Memory: one byte per ring byte (≤ `DEFAULT_UI_HISTORY_LIMIT_BYTES` per session).
+    front_states: std::collections::VecDeque<u8>,
+    decawm: bool,
+    irm: bool,
+    g0: u8,
+    decom: bool,
+    region: (Option<u16>, Option<u16>),
+    buffer_alternate: bool,
+    shift_out: bool,
+    lrmm: bool,
+    sticky: bool,
+    lost: bool,
+}
+
+impl LexicalTailTracker {
+    fn new(history_limit_bytes: usize) -> Self {
+        Self {
+            state: TailState::Ground,
+            pending: Vec::new(),
+            utf8_need: 0,
+            utf8_seen: 0,
+            utf8_lead: 0,
+            last_graphic: None,
+            entered_via_string_abort: false,
+            front_states: std::collections::VecDeque::with_capacity(history_limit_bytes),
+            decawm: true,
+            irm: false,
+            g0: b'B',
+            decom: false,
+            region: (None, None),
+            buffer_alternate: false,
+            shift_out: false,
+            lrmm: false,
+            sticky: false,
+            lost: false,
+        }
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        // Raw C1 fail-closed in ANY state (Root gap 3): xterm's parser applies global
+        // C1 rules everywhere (the payload comment was false) — the backend parser and
+        // the client disagree, so any raw 0x80..0x9F marks the session sticky, EXCEPT
+        // inside a partial UTF-8 char where those bytes are continuation data.
+        if (0x80..=0x9f).contains(&byte) && self.state != TailState::Utf8 {
+            self.sticky = true;
+        }
+        match self.state {
+            TailState::Ground => match byte {
+                0x1b => self.begin(byte),
+                // Bare C1 (0x80..0x9F) is NOT mirror-equivalent (Root correction): the
+                // client's Uint8Array path treats it as data, but the backend parser
+                // (vt100/vte) EXECUTES 8-bit C1 — e.g. raw `9B 31mX` renders the mirror
+                // with `X` in red while the client shows `31mX` literally. Fail-closed
+                // from ingest: any raw C1 marks the session sticky.
+                0x80..=0x9f => self.sticky = true,
+                0xc2..=0xdf => {
+                    self.state = TailState::Utf8;
+                    self.utf8_need = 1;
+                    self.utf8_seen = 0;
+                    self.utf8_lead = byte;
+                    self.begin(byte);
+                }
+                0xe0..=0xef => {
+                    self.state = TailState::Utf8;
+                    self.utf8_need = 2;
+                    self.utf8_seen = 0;
+                    self.utf8_lead = byte;
+                    self.begin(byte);
+                }
+                0xf0..=0xf4 => {
+                    self.state = TailState::Utf8;
+                    self.utf8_need = 3;
+                    self.utf8_seen = 0;
+                    self.utf8_lead = byte;
+                    self.begin(byte);
+                }
+                0x0e => {
+                    if !self.shift_out {
+                        self.shift_out = true;
+                        self.sticky = true;
+                    }
+                    self.last_graphic = None;
+                }
+                0x0f => {
+                    if self.shift_out {
+                        self.shift_out = false;
+                        self.sticky = true;
+                    }
+                    self.last_graphic = None;
+                }
+                // ALL Ground C0 executables (0x00..0x1f except ESC — incl. NUL, BEL,
+                // CAN/SUB, CR/LF/BS/TAB…) reset the PGC (Root gap 1)
+                0x00..=0x1f => {
+                    self.last_graphic = None;
+                }
+                // ASCII graphic char: the REP preceding glyph is recorded (decoded)
+                0x20..=0x7e => {
+                    self.last_graphic = Some(vec![byte]);
+                }
+                // Invalid UTF-8 leads: F5..FF (client replaces them), C0/C1 (impossible
+                // overlong leads), and lone continuations A0..BF — all fail closed
+                0xf5..=0xff | 0xc0 | 0xc1 | 0xa0..=0xbf => self.sticky = true,
+                _ => {}
+            },
+            TailState::Escape => match byte {
+                0x5b => {
+                    self.state = TailState::Csi;
+                    self.pending.push(byte);
+                }
+                0x5d => {
+                    self.state = TailState::Osc;
+                    self.pending.push(byte);
+                }
+                0x50 => {
+                    self.state = TailState::Dcs;
+                    self.pending.push(byte);
+                }
+                0x58 | 0x5e | 0x5f => {
+                    self.state = TailState::Sos;
+                    self.pending.push(byte);
+                }
+                0x20..=0x2f => {
+                    self.state = TailState::EscapeIntermediate;
+                    self.pending.push(byte);
+                }
+                // final byte: completed 2-byte escape (incl. ST `ESC \`, RIS `ESC c`,
+                // charset designators `ESC ( <final>`)
+                0x30..=0x7e => self.complete_with(byte),
+                0x18 | 0x1a | 0x9c => self.abort(),
+                // C0 EXECUTE (C0 action matrix): resets the PGC, the escape continues
+                0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                    self.last_graphic = None;
+                }
+                _ => self.abort(),
+            },
+            TailState::EscapeIntermediate => {
+                if (0x30..=0x7e).contains(&byte) {
+                    self.complete_with(byte);
+                } else if (0x20..=0x2f).contains(&byte) {
+                    self.pending.push(byte);
+                    self.check_bound();
+                } else if byte == 0x1b {
+                    self.begin(byte);
+                } else if byte == 0x18 || byte == 0x1a || byte == 0x9c {
+                    self.abort();
+                } else if (0x00..=0x1f).contains(&byte) {
+                    // C0 EXECUTE: resets the PGC, the escape continues
+                    self.last_graphic = None;
+                } else {
+                    // CAN/SUB/ST (0x18/0x1a/0x9c) and any other byte abort the string
+                    self.abort();
+                }
+            }
+            TailState::Csi => {
+                if (0x40..=0x7e).contains(&byte) {
+                    self.complete_with(byte);
+                } else if byte == 0x1b {
+                    self.begin(byte);
+                } else if byte == 0x18 || byte == 0x1a || byte == 0x9c {
+                    self.abort();
+                } else if (0x00..=0x1f).contains(&byte) {
+                    // C0 EXECUTE (C0 action matrix): resets the PGC, the CSI continues
+                    self.last_graphic = None;
+                } else {
+                    self.pending.push(byte);
+                    self.check_bound();
+                }
+            }
+            TailState::Osc => {
+                // BEL/ST terminate an OSC (reset); the ordinary C0s are IGNORED as
+                // payload (C0 action matrix: OSC preserves the PGC across them).
+                if byte == 0x07 || byte == 0x9c {
+                    self.complete_with(byte);
+                } else if byte == 0x18 || byte == 0x1a {
+                    self.abort();
+                } else if byte == 0x1b {
+                    // A/B matrix F4 + inner-ESC PGC families (measured xterm): OSC_END
+                    // resets the PGC at the ESC; the fast path is excluded while this
+                    // sequence is open.
+                    self.entered_via_string_abort = true;
+                    self.last_graphic = None;
+                    self.begin(byte);
+                } else {
+                    // C1 bytes inside string payloads are data (xterm.js OscPut)
+                    self.pending.push(byte);
+                    self.check_bound();
+                }
+            }
+            TailState::Dcs => {
+                // ST (0x9c / ESC \) unhoods DCS: reset. BEL and the ordinary C0s are
+                // DCS_PUT payload (C0 action matrix: they PRESERVE the PGC).
+                if byte == 0x9c {
+                    self.complete_with(byte);
+                } else if byte == 0x18 || byte == 0x1a {
+                    self.abort();
+                } else if byte == 0x1b {
+                    // F4 + inner-ESC families: DCS_UNHOOK resets the PGC at the ESC.
+                    self.entered_via_string_abort = true;
+                    self.last_graphic = None;
+                    self.begin(byte);
+                } else {
+                    self.pending.push(byte);
+                    self.check_bound();
+                }
+            }
+            TailState::Sos => {
+                // SOS/PM/APC are IGNORED strings: the ST (0x9c) ends them via
+                // IGNORE -> Ground with the PGC PRESERVED (Root gap 2 — unlike DCS).
+                if byte == 0x9c {
+                    self.reset_after_sequence();
+                } else if byte == 0x18 || byte == 0x1a {
+                    self.abort();
+                } else if byte == 0x1b {
+                    // F4 + inner-ESC families: SOS/PM/APC preserve the PGC until the
+                    // following sequence dispatches.
+                    self.entered_via_string_abort = true;
+                    self.begin(byte);
+                } else {
+                    self.pending.push(byte);
+                    self.check_bound();
+                }
+            }
+            TailState::Utf8 => {
+                if (0x80..=0xbf).contains(&byte) {
+                    // Scalar validation per the lead (Root gap 4): the second byte's
+                    // permitted range excludes overlong (E0/F0), surrogates (ED) and
+                    // > U+10FFFF (F4); anything else is fail-closed sticky.
+                    let valid = match (self.utf8_lead, self.utf8_seen) {
+                        (0xe0, 0) => byte >= 0xa0,
+                        (0xed, 0) => byte <= 0x9f,
+                        (0xf0, 0) => byte >= 0x90,
+                        (0xf4, 0) => byte <= 0x8f,
+                        _ => true,
+                    };
+                    if !valid {
+                        self.sticky = true;
+                        self.last_graphic = None;
+                        self.reset_after_sequence();
+                        return;
+                    }
+                    self.utf8_seen += 1;
+                    self.pending.push(byte);
+                    if self.utf8_seen >= self.utf8_need {
+                        self.finish_utf8(byte);
+                    }
+                } else {
+                    // ESC or any non-continuation byte truncating a partial scalar:
+                    // fail closed, reset the scalar, and redispatch the byte exactly
+                    // once (the ESC lands in Escape so its subsequent bytes — e.g.
+                    // `ESC [` — keep their CSI semantics; a printable lands in Ground).
+                    self.sticky = true;
+                    self.last_graphic = None;
+                    self.reset_after_sequence();
+                    self.push_byte(byte);
+                }
+            }
+        }
+    }
+
+    /// Resets the terminal state, modes and checkpoint (RIS `ESC c` semantics) while
+    /// PRESERVING the `front_states` window, which must stay in byte-for-byte lockstep
+    /// with the history ring (Root RIS gate): the pre-states of the already-ring bytes
+    /// are historical and the RIS does not rewrite them.
+    fn reset_terminal_state(&mut self) {
+        self.state = TailState::Ground;
+        self.pending.clear();
+        self.utf8_need = 0;
+        self.utf8_seen = 0;
+        self.utf8_lead = 0;
+        self.last_graphic = None;
+        self.entered_via_string_abort = false;
+        self.decawm = true;
+        self.irm = false;
+        self.g0 = b'B';
+        self.decom = false;
+        self.region = (None, None);
+        self.buffer_alternate = false;
+        self.shift_out = false;
+        self.lrmm = false;
+        self.sticky = false;
+        self.lost = false;
+        // front_states intentionally untouched: it mirrors the ring window, not the
+        // terminal state.
+    }
+
+    /// Starts a fresh sequence from ground: any previous pending bytes are discarded
+    /// (ESC/CAN always abort the in-flight sequence in both parsers).
+    fn begin(&mut self, byte: u8) {
+        self.state = if (0xc2..=0xf4).contains(&byte) {
+            TailState::Utf8
+        } else {
+            TailState::Escape
+        };
+        self.pending.clear();
+        self.pending.push(byte);
+    }
+
+    /// A completed graphic character (ASCII handled in Ground; multi-byte here): record
+    /// it for the REP re-poke, advance the cursor model, and return to ground. C1-as-
+    /// UTF-8 (`C2 9B` etc.) decodes to U+0080..U+009F: the real client executes it but
+    /// the backend parser does not (mirror divergence — the SAME class as raw C1), so
+    /// fail-closed from ingest (Root C1 correction).
+    fn finish_utf8(&mut self, continuation: u8) {
+        if self.utf8_need == 1 && self.utf8_lead == 0xc2 && (0x80..=0x9f).contains(&continuation) {
+            self.sticky = true;
+            self.last_graphic = None;
+            self.reset_after_sequence();
+            return;
+        }
+        // the decoded grapheme's raw bytes (the exact glyph for the PGC certification)
+        self.last_graphic = Some(self.pending.clone());
+        self.reset_after_sequence();
+    }
+
+    /// Completes the in-flight sequence WITH its final byte: the final byte is part of
+    /// the interpreted sequence, so `apply_modes` sees the true terminator (the Root
+    /// review fix: `ESC[?7l` must reach the mode logic as `...l`, not `...7`). Any valid
+    /// intermediate sequence also resets the client's REP preceding state (A/B F2).
+    fn complete_with(&mut self, byte: u8) {
+        self.pending.push(byte);
+        self.apply_modes();
+        self.last_graphic = None;
+        self.entered_via_string_abort = false;
+        self.reset_after_sequence();
+    }
+
+    /// Aborts the in-flight sequence (CAN/SUB/ESC/ST interrupt): an incomplete sequence
+    /// must never apply mode side effects as if it had completed. The abort also
+    /// resets the REP preceding state (a C0 EXECUTE in xterm).
+    fn abort(&mut self) {
+        self.entered_via_string_abort = false;
+        self.last_graphic = None;
+        self.reset_after_sequence();
+    }
+
+    fn reset_after_sequence(&mut self) {
+        self.state = TailState::Ground;
+        self.pending.clear();
+        self.utf8_need = 0;
+        self.utf8_seen = 0;
+        self.lost = false;
+    }
+
+    fn check_bound(&mut self) {
+        if self.pending.len() > UI_TAIL_TRACKER_BOUND {
+            // The open suffix is indeterminate AND its lost bytes could carry a mode
+            // toggle: fail-closed until a proven checkpoint.
+            self.lost = true;
+            self.sticky = true;
+            self.state = TailState::Ground;
+            self.pending.clear();
+        }
+    }
+
+    /// The open suffix at the current stream position, or `None` when the tail is in
+    /// ground (or indeterminate). Called once per attach, cold path.
+    fn pending_suffix(&self) -> Option<Vec<u8>> {
+        if self.state != TailState::Ground && !self.pending.is_empty() && !self.lost {
+            Some(self.pending.clone())
+        } else {
+            None
+        }
+    }
+
+    /// The first ring-relative offset at or after `start` whose lexical pre-state is
+    /// Ground — a position a parser in ground state can safely begin reading from. The
+    /// ring front may sit inside a control string (its opening was evicted): every byte
+    /// of the payload has a non-Ground pre-state, and the first valid boundary is the
+    /// byte after the terminator. Offsets directly after an ESC-aborted string (A/B F4:
+    /// string → ESC → the following byte) are excluded. Returns `None` when no Ground
+    /// position exists in the remaining window — the attach must fall back to HEAD's
+    /// bytes. Cold path (one linear scan per attach, ≤ 64 KiB).
+    fn first_ground_from(&self, start: usize) -> Option<usize> {
+        let states: Vec<u8> = self.front_states.iter().copied().collect();
+        (start..states.len()).find(|offset| {
+            states[*offset] == TailState::Ground as u8 && !esc_aborted_string_at(*offset, &states)
+        })
+    }
+
+    /// Why the common fast-path preconditions fail, or `None` when they hold: tail
+    /// determinable, no unmodeled history since the last proven checkpoint, final modes
+    /// in the supported subset, active buffer normal (both tracker and parser), and no
+    /// ESC-aborted string pending (A/B F4).
+    fn common_eligibility(&self, parser_alternate: bool) -> Option<&'static str> {
+        if self.lost {
+            return Some("tail_indeterminate");
+        }
+        if self.sticky {
+            return Some("sticky_historical");
+        }
+        // A/B matrix F4: a string aborted by an ESC leaves a sequence whose client
+        // continuation renders literally — exclude while it is pending.
+        if self.entered_via_string_abort {
+            return Some("esc_aborted_string");
+        }
+        // Frontend-validated (2026-08-23): a partial UTF-8 lead at the boundary is NOT
+        // restorable through the CAN seam — xterm.js's decoder does not resync on the
+        // re-emitted lead and the live continuation renders mojibake. HEAD's ring-only
+        // seed preserves the split character (the live chunk completes it), so this tail
+        // class falls back byte-identically.
+        if self.state == TailState::Utf8 {
+            return Some("utf8_partial_tail");
+        }
+        if !self.decawm {
+            return Some("decawm=off");
+        }
+        if self.irm {
+            return Some("irm=on");
+        }
+        if self.g0 != b'B' {
+            return Some("g0!=ascii");
+        }
+        if self.shift_out {
+            return Some("shift=out");
+        }
+        if self.lrmm {
+            return Some("lrmm=on");
+        }
+        if self.decom {
+            return Some("decom=on");
+        }
+        if self.region != (None, None) {
+            return Some("region=trimmed");
+        }
+        if self.buffer_alternate || parser_alternate {
+            return Some("buffer=alternate");
+        }
+        None
+    }
+
+    /// Applies the mode side effects of the completed sequence `self.pending`. The final
+    /// byte gates every arm, so aborted sequences and non-mode sequences are no-ops.
+    fn apply_modes(&mut self) {
+        let seq = &self.pending;
+        if seq.len() < 2 {
+            return;
+        }
+        if seq[0] == 0x1b && seq[1] != b'[' {
+            match seq[1] {
+                // RIS: full reset — the proven checkpoint (screen and modes rebuilt).
+                // Must NOT touch `front_states`: they stay in byte-for-byte lockstep
+                // with the history ring (Root RIS gate).
+                b'c' => self.reset_terminal_state(),
+                // G0 designation: `ESC ( <final>`
+                b'(' => {
+                    let g0 = *seq.last().unwrap_or(&b'B');
+                    if self.g0 != g0 {
+                        self.g0 = g0;
+                        self.sticky = true;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        // CSI introducer: 7-bit `ESC [` or the C1-via-UTF-8 form `C2 9B` (A/B F1 — the
+        // real client decodes it and executes it as an 8-bit CSI).
+        let csi = (seq[0] == 0x1b && seq[1] == b'[')
+            || (seq[0] == 0xc2 && seq[1] == 0x9b);
+        if !csi || seq.len() < 3 {
+            return;
+        }
+        let final_byte = *seq.last().unwrap();
+        let body = &seq[2..seq.len() - 1];
+        let (private, params) = parse_csi_params(body);
+        match final_byte {
+            b'h' | b'l' => {
+                let on = final_byte == b'h';
+                if private {
+                    for param in params {
+                        match param {
+                            7 if self.decawm != on => {
+                                self.decawm = on;
+                                self.sticky = true;
+                            }
+                            6 => self.decom = on,
+                            69 if self.lrmm != on => {
+                                self.lrmm = on;
+                                self.sticky = true;
+                            }
+                            47 | 1047 | 1049 if self.buffer_alternate != on => {
+                                self.buffer_alternate = on;
+                                self.sticky = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    for param in params {
+                        if param == 4 && self.irm != on {
+                            self.irm = on;
+                            self.sticky = true;
+                        }
+                    }
+                }
+            }
+            b'r' => {
+                if !private {
+                    self.region = match params.as_slice() {
+                        // bare `CSI r` / `CSI ;r` = full margins
+                        [0] | [0, 0] => (None, None),
+                        [top, bottom] => (Some(*top), Some(*bottom)),
+                        [top] => (Some(*top), None),
+                        _ => (None, None),
+                    };
+                }
+            }
+            b'b' if !private => {
+                // Cross-validation p3: vt100 0.15.2 does NOT implement `CSI Ps b`
+                // (REP) — the authoritative screen loses the cells a historical REP
+                // created, so the mirror diverges from the real client regardless of
+                // the PGC state at N. Fail-closed from the first completed REP until a
+                // proven cell checkpoint (RIS).
+                self.sticky = true;
+            }
+            b'p' if !private && body.contains(&b'!') => {
+                // DECSTR: modes to defaults, buffer kept, sticky KEPT (cells persist).
+                self.decawm = true;
+                self.irm = false;
+                self.g0 = b'B';
+                self.decom = false;
+                self.region = (None, None);
+                self.shift_out = false;
+                self.lrmm = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Per-attach Route A instrumentation carried out of the parser lock (the file's own
+/// #1439 R2 rule: no logging under the mutex). Sizes and states only — never content.
+/// `behavior` is "fast" | "ring-only" | "screen-only"; `reason` names the failing gate
+/// on fallbacks ("fast" on the fast path).
+type AttachInstrumentation = (
+    &'static str,
+    &'static str,
+    usize,
+    usize,
+    usize,
+    usize,
+    u128,
+    &'static str,
+);
+
+/// Whether `states[offset]` is directly after a string state that an ESC aborted
+/// (A/B matrix F4): the real client ends the string at the ESC and parses the
+/// following bytes from Escape, so a boundary there would replay an ESC-tail the client
+/// renders literally.
+fn esc_aborted_string_at(offset: usize, states: &[u8]) -> bool {
+    if offset < 2 {
+        return false;
+    }
+    let before = states[offset - 2];
+    let string_state = before == TailState::Osc as u8
+        || before == TailState::Dcs as u8
+        || before == TailState::Sos as u8;
+    string_state && states[offset - 1] == TailState::Escape as u8
+}
+
+/// Splits the body of a completed CSI (bytes between `ESC [` / C1 and the final byte)
+/// into `(private, params)`. An empty body yields `[0]`; omitted parameters yield 0
+/// (the region arm maps `[0]`/`[0, 0]` back to the full-margins default).
+fn parse_csi_params(body: &[u8]) -> (bool, Vec<u16>) {
+    let mut private = false;
+    let mut params = Vec::new();
+    let mut current: Option<u16> = None;
+    for &byte in body {
+        match byte {
+            b'?' => private = true,
+            b'0'..=b'9' => current = Some(current.unwrap_or(0) * 10 + u16::from(byte - b'0')),
+            b';' => {
+                params.push(current.unwrap_or(0));
+                current = None;
+            }
+            _ => {}
+        }
+    }
+    params.push(current.unwrap_or(0));
+    (private, params)
+}
+
+/// Fail-closed certificate that the replay the client will parse (prologue + ring minus
+/// its open suffix) is a SUBSET-consistent rendering of the live parser's grid: every
+/// cell the replay paints must match the source cell-for-cell (contents, colors, style),
+/// while cells the replay leaves empty are allowed to differ — the mirror repaints the
+/// whole viewport from the live grid, so scrolled-out paint the ring cannot reproduce is
+/// exactly what the fast path fixes. What the certificate still rejects: a ring front
+/// landing inside a string sequence (the source has no literal text where the replay
+/// renders it), grid fragmentation (sequential `\n`-only lines render differently after
+/// the ring front), and DECSTBM/DECOM history whose cells the replay cannot reproduce.
+fn scratch_certificate(rows: u16, cols: u16, body: &[u8], suffix: Option<&[u8]>, live: &vt100::Screen) -> bool {
+    let cut = suffix.map_or(body.len(), |s| body.len() - s.len());
+    let mut scratch = vt100::Parser::new(rows, cols, 0);
+    scratch.process(UI_HISTORY_REPLAY_PROLOGUE);
+    scratch.process(&body[..cut]);
+    if scratch.screen().alternate_screen() {
+        return false;
+    }
+    for row in 0..rows {
+        let scratch_row_has_content = (0..cols)
+            .any(|col| cell_non_default(scratch.screen().cell(row, col)));
+        if scratch_row_has_content
+            && scratch.screen().row_wrapped(row) != live.row_wrapped(row)
+        {
+            return false;
+        }
+        for col in 0..cols {
+            let cell = scratch.screen().cell(row, col);
+            if !cell_non_default(cell) {
+                continue;
+            }
+            let actual = cell.map(|x| {
+                (
+                    x.contents().to_string(),
+                    x.fgcolor(),
+                    x.bgcolor(),
+                    x.bold(),
+                    x.italic(),
+                    x.underline(),
+                    x.inverse(),
+                )
+            });
+            let wanted = live.cell(row, col).map(|x| {
+                (
+                    x.contents().to_string(),
+                    x.fgcolor(),
+                    x.bgcolor(),
+                    x.bold(),
+                    x.italic(),
+                    x.underline(),
+                    x.inverse(),
+                )
+            });
+            if actual != wanted {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// PGC restoration bytes for the seed's tail (Root PGC gate): the source's preceding
+/// glyph from the tracker (`Some` — the decoded grapheme) drives the re-poke; `None`
+/// gets a deterministic final `\x18` (CAN — visually inert in Ground, resets the PGC
+/// by C0 EXECUTE). The re-poke's TARGET comes from the authoritative vt100 Screen
+/// (cursor + glyph cell, wide-lead adjusted, exact cell attributes). The FINAL proof is
+/// the certified seed reparse (`seed_certificate`), which compares the candidate
+/// seed's parsed tail against the source exactly — any mismatch falls back.
+fn pgc_restoration_bytes(tail: &LexicalTailTracker, screen: &vt100::Screen) -> Option<Vec<u8>> {
+    if tail.last_graphic.is_none() {
+        // deterministic None via CAN: visually inert in Ground, resets the PGC by C0
+        // EXECUTE (certified by the seed reparse)
+        return Some(b"\x18".to_vec());
+    }
+    let (rows, cols) = screen.size();
+    let (row, col) = screen.cursor_position();
+    if row >= rows {
+        return None;
+    }
+    let mut target_col = if col > 0 {
+        col - 1
+    } else if col >= cols {
+        cols - 1
+    } else {
+        return None;
+    };
+    let cell = screen.cell(row, target_col)?;
+    if cell.contents().is_empty() && target_col > 0 {
+        // A wide glyph's continuation cell is empty: the lead is one column earlier.
+        let lead = screen.cell(row, target_col - 1)?;
+        if lead.is_wide() && !lead.contents().is_empty() {
+            target_col -= 1;
+        } else {
+            return None;
+        }
+    }
+    let cell = screen.cell(row, target_col)?;
+    let glyph = cell.contents();
+    if glyph.is_empty() {
+        return None;
+    }
+    // Screen-neutral requirement: the glyph renders under the mirror's final SGR (the
+    // source's current attributes) — the cell must carry exactly those.
+    if cell.fgcolor() != screen.fgcolor()
+        || cell.bgcolor() != screen.bgcolor()
+        || cell.bold() != screen.bold()
+        || cell.italic() != screen.italic()
+        || cell.underline() != screen.underline()
+        || cell.inverse() != screen.inverse()
+    {
+        return None;
+    }
+    let mut bytes = format!("\x1b[{};{}H", row + 1, target_col + 1).into_bytes();
+    bytes.extend_from_slice(glyph.as_bytes());
+    Some(bytes)
+}
+
+/// Certified seed reparse (Root PGC gate): parse the FINAL seed — prologue + replay −
+/// suffix + seam + mirror + PGC restoration + suffix — in a fresh parser AND a fresh
+/// tracker, and compare the resulting state exactly against the source at N:
+///
+/// * the PGC (the fresh tracker's last preceding glyph vs the source's — the only
+///   direct proof; covers the CAN-for-None and the exact-glyph-for-Some cases),
+/// * the cursor position,
+/// * the wraps and EVERY cell (contents and attributes) of the repainted viewport.
+///
+/// Any mismatch → byte-identical HEAD fallback (indeterminate never enters the fast
+/// path). One extra bounded parse per attach (cold path).
+fn seed_certificate(
+    seed: &[u8],
+    rows: u16,
+    cols: u16,
+    source_tail: &LexicalTailTracker,
+    source: &vt100::Screen,
+) -> bool {
+    let mut fresh = vt100::Parser::new(rows, cols, 0);
+    fresh.process(seed);
+    let mut fresh_tail = LexicalTailTracker::new(DEFAULT_UI_HISTORY_LIMIT_BYTES);
+    for &byte in seed {
+        fresh_tail.push_byte(byte);
+    }
+    if fresh_tail.last_graphic != source_tail.last_graphic {
+        return false;
+    }
+    if fresh.screen().cursor_position() != source.cursor_position() {
+        return false;
+    }
+    for row in 0..rows {
+        if fresh.screen().row_wrapped(row) != source.row_wrapped(row) {
+            return false;
+        }
+        for col in 0..cols {
+            let a = fresh.screen().cell(row, col);
+            let b = source.cell(row, col);
+            let ae = a.map(|x| {
+                (
+                    x.contents().to_string(),
+                    x.fgcolor(),
+                    x.bgcolor(),
+                    x.bold(),
+                    x.italic(),
+                    x.underline(),
+                    x.inverse(),
+                )
+            });
+            let be = b.map(|x| {
+                (
+                    x.contents().to_string(),
+                    x.fgcolor(),
+                    x.bgcolor(),
+                    x.bold(),
+                    x.italic(),
+                    x.underline(),
+                    x.inverse(),
+                )
+            });
+            if ae != be {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A cell the replay must reproduce faithfully: it has visible content or carries style.
+fn cell_non_default(cell: Option<&vt100::Cell>) -> bool {
+    cell.is_some_and(|x| {
+        !x.contents().is_empty()
+            || x.fgcolor() != vt100::Color::Default
+            || x.bgcolor() != vt100::Color::Default
+            || x.bold()
+            || x.italic()
+            || x.underline()
+            || x.inverse()
+    })
 }
 
 /// The private result surface of the Tauri output effect. It deliberately carries no
@@ -942,6 +1843,7 @@ impl SessionIoFanout {
         idle_tuning: IdleTuning,
         rows: u16,
         cols: u16,
+        history_limit_bytes: usize,
         target: PtyOutputTarget,
     ) -> Result<PtyOutputRegistrationToken, SessionRegistrationFailure> {
         let identity = Arc::new(RegistrationIdentity {
@@ -963,9 +1865,11 @@ impl SessionIoFanout {
             // Reserved up front, outside the parser mutex, so the ring never reallocates and
             // its ceiling is a property of construction. `VecDeque` growth is amortized, so
             // reserving later cannot pin the ceiling: the doubling already overshot by then.
-            history: std::collections::VecDeque::with_capacity(UI_HISTORY_LIMIT_BYTES),
+            history: std::collections::VecDeque::with_capacity(history_limit_bytes),
             history_aligned: true,
             conpty_size: (rows, cols),
+            tail: LexicalTailTracker::new(history_limit_bytes),
+            history_limit_bytes,
         };
         let mut parsers = self
             .screen_parsers
@@ -988,7 +1892,14 @@ impl SessionIoFanout {
         rows: u16,
         cols: u16,
     ) -> Result<PtyOutputRegistrationToken, SessionRegistrationFailure> {
-        self.register_session(id, idle_tuning, rows, cols, PtyOutputTarget::noop())
+        self.register_session(
+            id,
+            idle_tuning,
+            rows,
+            cols,
+            DEFAULT_UI_HISTORY_LIMIT_BYTES,
+            PtyOutputTarget::noop(),
+        )
     }
 
     fn acquire_reader_lease(
@@ -1126,7 +2037,13 @@ impl SessionIoFanout {
                         // watermark and only skips what is at or below the snapshot sequence,
                         // so those bytes would be seeded and then written again when they
                         // arrive live: a duplicated block of history.
-                        append_history(&mut state.history, &mut state.history_aligned, &data);
+                        append_history(
+                            &mut state.history,
+                            &mut state.history_aligned,
+                            &mut state.tail,
+                            &data,
+                            state.history_limit_bytes,
+                        );
                         Ok::<u64, ()>(sequence)
                     });
                     match processed {
@@ -1227,6 +2144,10 @@ impl SessionIoFanout {
         // #1458: carried out of the parser lock exactly like `reconcile_fault`. `Some` only
         // when the ring was flagged unaligned; the pair is (ring length, bytes kept).
         let mut history_unaligned: Option<(usize, usize)> = None;
+        // Route A instrumentation carrier, emitted after the parser lock is dropped (the
+        // file's own #1439 R2 rule: no logging under the mutex).
+        // (behavior, reason, ring_bytes, kept_bytes, mirror_bytes, tail_bytes, elapsed_us, buffer)
+        let mut attach_info: Option<AttachInstrumentation> = None;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
             let (parser_rows, parser_cols) = state.parser.screen().size();
             if (parser_rows, parser_cols) != state.conpty_size {
@@ -1242,7 +2163,7 @@ impl SessionIoFanout {
                     "[terminal-snapshot] stage=attach_grid_mismatch session={id} parser={parser_cols}x{parser_rows} conpty={conpty_cols}x{conpty_rows} (#1439)"
                 );
                 let resized = crate::logging::catch_payload_unwind(|| {
-                    state.parser.set_size(conpty_rows, conpty_cols)
+                    state.parser.set_size(conpty_rows, conpty_cols);
                 });
                 if resized.is_err() {
                     state.parser_availability = ParserAvailability::Unavailable;
@@ -1274,29 +2195,177 @@ impl SessionIoFanout {
                             replay.map_or(0, |(front, back)| front.len() + back.len()),
                         ));
                     }
-                    crate::logging::catch_payload_unwind(|| {
+                    let ring_len = replay.map_or(0, |(front, back)| front.len() + back.len());
+                    // Root blocking review: the replay must start at a PROVEN Ground
+                    // boundary. The ring front (and the first-line offset) may sit inside a
+                    // control string whose opening was evicted; a raw `\n` there is not a
+                    // lexical boundary. The front-states mirror gives the exact pre-state
+                    // of every ring byte: advance the replay start to the first Ground
+                    // position (the byte after the terminator), or reject the fast path
+                    // when no Ground position exists in the window. Payload bytes before
+                    // that position are dropped — the client never misreads them from
+                    // Ground (false-positive cells, mode side effects, scrollback debris).
+                    let fast_replay: Option<(&[u8], &[u8])> = match replay {
+                        Some((front, back)) => {
+                            let start = state.history.len() - (front.len() + back.len());
+                            match state.tail.first_ground_from(start) {
+                                Some(offset) if offset == start => Some((front, back)),
+                                Some(offset) => {
+                                    let advance = offset - start;
+                                    if advance < front.len() {
+                                        Some((&front[advance..], back))
+                                    } else if advance - front.len() < back.len() {
+                                        Some((&[], &back[advance - front.len()..]))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                None => None,
+                            }
+                        }
+                        None => None,
+                    };
+                    let buffer_state = if state.parser.screen().alternate_screen() {
+                        "alternate"
+                    } else {
+                        "normal"
+                    };
+                    // Route A instrumentation carrier: set inside the closure, emitted
+                    // after the parser lock is dropped (the file's own #1439 R2 rule: no
+                    // logging under the mutex).
+                    let started = std::time::Instant::now();                    crate::logging::catch_payload_unwind(|| {
                         let screen = state.parser.screen();
                         let (rows, cols) = screen.size();
                         let cells = usize::from(rows).checked_mul(usize::from(cols)).ok_or(())?;
                         if rows > MAX_ROWS || cols > MAX_COLUMNS || cells > MAX_CELLS {
                             return Err(());
                         }
-                        let data = match replay {
-                            Some((front, back)) => {
-                                let mut bytes = Vec::with_capacity(
-                                    UI_HISTORY_REPLAY_PROLOGUE.len() + front.len() + back.len(),
-                                );
-                                bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
-                                bytes.extend_from_slice(front);
-                                bytes.extend_from_slice(back);
-                                bytes
+                        let suffix = state.tail.pending_suffix();
+                        let common_reason =
+                            state.tail.common_eligibility(screen.alternate_screen());
+                        let formatted = screen.contents_formatted();
+                        let (data, behavior, reason) = match replay {
+                            Some((orig_front, orig_back)) => {
+                                // The fast attempt uses the boundary-ADVANCED replay when
+                                // the boundary proof advanced it; the fallback ALWAYS uses
+                                // the ORIGINAL replay (byte-identical to HEAD).
+                                let (fast_front, fast_back) =
+                                    fast_replay.unwrap_or((orig_front, orig_back));
+                                let boundary_proven = fast_replay.is_some();
+                                // One bounded contiguous copy of the fast replay (the open
+                                // suffix may straddle the VecDeque front/back halves — the
+                                // trim must never do half arithmetic on the two slices).
+                                let mut body = Vec::with_capacity(fast_front.len() + fast_back.len());
+                                body.extend_from_slice(fast_front);
+                                body.extend_from_slice(fast_back);
+                                let suffix_inside = suffix
+                                    .as_ref()
+                                    .is_none_or(|s| s.len() <= body.len());
+                                let pgc = pgc_restoration_bytes(&state.tail, screen);
+                                if boundary_proven
+                                    && common_reason.is_none()
+                                    && suffix_inside
+                                    && pgc.is_some()
+                                    && scratch_certificate(rows, cols, &body, suffix.as_deref(), screen)
+                                {
+                                    let cut = suffix.as_ref().map_or(body.len(), |s| body.len() - s.len());
+                                    let mut bytes = Vec::with_capacity(
+                                        UI_HISTORY_REPLAY_PROLOGUE.len()
+                                            + cut
+                                            + UI_HISTORY_REPLAY_SEAM.len()
+                                            + formatted.len()
+                                            + suffix.as_ref().map_or(0, |s| s.len()),
+                                    );
+                                    bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                                    bytes.extend_from_slice(&body[..cut]);
+                                    bytes.extend_from_slice(UI_HISTORY_REPLAY_SEAM);
+                                    bytes.extend_from_slice(&formatted);
+                                    // PGC exact restoration (Root gate): the CAN for a
+                                    // source-PGC-None (deterministic, visually inert) or
+                                    // the exact-glyph re-poke for a source-PGC-Some —
+                                    // before the open suffix.
+                                    bytes.extend_from_slice(pgc.as_deref().unwrap_or(b""));
+                                    if let Some(s) = &suffix {
+                                        bytes.extend_from_slice(s);
+                                    }
+                                    // Certified seed reparse: the final state (PGC,
+                                    // cursor, wraps, per-cell) must equal the source.
+                                    if seed_certificate(&bytes, rows, cols, &state.tail, screen) {
+                                        (bytes, "fast", "fast")
+                                    } else {
+                                        let mut fallback =
+                                            Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + orig_front.len() + orig_back.len());
+                                        fallback.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                                        fallback.extend_from_slice(orig_front);
+                                        fallback.extend_from_slice(orig_back);
+                                        (fallback, "ring-only", "seed_certificate_mismatch")
+                                    }
+                                } else {
+                                    // Fallback: byte-identical to HEAD (prologue + the
+                                    // ORIGINAL replay verbatim; the client stays
+                                    // mid-sequence and the live chunk completes the tail,
+                                    // #1458 §7.4). The boundary advance is DISCARDED on
+                                    // any gate failure, so an evicted string opening never
+                                    // leaks into the fallback bytes.
+                                    let mut bytes = Vec::with_capacity(
+                                        UI_HISTORY_REPLAY_PROLOGUE.len() + orig_front.len() + orig_back.len(),
+                                    );
+                                    bytes.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+                                    bytes.extend_from_slice(orig_front);
+                                    bytes.extend_from_slice(orig_back);
+                                    let reason = if !boundary_proven {
+                                        "no_ground_boundary"
+                                    } else {
+                                        common_reason.unwrap_or("suffix_untrimable_or_certificate")
+                                    };
+                                    (bytes, "ring-only", reason)
+                                }
                             }
                             // No line start with content behind it. The ring cannot be
                             // replayed from any offset, and in the observed incident it holds
                             // nothing but spinner frames anyway. The mirror is a consistent
                             // full repaint on a grid the #1439 branch above already validated.
-                            None => screen.contents_formatted(),
+                            // Fast path appends the open suffix so the live chunk completes
+                            // it (fixing the pre-existing orphaned-continuation wart);
+                            // fallback is HEAD's mirror byte for byte.
+                            None => {
+                                let pgc = pgc_restoration_bytes(&state.tail, screen);
+                                if common_reason.is_none() && pgc.is_some() {
+                                    let mut bytes = Vec::with_capacity(
+                                        formatted.len()
+                                            + pgc.as_ref().map_or(0, |p| p.len())
+                                            + suffix.as_ref().map_or(0, |s| s.len()),
+                                    );
+                                    bytes.extend_from_slice(&formatted);
+                                    bytes.extend_from_slice(pgc.as_deref().unwrap_or(b""));
+                                    if let Some(s) = &suffix {
+                                        bytes.extend_from_slice(s);
+                                    }
+                                    if seed_certificate(&bytes, rows, cols, &state.tail, screen) {
+                                        (bytes, "fast", "fast")
+                                    } else {
+                                        (formatted.clone(), "screen-only", "seed_certificate_mismatch")
+                                    }
+                                } else {
+                                    (
+                                        formatted.clone(),
+                                        "screen-only",
+                                        common_reason.unwrap_or("fast_gate"),
+                                    )
+                                }
+                            }
                         };
+
+                        attach_info = Some((
+                            behavior,
+                            reason,
+                            ring_len,
+                            ring_len,
+                            formatted.len(),
+                            suffix.as_ref().map_or(0, |s| s.len()),
+                            started.elapsed().as_micros(),
+                            buffer_state,
+                        ));
                         Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {
                             data,
                             rows,
@@ -1320,6 +2389,17 @@ impl SessionIoFanout {
         };
         self.attachments.attach(id, label);
         drop(parsers);
+        if let Some((behavior, reason, ring, kept, mirror, tail, elapsed_us, buffer)) = attach_info {
+            if behavior == "fast" {
+                log::debug!(
+                    "[terminal-snapshot] stage=attach_replay_repaint session={id} behavior={behavior} reason={reason} ring={ring} kept={kept} mirror={mirror} tail={tail} elapsed_us={elapsed_us}"
+                );
+            } else {
+                log::warn!(
+                    "[terminal-snapshot] stage=attach_replay_fallback session={id} reason={reason} ring={ring} kept={kept} tail={tail} buffer={buffer} behavior={behavior}"
+                );
+            }
+        }
         if let Some((ring, kept)) = history_unaligned {
             log::warn!(
                 "[terminal-snapshot] stage=attach_history_unaligned session={id} ring={ring} kept={kept} (#1458)"
@@ -1395,6 +2475,14 @@ impl SessionIoFanout {
         self.attachments.pending_bytes_for_test(id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn history_limit_bytes_for_test(&self, id: Uuid) -> Option<usize> {
+        let parsers = self.screen_parsers.lock().ok()?;
+        parsers
+            .get(&id)
+            .map(|state| state.history_limit_bytes)
+    }
+
     pub fn record_resize(&self, id: Uuid) {
         self.idle_detector.record_resize(id);
     }
@@ -1438,8 +2526,9 @@ impl SessionIoFanout {
                 log::warn!("[terminal-snapshot] stage=resize_skipped reason=parser_unavailable session={id} cols={cols} rows={rows} (#1439)");
                 return;
             }
-            let resized =
-                crate::logging::catch_payload_unwind(|| state.parser.set_size(rows, cols));
+            let resized = crate::logging::catch_payload_unwind(|| {
+                state.parser.set_size(rows, cols);
+            });
             if resized.is_err() {
                 state.parser_availability = ParserAvailability::Unavailable;
                 true
@@ -2256,6 +3345,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 30,
                 120,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_test_sink(Arc::clone(sink)),
             )
             .expect("register session with sink");
@@ -2303,6 +3393,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 30,
                 120,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
             )
             .expect("register fanout");
@@ -2505,6 +3596,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 1,
                 1,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_test_sink(Arc::clone(&sink)),
             )
             .expect("register one-cell session");
@@ -2805,6 +3897,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 30,
                 120,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_app_handle(app.handle().clone()),
             )
             .expect("register app-handle session");
@@ -2890,6 +3983,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 4,
                 40,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_test_sink(Arc::clone(&old_sink)),
             )
             .expect("register old session");
@@ -2900,6 +3994,7 @@ mod tests {
                 IdleTuning::DEFAULT,
                 4,
                 40,
+                DEFAULT_UI_HISTORY_LIMIT_BYTES,
                 PtyOutputTarget::from_test_sink(Arc::clone(&new_sink_events)),
             )
             .expect("register replacement session");
@@ -3297,20 +4392,13 @@ mod tests {
         for _ in 0..512 {
             feed(&fanout, id, &[&chunk]);
         }
-        {
-            let parsers = fanout.screen_parsers.lock().expect("parser state");
-            let state = parsers.get(&id).expect("registered session");
-            assert!(state.history.len() <= UI_HISTORY_LIMIT_BYTES);
-            assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
-            assert_eq!(state.history.front().copied(), Some(b'>'));
-        }
 
-        let oversized = vec![b'x'; UI_HISTORY_LIMIT_BYTES + 4_096];
+        let oversized = vec![b'x'; DEFAULT_UI_HISTORY_LIMIT_BYTES + 4_096];
         feed(&fanout, id, &[&oversized]);
         let parsers = fanout.screen_parsers.lock().expect("parser state");
         let state = parsers.get(&id).expect("registered session");
-        assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
-        assert_eq!(state.history.capacity(), UI_HISTORY_LIMIT_BYTES);
+        assert_eq!(state.history.len(), DEFAULT_UI_HISTORY_LIMIT_BYTES);
+        assert_eq!(state.history.capacity(), DEFAULT_UI_HISTORY_LIMIT_BYTES);
         assert_eq!(state.parser_availability, ParserAvailability::Available);
     }
 
@@ -3326,14 +4414,14 @@ mod tests {
         // A realistic spinner frame: truecolor SGR, label, carriage return. No `\n`. 33 bytes, so
         // the steady-state front lands 2 bytes into the SGR, exactly where the incident cut.
         let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+        for _ in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
             feed(&fanout, id, &[frame]);
         }
         {
             // The precondition of the defect, asserted rather than assumed.
             let parsers = fanout.screen_parsers.lock().expect("parser state");
             let state = parsers.get(&id).expect("registered session");
-            assert_eq!(state.history.len(), UI_HISTORY_LIMIT_BYTES);
+            assert_eq!(state.history.len(), DEFAULT_UI_HISTORY_LIMIT_BYTES);
             assert!(!state.history_aligned);
         }
 
@@ -3341,21 +4429,21 @@ mod tests {
         let data = activation_data(&fanout, id, true);
 
         assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
-        assert_eq!(data, expected);
+        // the fast mirror path ends with the deterministic PGC-None CAN ()
+        let mut with_pgc = expected.clone();
+        with_pgc.push(0x18);
+        assert_eq!(data, with_pgc);
     }
 
-    /// #1458. The healthy path must stay byte identical: when the capped trim did realign the
-    /// ring, the seed is the ring verbatim, from its very first byte. Asserting the whole body
-    /// against the ring is the point. An alignment scan applied unconditionally would silently
-    /// drop the ring's first line here, and a `starts_with` on the line's prefix would still pass,
-    /// because every line of such a replay begins with the same SGR bytes.
+    /// #1458. The healthy path: when the capped trim did realign the ring, the seed is the
+    /// prologue followed by the ring verbatim from its very first byte. This fixture's
+    /// sequential `\n`-only lines (no `\r`) fragment differently after the ring front than
+    /// in the source, so the Route A scratch certificate correctly sends it to the
+    /// byte-identical HEAD fallback — the ring-verbatim property below pins exactly that.
     #[test]
     fn a_line_aligned_ring_still_seeds_the_whole_ring() {
         let fanout = fanout();
         let id = session(&fanout);
-        // 102 bytes per line, not a divisor of the 65 536 byte ring, so the space trim lands off a
-        // line boundary and the realignment has to do real work: 50 bytes drained for space and 52
-        // more to realign, on every overflow.
         for index in 0..2_000 {
             feed(
                 &fanout,
@@ -3389,7 +4477,7 @@ mod tests {
         let fanout = fanout();
         let id = session(&fanout);
         let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r";
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+        for _ in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
             feed(&fanout, id, &[frame]);
         }
         // One frame that ends in the ring's only newline. The capped trim scan still sees no `\n`
@@ -3410,19 +4498,23 @@ mod tests {
         let data = activation_data(&fanout, id, true);
 
         assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
-        assert_eq!(data, expected);
+        let mut with_pgc = expected.clone();
+        with_pgc.push(0x18);
+        assert_eq!(data, with_pgc);
     }
 
     /// #1458. The recovering case, and the only one that exercises `history_from_first_line`'s
     /// `Some` arm: an unaligned ring that still holds lines must seed from the byte after its
     /// first `\n`, not fall back to the mirror. Asserting the whole body is the point; a stub
-    /// helper that always returns `None` passes every other test in this file.
+    /// helper that always returns `None` passes every other test in this file. Like the
+    /// aligned fixture, this one lands in the HEAD fallback (sequential `\n`-only lines are
+    /// not grid-reproducible after the ring front), so the body must equal HEAD's bytes.
     #[test]
     fn an_unaligned_ring_with_a_later_newline_seeds_from_that_line() {
         let fanout = fanout();
         let id = session(&fanout);
         let frame = b"\x1b[38;2;153;153;153m* Drizzling..\r"; // 33 bytes, no `\n`
-        for _ in 0..(UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
+        for _ in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / frame.len() + 64) {
             feed(&fanout, id, &[frame]);
         }
         for index in 0..40 {
@@ -3455,6 +4547,7 @@ mod tests {
             expected.as_slice()
         );
     }
+
 
     /// #1458. The helper's four decided branches, pinned without a fixture because which half of
     /// the ring holds the first `\n` is a `VecDeque` layout detail no fanout test can choose.
@@ -3520,7 +4613,10 @@ mod tests {
         let expected = mirrored_screen(&fanout, id);
 
         let data = activation_data(&fanout, id, true);
-        assert_eq!(data, expected);
+        // the fast mirror path ends with the deterministic PGC-None CAN (\x18)
+        let mut with_pgc = expected.clone();
+        with_pgc.push(0x18);
+        assert_eq!(data, with_pgc);
         assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
     }
 
@@ -3538,7 +4634,1422 @@ mod tests {
         let expected = mirrored_screen(&fanout, id);
 
         let data = activation_data(&fanout, id, false);
-        assert_eq!(data, expected);
+        let mut with_pgc = expected.clone();
+        with_pgc.push(0x18);
+        assert_eq!(data, with_pgc);
         assert!(!data.starts_with(UI_HISTORY_REPLAY_PROLOGUE));
+    }
+
+    // ── Route A (fail-closed fast path) ────────────────────────────────────────
+
+
+    /// Codex-like fixture: a normal-buffer TUI with cursor addressing, > 64 KiB, whose
+    /// initial full paint scrolled out of the ring. HEAD's ring-only seed leaves the rows
+    /// the ring never repaints hollow (the incident's black band); the fast path must
+    /// engage (seam + mirror present) and the fresh client must equal the no-attach
+    /// reference after the live continuation.
+    #[test]
+    fn codex_like_fixture_engages_fast_path_and_is_exact_after_live() {
+        fn codex_stream(frames: usize) -> Vec<u8> {
+            let mut v = Vec::new();
+            // full paint of all 30 rows (this is what scrolls out of the ring)
+            for r in 1..=30u16 {
+                v.extend_from_slice(format!("\x1b[{r};1H\x1b[38;2;{};60;90mrow-{r:02} {:0<85}\x1b[K", (r * 7) % 255, "").as_bytes());
+            }
+            for i in 0..frames {
+                let r = 3 + (i % 25) as u16;
+                let c = 5 + (i % 60) as u16;
+                v.extend_from_slice(format!("\x1b[{r};{c}H\x1b[38;2;{};200;50mcell-{i:04}\x1b[K", i % 255).as_bytes());
+                v.extend_from_slice(format!("\x1b[30;1H\x1b[38;2;153;153;153m* working {}\r", "*".repeat(i % 5)).as_bytes());
+                v.extend_from_slice(format!("\x1b[1;1Hlog {i:04} ok\n").as_bytes());
+            }
+            v
+        }
+        let continuation = format!("\x1b[1;1Hlog 9999 done\n\x1b[15;1Hfinal").into_bytes();
+        let fanout = fanout();
+        let id = session(&fanout);
+        let mut stream = codex_stream(760); // ~93 KiB with the paint
+        assert!(stream.len() > DEFAULT_UI_HISTORY_LIMIT_BYTES);
+        let cut = stream.len() - continuation.len() - 1;
+        let after: Vec<u8> = stream.split_off(cut);
+        // feed everything but the last chunk, attach, then the live continuation
+        feed(&fanout, id, &[&stream]);
+        let snapshot = attach(&fanout, id, WINDOW).expect("snapshot");
+        let seed = snapshot.data.clone();
+        feed(&fanout, id, &[&after]);
+
+        // fast path engaged: seam present, mirror present
+        assert!(
+            seed.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "fast path must engage for the eligible Codex-like fixture (reason={:?})",
+            {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                let st = parsers.get(&id).expect("registered session");
+                st.tail.common_eligibility(st.parser.screen().alternate_screen())
+            }
+        );
+        // HEAD's ring-only seed leaves hollow rows (the incident)
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut head_fresh = vt100::Parser::new(30, 120, 0);
+        head_fresh.process(UI_HISTORY_REPLAY_PROLOGUE);
+        head_fresh.process(&ring);
+        let mut live = vt100::Parser::new(30, 120, 0);
+        live.process(&stream);
+        live.process(&after);
+        assert!(
+            head_fresh.screen().contents() != live.screen().contents(),
+            "HEAD ring-only replay must leave hollow rows for this fixture"
+        );
+        // fast path: fresh == no-attach reference after the live bytes
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&seed);
+        fresh.process(&after);
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&stream);
+        reference.process(&after);
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        assert_eq!(fresh.screen().contents(), reference.screen().contents());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+        assert_eq!(fresh.screen().title(), reference.screen().title());
+    }
+
+    /// A `\n` inside a control string is not a lexical boundary: a ring whose aligned front
+    /// lands inside an OSC must fall back to HEAD's exact bytes (the pre-existing E.5
+    /// assumption), never the fast path — and the open-suffix guard must not panic on a
+    /// suffix longer than the aligned slice.
+    #[test]
+    fn ring_front_inside_a_string_falls_back_byte_identical() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        // 65 528 'x' bytes without newlines, then an OSC whose newline is the ring's first
+        // `\n`; the ring front lands mid-OSC.
+        feed(&fanout, id, &[&vec![b'x'; DEFAULT_UI_HISTORY_LIMIT_BYTES - 8]]);
+        feed(&fanout, id, &[b"\x1b]0;abc\ndef"]); // OSC still open at N
+        let (slice, formatted) = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            assert!(!state.history_aligned);
+            let (front, back) = state.history.as_slices();
+            let ring = [front, back].concat();
+            let newline = ring.iter().position(|byte| *byte == b'\n').expect("a newline");
+            (
+                ring[newline + 1..].to_vec(),
+                state.parser.screen().contents_formatted(),
+            )
+        };
+        let data = activation_data(&fanout, id, true);
+        // HEAD would seed prologue + first-line slice; Route A must fall back byte-identical
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "mid-string front must not engage the fast path"
+        );
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + slice.len());
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(&slice);
+        assert_eq!(data, head);
+        let _ = formatted;
+    }
+
+    /// Every determinable open-tail class: fast path trims the suffix and re-emits it
+    /// EXACTLY once after the mirror, and the fresh client equals the no-attach reference
+    /// after the live continuation. The partial UTF-8 tail is the one class that must fall
+    /// back (frontend-validated: the CAN seam breaks xterm.js's decoder resync).
+    #[test]
+    fn open_tails_are_trimmed_reemitted_once_and_exact_after_live() {
+        let cases: &[(&str, &[u8], &[u8])] = &[
+            ("osc-bel", b"\x1b]0;partial", b" title\x07"),
+            ("osc-st", b"\x1b]0;partial", b" title\x1b\\"),
+            ("csi", b"\x1b[38;2;15", b"5;153;153mX"),
+            ("dcs", b"\x1bP1;2|payload", b" more\x1b\\"),
+            ("apc", b"\x1b_payload", b" more\x1b\\"),
+            ("sos", b"\x1bXpayload", b" more\x1b\\"),
+            ("pm", b"\x1b^payload", b" more\x1b\\"),
+            ("charset-intermediate", b"\x1b(", b"0"), // ESC + intermediate, still open at N
+            ("loose-esc", b"\x1b", b"[1;1HZ"),
+        ];
+        for (name, tail, continuation) in cases {
+            let fanout = fanout();
+            let id = session(&fanout);
+            let mut base = Vec::new();
+            for i in 0..30 {
+                base.extend_from_slice(format!("\x1b[{i};1Hline {i:03}\x1b[K\n").as_bytes());
+            }
+            feed(&fanout, id, &[&base]);
+            feed(&fanout, id, &[tail]);
+            let data = activation_data(&fanout, id, true);
+            assert!(
+                data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                    .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+                "{name}: fast path must engage"
+            );
+            // the open suffix appears exactly once, at the end: its bytes add EXACTLY one
+            // occurrence beyond the same bytes inside prologue/ring/seam/mirror (a 1-byte
+            // tail like a loose ESC also matches every ESC in the content)
+            let count = data.windows(tail.len()).filter(|w| *w == *tail).count();
+            let rest_count = data[..data.len() - tail.len()]
+                .windows(tail.len())
+                .filter(|w| *w == *tail)
+                .count();
+            assert_eq!(count, rest_count + 1, "{name}: suffix must appear exactly once, got {count}");
+            assert!(data.ends_with(tail), "{name}: suffix must be at the end");
+            // equality after the live continuation vs the no-attach reference
+            let mut stream = base.clone();
+            stream.extend_from_slice(tail);
+            let mut fresh = vt100::Parser::new(30, 120, 0);
+            fresh.process(&data);
+            fresh.process(continuation);
+            let mut reference = vt100::Parser::new(30, 120, 0);
+            reference.process(&stream);
+            reference.process(continuation);
+            assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted(), "{name}");
+            assert_eq!(fresh.screen().contents(), reference.screen().contents(), "{name}");
+            assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position(), "{name}");
+            assert_eq!(fresh.screen().title(), reference.screen().title(), "{name}");
+        }
+
+        // partial UTF-8: MUST fall back (frontend-validated mojibake on the CAN seam)
+        let fanout = fanout();
+        let id = session(&fanout);
+        let mut base = Vec::new();
+        for i in 0..30 {
+            base.extend_from_slice(format!("\x1b[{i};1Hline {i:03}\x1b[K\n").as_bytes());
+        }
+        feed(&fanout, id, &[&base]);
+        feed(&fanout, id, &[b"\xe2\x82"]); // two bytes of a 3-byte char
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "partial UTF-8 tail must fall back"
+        );
+        // HEAD byte-identical: prologue + full ring (the ring holds the whole stream here)
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(&ring);
+        assert_eq!(data, head);
+        // and HEAD's behavior preserves the split char after live
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\xac");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        let mut stream = base.clone();
+        stream.extend_from_slice(b"\xe2\x82");
+        reference.process(&stream);
+        reference.process(b"\xac");
+        assert_eq!(fresh.screen().contents(), reference.screen().contents());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// Unmodeled mode history (DECAWM, IRM, charset, LRMM, alternate, SO) is sticky:
+    /// even a used-and-restored mode must fall back byte-identical to HEAD.
+    #[test]
+    fn unmodeled_history_falls_back_byte_identical() {
+        let cases: &[(&str, &[u8])] = &[
+            ("decawm-off", b"\x1b[?7l"),
+            ("decawm-then-on", b"\x1b[?7l\x1b[1;1Hx\x1b[?7h"),
+            ("irm", b"\x1b[4h"),
+            ("irm-restored", b"\x1b[4h\x1b[4l"),
+            ("charset", b"\x1b(0"),
+            ("charset-restored", b"\x1b(0\x1b(B"),
+            ("lrmm", b"\x1b[?69h"),
+            ("alternate-active", b"\x1b[?1049h"),
+            ("alternate-entered-exited", b"\x1b[?1049h\x1b[?1049l"),
+            ("shift-out", b"\x0e"),
+        ];
+        for (name, toggle) in cases {
+            let fanout = fanout();
+            let id = session(&fanout);
+            let mut base = Vec::new();
+            for i in 0..30 {
+                base.extend_from_slice(format!("line {i:03}\n").as_bytes());
+            }
+            feed(&fanout, id, &[&base]);
+            feed(&fanout, id, &[toggle]);
+            let data = activation_data(&fanout, id, true);
+            assert!(
+                !data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+                "{name}: unmodeled history must fall back"
+            );
+            let ring = {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                let state = parsers.get(&id).expect("registered session");
+                let (front, back) = state.history.as_slices();
+                [front, back].concat()
+            };
+            let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+            head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+            head.extend_from_slice(&ring);
+            assert_eq!(data, head, "{name}: fallback must be byte-identical to HEAD");
+        }
+
+        // IRM activated BEFORE the ring front, still ON at N: the stream-global tracker
+        // sees it (the ring never rotated it away) -> fallback; the first live byte that
+        // would distinguish insert/overwrite stays HEAD-identical.
+        let fanout = fanout();
+        let id = session(&fanout);
+        let mut base = Vec::new();
+        for i in 0..(2 * 1024 / 24) {
+            base.extend_from_slice(format!("line {i:05} xxxxxxxxxx\r\n").as_bytes());
+        }
+        feed(&fanout, id, &[&base]);
+        feed(&fanout, id, &[b"\x1b[4h"]); // IRM on, before the ring window
+        let mut tail = Vec::new();
+        for i in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / 24 + 64) {
+            tail.extend_from_slice(format!("tail {i:05} xxxxxxxxxx\r\n").as_bytes());
+        }
+        feed(&fanout, id, &[&tail]);
+        // sanity: the 4h bytes rotated out of the ring
+        {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            let ring = [front, back].concat();
+            assert!(!ring.windows(3).any(|w| w == b"\x1b[4h"), "4h must have rotated out");
+            assert!(
+                state.history.len() >= DEFAULT_UI_HISTORY_LIMIT_BYTES - 64,
+                "ring must be saturated, got {}",
+                state.history.len()
+            );
+        }
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "IRM-on rotated outside the ring must fall back (tracker is stream-global)"
+        );
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        // HEAD's fallback = prologue + the aligned replay (full ring when aligned, the
+        // first-line slice otherwise) — mirror the production decision exactly
+        let replay: &[u8] = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            if state.history_aligned {
+                &ring
+            } else {
+                let newline = ring.iter().position(|byte| *byte == b'\n').expect("a newline");
+                &ring[newline + 1..]
+            }
+        };
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + replay.len());
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(replay);
+        assert_eq!(data, head, "IRM-rotated fallback must be byte-identical to HEAD");
+        // live byte stream that would distinguish insert (IRM on) from overwrite (off):
+        // fresh after live == no-attach reference after live (HEAD behavior preserved)
+        let mut stream = base.clone();
+        stream.extend_from_slice(b"\x1b[4h");
+        stream.extend_from_slice(&tail);
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\x1b[5;5HABC\x1b[5;5HD");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&stream);
+        reference.process(b"\x1b[5;5HABC\x1b[5;5HD");
+        assert_eq!(fresh.screen().contents(), reference.screen().contents());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// DECSTBM/DECOM are modeled by vt100: used-and-restored is admitted (final default +
+    /// scratch certificate) and the fast path is exact after live; still-active region or
+    /// origin at N falls back.
+    #[test]
+    fn decom_region_used_and_restored_is_admitted() {
+        // restored: admitted
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        let mut stream = Vec::new();
+        for i in 0..30 {
+            stream.extend_from_slice(format!("line {i:03}\n").as_bytes());
+        }
+        stream.extend_from_slice(b"\x1b[?6h\x1b[5;25r\x1b[1;1Horigin-content\x1b[r\x1b[?6l");
+        stream.extend_from_slice(b"\x1b[1;1Hafter-restore\n");
+        feed(&fanout, id, &[&stream]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "used-and-restored DECSTBM/DECOM with default final must be admitted"
+        );
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\x1b[1;1Hlive\n");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&stream);
+        reference.process(b"\x1b[1;1Hlive\n");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+
+        // still trimmed at N: fallback
+        let fanout2 = make_fanout();
+        let id2 = session(&fanout2);
+        let mut stream2 = Vec::new();
+        for i in 0..30 {
+            stream2.extend_from_slice(format!("line {i:03}\n").as_bytes());
+        }
+        stream2.extend_from_slice(b"\x1b[5;25r");
+        feed(&fanout2, id2, &[&stream2]);
+        let data2 = activation_data(&fanout2, id2, true);
+        assert!(
+            !data2
+                .windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "region still trimmed at N must fall back"
+        );
+        let ring2 = {
+            let parsers = fanout2.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id2).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut head2 = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring2.len());
+        head2.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head2.extend_from_slice(&ring2);
+        assert_eq!(data2, head2);
+    }
+
+    /// Wrap-pending (exact-width row) and an active SGR at N survive the fast path after
+    /// live bytes: the mirror's built-in re-poke and final attrs diff are pinned here
+    /// (frontend-validated h2/h3).
+    #[test]
+    fn wrap_pending_and_active_sgr_survive_after_live() {
+        // exact-width wrap-pending at cols=10: the live "X" must wrap like the source
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 3, 10)
+            .expect("register narrow session");
+        feed(&fanout, id, &[b"0123456789"]); // exactly 10 chars: cursor past-end at N
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len()).any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "narrow exact-width fixture must be eligible"
+        );
+        let mut fresh = vt100::Parser::new(3, 10, 0);
+        fresh.process(&data);
+        fresh.process(b"X");
+        let mut reference = vt100::Parser::new(3, 10, 0);
+        reference.process(b"0123456789X");
+        assert_eq!(fresh.screen().contents(), reference.screen().contents());
+
+        // active SGR at N: the mirror restores it; the live byte renders bold+red
+        let fanout2 = make_fanout();
+        let id2 = session(&fanout2);
+        feed(&fanout2, id2, &[b"ab\x1b[31;1m"]);
+        let data2 = activation_data(&fanout2, id2, true);
+        assert!(
+            data2
+                .windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "SGR-active fixture must be eligible"
+        );
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data2);
+        let (row, col) = fresh.screen().cursor_position();
+        assert!(fresh.screen().bold(), "mirror must restore the active SGR state");
+        assert_eq!(fresh.screen().fgcolor(), vt100::Color::Idx(1));
+        fresh.process(b"X");
+        let cell = fresh.screen().cell(row, col).expect("cell at the cursor");
+        assert_eq!(cell.contents(), "X");
+        assert!(cell.bold(), "live byte must render with the restored SGR");
+        assert_eq!(cell.fgcolor(), vt100::Color::Idx(1));
+    }
+
+    /// The tail tracker applies modes with the TRUE final byte (split across chunk
+    /// boundaries), and aborted sequences never apply modes or mark sticky. Pins the
+    /// Root review fix: `ESC[?7l` must reach the mode logic as `...l`, not `...7`.
+    #[test]
+    fn tail_tracker_applies_modes_per_byte_and_aborts_do_not() {
+        fn feed_bytewise(fanout: &SessionIoFanout, id: Uuid, seq: &[u8]) {
+            for byte in seq {
+                feed(fanout, id, &[&[*byte]]);
+            }
+        }
+        // (state, decawm, irm, g0, decom, region, buffer_alt, shift, lrmm, sticky, lost)
+        let t = |fanout: &SessionIoFanout, id: Uuid| {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            (
+                state.tail.state,
+                state.tail.decawm,
+                state.tail.irm,
+                state.tail.g0,
+                state.tail.decom,
+                state.tail.region,
+                state.tail.buffer_alternate,
+                state.tail.shift_out,
+                state.tail.lrmm,
+                state.tail.sticky,
+                state.tail.lost,
+            )
+        };
+
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[?7l");
+        let s = t(&fanout, id);
+        assert!(!s.1 && s.9, "?7l: DECAWM off + sticky (final byte l applied)");
+        feed_bytewise(&fanout, id, b"\x1b[?7h");
+        let s = t(&fanout, id);
+        assert!(s.1 && s.9, "?7h: DECAWM on, sticky stays");
+
+        feed_bytewise(&fanout, id, b"\x1b[4h");
+        let s = t(&fanout, id);
+        assert!(s.2 && s.9, "4h: IRM on + sticky");
+        // CAN aborts an incomplete IRM set: prior state must stay
+        feed_bytewise(&fanout, id, b"\x1b[4");
+        feed_bytewise(&fanout, id, b"\x18");
+        let s = t(&fanout, id);
+        assert!(s.2 && s.9, "aborted incomplete 4: prior IRM+sticky must stay");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[4\x18"); // CAN aborts the incomplete 4h
+        let s = t(&fanout, id);
+        assert!(!s.2 && !s.9, "aborted 4h: IRM NOT applied, NO sticky");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[?6h");
+        let s = t(&fanout, id);
+        assert!(s.4 && !s.9, "?6h: DECOM on, NOT sticky (modeled)");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[?69h");
+        let s = t(&fanout, id);
+        assert!(s.8 && s.9, "?69h: LRMM on + sticky");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[?1049h");
+        let s = t(&fanout, id);
+        assert!(s.6 && s.9, "?1049h: alternate + sticky");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b(0");
+        let s = t(&fanout, id);
+        assert!(s.3 == b'0' && s.9, "ESC(0: G0 special + sticky");
+        feed_bytewise(&fanout, id, b"\x1b(B");
+        let s = t(&fanout, id);
+        assert!(s.3 == b'B' && s.9, "ESC(B: G0 ASCII, sticky stays");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[4h");
+        feed_bytewise(&fanout, id, b"\x1bc"); // completed RIS: proven checkpoint
+        let s = t(&fanout, id);
+        assert!(s.1 && !s.2 && s.3 == b'B' && !s.9, "completed RIS resets everything incl. sticky");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[4h");
+        feed_bytewise(&fanout, id, b"\x1b");
+        feed_bytewise(&fanout, id, b"\x18"); // RIS aborted by CAN
+        let s = t(&fanout, id);
+        assert!(s.2 && s.9, "aborted RIS must NOT clear the checkpoint (IRM+sticky stay)");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x1b[5;25r");
+        let s = t(&fanout, id);
+        assert!(s.5 == (Some(5), Some(25)) && !s.9, "DECSTBM applied, NOT sticky");
+        feed_bytewise(&fanout, id, b"\x1b[r");
+        let s = t(&fanout, id);
+        assert!(s.5 == (None, None), "bare CSI r restores full margins");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x0e");
+        let s = t(&fanout, id);
+        assert!(s.7 && s.9, "SO: shift out + sticky");
+        feed_bytewise(&fanout, id, b"\x0f");
+        let s = t(&fanout, id);
+        assert!(!s.7 && s.9, "SI: shift in, sticky stays (historical)");
+
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed_bytewise(&fanout, id, b"\x9b"); // raw C1: mirror divergence -> fail closed (Root correction)
+        let s = t(&fanout, id);
+        assert!(
+            s.0 == TailState::Ground && s.9 && !s.10,
+            "raw C1: ground + sticky, NOT lost (client and vt100 disagree on it)"
+        );
+    }
+
+    /// Root blocking review, test 1: the ring front lands inside a TERMINATED control
+    /// string whose opening was evicted; the first `\n` in the window is the string's
+    /// payload LF, so only the position AFTER the terminator is a valid boundary. The
+    /// replay must start there (the payload is dropped), the fast path engages, and the
+    /// fresh client equals the no-attach reference after the live bytes.
+    #[test]
+    fn ring_front_inside_a_terminated_string_advances_to_the_post_terminator_boundary() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        // 1000 'x' bytes rotate out so the ring front lands inside the OSC; the payload's
+        // LF is the first newline in the window (a raw-LF boundary that must NOT be
+        // trusted); the BEL terminates the OSC inside the ring.
+        feed(&fanout, id, &[&vec![b'x'; 1_000]]);
+        feed(&fanout, id, &[b"\x1b]0;ab\ncd\x07"]);
+        let mut lines = Vec::new();
+        for i in 0..2_849 {
+            lines.extend_from_slice(format!("tail {i:05} xxxxxxxxxx\r\n").as_bytes()); // 23 B
+        }
+        feed(&fanout, id, &[&lines]); // total ≈ 65.5 KiB + OSC; front lands inside the OSC
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "fast path must engage with the advanced boundary"
+        );
+        // the replay portion starts with the first line, NOT with the OSC payload
+        let body = &data[UI_HISTORY_REPLAY_PROLOGUE.len()..];
+        assert!(
+            body.starts_with(b"tail 00000"),
+            "replay must start after the string terminator, got {:?}",
+            &body[..body.len().min(20)]
+        );
+        // equality after live vs the no-attach reference
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\x1b[1;1Hlive\n");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&[b'x'; 1_000]);
+        reference.process(b"\x1b]0;ab\ncd\x07");
+        reference.process(&lines);
+        reference.process(b"\x1b[1;1Hlive\n");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        // title deliberately not compared: the string opening was evicted, so the replay
+        // cannot restore it (pre-existing, cosmetic window chrome — HEAD loses it too).
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// Root blocking review, test 2: payload that, misread from Ground, would paint
+    /// EXACTLY cells the live grid already holds. The scratch certificate ALONE would
+    /// pass (false positive — demonstrated); the boundary proof is what rejects the
+    /// misparse: the payload is dropped from the replay, never painted.
+    #[test]
+    fn mid_string_payload_that_would_false_positive_the_scratch_is_dropped() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[&vec![b'x'; 1_000]]);
+        // payload, read from Ground, paints `line 0000` — identical to a real live line
+        feed(&fanout, id, &[b"\x1b]0;ab\nline 0000\x07"]);
+        let mut lines = Vec::new();
+        for i in 0..5_957 {
+            lines.extend_from_slice(format!("line {i:04}\r\n").as_bytes()); // 11 B; total > 64 KiB, front inside the OSC
+        }
+        feed(&fanout, id, &[&lines]);
+        // the misparse WOULD pass the subset certificate (false positive)
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut live = vt100::Parser::new(30, 120, 0);
+        live.process(&[b'x'; 1_000]);
+        live.process(b"\x1b]0;ab\nline 0000\x07");
+        live.process(&lines);
+        let misparsed_passes = scratch_certificate(30, 120, &ring, None, live.screen());
+        assert!(
+            misparsed_passes,
+            "the fixture must demonstrate the scratch false positive"
+        );
+        let data = activation_data(&fanout, id, true);
+        // the boundary proof rejects the misparse: the payload is NOT replayed
+        let body = &data[UI_HISTORY_REPLAY_PROLOGUE.len()..];
+        assert!(
+            body.starts_with(b"line "),
+            "replay must start after the BEL (payload dropped), got {:?}",
+            &body[..body.len().min(20)]
+        );
+    }
+
+    /// Root blocking review, test 3: bytes that would activate an unmodeled mode when
+    /// misread from Ground must never reach the fast path. Note the parser semantics: an
+    /// ESC inside a control string TERMINATES the string (both vte and xterm.js), so the
+    /// `?7l` after it is a REAL sequence — the tracker applies it (DECAWM off + sticky),
+    /// the eligibility rejects, and the fallback is byte-identical to HEAD.
+    #[test]
+    fn mid_string_payload_with_a_mode_toggle_is_never_replayed() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[&vec![b'x'; 1_000]]);
+        feed(&fanout, id, &[b"\x1b]0;ab\n\x1b[?7lcd\x07"]); // the LF is inside the OSC; the ESC ends it
+        let mut lines = Vec::new();
+        for i in 0..5_957 {
+            lines.extend_from_slice(format!("line {i:04}\r\n").as_bytes()); // 11 B; total > 64 KiB, front inside the OSC
+        }
+        feed(&fanout, id, &[&lines]);
+        let data = activation_data(&fanout, id, true);
+        // the tracker applied the real `?7l` (the ESC terminated the string) -> sticky ->
+        // the fast path is rejected, never a misparse of the payload
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "mode-activating bytes after a string LF must reject the fast path"
+        );
+        // HEAD byte-identical: prologue + the aligned replay (the whole ring here)
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(&ring);
+        if data != head {
+            let first = data.iter().zip(head.iter()).position(|(a, b)| a != b);
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let st = parsers.get(&id).expect("registered session");
+            eprintln!("T3DBG aligned={} first_div={:?} data_head={:?} head_data={:?} ring_front={:?}", st.history_aligned, first, first.map(|i| &data[i..(i + 10).min(data.len())]), first.map(|i| &head[i..(i + 10).min(head.len())]), st.history.iter().take(8).copied().collect::<Vec<u8>>());
+        }
+        assert_eq!(data, head, "fallback must be byte-identical to HEAD; data={} head={}", data.len(), head.len());
+    }
+
+    /// Root blocking review, test 4: an OSC whose ST (ESC \) is split across chunk
+    /// boundaries and across the VecDeque front/back halves must keep the front-states
+    /// mirror in lockstep: the only valid boundary is after the completed ST.
+    #[test]
+    fn split_st_keeps_the_front_states_in_lockstep() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        // a long filler so the ring rotates; the OSC opening at the front boundary
+        feed(&fanout, id, &[&vec![b'y'; 61_000]]);
+        feed(&fanout, id, &[b"\x1b]0;ab"]);
+        feed(&fanout, id, &[b"cd\x1b\\"]); // ST split across chunks
+        let mut lines = Vec::new();
+        for i in 0..600 {
+            lines.extend_from_slice(format!("line {i:04}\r\n").as_bytes());
+        }
+        feed(&fanout, id, &[&lines]);
+        let data = activation_data(&fanout, id, true);
+        // the fast path must engage and the split-ST OSC must parse correctly through the
+        // replay (the front-states mirror stays in lockstep across chunk splits)
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "split-ST stream must stay eligible"
+        );
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\x1b[1;1Hlive\n");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&[b'y'; 61_000]);
+        reference.process(b"\x1b]0;ab");
+        reference.process(b"cd\x1b\\"); // ESC + backslash = ST
+        reference.process(&lines);
+        reference.process(b"\x1b[1;1Hlive\n");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        // title deliberately not compared: the OSC sits before the replay start (the ring
+        // cannot restore it — pre-existing, cosmetic; HEAD loses it identically).
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// Root blocking review, test 5: an oversized chunk discards a string opening AND its
+    /// payload in the same call; the ring starts at a genuine Ground position (the lines)
+    /// and the fast path engages with the full ring.
+    #[test]
+    fn oversized_chunk_discarding_an_open_string_keeps_the_ground_boundary() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(b"\x1b]0;ab\x07"); // opening + payload (BEL-terminated) in the discarded prefix
+        for i in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / 11 + 64) {
+            chunk.extend_from_slice(format!("line {i:04}\r\n").as_bytes());
+        }
+        assert!(chunk.len() > DEFAULT_UI_HISTORY_LIMIT_BYTES);
+        feed(&fanout, id, &[&chunk]); // ONE chunk, oversized
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "the discarded-prefix ring must stay eligible (front at Ground)"
+        );
+        let body = &data[UI_HISTORY_REPLAY_PROLOGUE.len()..];
+        assert!(
+            body.starts_with(b"line "),
+            "replay must start with the lines, got {:?}",
+            &body[..body.len().min(20)]
+        );
+        assert!(
+            !body.windows(9).any(|w| w == b"\x1b]0;ab\x07"),
+            "the discarded OSC bytes must not appear in the replay"
+        );
+        // equality after live vs the no-attach reference
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"\x1b[1;1Hlive\n");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&chunk);
+        reference.process(b"\x1b[1;1Hlive\n");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// Root blocking review, test 6: an OPEN string at N (never terminated) leaves NO
+    /// Ground position after the front — the fast path must fall back byte-identical to
+    /// HEAD (the existing `ring_front_inside_a_string` fixture now exercises the
+    /// `no_ground_boundary` reason), and the Codex fixture must still engage.
+    #[test]
+    fn open_string_at_n_has_no_ground_boundary_and_falls_back() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[&vec![b'x'; DEFAULT_UI_HISTORY_LIMIT_BYTES - 8]]);
+        feed(&fanout, id, &[b"\x1b]0;abc\ndef"]); // OSC never terminated
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "an open string with no Ground in the window must fall back"
+        );
+        // HEAD byte-identical: prologue + the first-line slice (the only replay HEAD has)
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let newline = ring.iter().position(|byte| *byte == b'\n').expect("a newline");
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len() - newline - 1);
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(&ring[newline + 1..]);
+        assert_eq!(data, head, "fallback must be byte-identical to HEAD");
+    }
+
+    /// RIS must reset the terminal state WITHOUT breaking the front_states lockstep
+    /// (Root RIS gate): the invariant `front_states.len() == history.len()` holds across
+    /// RIS at the start/middle/end, trims and oversized chunks, and the fast path still
+    /// works after a mid-stream RIS.
+    #[test]
+    fn ris_preserves_front_states_lockstep() {
+        fn assert_lockstep(fanout: &SessionIoFanout, id: Uuid) {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let st = parsers.get(&id).expect("registered session");
+            assert_eq!(
+                st.tail.front_states.len(),
+                st.history.len(),
+                "front-states must mirror the ring byte-for-byte"
+            );
+        }
+        let fanout = fanout();
+        let id = session(&fanout);
+        // RIS at the START (empty ring)
+        feed(&fanout, id, &[b"\x1bc"]);
+        assert_lockstep(&fanout, id);
+        // RIS in the MIDDLE of a partial ring, pre-RIS bytes still in it
+        feed(&fanout, id, &[b"line one\r\n"]);
+        feed(&fanout, id, &[b"\x1bc"]);
+        feed(&fanout, id, &[b"line two\r\n"]);
+        assert_lockstep(&fanout, id);
+        // saturated ring + a RIS + more (subsequent trim exercises the drains)
+        let mut filler = Vec::new();
+        for i in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / 11) {
+            filler.extend_from_slice(format!("fill {i:05} x\r\n").as_bytes());
+        }
+        feed(&fanout, id, &[&filler]);
+        feed(&fanout, id, &[b"\x1bc"]);
+        for i in 0..100 {
+            feed(&fanout, id, &[format!("post {i:03}\r\n").as_bytes()]);
+        }
+        assert_lockstep(&fanout, id);
+        // oversized chunk after the RIS
+        let mut big = Vec::new();
+        for i in 0..(DEFAULT_UI_HISTORY_LIMIT_BYTES / 11 + 64) {
+            big.extend_from_slice(format!("big {i:05} x\r\n").as_bytes());
+        }
+        feed(&fanout, id, &[&big]);
+        assert_lockstep(&fanout, id);
+        // the stream after the RIS is fresh: eligible, fast path engages
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "a post-RIS stream must stay eligible (RIS is the proven checkpoint)"
+        );
+    }
+
+    /// A/B F2 (final design): the re-poke is CONDITIONAL on the source's preceding
+    /// state at N — active (last byte a printable) → the seed ends with
+    /// `CUP(glyph cell) + glyph`; reset (last byte a CSI/ESC/C0 dispatch) → NO re-poke
+    /// (the seam + the mirror's own sequences already leave the client reset, matching
+    /// the source). xterm repeats the glyph empirically for non-ASCII too, so the
+    /// tracker records the raw multi-byte glyph.
+    #[test]
+    fn rep_preceding_state_drives_the_conditional_repoke() {
+        fn seed_ends_with_repoke(data: &[u8], glyph: &[u8]) -> bool {
+            data.windows(glyph.len()).any(|w| w == glyph) && data.ends_with(glyph)
+        }
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"A"]); // preceding ACTIVE at N
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            seed_ends_with_repoke(&data, b"A"),
+            "active preceding: the seed must end with the glyph re-poke"
+        );
+        // the re-poke's CUP targets the glyph's cell: `\x1b[1;1H` + `A` at the end
+        assert!(data.ends_with(b"\x1b[1;1HA"));
+
+        // reset case: ASCII then a CUP dispatch — the seed must NOT re-poke
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"A\x1b[1;1H"]); // CUP resets the preceding
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !seed_ends_with_repoke(&data, b"A"),
+            "reset preceding: the seed must NOT re-poke (the mirror's sequences already reset it)"
+        );
+
+        // C0 reset case: ASCII then CR
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"AB\r"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(!seed_ends_with_repoke(&data, b"B"));
+        assert!(!seed_ends_with_repoke(&data, b"A"));
+
+        // non-ASCII last graphic: the re-poke carries the REAL multi-byte glyph
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &["Aé".as_bytes()]); // ends with U+00E9 (2 bytes)
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            seed_ends_with_repoke(&data, "é".as_bytes()),
+            "non-ASCII preceding: the re-poke must carry the decoded glyph"
+        );
+
+        // wrap-pending P5: glyph at the last column -> re-poke at (row, cols-1)
+        let fanout = make_fanout();
+        let id = Uuid::new_v4();
+        fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 3, 10)
+            .expect("register narrow session");
+        feed(&fanout, id, &[b"0123456789"]); // glyph `9` at the last column
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.ends_with(b"\x1b[1;10H9"),
+            "wrap-pending re-poke: CUP(row, cols-1) + glyph restores preceding AND pending wrap"
+        );
+    }
+
+    /// A/B F4: a string aborted by an ESC leaves a pending sequence the real client
+    /// continues literally — the fast path is excluded while it is open (fallback
+    /// byte-identical to HEAD), including the ESC/`[` split across chunks.
+    #[test]
+    fn f4_esc_aborted_string_excludes_the_fast_path() {
+        for stream in [
+            &b"\x1b]0;title\x1b[31".to_vec(), // OSC aborted by ESC, CSI PENDING at N
+            &b"\x1bP1;2|payload\x1b[".to_vec(), // DCS aborted, ESC[ split pending
+            &b"\x1b_title\x1b[1;1".to_vec(),   // APC aborted, CUP pending
+        ] {
+            let fanout = fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[b"line one\r\n"]);
+            feed(&fanout, id, &[stream]);
+            let data = activation_data(&fanout, id, true);
+            assert!(
+                !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                    .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+                "an ESC-aborted string pending at N must exclude the fast path"
+            );
+            // HEAD byte-identical (the ring holds the whole stream here)
+            let ring = {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                let state = parsers.get(&id).expect("registered session");
+                let (front, back) = state.history.as_slices();
+                [front, back].concat()
+            };
+            let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+            head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+            head.extend_from_slice(&ring);
+            assert_eq!(data, head, "F4 fallback must be byte-identical to HEAD");
+        }
+    }
+
+    /// A/B F1 + Root correction: C1 via UTF-8 (`C2 9B` etc.) and bare C1 both fail
+    /// closed — the client and the backend parser disagree on their semantics, so the
+    /// mirror cannot be trusted; the session falls back byte-identically.
+    #[test]
+    fn f1_c1_via_utf8_and_raw_c1_fail_closed() {
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\xc2\x9b?7l"]); // C2 9B = U+009B: executed by the client, not by vt100
+        let parsers = fanout.screen_parsers.lock().expect("parser state");
+        let st = parsers.get(&id).expect("registered session");
+        assert!(st.tail.sticky, "C2 9B must fail closed (mirror divergence)");
+        drop(parsers);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "C1-via-UTF-8 stream must fall back"
+        );
+        // raw C1 0x80..0x9F from ingest: same fail-close
+        for raw in [b"\x9b31mX".as_slice(), b"\x9dtitle", b"\x90payload", b"\x9c"] {
+            let fanout = make_fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[b"line one\r\n"]);
+            feed(&fanout, id, &[raw]);
+            let data = activation_data(&fanout, id, true);
+            assert!(
+                !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                    .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+                "raw C1 {raw:?} must fail closed"
+            );
+            let ring = {
+                let parsers = fanout.screen_parsers.lock().expect("parser state");
+                let state = parsers.get(&id).expect("registered session");
+                let (front, back) = state.history.as_slices();
+                [front, back].concat()
+            };
+            let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+            head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+            head.extend_from_slice(&ring);
+            assert_eq!(data, head, "raw C1 fallback must be byte-identical to HEAD");
+        }
+    }
+
+    /// ST/PGC and REP-dispatch gates (measured xterm): a completed string termination
+    /// (OSC_END/DCS_UNHOOK by BEL/ST/CAN/SUB) and a completed REP (`CSI Ps b` — the
+    /// CSI_DISPATCH itself) both reset the preceding-graphic state. The snapshot just
+    /// BEFORE the REP's final `b` keeps the PGC active (the re-poke applies); just
+    /// AFTER the completion it is reset (no re-poke).
+    #[test]
+    fn pgc_resets_on_string_termination_and_rep_dispatch() {
+        let make_fanout = fanout;
+        // X + OSC + ST: the ST termination resets the PGC
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b]0;t\x1b\\"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "ST termination must reset the PGC (no re-poke)"
+        );
+        // X + OSC + BEL
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b]0;t\x07"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(!data.ends_with(b"\x1b[1;1HX"), "BEL termination must reset the PGC");
+        // X + DCS + ST, X + APC + CAN
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1bP1;2|t\x1b\\"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(!data.ends_with(b"\x1b[1;1HX"), "DCS ST must reset the PGC");
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b_t\x18"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(!data.ends_with(b"\x1b[1;1HX"), "APC CAN must reset the PGC");
+        // inner-ESC families (Root correction): OSC/DCS reset the PGC AT the ESC;
+        // SOS/PM/APC (ignored strings) keep it ACTIVE until the next dispatch
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b]0;t\x1b"]); // OSC + inner ESC: OSC_END already reset
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "OSC inner ESC must reset the PGC (OSC_END)"
+        );
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1bP1;2|t\x1b"]); // DCS + inner ESC: DCS_UNHOOK reset
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "DCS inner ESC must reset the PGC (DCS_UNHOOK)"
+        );
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b_t\x1b"]); // APC + inner ESC
+        let data = activation_data(&fanout, id, true);
+        // The F4 exclusion subsumes the PGC nuance: ANY ESC-aborted string excludes the
+        // fast path, so the seed is the byte-identical fallback (the PGC-active case for
+        // the ignored strings never reaches a re-poke decision).
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "APC inner ESC must exclude the fast path (F4)"
+        );
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b^t\x1b"]); // PM: same as APC
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "PM inner ESC must exclude the fast path (F4)"
+        );
+        // completed REP resets the PGC: X + CSI 2b
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b[2b"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "a completed REP resets the PGC (CSI_DISPATCH)"
+        );
+        // snapshot just BEFORE the REP's final `b`: PGC still active, the re-poke applies
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b[2"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.ends_with(b"\x1b[1;1HX\x1b[2"),
+            "before the REP dispatch the PGC is active: re-poke + deferred suffix"
+        );
+    }
+
+
+    /// Cross-validation p3: a completed `CSI Ps b` (REP) in the ring makes the
+    /// authoritative screen diverge (vt100 0.15.2 has no REP handler — the REP cells
+    /// are lost) — the session must fall back byte-identically.
+    #[test]
+    fn rep_in_ring_is_unmodelled_and_falls_back() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b[2b"]); // historical REP completes
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.windows(UI_HISTORY_REPLAY_SEAM.len())
+                .any(|w| w == UI_HISTORY_REPLAY_SEAM),
+            "a completed REP must fail closed (unmodelled cells)"
+        );
+        let ring = {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let state = parsers.get(&id).expect("registered session");
+            let (front, back) = state.history.as_slices();
+            [front, back].concat()
+        };
+        let mut head = Vec::with_capacity(UI_HISTORY_REPLAY_PROLOGUE.len() + ring.len());
+        head.extend_from_slice(UI_HISTORY_REPLAY_PROLOGUE);
+        head.extend_from_slice(&ring);
+        assert_eq!(data, head, "REP-in-ring fallback must be byte-identical to HEAD");
+    }
+
+    /// Cross-validation n6 (frontend repro `sem2.html`): the ring ends with a PENDING
+    /// CSI (`\x1b[`) after an SGR on an empty screen; the suffix is trimmed and
+    /// re-emitted, the PGC-None CAN is appended, and the live `5b` completes the REP
+    /// with the PGC already reset — no-op, equal to the no-attach reference.
+    #[test]
+    fn pending_csi_tail_after_sgr_dispatch_stays_gt() {
+        let fanout = fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\x1b[H\x1b[2J\x1b[31m\x1b["]); // ring from the frontend repro
+        let data = activation_data(&fanout, id, true);
+        // the seed must trim the pending CSI and re-emit it after the PGC restoration
+        assert!(
+            data.ends_with(b"\x18\x1b["),
+            "seed must end CAN + re-emitted suffix, got {:?}",
+            &data[data.len().saturating_sub(8)..]
+        );
+        // the fresh client + the live continuation == the no-attach reference
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b"5b");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(b"\x1b[H\x1b[2J\x1b[31m\x1b[5b");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        assert_eq!(fresh.screen().cursor_position(), reference.screen().cursor_position());
+    }
+
+    /// C0 action matrix (measured xterm): the ordinary C0s EXECUTE (reset the PGC)
+    /// only in Ground/Escape/CSI; inside OSC they are IGNORED payload, inside
+    /// DCS/SOS-PM-APC they are DCS_PUT/IGNORE — both PRESERVE the PGC. The counter-
+    /// example `X + OSC-open + NUL` must keep the preceding glyph.
+    #[test]
+    fn c0_action_matrix_is_state_specific() {
+        let make_fanout = fanout;
+        // X + OSC-open + NUL: the PGC must survive the NUL (OSC IGNOREs it)
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b]0;t\x00"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.ends_with(b"\x1b[1;1HX\x1b]0;t\x00"),
+            "OSC-open + NUL must preserve the PGC (re-poke + deferred suffix)"
+        );
+        // X + DCS-open + BEL: the BEL is DCS_PUT payload — the PGC survives
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1bP1;2|t\x07"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.ends_with(b"\x1b[1;1HX\x1bP1;2|t\x07"),
+            "DCS-open + BEL must preserve the PGC"
+        );
+        // X + SOS-open + NUL: IGNORE payload, preserved
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1bX t\x00"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.ends_with(b"\x1b[1;1HX\x1bX t\x00"),
+            "SOS-open + NUL must preserve the PGC"
+        );
+        // X + CSI-open + NUL: the CSI state EXECUTEs the NUL — the PGC resets
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b[1\x00"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "CSI-open + NUL must reset the PGC (C0 EXECUTE)"
+        );
+        // X + ESC-open + NUL: same EXECUTE reset, the escape continues
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b\x00"]);
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            !data.ends_with(b"\x1b[1;1HX"),
+            "ESC-open + NUL must reset the PGC (C0 EXECUTE)"
+        );
+    }
+
+    /// Root tracker gaps (083010): (1) ALL Ground C0 executables reset the PGC;
+    /// (2) SO/SI reset it while keeping the shift side effect; (3) raw C1 is sticky in
+    /// EVERY state; (4) UTF-8 scalar validation (overlong/surrogate/>max) + the
+    /// interrupted byte is redispatched exactly once.
+    #[test]
+    fn tracker_c0_sweep_raw_c1_and_utf8_scalars() {
+        let make_fanout = fanout;
+        let t = |fanout: &SessionIoFanout, id: Uuid| {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let st = parsers.get(&id).expect("registered session");
+            (
+                st.tail.last_graphic.clone(),
+                st.tail.shift_out,
+                st.tail.sticky,
+                st.tail.lost,
+            )
+        };
+        // (1) every Ground C0 (0x00..=0x1f except ESC) after a print resets the PGC
+        for c0 in 0x00u8..=0x1f {
+            if c0 == 0x1b {
+                continue;
+            }
+            let fanout = make_fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[b"X"]);
+            feed(&fanout, id, &[&[c0]]);
+            let s = t(&fanout, id);
+            assert!(
+                s.0.is_none(),
+                "Ground C0 0x{c0:02x} must reset the PGC"
+            );
+        }
+        // (2) SO/SI reset the PGC AND keep the shift side effect
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x0e"]);
+        let s = t(&fanout, id);
+        assert!(s.0.is_none() && s.1, "SO must reset the PGC and set shift_out");
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x0f"]);
+        let s = t(&fanout, id);
+        assert!(s.0.is_none() && !s.1, "SI must reset the PGC and clear shift_out");
+        // (3) SOS with the C1-ST (0x9c) PRESERVES the PGC; DCS with 0x9c resets it
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1b_t\x9c"]);
+        let s = t(&fanout, id);
+        assert!(s.0.is_some(), "SOS + 0x9c must preserve the PGC (IGNORE -> Ground)");
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"X\x1bP1;2|t\x9c"]);
+        let s = t(&fanout, id);
+        assert!(s.0.is_none(), "DCS + 0x9c must reset the PGC (UNHOOK)");
+        // raw C1 is sticky in EVERY state (Ground/OSC/DCS/SOS/CSI)
+        for (tag, prefix) in [
+            ("ground", b"".as_slice()),
+            ("osc", b"\x1b]0;t".as_slice()),
+            ("dcs", b"\x1bP1;2|t".as_slice()),
+            ("sos", b"\x1b_t".as_slice()),
+            ("csi", b"\x1b[1;1".as_slice()),
+        ] {
+            let fanout = make_fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[b"X"]);
+            feed(&fanout, id, &[prefix]);
+            feed(&fanout, id, &[b"\x9b"]);
+            let s = t(&fanout, id);
+            assert!(s.2, "raw C1 in {tag} must fail closed");
+        }
+        // (4) UTF-8 scalar validation: overlong/surrogate/>max/invalid-lead -> sticky
+        for (tag, bytes) in [
+            ("overlong", b"\xe0\x80\x80".as_slice()),
+            ("surrogate", b"\xed\xa0\x80".as_slice()),
+            ("too-big", b"\xf4\x90\x80\x80".as_slice()),
+            ("invalid-lead", b"\xf5".as_slice()),
+        ] {
+            let fanout = make_fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[bytes]);
+            let s = t(&fanout, id);
+            assert!(s.2, "{tag} UTF-8 must fail closed");
+        }
+        // interrupted char: the non-continuation byte is redispatched exactly once
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\xc3"]); // partial é
+        feed(&fanout, id, &[b"Z"]); // not a continuation: sticky + Z processed as a graphic
+        let s = t(&fanout, id);
+        assert!(s.2, "malformed UTF-8 must fail closed");
+        assert_eq!(s.0.as_deref(), Some(b"Z".as_slice()), "the interruptor must be redispatched");
+        // Root three-forms fix: lone C0/C1 leads and lone A0..BF continuations in
+        // Ground fail closed
+        for (tag, byte) in [("c0-lead", 0xc0u8), ("c1-lead", 0xc1), ("a0-cont", 0xa0), ("bf-cont", 0xbf)] {
+            let fanout = make_fanout();
+            let id = session(&fanout);
+            feed(&fanout, id, &[&[byte]]);
+            let s = t(&fanout, id);
+            assert!(s.2, "{tag} must fail closed");
+        }
+        // ESC truncating a partial scalar: sticky + the ESC redispatched into Escape
+        // so `ESC [ 31 m` still applies the SGR in the tracker
+        let fanout = make_fanout();
+        let id = session(&fanout);
+        feed(&fanout, id, &[b"\xc3\x1b[31m"]);
+        let parsers = fanout.screen_parsers.lock().expect("parser state");
+        let st = parsers.get(&id).expect("registered session");
+        assert!(st.tail.sticky, "ESC truncating a scalar must fail closed");
+        assert_eq!(
+            st.tail.state,
+            TailState::Ground,
+            "the redispatched ESC must land in Escape and the CSI must complete"
+        );
+        assert!(
+            st.tail.pending.is_empty(),
+            "the CSI after the redispatch must be consumed"
+        );
+        drop(parsers);
+    }
+
+
+    /// Configurable history limit (project settings): a session registered with a
+    /// custom limit trims its ring at that limit, keeps the front-states lockstep,
+    /// and seeds within the custom limit; a second session keeps its own default.
+    #[test]
+    fn custom_history_limit_trims_and_seeds_per_session() {
+        let make_fanout = fanout;
+        let fanout = make_fanout();
+        let token = fanout
+            .register_session(
+                Uuid::new_v4(),
+                IdleTuning::DEFAULT,
+                30,
+                120,
+                8_192,
+                PtyOutputTarget::noop(),
+            )
+            .expect("register custom-limit session");
+        let id = token.identity.session_id;
+        let mut filler = Vec::new();
+        for i in 0..2_000 {
+            filler.extend_from_slice(format!("line {i:05} x\r\n").as_bytes()); // 13 B
+        }
+        feed(&fanout, id, &[&filler]); // 26 KiB >> 8 KiB
+        {
+            let parsers = fanout.screen_parsers.lock().expect("parser state");
+            let st = parsers.get(&id).expect("registered session");
+            assert_eq!(st.history_limit_bytes, 8_192);
+            assert!(
+                st.history.len() <= 8_192,
+                "ring must trim at the session limit, got {}",
+                st.history.len()
+            );
+            assert_eq!(
+                st.tail.front_states.len(),
+                st.history.len(),
+                "front-states lockstep with the custom limit"
+            );
+        }
+        let data = activation_data(&fanout, id, true);
+        assert!(
+            data.len() < 8_192 + 2_048,
+            "the seed stays within the custom limit, got {}",
+            data.len()
+        );
+        // isolation: a default-limit session trims at 64 KiB, not at the custom one
+        let fanout2 = make_fanout();
+        let id2 = session(&fanout2);
+        let mut filler = Vec::new();
+        for i in 0..2_000 {
+            filler.extend_from_slice(format!("line {i:05} x\r\n").as_bytes());
+        }
+        feed(&fanout2, id2, &[&filler]);
+        let parsers = fanout2.screen_parsers.lock().expect("parser state");
+        let st = parsers.get(&id2).expect("registered session");
+        assert_eq!(st.history_limit_bytes, DEFAULT_UI_HISTORY_LIMIT_BYTES);
+        assert!(
+            st.history.len() > 8_192 && st.history.len() <= DEFAULT_UI_HISTORY_LIMIT_BYTES,
+            "default session keeps the default ceiling, got {}",
+            st.history.len()
+        );
+    }
+
+    /// Atomic frontier: the attach holds the parser mutex, the open suffix appears in the
+    /// seed exactly once, nothing at or below N is replayed as live, and the live
+    /// continuation is byte-identical to N+1.
+    #[test]
+    fn concurrent_output_keeps_the_atomic_frontier() {
+        let fanout = fanout();
+        let sink = new_sink();
+        let id = session_with_sink(&fanout, &sink);
+        let mut base = Vec::new();
+        for i in 0..30 {
+            base.extend_from_slice(format!("line {i:03}\n").as_bytes());
+        }
+        feed(&fanout, id, &[&base]);
+        feed(&fanout, id, &[b"\x1b]0;partial"]); // ends mid-OSC at N
+        let snapshot = attach(&fanout, id, WINDOW).expect("snapshot");
+        let data = snapshot.data.clone();
+        let n = snapshot.sequence;
+        let tail = b"\x1b]0;partial";
+        let count = data.windows(tail.len()).filter(|w| *w == *tail).count();
+        assert_eq!(count, 1, "open suffix must appear exactly once in the seed");
+        feed(&fanout, id, &[b" title\x07\x1b[1;1Hlive\n"]);
+        flush(&fanout, id);
+        let emitted = events(&sink);
+        let live_seqs: Vec<u64> = emitted.iter().filter_map(|e| e.2).collect();
+        assert!(
+            live_seqs.iter().all(|s| *s > n),
+            "nothing at or below N may be delivered as live: {live_seqs:?} vs N={n}"
+        );
+        // fresh == no-attach reference after the live continuation
+        let mut fresh = vt100::Parser::new(30, 120, 0);
+        fresh.process(&data);
+        fresh.process(b" title\x07\x1b[1;1Hlive\n");
+        let mut reference = vt100::Parser::new(30, 120, 0);
+        reference.process(&base);
+        reference.process(b"\x1b]0;partial title\x07\x1b[1;1Hlive\n");
+        assert_eq!(fresh.screen().contents_formatted(), reference.screen().contents_formatted());
+        assert_eq!(fresh.screen().title(), reference.screen().title());
     }
 }

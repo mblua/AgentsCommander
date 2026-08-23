@@ -1641,9 +1641,26 @@ impl ContainerTransportBackend {
             container_credential_path,
             ..
         } = attach;
+        // Per-project history limit, read cold at attach registration (construction-
+        // time sizing: an existing session's ring cannot be resized — the value
+        // applies to NEW registrations; no hot reload). The shared helper covers the
+        // bridge root whether it is the project path or an `.ac` path; any
+        // derivation/config failure falls back to the default and never fails the
+        // attach.
+        let history_limit_bytes =
+            crate::config::project_settings::project_history_limit_bytes_for_cwd(
+                std::path::Path::new(bridge_root),
+            );
         if self
             .fanout
-            .register_session(session_id, idle_tuning, rows, cols, output_target)
+            .register_session(
+                session_id,
+                idle_tuning,
+                rows,
+                cols,
+                history_limit_bytes,
+                output_target,
+            )
             .is_err()
         {
             return Err(TransportAttachError::Invalid);
@@ -3045,6 +3062,7 @@ impl ContainerTransportBackend {
                 crate::session::profile::IdleTuning::DEFAULT,
                 rows,
                 cols,
+                crate::config::project_settings::DEFAULT_TERMINAL_HISTORY_LIMIT_BYTES,
                 target,
             )
             .expect("register protocol snapshot session");

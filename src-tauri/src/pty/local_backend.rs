@@ -1650,10 +1650,27 @@ impl LocalProcessBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, instance);
+        // Per-project history limit, read cold at SESSION CREATION (construction-time
+        // sizing: the ring cannot be resized after registration, so the value applies
+        // to NEW sessions only — no hot reload, no re-read on re-attach). The shared
+        // helper covers both the project-root cwd and the nested `.ac` cwd; any
+        // derivation/config failure falls back to the default and never fails the
+        // spawn.
+        let history_limit_bytes =
+            crate::config::project_settings::project_history_limit_bytes_for_cwd(
+                std::path::Path::new(&spawn_cwd),
+            );
         let output_token =
             match self
                 .fanout
-                .register_session(id, idle_tuning, rows, cols, output_target)
+                .register_session(
+                    id,
+                    idle_tuning,
+                    rows,
+                    cols,
+                    history_limit_bytes,
+                    output_target,
+                )
             {
                 Ok(token) => token,
                 Err(_) => {
@@ -4063,6 +4080,47 @@ mod adapter_spawn_sync_tests {
             program: program.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+
+    /// The local backend derives the per-project history limit from the session cwd's
+    /// `.ac` ancestor and would register with the derived value (never 65 536 for a
+    /// non-default project). The derivation expression below is the exact one used in
+    /// `spawn_sync`; the register_session wiring is pinned by the output.rs
+    /// custom-limit test.
+    #[test]
+    fn local_project_history_limit_derivation_matches_spawn_sync() {
+        // the SHARED production helper is called directly (no hand-duplicated
+        // derivation), for BOTH layouts: cwd == project root (`.ac` is a direct
+        // child) and the nested WG cwd (`.ac` is an ancestor).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        std::fs::create_dir_all(&ac).expect("create .ac");
+        std::fs::write(
+            ac.join("project-settings.json"),
+            r#"{"terminalHistoryLimitBytes": 8192}"#,
+        )
+        .expect("write settings");
+        // layout 1: cwd == the project root
+        let root_cwd = temp.path().to_string_lossy().to_string();
+        assert_eq!(
+            crate::config::project_settings::project_history_limit_bytes_for_cwd(
+                std::path::Path::new(&root_cwd)
+            ),
+            8_192,
+            "project-root cwd must not end up with 65 536"
+        );
+        // layout 2: nested WG cwd
+        let nested_cwd = ac.join("wg-22-ac-dev-team-v2").join("repo-AgentsCommander");
+        std::fs::create_dir_all(&nested_cwd).expect("create nested cwd");
+        let nested_str = nested_cwd.to_string_lossy().to_string();
+        assert_eq!(
+            crate::config::project_settings::project_history_limit_bytes_for_cwd(
+                std::path::Path::new(&nested_str)
+            ),
+            8_192,
+            "nested WG cwd must not end up with 65 536"
+        );
     }
 
     #[test]
