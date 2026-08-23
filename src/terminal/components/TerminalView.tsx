@@ -1098,6 +1098,53 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           return; // the entry went away while this transition was queued
         }
 
+        // #1528 - request the seed snapshot only after this window's fitted
+        // grid is imposed on the PTY. The snapshot then arrives at the fitted
+        // grid, `resizeTerminalForSnapshot` no-ops, the settle `fit()` no-ops,
+        // and replay never resizes a populated buffer: the initial attach
+        // converges on the same geometry as detach -> reattach. Wait one
+        // animation frame so xterm has measured its cells against the
+        // now-visible container (ResizeObserver delivery precedes rAF
+        // callbacks in the same frame); fit to that container; clear the
+        // dedup key so this imposition can never be deduplicated away by a
+        // stale key (#1439) or by the fit's own fire-and-forget onResize
+        // send; then await the typed resize so the backend parser grid is
+        // updated before `attachOutput` captures the snapshot. The frame wait
+        // is skipped while the document is hidden: Chromium/WebView2 suspend
+        // rAF exactly for hidden (minimized/occluded) pages, so a hidden
+        // window must not stall the attach; without the wait the fit no-ops
+        // on unmeasured cells, the send carries the current grid, and the
+        // attach degrades exactly to the status-quo path, converging when the
+        // window becomes visible (G3). Every outcome of the awaited send is
+        // tolerated exactly as the settle tolerates it: "failed" leaves the
+        // PTY at its previous grid (the existing retry and the settle
+        // re-imposition still run), "deduplicated" cannot occur after the key
+        // clear. `attachedSessionId` is deliberately set only AFTER this
+        // block: it means "a backend attachment is pending or active", and
+        // an early return on a superseded or disposed target must not leave
+        // a stale value behind (the "owes a detach" invariant of the chain).
+        if (!document.hidden) {
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          });
+        }
+        if (
+          desiredSessionId !== target ||
+          registry.get(target) !== entry ||
+          entry.destroyed
+        ) {
+          return;
+        }
+        entry.fitAddon.fit();
+        entry.lastSentViewport = null;
+        await sendPtyResize(target, entry, entry.terminal.cols, entry.terminal.rows);
+        if (
+          desiredSessionId !== target ||
+          registry.get(target) !== entry ||
+          entry.destroyed
+        ) {
+          return;
+        }
         attachedSessionId = target;
         const requestedAt = beginSeed(target, entry);
         try {

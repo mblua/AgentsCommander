@@ -324,12 +324,9 @@ describe("TerminalView PTY spawn size (#973)", () => {
       await frames.flush();
       await attachSpawnedSession();
 
-      // #1439 (R1): the attach settle invalidates the viewport dedup key, so
-      // the settle sync sends exactly one resize even though the size never
-      // changed. The #973 guarantee moved with it: the frontend no longer
-      // suppresses the settle send; the backend `resize_instance` dedup answers
-      // this same-size resize with `sent = false`, so no resize reaches the
-      // child while it is starting up.
+      // The drive loop stops at the awaited pre-seed imposition. The backend
+      // `resize_instance` dedup answers this same-size resize with
+      // `sent = false`, so no resize reaches the starting child.
       await driveFramesUntil(
         frames,
         "the settle sync sent",
@@ -339,10 +336,11 @@ describe("TerminalView PTY spawn size (#973)", () => {
         { sessionId: SPAWNED, cols: 74, rows: 23 },
       ]);
 
-      // The second rAF frame and any other queued sync dedup against the
-      // freshly written key: one send per settle, no more.
+      // The original second priming frame sends after the seedless path clears
+      // the key. The seedless resync frames then dedup against that fresh key.
       await frames.flush();
       expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 23 },
         { sessionId: SPAWNED, cols: 74, rows: 23 },
       ]);
 
@@ -374,7 +372,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
-  it("resizes once for the drift and once more at the settle, and reports the drift exactly once", async () => {
+  it("resizes for the drift, the pre-seed imposition, and the original second sync frame, and reports the drift exactly once", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fake = new FakeTransport();
     setupTerminalTransport(fake);
@@ -391,23 +389,23 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
       await attachSpawnedSession();
 
-      // Correctness first: the PTY is told the truth. The drift fires one
-      // resize from xterm's onResize, and since #1439 (R1) the attach settle
-      // re-imposes the identical size once more (the settle invalidates the
-      // dedup key; the backend `resize_instance` dedup absorbs the repeat).
-      // Exactly these two named senders: any identical-resize burst beyond
-      // them is still gone, which is what #973 pinned.
+      // Correctness first: the PTY is told the truth. The drift's onResize,
+      // the awaited pre-seed imposition, and the original second priming frame
+      // each carry the fitted size. The seedless resync dedups against the
+      // second frame's fresh key.
       await driveFramesUntil(
         frames,
-        "drift send and settle re-send landed",
-        () => resizesFor(fake, SPAWNED).length >= 2
+        "drift, pre-seed, and second-frame sends landed",
+        () => resizesFor(fake, SPAWNED).length >= 3
       );
       expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
         { sessionId: SPAWNED, cols: 74, rows: 24 },
         { sessionId: SPAWNED, cols: 74, rows: 24 },
       ]);
       await frames.flush();
       expect(resizesFor(fake, SPAWNED).map((call) => call.args)).toEqual([
+        { sessionId: SPAWNED, cols: 74, rows: 24 },
         { sessionId: SPAWNED, cols: 74, rows: 24 },
         { sessionId: SPAWNED, cols: 74, rows: 24 },
       ]);
@@ -535,9 +533,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       await createWhileOnScreen(fake);
       const spawned = await attachSpawnedSession();
 
-      // The #1439 (R1) settle send lands and succeeds: exactly one same-size
-      // resize, after which nothing is armed and nothing else in the system
-      // will send for this session until the drag.
+      // The drive loop stops when the awaited pre-seed imposition lands.
       await driveFramesUntil(
         frames,
         "the settle send landed",
@@ -547,22 +543,24 @@ describe("TerminalView PTY spawn size (#973)", () => {
         { sessionId: SPAWNED, cols: 74, rows: 23 },
       ]);
       await frames.flush();
-      expect(resizesFor(fake, SPAWNED)).toHaveLength(1);
+      // The original second priming frame adds one send; the seedless resync
+      // dedups against its fresh key.
+      expect(resizesFor(fake, SPAWNED)).toHaveLength(2);
 
       // The user drags the window. xterm reflows and fires onResize: one resize,
       // long after every scheduled fit has run. It fails.
       spawned.emitResize(74, 24);
 
       await waitFor(
-        () => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(3),
+        () => expect(resizesFor(fake, SPAWNED).length).toBeGreaterThanOrEqual(4),
         2000
       );
 
       // The attempt and the re-send both carry the size the terminal is actually at.
-      // Nothing but the retry could have produced that third call.
+      // Nothing but the retry could have produced that fourth call.
       const resizes = resizesFor(fake, SPAWNED);
-      expect(resizes[1].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
       expect(resizes[2].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
+      expect(resizes[3].args).toEqual({ sessionId: SPAWNED, cols: 74, rows: 24 });
     } finally {
       rendered.cleanup();
     }
@@ -590,9 +588,10 @@ describe("TerminalView PTY spawn size (#973)", () => {
 
       // A PTY stranded at a size the terminal is not must never be mistaken for
       // a PTY that was resized. When the budget runs out, it says so. In an
-      // all-fail world the #1439 (R1) settle burst alone consumes the whole
-      // budget: one frame-driven send, at most one second-frame repeat, then
-      // PTY_RESIZE_MAX_RETRIES timer re-sends, then this loud line.
+      // all-fail world four frame-driven sends fire: pre-seed, the original
+      // second priming frame, and both seedless-resync frames. The first loud
+      // line comes from the second resync frame; up to three timer retries at
+      // 120/240/360 ms can also fire and log "giving up" before the poll wins.
       await waitFor(
         () =>
           expect(
@@ -604,7 +603,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // And the budget is a budget, all of it spent by the settle burst here,
       // not an endless loop against a backend that is gone.
       const settleSends = resizesFor(fake, SPAWNED).length;
-      expect(settleSends).toBeLessThanOrEqual(5);
+      expect(settleSends).toBeLessThanOrEqual(7);
 
       // The user drags the window. First attempts are never budget-gated, so
       // the drag's own send still goes out (and says "giving up" once more),
@@ -621,7 +620,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
         cols: 74,
         rows: 24,
       });
-      expect(resizes.length).toBeLessThanOrEqual(6);
+      expect(resizes.length).toBeLessThanOrEqual(8);
     } finally {
       rendered.cleanup();
     }
