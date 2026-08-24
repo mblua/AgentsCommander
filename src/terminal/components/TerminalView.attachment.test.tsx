@@ -1415,7 +1415,7 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1));
 
       const pair = [
-        { cols: 81, rows: 24 },
+        { cols: 90, rows: 24 },
         { cols: 80, rows: 24 },
       ];
       expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual(pair);
@@ -1426,7 +1426,7 @@ describe("TerminalView attachment (#1363)", () => {
       expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
         { cols: 80, rows: 24 },
       ]);
-      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 81, rows: 24 });
+      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 90, rows: 24 });
       expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({ cols: 80, rows: 24 });
     } finally {
       rendered.cleanup();
@@ -1462,7 +1462,7 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
 
       expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([
-        { cols: 2, rows: 3 },
+        { cols: 11, rows: 3 },
         { cols: 1, rows: 3 },
       ]);
       expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
@@ -1515,11 +1515,11 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
 
       expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([
-        { cols: 81, rows: 24 },
+        { cols: 90, rows: 24 },
         { cols: 80, rows: 24 },
       ]);
       expect(entry.snapshotResizeSuppressed).toBe(true);
-      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 81, rows: 24 });
+      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 90, rows: 24 });
     } finally {
       Map.prototype.get = originalMapGet;
       rendered.cleanup();
@@ -1533,7 +1533,7 @@ describe("TerminalView attachment (#1363)", () => {
     { name: "unsafe columns", proposal: { cols: Number.MAX_SAFE_INTEGER + 1, rows: 24 } },
     { name: "zero columns", proposal: { cols: 0, rows: 24 } },
     { name: "negative columns", proposal: { cols: -1, rows: 24 } },
-    { name: "maximum-safe columns", proposal: { cols: Number.MAX_SAFE_INTEGER, rows: 24 } },
+    { name: "pulse-overflow columns", proposal: { cols: Number.MAX_SAFE_INTEGER - 9, rows: 24 } },
     { name: "non-finite rows", proposal: { cols: 80, rows: Number.NaN } },
     { name: "fractional rows", proposal: { cols: 80, rows: 23.5 } },
     { name: "unsafe rows", proposal: { cols: 80, rows: Number.MAX_SAFE_INTEGER + 1 } },
@@ -1719,17 +1719,17 @@ describe("TerminalView attachment (#1363)", () => {
     }> = [
       {
         name: "first leg before mutation",
-        behaviors: [{ cols: 81, rows: 24, action: "throw-before", error: firstBefore }],
-        attempts: [{ cols: 81, rows: 24 }],
+        behaviors: [{ cols: 90, rows: 24, action: "throw-before", error: firstBefore }],
+        attempts: [{ cols: 90, rows: 24 }],
         effective: [],
         expectedError: firstBefore,
         dimensionsRestored: true,
       },
       {
         name: "first leg after mutation",
-        behaviors: [{ cols: 81, rows: 24, action: "throw-after", error: firstAfter }],
-        attempts: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
-        effective: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
+        behaviors: [{ cols: 90, rows: 24, action: "throw-after", error: firstAfter }],
+        attempts: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
+        effective: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
         expectedError: firstAfter,
         dimensionsRestored: true,
       },
@@ -1737,26 +1737,26 @@ describe("TerminalView attachment (#1363)", () => {
         name: "second leg before mutation",
         behaviors: [{ cols: 80, rows: 24, action: "throw-before", error: secondBefore }],
         attempts: [
-          { cols: 81, rows: 24 },
+          { cols: 90, rows: 24 },
           { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
         ],
-        effective: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
+        effective: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
         expectedError: secondBefore,
         dimensionsRestored: true,
       },
       {
         name: "second leg after mutation",
         behaviors: [{ cols: 80, rows: 24, action: "throw-after", error: secondAfter }],
-        attempts: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
-        effective: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
+        attempts: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
+        effective: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
         expectedError: secondAfter,
         dimensionsRestored: true,
       },
       {
         name: "no-op first leg",
-        behaviors: [{ cols: 81, rows: 24, action: "noop" }],
-        attempts: [{ cols: 81, rows: 24 }],
+        behaviors: [{ cols: 90, rows: 24, action: "noop" }],
+        attempts: [{ cols: 90, rows: 24 }],
         effective: [],
         expectedMessage: "Terminal resize pulse did not reach expanded grid",
         dimensionsRestored: true,
@@ -1765,11 +1765,11 @@ describe("TerminalView attachment (#1363)", () => {
         name: "no-op second leg",
         behaviors: [{ cols: 80, rows: 24, action: "noop" }],
         attempts: [
-          { cols: 81, rows: 24 },
+          { cols: 90, rows: 24 },
           { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
         ],
-        effective: [{ cols: 81, rows: 24 }, { cols: 80, rows: 24 }],
+        effective: [{ cols: 90, rows: 24 }, { cols: 80, rows: 24 }],
         expectedMessage: "Terminal resize pulse did not restore original grid",
         dimensionsRestored: true,
       },
@@ -1780,11 +1780,11 @@ describe("TerminalView attachment (#1363)", () => {
           { cols: 80, rows: 24, action: "throw-before", error: aggregateRestoration },
         ],
         attempts: [
-          { cols: 81, rows: 24 },
+          { cols: 90, rows: 24 },
           { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
         ],
-        effective: [{ cols: 81, rows: 24 }],
+        effective: [{ cols: 90, rows: 24 }],
         expectedMessage: "Terminal resize pulse and dimension restoration failed",
         aggregateErrors: [aggregatePrimary, aggregateRestoration],
         dimensionsRestored: false,
@@ -1852,7 +1852,7 @@ describe("TerminalView attachment (#1363)", () => {
           expect(fakeBufferGridState(terminal), scenario.name).toEqual(stateBeforePulse);
         } else {
           expect({ cols: terminal.cols, rows: terminal.rows }, scenario.name).toEqual({
-            cols: 81,
+            cols: 90,
             rows: 24,
           });
         }
@@ -2012,8 +2012,8 @@ describe("TerminalView attachment (#1363)", () => {
       const disposable = terminal.onResize((size) =>
         events.push({ cols: size.cols, rows: size.rows }),
       );
-      terminal.resize(terminal.cols + 1, terminal.rows);
-      terminal.resize(terminal.cols - 1, terminal.rows);
+      terminal.resize(terminal.cols + 10, terminal.rows);
+      terminal.resize(terminal.cols - 10, terminal.rows);
       disposable.dispose();
       return events;
     };
@@ -2044,7 +2044,7 @@ describe("TerminalView attachment (#1363)", () => {
         );
         const before = publicState(candidate);
         expect(pulse(candidate), oracle.name).toEqual([
-          { cols: 6, rows: 3 },
+          { cols: 15, rows: 3 },
           { cols: 5, rows: 3 },
         ]);
         expect(publicState(candidate), `${oracle.name}: reversible state`).toEqual(before);
@@ -2075,7 +2075,7 @@ describe("TerminalView attachment (#1363)", () => {
         let caught: unknown;
         try {
           try {
-            candidate.resize(6, 3);
+            candidate.resize(15, 3);
             throw primary;
           } catch (error) {
             if (candidate.cols !== 5 || candidate.rows !== 3) {
@@ -2090,7 +2090,7 @@ describe("TerminalView attachment (#1363)", () => {
         }
         expect(caught).toBe(primary);
         expect(events).toEqual([
-          { cols: 6, rows: 3 },
+          { cols: 15, rows: 3 },
           { cols: 5, rows: 3 },
         ]);
         expect(publicState(candidate)).toEqual(before);
@@ -2183,7 +2183,7 @@ describe("TerminalView attachment (#1363)", () => {
         expect(publicState(candidate)).toEqual(publicState(control));
         const before = publicState(candidate);
         expect(pulse(candidate)).toEqual([
-          { cols: 123, rows: 39 },
+          { cols: 132, rows: 39 },
           { cols: 122, rows: 39 },
         ]);
         expect(publicState(candidate)).toEqual(before);
@@ -2250,7 +2250,7 @@ describe("TerminalView attachment (#1363)", () => {
       expect(terminal.writes).toEqual([]);
       expect(terminal.resets).toBe(0);
       expect(terminal.ordinaryFitCalls).toBeGreaterThan(0);
-      expect(terminal.resizeAttempts).not.toContainEqual({ cols: 81, rows: 24 });
+      expect(terminal.resizeAttempts).not.toContainEqual({ cols: 90, rows: 24 });
     } finally {
       rendered.cleanup();
     }

@@ -448,7 +448,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       !Number.isSafeInteger(proposed.cols) ||
       !Number.isSafeInteger(proposed.rows) ||
       proposed.cols < 1 ||
-      proposed.cols >= Number.MAX_SAFE_INTEGER ||
+      proposed.cols >= Number.MAX_SAFE_INTEGER - 9 ||
       proposed.rows < 1
     ) {
       entry.fitAddon.fit();
@@ -492,9 +492,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.snapshotResizeSuppressed = true;
     try {
       try {
-        entry.terminal.resize(original.cols + 1, original.rows);
+        entry.terminal.resize(original.cols + 10, original.rows);
         if (
-          entry.terminal.cols !== original.cols + 1 ||
+          entry.terminal.cols !== original.cols + 10 ||
           entry.terminal.rows !== original.rows
         ) {
           throw new Error("Terminal resize pulse did not reach expanded grid");
