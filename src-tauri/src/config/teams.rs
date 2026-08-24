@@ -943,7 +943,7 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
         }
         // No `.ac` ancestor at all: no project owns the cwd, so no anchor can
         // bind (every valid wg-replica layout requires an `.ac` root).
-        let Some(owning_ac_root) = owning_ac_root.as_deref() else {
+        let Some(owning_ac_root) = owning_ac_root else {
             return Ok(None);
         };
         if !path.starts_with(owning_ac_root) {
@@ -3234,7 +3234,7 @@ mod tests {
         let anchor =
             strict_wg_replica_anchor_from_cwd(&alice).expect("walk must not error");
         assert_eq!(
-            std::fs::canonicalize(&anchor.expect("own replica must bind")).unwrap(),
+            std::fs::canonicalize(anchor.expect("own replica must bind")).unwrap(),
             std::fs::canonicalize(&alice).unwrap()
         );
     }
@@ -3257,9 +3257,7 @@ mod tests {
 
         let anchor = strict_wg_replica_anchor_from_cwd(&deep).expect("walk must not error");
         assert_eq!(
-            std::fs::canonicalize(
-                &anchor.expect("deeper cwd must bind the own replica")
-            )
+            std::fs::canonicalize(anchor.expect("deeper cwd must bind the own replica"))
             .unwrap(),
             std::fs::canonicalize(
                 temp.path()
