@@ -190,17 +190,11 @@ pub async fn task_get_title(
     Ok(task_ops::title_value_of(&parsed))
 }
 
-/// Set the YAML-frontmatter `title:` field of the workgroup TASK.md for
-/// the given session. Returns the new (post-edit) trimmed TASK.md
-/// content for direct local refresh, AND emits `workgroup_task_updated`
-/// for sibling sessions/windows.
-#[tauri::command]
-pub async fn task_set_title(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    session_id: String,
-    title: String,
-) -> Result<TaskUpdateResult, String> {
+/// Shared title validator for both the session-based `task_set_title` and
+/// the path-based `task_set_title_at`, so the two commands cannot drift.
+/// Pure code motion: same checks, messages, and order as the original
+/// inline block in `task_set_title`.
+fn validate_user_title(title: &str) -> Result<(), String> {
     if title.trim().is_empty() {
         return Err("title cannot be empty".to_string());
     }
@@ -217,6 +211,21 @@ pub async fn task_set_title(
     if title.chars().count() > 256 {
         return Err("title is too long (max 256 characters)".to_string());
     }
+    Ok(())
+}
+
+/// Set the YAML-frontmatter `title:` field of the workgroup TASK.md for
+/// the given session. Returns the new (post-edit) trimmed TASK.md
+/// content for direct local refresh, AND emits `workgroup_task_updated`
+/// for sibling sessions/windows.
+#[tauri::command]
+pub async fn task_set_title(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    session_id: String,
+    title: String,
+) -> Result<TaskUpdateResult, String> {
+    validate_user_title(&title)?;
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome =
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
@@ -321,6 +330,50 @@ pub async fn task_clean_at(
     Ok(result)
 }
 
+/// Set the YAML-frontmatter `title:` field of the workgroup TASK.md addressed
+/// directly by its `wg-*` root path, for cold workgroups with no live/exited
+/// session to resolve from (#1536). Mirrors `task_set_title` after validation:
+/// same perform + emit + TaskUpdateResult. The raw path is validated by
+/// `validate_wg_root` before any write (see the helper docs for the threat
+/// model).
+#[tauri::command]
+pub async fn task_set_title_at(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    workgroup_root: String,
+    title: String,
+) -> Result<TaskUpdateResult, String> {
+    validate_user_title(&title)?;
+    // Clone the small Vec and drop the read guard immediately; perform() does
+    // blocking IO and must not be held across the settings lock.
+    let project_paths = { settings.read().await.project_paths.clone() };
+    let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
+
+    let outcome =
+        task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
+    log::info!("[task] set_title_at for {} -> {:?}", workgroup_root, outcome);
+
+    let (content, task_title) = match &outcome {
+        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
+        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
+            (content.clone(), title.clone())
+        }
+    };
+    let trimmed = content.trim();
+    let task = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    };
+    let result = TaskUpdateResult {
+        workgroup_root: strip_unc(&wg_root),
+        task: task.clone(),
+    };
+    emit_task_updated(&app, &wg_root, &task, &task_title);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     //! Covers `cli::task_ops::perform` and `validate_wg_root` through the
@@ -330,7 +383,7 @@ mod tests {
     //! assertions it backs still cover the live save and clean paths.
     use std::path::Path;
 
-    use super::validate_wg_root;
+    use super::{validate_user_title, validate_wg_root};
     use crate::cli::task_ops::{perform, EditOutcome, TaskOp};
 
     /// Read TASK.md once and return both the trimmed full body and the parsed
@@ -641,5 +694,80 @@ mod tests {
         std::fs::create_dir_all(&wg).unwrap();
         let arg = wg.to_string_lossy().into_owned();
         assert!(validate_wg_root(&arg, &paths_of(proj.path())).is_err());
+    }
+
+    // ---- #1536: task_set_title_at (path-based user title) + validate_user_title ----
+    //
+    // SetUserTitle writes the reserved `USER: ` marker into the file and the
+    // readers (parse_task_title / title_value_of) return the raw scalar, so the
+    // readback assertions below expect the `USER: ` prefix (round-3 marker
+    // correction) — the same scalar the live task_set_title path writes.
+
+    // 1. create-on-missing: a wg dir with no TASK.md gets a user title written
+    //    (backup None because nothing pre-existed), mirroring
+    //    task_clean_at_creates_task_when_missing.
+    #[test]
+    fn task_set_title_at_creates_task_when_missing() {
+        let proj = tempfile::tempdir().unwrap();
+        let wg = make_real_wg(proj.path());
+        let validated = validate_wg_root(&wg, &paths_of(proj.path())).expect("validate");
+        assert!(
+            !validated.join("TASK.md").exists(),
+            "precondition: no TASK.md"
+        );
+        let outcome = perform(&validated, TaskOp::SetUserTitle("My Title".into()))
+            .expect("set user title creates file");
+        assert!(matches!(outcome, EditOutcome::Wrote { backup: None, .. }));
+        assert!(validated.join("TASK.md").exists());
+        let (_task, title) = read_task_fields_at(&validated);
+        assert_eq!(title.as_deref(), Some("USER: My Title"));
+    }
+
+    // 2. round trip: seed a coordinator title, then SetUserTitle over it; the
+    //    readback carries the `USER: ` marker, mirroring
+    //    task_clean_at_round_trip_returns_clean_title.
+    #[test]
+    fn task_set_title_at_round_trip_returns_title() {
+        let proj = tempfile::tempdir().unwrap();
+        let wg = make_real_wg(proj.path());
+        perform(
+            std::path::Path::new(&wg),
+            TaskOp::SetTitle("Real Brief".to_string()),
+        )
+        .expect("seed title");
+        let validated = validate_wg_root(&wg, &paths_of(proj.path())).expect("validate");
+        perform(&validated, TaskOp::SetUserTitle("Edited Title".into())).expect("set user title");
+        let (_task, title) = read_task_fields_at(&validated);
+        assert_eq!(title.as_deref(), Some("USER: Edited Title"));
+    }
+
+    // 3. the extracted validator is pure: same checks, messages, and order as
+    //    the inline block it was lifted from.
+    #[test]
+    fn validate_user_title_rejects_empty_and_whitespace() {
+        assert!(validate_user_title("").is_err());
+        assert!(validate_user_title("   \t  ").is_err());
+    }
+
+    #[test]
+    fn validate_user_title_rejects_control_chars_except_tab() {
+        assert!(validate_user_title("bad\u{0}title").is_err());
+        assert!(validate_user_title("line1\nline2").is_err());
+        assert!(validate_user_title("line1\rline2").is_err());
+        assert!(validate_user_title("tab\tbetween").is_ok());
+    }
+
+    #[test]
+    fn validate_user_title_rejects_over_256_scalars() {
+        let ok: String = "a".repeat(256);
+        let too_long: String = "a".repeat(257);
+        assert!(validate_user_title(&ok).is_ok());
+        assert!(validate_user_title(&too_long).is_err());
+    }
+
+    #[test]
+    fn validate_user_title_accepts_normal_title() {
+        assert!(validate_user_title("My Title").is_ok());
+        assert!(validate_user_title("tab\tbetween").is_ok());
     }
 }
