@@ -3365,10 +3365,17 @@ impl MailboxPoller {
     /// One poll cycle: scan all repo outbox dirs, process each message.
     async fn poll<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<(), String> {
         self.snapshot_scanner.begin_cycle();
-        // (#1399) The only instrument that can confirm the pickup-latency win
-        // on a live instance: per-cycle service time and handoff count.
+        // (#1399) The two timing lines the issue authorizes: one at the top
+        // of the cycle and one at the bottom, each reporting elapsed ms,
+        // outboxes scanned, and messages processed. Together they prove the
+        // scanner returns in milliseconds instead of holding the loop for
+        // delivery time.
         let cycle_started = std::time::Instant::now();
-        let mut handed_off = 0usize;
+        let mut messages_processed = 0usize;
+        log::info!(
+            "[mailbox] poll cycle started elapsed_ms={} outboxes=0 messages=0",
+            cycle_started.elapsed().as_millis()
+        );
         // (#1399) Reap, then drain, before any outbox work: joined workers
         // free cap slots, and an outcome's path can belong to any outbox, so
         // the drain is per-cycle, not per-outbox. Draining before the scans
@@ -3538,8 +3545,7 @@ impl MailboxPoller {
 
             // (#1399) One walk partitions the outbox root by extension:
             // messages to scan and claim markers to reclaim. Deliberately
-            // unbounded, exactly as today's scan is; the warn makes an
-            // implausible backlog visible instead of silently truncated.
+            // unbounded, exactly as today's scan is.
             let mut entries: Vec<PathBuf> = Vec::new();
             let mut claims: Vec<PathBuf> = Vec::new();
             match std::fs::read_dir(outbox_dir) {
@@ -3557,13 +3563,6 @@ impl MailboxPoller {
                     }
                 }
                 Err(_) => continue,
-            }
-            if entries.len() > 4_096 {
-                log::warn!(
-                    "[mailbox] outbox {} holds {} queued messages in one cycle",
-                    outbox_dir.display(),
-                    entries.len()
-                );
             }
             // (#1399 R2) Reclamation renames files a live worker may own, and
             // the ownership test is path-keyed, so it runs only where the
@@ -3593,6 +3592,7 @@ impl MailboxPoller {
             }
 
             for path in entries {
+                messages_processed += 1;
                 let standard_content = match classify_outbox_document(&path) {
                     OutboxClassification::PrivilegedCandidate { bytes, identity } => {
                         self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
@@ -3623,7 +3623,7 @@ impl MailboxPoller {
                         // retry state for `path` must survive until the worker
                         // reports.
                         Some(msg) => match self.claim_and_spawn_wake(app, &path, msg) {
-                            WakeHandoff::Spawned => handed_off += 1,
+                            WakeHandoff::Spawned => {}
                             WakeHandoff::LaneBusy => {}
                             WakeHandoff::ClaimFailed(e) => {
                                 self.record_message_outcome(path, Err(e)).await
@@ -3639,10 +3639,10 @@ impl MailboxPoller {
         }
 
         log::info!(
-            "[mailbox] poll cycle done elapsed_ms={} outboxes={} handed_off={}",
+            "[mailbox] poll cycle done elapsed_ms={} outboxes={} messages={}",
             cycle_started.elapsed().as_millis(),
             outbox_dirs.len(),
-            handed_off
+            messages_processed
         );
 
         self.snapshot_scanner.finish_cycle();
