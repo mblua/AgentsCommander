@@ -3192,10 +3192,7 @@ impl MailboxPoller {
         {
             return WakeHandoff::LaneBusy;
         }
-        let Some(reservation) = self
-            .wake_lanes
-            .try_reserve(&msg.to, crate::phone::wake_lanes::WAKE_WORKER_LIMIT)
-        else {
+        let Some(reservation) = self.wake_lanes.try_reserve(&msg.to) else {
             return WakeHandoff::LaneBusy;
         };
         let claim = wake_claim_path(path);

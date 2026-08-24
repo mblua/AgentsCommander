@@ -43,13 +43,12 @@ impl WakeLanes {
     pub(crate) fn try_reserve(
         self: &Arc<Self>,
         target: &str,
-        limit: usize,
     ) -> Option<WakeLaneReservation> {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if active.len() >= limit || !active.insert(target.to_string()) {
+        if active.len() >= WAKE_WORKER_LIMIT || !active.insert(target.to_string()) {
             return None;
         }
         Some(WakeLaneReservation {
@@ -86,16 +85,12 @@ mod tests {
     #[test]
     fn same_target_is_exclusive_until_the_reservation_drops() {
         let lanes = Arc::new(WakeLanes::default());
-        let first = lanes.try_reserve("proj:wg-1/dev-rust", WAKE_WORKER_LIMIT);
+        let first = lanes.try_reserve("proj:wg-1/dev-rust");
         assert!(first.is_some());
-        assert!(lanes
-            .try_reserve("proj:wg-1/dev-rust", WAKE_WORKER_LIMIT)
-            .is_none());
+        assert!(lanes.try_reserve("proj:wg-1/dev-rust").is_none());
         drop(first);
         assert_eq!(lanes.len(), 0);
-        assert!(lanes
-            .try_reserve("proj:wg-1/dev-rust", WAKE_WORKER_LIMIT)
-            .is_some());
+        assert!(lanes.try_reserve("proj:wg-1/dev-rust").is_some());
     }
 
     /// (#1399 T1) A ninth distinct target is refused at `limit = 8` and
@@ -106,13 +101,13 @@ mod tests {
         let mut held: Vec<WakeLaneReservation> = (0..WAKE_WORKER_LIMIT)
             .map(|slot| {
                 lanes
-                    .try_reserve(&format!("target-{slot}"), WAKE_WORKER_LIMIT)
+                    .try_reserve(&format!("target-{slot}"))
                     .expect("distinct target under the cap must reserve")
             })
             .collect();
-        assert!(lanes.try_reserve("target-8", WAKE_WORKER_LIMIT).is_none());
+        assert!(lanes.try_reserve("target-8").is_none());
         held.pop();
-        let ninth = lanes.try_reserve("target-8", WAKE_WORKER_LIMIT);
+        let ninth = lanes.try_reserve("target-8");
         assert!(ninth.is_some());
         drop(ninth);
         drop(held);
