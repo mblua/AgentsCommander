@@ -3035,16 +3035,10 @@ impl MailboxPoller {
                 tokio::select! {
                     biased;
                     _ = shutdown.token().cancelled() => {
-                        // (#1399) The count makes a delivery cut by process
-                        // exit visible and reconcilable with the reclamation
-                        // lines at the next start.
-                        log::info!(
-                            "[MailboxPoller] Shutdown signal received, stopping (detaching {} wake workers)",
-                            self.wake_workers.len()
-                        );
+                        log::info!("[MailboxPoller] Shutdown signal received, stopping");
                         // (#1399) Detach instead of cancelling: dropping a
                         // JoinSet cancels its tasks, which would cut a wake
-                        // mid-inject; detached workers run to completion
+                        // mid-inject. Detached workers run to completion
                         // best-effort, and any claim cut off by process exit
                         // is returned by reclamation at the next start.
                         self.wake_workers.detach_all();
