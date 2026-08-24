@@ -1,6 +1,5 @@
-//! (#1399) Per-target lane reservation for detached wake delivery. Same shape as
-//! `api::dispatcher::PtyWorkerTargets`, which has held this invariant for
-//! per-target PTY work in production.
+//! (#1399) Per-target lane reservation for detached wake delivery: per-target
+//! exclusivity and a global in-flight cap, with RAII release.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -80,8 +79,7 @@ impl Drop for WakeLaneReservation {
 mod tests {
     use super::*;
 
-    /// (#1399 T1) A second reservation for the same target is refused while the
-    /// first is alive; dropping the first releases the lane for the same target.
+    /// (#1399 T1) Same-target exclusion and RAII release.
     #[test]
     fn same_target_is_exclusive_until_the_reservation_drops() {
         let lanes = Arc::new(WakeLanes::default());
@@ -93,8 +91,8 @@ mod tests {
         assert!(lanes.try_reserve("proj:wg-1/dev-rust").is_some());
     }
 
-    /// (#1399 T1) A ninth distinct target is refused at `limit = 8` and
-    /// succeeds after one release.
+    /// (#1399 T1) The global cap refuses a ninth distinct target until one
+    /// reservation is released.
     #[test]
     fn ninth_distinct_target_is_refused_until_a_release() {
         let lanes = Arc::new(WakeLanes::default());

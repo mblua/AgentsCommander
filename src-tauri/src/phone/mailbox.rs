@@ -892,10 +892,9 @@ fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, String> {
     })
 }
 
-/// (#1399) Return a claim to its outbox path after a failed delivery. On
-/// failure the claim stays on disk and unowned once its outcome drains, so
-/// every-cycle reclamation retries the rename until it succeeds; the message is
-/// never invisible and unowned at the same time.
+/// (#1399) A failed restore leaves the durable claim in place. An owning drain
+/// keeps and requeues its outcome; without ledger ownership, a later poll or
+/// process restart retries general reclamation.
 fn release_wake_claim(claim: &Path, origin: &Path) {
     if let Err(error) = std::fs::rename(claim, origin) {
         log::error!(
@@ -1072,10 +1071,10 @@ impl Drop for WakeOutcomeReport {
     }
 }
 
-/// (#1399) The detached delivery tail: exactly today's seam code plus the
-/// rename-back on failure. The rename back happens BEFORE the outcome is
-/// sent, so by the time the scanner drains it the origin path is valid again
-/// and the relocated retry/reject block sees a real file.
+/// (#1399) The detached delivery tail: deliver, archive on success, and on
+/// any failure rename the claim back before the outcome is sent, so by the
+/// time the scanner drains it the origin path is valid again and the
+/// retry/reject block sees a real file.
 async fn deliver_claimed_wake<R: tauri::Runtime>(
     delivery: &MailboxPoller,
     app: &tauri::AppHandle<R>,
@@ -3103,13 +3102,14 @@ impl MailboxPoller {
     }
 
     /// (#1399) Return every claim with no live owner to the outbox. A claim is
-    /// unowned iff it is absent from `self.live_claims`, which is exact rather
-    /// than temporal: at the first cycle the set is empty, so every claim left
-    /// by a previous process is returned; afterwards a claim is skipped
-    /// precisely while its worker is running and its outcome is undrained.
-    /// Assumes one daemon per outbox (different builds never share one, because
-    /// `config::agent_local_dir_name()` derives the outbox from the binary
-    /// stem).
+    /// unowned iff it is absent from `self.live_claims`: at the first cycle
+    /// the set is empty, so every claim left by a previous process is
+    /// returned; afterwards a claim is skipped while its worker is running or
+    /// its outcome is undrained. The caller runs this only for a verified
+    /// outbox (R2), so an unverifiable spelling defers reclamation instead of
+    /// resurrecting a live claim. Assumes one daemon per outbox (different
+    /// builds never share one, because `config::agent_local_dir_name()` derives
+    /// the outbox from the binary stem).
     fn reclaim_unowned_wake_claims(&self, _outbox_dir: &Path, claims: &[PathBuf]) {
         for claim in claims {
             if self.live_claims.contains(claim) {
@@ -3184,9 +3184,9 @@ impl MailboxPoller {
         path: &Path,
         msg: OutboxMessage,
     ) -> WakeHandoff {
-        // Both caps checked, mirroring the dispatcher: `try_reserve` alone
-        // would suffice today; the `JoinSet::len()` check keeps the cap true
-        // if a reservation ever outlives its worker.
+        // A queued or requeued outcome can outlive both its worker and lane.
+        // Cap `live_claims` separately so pending reports cannot exceed the
+        // same global limit.
         if self.wake_workers.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
             || self.live_claims.len() >= crate::phone::wake_lanes::WAKE_WORKER_LIMIT
         {
@@ -3660,10 +3660,11 @@ impl MailboxPoller {
         Ok(())
     }
 
-    /// (#1399) Today's `Ok`/`Err` bookkeeping for one outbox message, unchanged.
-    /// Called inline for a message the scanner settled itself, and from the
-    /// outcome drain for a message a worker settled. Takes `path` owned so
-    /// every expression in the relocated block stays textually identical.
+    /// (#1399) The retry/reject bookkeeping for one outbox message: `Ok`
+    /// clears retry state, `Err` counts an attempt and rejects at the attempt
+    /// ceiling. Called inline for a message the scanner settled itself, and
+    /// from the outcome drain for a message a worker settled. Takes `path`
+    /// owned so every expression in the block stays textually identical.
     async fn record_message_outcome(&mut self, path: PathBuf, outcome: Result<(), String>) {
         match outcome {
             Ok(()) => {
@@ -21580,7 +21581,7 @@ mod tests {
         let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
 
         poller.poll(&app).await.unwrap();
-        poller.settle_wake_workers().await; // (#1399) join workers, then drain outcomes
+        poller.settle_wake_workers().await;
 
         assert!(!source.exists());
         let reason_path = source
@@ -21625,7 +21626,7 @@ mod tests {
         let mut poller = MailboxPoller::new();
 
         poller.poll(&app).await.unwrap();
-        poller.settle_wake_workers().await; // (#1399) join workers, then drain outcomes
+        poller.settle_wake_workers().await;
 
         assert!(source.exists());
         assert_eq!(
@@ -21701,15 +21702,12 @@ mod tests {
 
         poller.reclaim_unowned_wake_claims(&outbox, &claims);
 
-        // Unowned, no receipt: renamed back to the outbox.
         assert!(!unowned.exists());
         assert!(outbox.join("m-unowned.json").exists());
-        // Receipt present: claim deleted, message NOT recreated.
         assert!(!delivered.exists());
         assert!(!outbox.join("m-delivered.json").exists());
         assert!(!rejected.exists());
         assert!(!outbox.join("m-rejected.json").exists());
-        // Live: untouched (the G3 regression assertion).
         assert!(live.exists());
         assert!(!outbox.join("m-live.json").exists());
     }
@@ -21934,7 +21932,7 @@ mod tests {
     /// (#1399 T7 / G4) The shared drain settles the full owned disk-state
     /// matrix directly and requeues each failed settlement exactly once.
     #[tokio::test]
-    async fn drained_error_releases_ownership_and_reclamation_heals_the_claim() {
+    async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
         // Restore succeeds: the origin is actionable before the Err is counted.
         {
             let temp = tempfile::TempDir::new().unwrap();
