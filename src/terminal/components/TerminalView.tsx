@@ -164,6 +164,27 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
     container.appendChild(replayStatus);
 
+    const gridStatus = document.createElement("div");
+    gridStatus.className = "terminal-grid-status";
+    gridStatus.setAttribute("data-testid", `terminal-grid-size-${sessionId}`);
+    gridStatus.setAttribute("aria-label", "Terminal grid size");
+    gridStatus.style.position = "absolute";
+    gridStatus.style.right = "8px";
+    gridStatus.style.bottom = "4px";
+    gridStatus.style.zIndex = "2";
+    gridStatus.style.pointerEvents = "none";
+    gridStatus.style.padding = "1px 3px";
+    gridStatus.style.color = "var(--statusbar-fg)";
+    gridStatus.style.background = "var(--terminal-bg)";
+    gridStatus.style.fontFamily = "var(--font-mono)";
+    gridStatus.style.fontSize = "10px";
+    gridStatus.style.opacity = "0.75";
+    const updateGridStatus = (cols: number, rows: number) => {
+      gridStatus.textContent = `COLS: ${cols} ROWS: ${rows}`;
+    };
+    updateGridStatus(terminal.cols, terminal.rows);
+    container.appendChild(gridStatus);
+
     let webglAddon: WebglAddon | null = null;
     try {
       webglAddon = new WebglAddon();
@@ -242,6 +263,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminal.onResize(({ cols, rows }) => {
+      updateGridStatus(cols, rows);
       const entry = registry.get(sessionId);
       if (
         visibleSessionId !== sessionId ||
@@ -448,7 +470,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       !Number.isSafeInteger(proposed.cols) ||
       !Number.isSafeInteger(proposed.rows) ||
       proposed.cols < 1 ||
-      proposed.cols >= Number.MAX_SAFE_INTEGER - 9 ||
+      proposed.cols <= 10 ||
       proposed.rows < 1
     ) {
       entry.fitAddon.fit();
@@ -492,9 +514,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.snapshotResizeSuppressed = true;
     try {
       try {
-        entry.terminal.resize(original.cols + 10, original.rows);
+        entry.terminal.resize(original.cols - 10, original.rows);
         if (
-          entry.terminal.cols !== original.cols + 10 ||
+          entry.terminal.cols !== original.cols - 10 ||
           entry.terminal.rows !== original.rows
         ) {
           throw new Error("Terminal resize pulse did not reach expanded grid");
