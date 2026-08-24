@@ -61,6 +61,8 @@ Right-clicking a row opens a context menu, and AC builds a different one dependi
 
 `Clear task title` is disabled when there is nothing to clear, and says which case you are in through its tooltip: `Clear task title`, or `Nothing to clear`.
 
+- `Edit TASK title` (pencil) opens an inline editor inside the menu, prefilled with the current title. Save writes the title — through the session-based command when the workgroup has a live session, through the path-based command otherwise — closes the menu, and the sidebar row updates; Cancel (or Escape) closes the editor and keeps the menu open.
+
 Right-clicking a project row instead gives you the project's own menu, which is where `Archive Project` lives. See [Project archiving](project-archiving.md).
 
 ## What a session row shows
