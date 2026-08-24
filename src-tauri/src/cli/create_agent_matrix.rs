@@ -5,6 +5,14 @@
 //! `SettingsState`. That matches the existing CLI mutation
 //! model: local disk creation is immediate, while launch requests are handed to
 //! the running GUI through the session-request mailbox.
+//!
+//! #1163: the launch outcome is TRUTHFUL. The running app answers each session
+//! request with a `<id>.result.json` sidecar (created/rejected); this verb waits
+//! up to `SESSION_REQUEST_RESULT_TIMEOUT` for it and reports
+//! `launchStatus` (`skipped` | `launched` | `rejected` | `pending`) plus
+//! `launchError` on rejection. `launched` is `true` only when the app confirmed
+//! the session. Matrix creation stays independent of the launch result: exit
+//! code 0 and the matrix fields are always produced.
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -22,7 +30,7 @@ NOTES:\n  \
   --name is sanitized by the same backend as the UI into a lower-case Matrix id.\n  \
   --role-template must be an id from the same source as the New Agent picker.\n  \
   Invalid templates fail before creating the target Matrix directory.\n  \
-  Output is JSON with agentPath, agentName, rolePath, launched, launchAgent.")]
+  Output is JSON with agentPath, agentName, rolePath, launched, launchStatus, launchError, launchAgent.")]
 pub struct CreateAgentMatrixArgs {
     /// Registered AC project folder name. Paths are not accepted.
     #[arg(long, value_name = "PROJECT")]
@@ -60,7 +68,21 @@ struct CreateAgentMatrixResult {
     agent_name: String,
     role_path: String,
     launched: bool,
+    launch_status: LaunchStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launch_error: Option<String>,
     launch_agent: Option<String>,
+}
+
+/// #1163 - the truthful launch verdict reported by this verb. `launched ==
+/// (launch_status == Launched)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum LaunchStatus {
+    Skipped,
+    Launched,
+    Rejected,
+    Pending,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +168,8 @@ pub(crate) fn execute_matrix_project_create(
     }
 
     let mut launched = false;
+    let mut launch_status = LaunchStatus::Skipped;
+    let mut launch_error: Option<String> = None;
     let mut launch_agent_id: Option<String> = None;
 
     if let Some(requested) = launch {
@@ -158,10 +182,39 @@ pub(crate) fn execute_matrix_project_create(
                 ) {
                     Ok(request) => match create_agent::write_session_request(&request) {
                         Ok(()) => {
-                            launched = true;
+                            // #1163: the request is on disk; the TRUTHFUL
+                            // outcome comes from the running app's result
+                            // sidecar, with a bounded wait. Rejection is
+                            // distinguishable in this command's own output.
                             launch_agent_id = Some(agent.id.clone());
+                            match create_agent::wait_for_session_request_result(
+                                &request.id,
+                                create_agent::SESSION_REQUEST_RESULT_TIMEOUT,
+                            ) {
+                                create_agent::LaunchOutcome::Launched { .. } => {
+                                    launched = true;
+                                    launch_status = LaunchStatus::Launched;
+                                }
+                                create_agent::LaunchOutcome::Rejected { error } => {
+                                    launch_status = LaunchStatus::Rejected;
+                                    launch_error = Some(error.clone());
+                                    eprintln!(
+                                        "Warning: session launch rejected: {}",
+                                        error
+                                    );
+                                }
+                                create_agent::LaunchOutcome::Pending => {
+                                    launch_status = LaunchStatus::Pending;
+                                    eprintln!(
+                                        "Warning: no launch result within {}s (is the AgentsCommander app running?)",
+                                        create_agent::SESSION_REQUEST_RESULT_TIMEOUT.as_secs()
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
+                            launch_status = LaunchStatus::Rejected;
+                            launch_error = Some(e.clone());
                             eprintln!(
                                 "Warning: agent matrix created but failed to request launch: {}",
                                 e
@@ -169,6 +222,8 @@ pub(crate) fn execute_matrix_project_create(
                         }
                     },
                     Err(e) => {
+                        launch_status = LaunchStatus::Rejected;
+                        launch_error = Some(e.clone());
                         eprintln!(
                             "Warning: agent matrix created but failed to request launch: {}",
                             e
@@ -178,11 +233,14 @@ pub(crate) fn execute_matrix_project_create(
             }
             None => {
                 let available: Vec<&str> = settings.agents.iter().map(|a| a.id.as_str()).collect();
-                eprintln!(
-                    "Warning: agent '{}' not found in settings. Available: {}. Matrix created but not launched.",
+                let message = format!(
+                    "agent '{}' not found in settings. Available: {}. Matrix created but not launched.",
                     requested,
                     available.join(", ")
                 );
+                launch_status = LaunchStatus::Rejected;
+                launch_error = Some(message.clone());
+                eprintln!("Warning: {}", message);
             }
         }
     }
@@ -192,6 +250,8 @@ pub(crate) fn execute_matrix_project_create(
         agent_name: created.display_name,
         role_path,
         launched,
+        launch_status,
+        launch_error,
         launch_agent: launch_agent_id,
     };
 

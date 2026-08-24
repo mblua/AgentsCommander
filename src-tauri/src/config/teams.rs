@@ -923,6 +923,16 @@ fn verify_replica(
 
 pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<PathBuf>, String> {
     let cwd_identity = crate::path_identity::verify_directory(cwd)?;
+    // #1535: an anchor binds only when it belongs to the project that owns
+    // the cwd, i.e. its `wg_replica_layout.ac_root` equals the closest `.ac`
+    // ancestor of the cwd. A `__agent_*` replica of an ANCESTOR project is
+    // never an anchor for a nested-project cwd, so the ancestor's live
+    // session can no longer produce a sessionRace false positive.
+    let owning_ac_root = cwd_identity.canonical_path.ancestors().find(|path| {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(crate::config::ac_root::is_ac_root_name)
+    });
     for path in cwd_identity.canonical_path.ancestors() {
         let is_replica = path
             .file_name()
@@ -931,8 +941,28 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
         if !is_replica {
             continue;
         }
-        return crate::config::ac_root::wg_replica_layout_from_agent_dir(path)
-            .map(|layout| layout.map(|_| path.to_path_buf()));
+        // No `.ac` ancestor at all: no project owns the cwd, so no anchor can
+        // bind (every valid wg-replica layout requires an `.ac` root).
+        let Some(owning_ac_root) = owning_ac_root.as_deref() else {
+            return Ok(None);
+        };
+        if !path.starts_with(owning_ac_root) {
+            // The anchor belongs to an ancestor project's `.ac`; it never
+            // binds to this cwd. Keep walking: the cwd's own project may
+            // still hold a valid anchor above the current path.
+            continue;
+        }
+        let Some(layout) = crate::config::ac_root::wg_replica_layout_from_agent_dir(path)?
+        else {
+            continue;
+        };
+        if layout.ac_root != owning_ac_root {
+            // Belt-and-braces: the layout's own root must be the owning root.
+            // Unreachable for real on-disk layouts (a valid layout under the
+            // owning root always reports the owning root), kept as a guard.
+            continue;
+        }
+        return Ok(Some(path.to_path_buf()));
     }
     Ok(None)
 }
@@ -3123,5 +3153,231 @@ mod tests {
         let dir2 = "_team_bar_test_280_3_4";
         assert!(note_missing_team_config(project, dir2));
         assert!(!note_missing_team_config(project, dir2));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // #1535 walker confinement (plan §6, T1-T7)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// #1535 T1: the exact bug shape — a nested project's origin matrix dir
+    /// under an ancestor workgroup replica. The only `__agent_*` ancestor
+    /// (`__agent_alice`) belongs to the ANCESTOR project's `.ac`, so it must
+    /// not bind: the walker returns `Ok(None)` and the sessionRace gate is
+    /// skipped (pre-fix: `Ok(Some(alice))` → false-positive duplicate).
+    #[test]
+    fn strict_wg_replica_anchor_from_cwd_nested_project_origin_cwd_binds_nothing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let nested_origin = temp
+            .path()
+            .join("proj-outer")
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join("nested-proj")
+            .join(".ac")
+            .join("_agent_phase0");
+        std::fs::create_dir_all(&nested_origin).unwrap();
+
+        let anchor = strict_wg_replica_anchor_from_cwd(&nested_origin)
+            .expect("walk must not error");
+        assert_eq!(
+            anchor, None,
+            "the ancestor project's replica must never anchor a nested-project cwd"
+        );
+    }
+
+    /// #1535 T2: a nested project with its OWN replica anchors that replica,
+    /// not the ancestor's.
+    #[test]
+    fn strict_wg_replica_anchor_from_cwd_nested_project_replica_binds_own_anchor() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let alice = temp
+            .path()
+            .join("proj-outer")
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        let bob = alice
+            .join("nested-proj")
+            .join(".ac")
+            .join("wg-2-devs")
+            .join("__agent_bob");
+        for dir in [&alice, &bob] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        let anchor = strict_wg_replica_anchor_from_cwd(&bob).expect("walk must not error");
+        let anchor = anchor.expect("the nested project's own replica must bind");
+        assert_eq!(
+            std::fs::canonicalize(&anchor).unwrap(),
+            std::fs::canonicalize(&bob).unwrap(),
+            "the nested replica must anchor itself, not the ancestor replica"
+        );
+        assert!(
+            !anchor.ends_with("__agent_alice"),
+            "the ancestor replica must not anchor a nested-project cwd"
+        );
+    }
+
+    /// #1535 T3 regression: an ordinary replica cwd still anchors itself.
+    #[test]
+    fn strict_wg_replica_anchor_from_cwd_own_replica_regression() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let alice = temp
+            .path()
+            .join("proj")
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&alice).unwrap();
+
+        let anchor =
+            strict_wg_replica_anchor_from_cwd(&alice).expect("walk must not error");
+        assert_eq!(
+            std::fs::canonicalize(&anchor.expect("own replica must bind")).unwrap(),
+            std::fs::canonicalize(&alice).unwrap()
+        );
+    }
+
+    /// #1535 T4 regression: a deeper cwd inside an ordinary replica still
+    /// resolves to the same own anchor.
+    #[test]
+    fn strict_wg_replica_anchor_from_cwd_deeper_cwd_inside_own_replica_regression() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let deep = temp
+            .path()
+            .join("proj")
+            .join(".ac")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join("some")
+            .join("deep")
+            .join("subdir");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let anchor = strict_wg_replica_anchor_from_cwd(&deep).expect("walk must not error");
+        assert_eq!(
+            std::fs::canonicalize(
+                &anchor.expect("deeper cwd must bind the own replica")
+            )
+            .unwrap(),
+            std::fs::canonicalize(
+                temp.path()
+                    .join("proj")
+                    .join(".ac")
+                    .join("wg-1-devs")
+                    .join("__agent_alice")
+            )
+            .unwrap()
+        );
+    }
+
+    /// #1535 T5/T6/T7 fixture: `strict_target_fixture`-shaped outer project
+    /// (`proj/.ac/{_team_team, _agent_lead, _agent_dev-one, wg-1-team/...}`)
+    /// plus a nested project with its own full workgroup inside
+    /// `__agent_dev-one`: `nested-proj/.ac/{_team_team, _agent_lead2,
+    /// _agent_inner2, wg-2-team/{__agent_lead2, __agent_inner2}}` and an
+    /// origin-only dir `_agent_phase0` (the #1535 bug shape). The nested
+    /// replica `config.json` identity is `../../_agent_inner2`; the nested
+    /// team config names the nested origin matrices.
+    fn nested_strict_target_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj");
+        let ac_root = project.join(".ac");
+        let team = ac_root.join("_team_team");
+        let wg = ac_root.join("wg-1-team");
+        let outer_dev_one = wg.join("__agent_dev-one");
+        for directory in [
+            &team,
+            &ac_root.join("_agent_lead"),
+            &ac_root.join("_agent_dev-one"),
+            &wg.join("__agent_lead"),
+            &outer_dev_one,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"agents":["../_agent_dev-one","../_agent_lead"],"coordinator":"../_agent_lead"}"#,
+        )
+        .unwrap();
+        for (replica, identity) in [
+            (&wg.join("__agent_lead"), "../../_agent_lead"),
+            (&outer_dev_one, "../../_agent_dev-one"),
+        ] {
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"{identity}"}}"#),
+            )
+            .unwrap();
+        }
+
+        let nested_ac_root = outer_dev_one.join("nested-proj").join(".ac");
+        let nested_team = nested_ac_root.join("_team_team");
+        let nested_wg = nested_ac_root.join("wg-2-team");
+        let nested_inner2 = nested_wg.join("__agent_inner2");
+        let nested_origin = nested_ac_root.join("_agent_phase0");
+        for directory in [
+            &nested_team,
+            &nested_ac_root.join("_agent_lead2"),
+            &nested_ac_root.join("_agent_inner2"),
+            &nested_wg.join("__agent_lead2"),
+            &nested_inner2,
+            &nested_origin,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            nested_team.join("config.json"),
+            r#"{"agents":["../_agent_lead2","../_agent_inner2"],"coordinator":"../_agent_lead2"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            nested_inner2.join("config.json"),
+            r#"{"identity":"../../_agent_inner2"}"#,
+        )
+        .unwrap();
+
+        (temp, nested_inner2, nested_origin)
+    }
+
+    /// #1535 T5: a nested project's replica resolves to its own verified
+    /// sender identity (project/workgroup/agent of the NESTED project), not
+    /// the ancestor workgroup's.
+    #[test]
+    fn verify_pty_input_replica_cwd_nested_replica_resolves_own_fqn() {
+        let (_temp, nested_inner2, _nested_origin) = nested_strict_target_fixture();
+        let identity = verify_pty_input_replica_cwd(&nested_inner2)
+            .expect("nested replica must resolve its own identity");
+        assert_eq!(identity.canonical_fqn, "nested-proj:wg-2-team/inner2");
+        assert_eq!(identity.project, "nested-proj");
+        assert_eq!(identity.workgroup, "wg-2-team");
+        assert_eq!(identity.agent, "inner2");
+    }
+
+    /// #1535 T6: the #1535 bug-shaped cwd (an origin matrix dir, not a
+    /// replica) resolves to `Err("sender_identity_invalid")` — and never to
+    /// the outer workgroup.
+    #[test]
+    fn verify_pty_input_replica_cwd_nested_origin_cwd_is_invalid() {
+        let (_temp, _nested_inner2, nested_origin) = nested_strict_target_fixture();
+        let err = verify_pty_input_replica_cwd(&nested_origin).expect_err("origin dir must not resolve");
+        assert_eq!(err, "sender_identity_invalid");
+    }
+
+    /// #1535 T7: the create-gate key derives from the NESTED project for a
+    /// nested replica cwd, and is `None` (gate skipped) for the nested origin
+    /// cwd.
+    #[test]
+    fn pty_input_create_gate_key_from_cwd_nested_replica_uses_own_fqn_and_nested_origin_is_none() {
+        let (_temp, nested_inner2, nested_origin) = nested_strict_target_fixture();
+        assert_eq!(
+            pty_input_create_gate_key_from_cwd(&nested_inner2).expect("key must not error"),
+            Some("nested-proj:wg-2-team/inner2".to_string())
+        );
+        assert_eq!(
+            pty_input_create_gate_key_from_cwd(&nested_origin).expect("key must not error"),
+            None
+        );
     }
 }

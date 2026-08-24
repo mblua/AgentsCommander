@@ -10840,13 +10840,55 @@ impl MailboxPoller {
             return;
         }
 
+        // #1163: sweep stale result sidecars. The CLI consumes the result it
+        // reads and waits at most `SESSION_REQUEST_RESULT_TIMEOUT` (30 s); a
+        // result older than 5 minutes is litter from a timed-out or crashed
+        // CLI and is removed here (worst case a few KB in an already-ephemeral,
+        // ignored instance-artifact directory).
+        if let Ok(rd) = std::fs::read_dir(&requests_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !crate::cli::create_agent::is_session_request_result_path(&path) {
+                    continue;
+                }
+                let stale = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
+                if stale {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+
         let entries: Vec<PathBuf> = match std::fs::read_dir(&requests_dir) {
             Ok(rd) => rd
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                // #1163: result sidecars (`<id>.result.json`) are ANSWERS, not
+                // requests; without this exclusion a leftover result file would
+                // be parsed as a `SessionRequest` (parse fails -> spurious
+                // rejected result written for it).
+                .filter(|p| !crate::cli::create_agent::is_session_request_result_path(p))
                 .collect(),
             Err(_) => return,
+        };
+
+        // #1163: answer each request with a result sidecar on every terminal
+        // path (malformed, spawn-rebuild failure, create Ok/Err). Write the
+        // result BEFORE deleting the request: a crash in between leaves a
+        // re-processable request on disk (the pre-existing hazard), never a
+        // lost already-written outcome.
+        let write_result = |result: crate::cli::create_agent::SessionRequestResult| {
+            if let Err(e) = crate::cli::create_agent::write_session_request_result(&result) {
+                log::warn!(
+                    "[session-requests] Failed to write result for '{}': {}",
+                    result.id,
+                    e
+                );
+            }
         };
 
         for path in entries {
@@ -10863,6 +10905,19 @@ impl MailboxPoller {
                     Ok(r) => r,
                     Err(e) => {
                         log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
+                        // #1163: answer with a rejected result so the CLI can
+                        // distinguish rejection from a missing app. The request
+                        // filename IS `<id>.json`, so the id comes from the stem.
+                        write_result(crate::cli::create_agent::SessionRequestResult {
+                            id: path
+                                .file_stem()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
+                            session_id: None,
+                            error: Some(format!("malformed session request: {e}")),
+                        });
                         // Delete malformed file
                         let _ = std::fs::remove_file(&path);
                         continue;
@@ -10904,6 +10959,12 @@ impl MailboxPoller {
                             request.session_name,
                             e
                         );
+                        write_result(crate::cli::create_agent::SessionRequestResult {
+                            id: request.id.clone(),
+                            status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
+                            session_id: None,
+                            error: Some(e.to_string()),
+                        });
                         let _ = std::fs::remove_file(&path);
                         continue;
                     }
@@ -10919,7 +10980,7 @@ impl MailboxPoller {
                 (request.shell.clone(), request.shell_args.clone(), None)
             };
 
-            match crate::commands::session::create_session_inner(
+            let create_result = crate::commands::session::create_session_inner(
                 app,
                 session_mgr.inner(),
                 pty_mgr.inner(),
@@ -10938,8 +10999,8 @@ impl MailboxPoller {
                 None,
                 crate::commands::session::CreateSelectionIntent::Background,
             )
-            .await
-            {
+            .await;
+            match &create_result {
                 Ok(info) => {
                     log::info!(
                         "[session-requests] Created session '{}' (id={})",
@@ -10955,6 +11016,23 @@ impl MailboxPoller {
                     );
                 }
             }
+
+            // #1163: answer the request with the terminal outcome, then delete.
+            let result = match create_result {
+                Ok(info) => crate::cli::create_agent::SessionRequestResult {
+                    id: request.id.clone(),
+                    status: crate::cli::create_agent::SessionRequestResultStatus::Created,
+                    session_id: Some(info.id),
+                    error: None,
+                },
+                Err(e) => crate::cli::create_agent::SessionRequestResult {
+                    id: request.id.clone(),
+                    status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
+                    session_id: None,
+                    error: Some(e.to_string()),
+                },
+            };
+            write_result(result);
 
             // Delete processed request file regardless of success/failure
             let _ = std::fs::remove_file(&path);
@@ -11296,6 +11374,7 @@ mod tests {
     struct MailboxMockPtyBackend {
         live: std::sync::Mutex<HashSet<Uuid>>,
         writes: std::sync::Mutex<Vec<(Uuid, Vec<u8>)>>,
+        fail_spawn: std::sync::atomic::AtomicBool,
     }
 
     impl MailboxMockPtyBackend {
@@ -11323,6 +11402,15 @@ mod tests {
             &self,
             spec: BackendSpawnSpec,
         ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+            // #1163 M2 - test-only failure switch so a session-request poll can
+            // exercise the rejected-result path end to end.
+            if self.fail_spawn.load(Ordering::SeqCst) {
+                return Box::pin(async move {
+                    Err(crate::errors::AppError::PtyError(
+                        "synthetic spawn failure".to_string(),
+                    ))
+                });
+            }
             Box::pin(async move {
                 self.live.lock().unwrap().insert(spec.id);
                 Ok(())
@@ -20907,6 +20995,334 @@ mod tests {
             .join("poll-pi-busy-clear.reason.txt")
             .exists());
         assert!(mock_pty_writes_for(&app, session_id).is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // #1163 session-request result sidecars (M1-M5)
+    // ──────────────────────────────────────────────────────────────────────
+
+    struct SessionRequestFixture {
+        _temp: tempfile::TempDir,
+        cwd: PathBuf,
+        app: tauri::App<tauri::test::MockRuntime>,
+        backend: Arc<MailboxMockPtyBackend>,
+    }
+
+    /// Build an app that can run the FULL session-request create path
+    /// (`poll_session_requests` → `create_session_inner`): the mailbox states
+    /// plus the selection coordinator, resource monitor, target-gate store and
+    /// related states the create pipeline requires. The cwd is a plain temp
+    /// dir (not a WG replica), so no target-gate / sessionRace machinery
+    /// participates and the create either succeeds or fails purely on the PTY
+    /// backend.
+    fn make_session_request_fixture() -> SessionRequestFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cwd = temp.path().join("session-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let (pty_mgr, backend) = make_test_pty_manager();
+        let settings = AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            agents: wake_agents(),
+            ..Default::default()
+        };
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(&session_mgr),
+            shutdown.token().clone(),
+        );
+        let output_senders = Arc::new(Mutex::new(HashMap::new()));
+        let telegram: crate::telegram::manager::TelegramBridgeState = Arc::new(
+            tokio::sync::Mutex::new(
+                crate::telegram::manager::TelegramBridgeManager::new(output_senders),
+            ),
+        );
+        let store_dir = tempfile::TempDir::new().expect("create target-gate store");
+        let message_store = Arc::new(
+            crate::api::message_store::MessageStore::open(
+                store_dir
+                    .path()
+                    .join(crate::api::message_store::DB_FILENAME),
+            )
+            .expect("open target-gate store"),
+        );
+        let target_gate_state = crate::api::message_store::PtyInputTargetGateState::for_root(
+            store_dir.path().to_path_buf(),
+        );
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let app = tauri::test::mock_builder()
+            .manage(MasterToken::new(MAILBOX_MASTER_TOKEN.into()))
+            .manage(AppOutbox::new(
+                temp.path()
+                    .join(".app-outbox")
+                    .to_string_lossy()
+                    .to_string(),
+            ))
+            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(session_mgr.clone())
+            .manage(pty_mgr)
+            .manage(telegram)
+            .manage(Arc::new(crate::RestoreInProgress(AtomicBool::new(false))))
+            .manage(Arc::new(crate::PendingSelfClear::default()))
+            .manage(idle_detector)
+            .manage(std::sync::Arc::new(
+                crate::session::purge_guard::PurgeGuard::default(),
+            ))
+            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(coordinator.clone())
+            .manage(target_gate_state.clone())
+            .manage(shutdown)
+            .manage(crate::DetachedSessionsState::default())
+            .manage(crate::session::warnings::new_session_warning_state())
+            .manage(
+                crate::api::message_store::MessageStoreState::with_store_and_target_gate(
+                    Ok(message_store),
+                    target_gate_state.gate.clone(),
+                ),
+            )
+            .manage(store_dir)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build session request test app");
+        coordinator
+            .start(app.handle().clone())
+            .expect("start coordinator");
+        let bootstrap = coordinator.clone();
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                bootstrap
+                    .submit_restore_first()
+                    .await
+                    .expect("open coordinator")
+                    .finish();
+            });
+        })
+        .join()
+        .expect("join coordinator bootstrap");
+
+        SessionRequestFixture {
+            _temp: temp,
+            cwd,
+            app,
+            backend,
+        }
+    }
+
+    fn write_session_request_for_test(
+        cwd: &Path,
+        agent_id: &str,
+    ) -> crate::cli::create_agent::SessionRequest {
+        let request = crate::cli::create_agent::SessionRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            cwd: cwd.to_string_lossy().to_string(),
+            session_name: "session-request-m-test".to_string(),
+            agent_id: agent_id.to_string(),
+            shell: "codex".to_string(),
+            shell_args: vec!["--yolo".to_string()],
+            requested_profile: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        crate::cli::create_agent::write_session_request(&request).expect("write request");
+        request
+    }
+
+    fn session_request_file_for(id: &str) -> PathBuf {
+        crate::config::config_dir()
+            .expect("config dir")
+            .join(SESSION_REQUESTS_DIR_NAME)
+            .join(format!("{id}.json"))
+    }
+
+    fn session_request_result_file_for(id: &str) -> PathBuf {
+        crate::config::config_dir()
+            .expect("config dir")
+            .join(SESSION_REQUESTS_DIR_NAME)
+            .join(format!("{id}.result.json"))
+    }
+
+    fn read_session_request_result_json(id: &str) -> serde_json::Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(session_request_result_file_for(id)).expect("read result"),
+        )
+        .expect("result json")
+    }
+
+    /// M1: a successful create answers the request with a `created` result
+    /// sidecar carrying the session id, and deletes the request.
+    #[tokio::test]
+    async fn session_request_result_sidecar_written_on_success() {
+        // #1163: `config_dir()` is process-wide — one shared session-requests
+        // dir for every C/M artifact test. Serialize so a poll never consumes
+        // another test's request file mid-test.
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let request = write_session_request_for_test(&fixture.cwd, "codex");
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        let result = read_session_request_result_json(&request.id);
+        assert_eq!(
+            result["status"], "created",
+            "unexpected result: {}",
+            result
+        );
+        let session_id = result["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+        assert!(!session_id.is_empty());
+        assert!(
+            !session_request_file_for(&request.id).exists(),
+            "request must be deleted after processing"
+        );
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let rows = session_mgr.read().await.list_sessions().await;
+        assert_eq!(
+            rows.len(),
+            1,
+            "the session was really created; rows: {:?}",
+            rows.iter()
+                .map(|s| (s.id.clone(), s.name.clone(), s.working_directory.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].id, session_id);
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    /// M2: a failed create (PTY spawn error) answers with a `rejected` result
+    /// carrying the error text, and deletes the request.
+    #[tokio::test]
+    async fn session_request_result_sidecar_written_on_rejection() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let request = write_session_request_for_test(&fixture.cwd, "codex");
+        fixture.backend.fail_spawn.store(true, Ordering::SeqCst);
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        let result = read_session_request_result_json(&request.id);
+        assert_eq!(result["status"], "rejected");
+        let error = result["error"].as_str().expect("error text");
+        assert!(error.contains("synthetic spawn failure"), "{error}");
+        assert!(
+            !session_request_file_for(&request.id).exists(),
+            "request must be deleted after processing"
+        );
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    /// M3: a malformed request file gets a `rejected` result keyed by its
+    /// filename stem, and the request file is deleted.
+    #[tokio::test]
+    async fn malformed_request_writes_rejected_result() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let id = uuid::Uuid::new_v4().to_string();
+        let requests_dir = crate::config::config_dir()
+            .expect("config dir")
+            .join(SESSION_REQUESTS_DIR_NAME);
+        std::fs::create_dir_all(&requests_dir).unwrap();
+        std::fs::write(requests_dir.join(format!("{id}.json")), "{ not json !!").unwrap();
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        let result = read_session_request_result_json(&id);
+        assert_eq!(result["status"], "rejected");
+        let error = result["error"].as_str().expect("error text");
+        assert!(error.contains("malformed session request"), "{error}");
+        assert!(
+            !session_request_file_for(&id).exists(),
+            "malformed request must be deleted"
+        );
+    }
+
+    /// M4: a lone result sidecar is never consumed as a request (no delete,
+    /// no spurious rejected result for it).
+    #[tokio::test]
+    async fn result_sidecars_are_not_consumed_as_requests() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let id = uuid::Uuid::new_v4().to_string();
+        let result_path = session_request_result_file_for(&id);
+        std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &result_path,
+            format!(r#"{{"id":"{id}","status":"created","sessionId":"sess-1"}}"#),
+        )
+        .unwrap();
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        assert!(
+            result_path.exists(),
+            "a result sidecar is an ANSWER, never a request; it must stay untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&result_path).unwrap(),
+            format!(r#"{{"id":"{id}","status":"created","sessionId":"sess-1"}}"#)
+        );
+    }
+
+    /// M5: result sidecars older than 5 minutes are swept; fresh ones are
+    /// kept.
+    #[tokio::test]
+    async fn stale_result_sidecars_are_swept() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let stale_id = uuid::Uuid::new_v4().to_string();
+        let fresh_id = uuid::Uuid::new_v4().to_string();
+        let stale_path = session_request_result_file_for(&stale_id);
+        let fresh_path = session_request_result_file_for(&fresh_id);
+        std::fs::create_dir_all(stale_path.parent().unwrap()).unwrap();
+        for (path, id) in [(&stale_path, &stale_id), (&fresh_path, &fresh_id)] {
+            std::fs::write(
+                path,
+                format!(r#"{{"id":"{id}","status":"created","sessionId":"sess-1"}}"#),
+            )
+            .unwrap();
+        }
+        // Age the stale one 6 minutes (mtime only; `filetime` is not a
+        // dependency, `std::fs::File::set_times` is stable). Windows requires
+        // a WRITE-capable handle to change times.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale_path)
+            .unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(6 * 60),
+            ),
+        )
+        .unwrap();
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        assert!(!stale_path.exists(), "stale result sidecar must be swept");
+        assert!(fresh_path.exists(), "fresh result sidecar must be kept");
     }
 
     #[tokio::test]
