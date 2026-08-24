@@ -1,7 +1,7 @@
 //! Structured dependency guard for the Telegram output seam.
 //!
 //! `telegram::output` is the single owner of the output/logging cluster, sitting
-//! below its four consumers (`telegram::bridge` and the Claude, Codex and Gemini
+//! below its three consumers (`telegram::bridge` and the Claude and Codex
 //! watchers), which import from it directly with no intermediate re-export.
 //!
 //! The guard parses Rust syntax and records canonical internal module dependencies.
@@ -2561,7 +2561,7 @@ fn production_output_module_owns_the_seam_alone() {
 }
 
 #[test]
-fn production_codex_and_gemini_reach_output_without_bridge() {
+fn production_claude_and_codex_reach_output_without_bridge() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let index = build_module_index(&manifest, &manifest.join("src/lib.rs"), CRATE_ID)
         .expect("production module index should build");
@@ -2569,8 +2569,8 @@ fn production_codex_and_gemini_reach_output_without_bridge() {
     // `index_body` skips, so no glob reaches `build_scope`. Lifting one to the top
     // level would abort this analysis with "glob import forbidden".
     for module in [
+        "agentscommander_lib::telegram::claude_watcher",
         "agentscommander_lib::telegram::codex_watcher",
-        "agentscommander_lib::telegram::gemini_watcher",
     ] {
         let report = analyze_module_index(&index, CRATE_ID, module)
             .unwrap_or_else(|error| panic!("{module} guard analysis failed:\n{error}"));
