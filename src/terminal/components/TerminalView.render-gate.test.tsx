@@ -42,6 +42,14 @@ interface FakeTerminalInstance {
   writes: unknown[];
   screen: unknown[];
   resets: number;
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+      type: "normal" | "alternate";
+    };
+  };
   resizes: { cols: number; rows: number }[];
   emitResize(cols: number, rows: number): void;
   resize(cols: number, rows: number): void;
@@ -65,6 +73,14 @@ vi.mock("@xterm/xterm", () => ({
     writes: unknown[] = [];
     screen: unknown[] = [];
     resets = 0;
+    buffer: {
+      active: {
+        viewportY: number;
+        baseY: number;
+        length: number;
+        type: "normal" | "alternate";
+      };
+    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
     resizes: { cols: number; rows: number }[] = [];
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
@@ -86,9 +102,14 @@ vi.mock("@xterm/xterm", () => ({
       this.resizeHandlers.clear();
     }
 
-    write(data: unknown): void {
+    write(data: unknown, callback?: () => void): void {
       this.writes.push(data);
       this.screen.push(data);
+      // The #1489 attach pipeline awaits the optional parse-completion
+      // callback (the write fence) and reads the buffer metrics at settle.
+      // This fake applies bytes synchronously, so invoking the callback right
+      // after the push is faithful to this file's model.
+      callback?.();
     }
 
     /** Real xterm RIS: clears the screen and scrollback. */

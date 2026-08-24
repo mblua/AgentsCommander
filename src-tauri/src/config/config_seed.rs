@@ -331,14 +331,13 @@ pub(crate) fn perform_config_seed(seed: &ResolvedConfigSeed, unique_sfx: &str) -
     perform_config_seed_with_clock(seed, unique_sfx, &Utc::now)
 }
 
-/// #1065 Stage F: run the config seed and record its outcome under the per-project
-/// seed-manifest gate (plan sections 5.3/6.3/6.5).
+/// Run the config seed under the per-project seed-manifest gate.
 ///
 /// The caller (session-create chokepoint) already holds the process-local
 /// `ConfigSeedLockState`; this acquires the project kernel gate second, holds it
-/// across the install and the one manifest transaction, and drops it before
+/// across the install and drops it before
 /// returning. Ordering by gate state:
-/// * held: install, then record under the gate.
+/// * held: install under the gate.
 /// * pre-contention degradation: install untracked (no manifest write, no race).
 /// * contention/unsafe: skip the seed so the install never races a cooperating
 ///   writer; config seed stays fail-soft, so this never aborts the launch.
@@ -351,9 +350,17 @@ pub(crate) fn perform_config_seed_recorded(
     unique_sfx: &str,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> ConfigSeedReport {
+    perform_config_seed_recorded_with(seed, activation, || perform_config_seed(seed, unique_sfx))
+}
+
+fn perform_config_seed_recorded_with(
+    seed: &ResolvedConfigSeed,
+    activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    perform_seed: impl FnOnce() -> ConfigSeedReport,
+) -> ConfigSeedReport {
     use crate::config::seed_manifest::SoftProjectGate;
-    let Some(token) = activation else {
-        return perform_config_seed(seed, unique_sfx);
+    let Some(_activation) = activation else {
+        return perform_seed();
     };
     let Some(project_root) = seed
         .context
@@ -361,16 +368,15 @@ pub(crate) fn perform_config_seed_recorded(
         .as_ref()
         .and_then(|ac_root| ac_root.parent())
     else {
-        return perform_config_seed(seed, unique_sfx);
+        return perform_seed();
     };
     match crate::config::seed_manifest::acquire_project_gate_soft(project_root) {
-        SoftProjectGate::Held(mut guard) => {
-            let report = perform_config_seed(seed, unique_sfx);
-            record_config_seed_outcome(&mut guard, token, seed, &report);
+        SoftProjectGate::Held(guard) => {
+            let report = perform_seed();
             guard.release();
             report
         }
-        SoftProjectGate::DegradedUntracked => perform_config_seed(seed, unique_sfx),
+        SoftProjectGate::DegradedUntracked => perform_seed(),
         SoftProjectGate::Unavailable(error) => {
             log::warn!(
                 "[config-seed] project gate unavailable for {}: {}; skipping seed to avoid racing a cooperating writer",
@@ -811,102 +817,6 @@ fn config_scope_for_seed(seed: &ResolvedConfigSeed) -> Result<String, String> {
         components.push(component);
     }
     Ok(format!("config:{}", components.join("/")))
-}
-
-/// #1065 Stage F: record a completed config-seed outcome into the project seed
-/// manifest under an already-held gate (plan sections 5.3/5.4).
-///
-/// * `Published` with an exact staged-file list replaces the whole `config:<dest>`
-///   scope with those rows and the carried commit-point time.
-/// * `Published` with an over-bound list removes the prior scope and records no
-///   partial rows (`PublishedUnrecorded(ResourceBound)`), never a truncated scope.
-/// * `FailedAfterLogicalRemoval` removes the now-staged-away prior scope without a
-///   row or timestamp.
-/// * `Skipped` and ordinary `Failed` leave the manifest untouched.
-///
-/// Every manifest error is fail-soft: it warns and never converts a failed install
-/// into a publication, never aborts the launch, and never samples a later clock.
-pub(crate) fn record_config_seed_outcome(
-    guard: &mut crate::config::seed_manifest::ProjectSeedManifestGuard,
-    activation: &crate::config::seed_manifest::ManifestActivationToken,
-    seed: &ResolvedConfigSeed,
-    report: &ConfigSeedReport,
-) {
-    use crate::config::seed_manifest::{ManifestPathIdentity, PublishedScopeBatch};
-    let outcome = match report {
-        ConfigSeedReport::Published(publication) => {
-            let scope = match config_scope_for_seed(seed) {
-                Ok(scope) => scope,
-                Err(reason) => {
-                    log::warn!(
-                        "[config-seed] manifest scope unavailable for {}: {} (target published, unrecorded)",
-                        seed.dest.display(),
-                        reason
-                    );
-                    return;
-                }
-            };
-            match &publication.files {
-                CollectedSeedFiles::Exact(files) => {
-                    let dest_relative = match project_relative_dest(seed) {
-                        Ok(dest) => dest,
-                        Err(reason) => {
-                            log::warn!(
-                                "[config-seed] manifest dest unavailable for {}: {} (target published, unrecorded)",
-                                seed.dest.display(),
-                                reason
-                            );
-                            return;
-                        }
-                    };
-                    let mut identities = Vec::with_capacity(files.len());
-                    for file in files {
-                        match ManifestPathIdentity::from_relative_path(&dest_relative.join(file)) {
-                            Ok(identity) => identities.push(identity),
-                            Err(error) => {
-                                log::warn!(
-                                    "[config-seed] rejected manifest path under {}: {} (target published, unrecorded)",
-                                    seed.dest.display(),
-                                    error
-                                );
-                                return;
-                            }
-                        }
-                    }
-                    match PublishedScopeBatch::new(
-                        scope,
-                        manifest_source_for_tier(publication.tier),
-                        identities,
-                        publication.published_at,
-                    ) {
-                        Ok(batch) => guard.publication_permit().replace_scope(activation, batch),
-                        Err(error) => {
-                            log::warn!(
-                                "[config-seed] rejected manifest batch for {}: {} (target published, unrecorded)",
-                                seed.dest.display(),
-                                error
-                            );
-                            return;
-                        }
-                    }
-                }
-                CollectedSeedFiles::OverBound { reason, .. } => guard
-                    .publication_permit()
-                    .remove_unrecordable_scope(activation, scope, *reason),
-            }
-        }
-        ConfigSeedReport::FailedAfterLogicalRemoval(
-            ConfigSeedRollbackFailure::PreviousScopeStillStaged { scope, .. },
-        ) => guard
-            .publication_permit()
-            .remove_config_scope(activation, scope.clone()),
-        ConfigSeedReport::Skipped(_) | ConfigSeedReport::Failed(_) => return,
-    };
-    log::debug!(
-        "[config-seed] seed-manifest outcome for {}: {:?}",
-        seed.dest.display(),
-        outcome
-    );
 }
 
 struct SeedFileCollector {
@@ -1449,13 +1359,10 @@ mod tests {
         assert!(!replica.join(".claude.acseed-old-sfx1").exists());
     }
 
-    // #1065 Stage F activation coverage: an exact config-seed publication records the
-    // whole `config:<dest>` scope into the project seed manifest under the project
-    // gate. The project root is `ac_root.parent()`, so the fixture uses a real
-    // `.ac` workspace. Removing the `record_config_seed_outcome` adapter call would
-    // leave no manifest and fail this test (plan acceptance item 22).
+    /// Replica config seeding still runs under the project gate, but its report and
+    /// installed target no longer create seed-manifest rows.
     #[test]
-    fn config_seed_exact_publish_records_the_scope_under_the_gate() {
+    fn config_seed_exact_publish_preserves_report_without_creating_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path();
         let ac_root = project.join(".ac");
@@ -1469,29 +1376,99 @@ mod tests {
         let publication =
             assert_published(perform_config_seed_recorded(&resolved, "sfx", Some(&token)));
         assert_eq!(publication.tier, ConfigSeedTier::WorkspaceBase);
+        assert_eq!(publication.dest, resolved.dest);
         assert_eq!(
             publication.files,
             CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
         );
+        assert_eq!(std::fs::read(resolved.dest.join("f.txt")).unwrap(), b"SEED");
+        assert!(!ac_root.join("seed-manifest.toml").exists());
+    }
 
-        let manifest = std::fs::read_to_string(ac_root.join("seed-manifest.toml"))
-            .expect("an exact config-seed publication records a seed manifest under the gate");
-        assert!(
-            manifest.contains("scope = \"config:.ac/wg-1-team/__agent_x/.claude\""),
-            "manifest: {manifest}"
-        );
-        assert!(
-            manifest.contains("kind = \"replica_config_file\""),
-            "manifest: {manifest}"
-        );
-        assert!(
-            manifest.contains("path = \".ac/wg-1-team/__agent_x/.claude/f.txt\""),
-            "manifest: {manifest}"
-        );
-        assert!(
-            manifest.contains("source = \"workspace_base\""),
-            "manifest: {manifest}"
-        );
+    #[test]
+    fn config_seed_clocks_do_not_change_existing_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path();
+        let ac_root = project.join(".ac");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"SEED");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
+        let resolved = resolve_config_seed(&seed_cfg(".claude"), "C", Some(&ctx)).unwrap();
+        let token = crate::config::seed_manifest::ManifestActivationToken::for_test();
+        let manifest_path = ac_root.join("seed-manifest.toml");
+        let manifest_before = concat!(
+            "# Managed by AgentsCommander. Diagnostic only; never grants file ownership.\n",
+            "schema_version = 1\n",
+            "coverage_version = 2\n",
+            "coverage = [\"project_context_templates\", \"replica_config_folders\", \"coding_agent_catalog\"]\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/Context.AgentsCommander.md\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"project_context_template\"\n",
+            "scope = \"context:agentscommander\"\n",
+            "source = \"builtin\"\n",
+            "last_seeded_at = \"2026-07-16T19:40:07.123Z\"\n",
+            "\n",
+            "[[files]]\n",
+            "path = \".ac/wg-1-team/__agent_x/.claude/settings.json\"\n",
+            "path_encoding = \"utf8\"\n",
+            "kind = \"replica_config_file\"\n",
+            "scope = \"config:.ac/wg-1-team/__agent_x/.claude\"\n",
+            "source = \"workspace_base\"\n",
+            "last_seeded_at = \"2026-07-16T19:41:12.456Z\"\n"
+        )
+        .as_bytes()
+        .to_vec();
+        std::fs::write(&manifest_path, &manifest_before).unwrap();
+
+        for (unique_sfx, published_at) in [
+            (
+                "sfx-clock-one",
+                DateTime::parse_from_rfc3339("2026-07-20T15:47:23.456Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            (
+                "sfx-clock-two",
+                DateTime::parse_from_rfc3339("2026-07-21T15:47:23.456Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+        ] {
+            let publication = assert_published(perform_config_seed_recorded_with(
+                &resolved,
+                Some(&token),
+                || {
+                    let nested =
+                        crate::config::seed_manifest::ProjectSeedManifestGuard::acquire_with_timeout(
+                            project,
+                            std::time::Duration::ZERO,
+                        )
+                        .unwrap_err();
+                    assert!(matches!(nested, SeedManifestError::BusyTimeout { .. }));
+                    perform_config_seed_with_clock(&resolved, unique_sfx, &|| published_at)
+                },
+            ));
+            assert_eq!(publication.tier, ConfigSeedTier::WorkspaceBase);
+            assert_eq!(publication.dest, resolved.dest);
+            assert_eq!(
+                publication.files,
+                CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
+            );
+            assert_eq!(publication.published_at, published_at);
+            assert_eq!(std::fs::read(resolved.dest.join("f.txt")).unwrap(), b"SEED");
+            assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
+
+            let reacquired =
+                crate::config::seed_manifest::ProjectSeedManifestGuard::acquire_with_timeout(
+                    project,
+                    std::time::Duration::ZERO,
+                )
+                .unwrap();
+            reacquired.release();
+        }
     }
 
     // Stage E (#1064) end-to-end config-staging scale benchmark (plan section

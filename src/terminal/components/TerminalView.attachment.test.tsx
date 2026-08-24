@@ -31,6 +31,7 @@ import {
 import { rememberSpawnViewport } from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
 import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
+import type { PtyScreenSnapshot } from "../../shared/types";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -38,13 +39,33 @@ interface FakeTerminalInstance {
   element: HTMLElement | null;
   writes: number[][];
   screen: number[][];
+  resizes: { cols: number; rows: number }[];
   resets: number;
   disposed: boolean;
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+      type: "normal" | "alternate";
+    };
+  };
+  scrollToBottomCalls: number;
+  pendingWriteCallbacks: Array<() => void>;
+  writeThrows: boolean;
+  resize(cols: number, rows: number): void;
 }
 
 const xterm = vi.hoisted(() => ({
   instances: [] as FakeTerminalInstance[],
+  // Queue semantics matching xterm 6.0.0: a write is recorded in `writes` at
+  // queue time, applied to `screen` and completed only when its callback runs.
+  // When true, completions are scheduled on a microtask; when false, they are
+  // parked in the instance's FIFO until the test drains it (gated control).
+  autoCompleteWrites: true,
 }));
+
+const fitViewport = vi.hoisted(() => ({ cols: 80, rows: 24 }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class implements FakeTerminalInstance {
@@ -53,14 +74,28 @@ vi.mock("@xterm/xterm", () => ({
     element: HTMLElement | null = null;
     writes: number[][] = [];
     screen: number[][] = [];
+    resizes: { cols: number; rows: number }[] = [];
     resets = 0;
     disposed = false;
+    buffer: {
+      active: {
+        viewportY: number;
+        baseY: number;
+        length: number;
+        type: "normal" | "alternate";
+      };
+    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
+    scrollToBottomCalls = 0;
+    pendingWriteCallbacks: Array<() => void> = [];
+    writeThrows = false;
 
     constructor() {
       xterm.instances.push(this);
     }
 
-    loadAddon(): void {}
+    loadAddon(addon?: { activate?: (terminal: FakeTerminalInstance) => void }): void {
+      addon?.activate?.(this);
+    }
     open(element: HTMLElement): void {
       this.element = element;
     }
@@ -68,16 +103,38 @@ vi.mock("@xterm/xterm", () => ({
     dispose(): void {
       this.disposed = true;
     }
-    write(data: unknown): void {
+    write(data: unknown, callback?: () => void): void {
+      // xterm's 50-MiB flow-control guard throws synchronously BEFORE the
+      // chunk is queued; the byte was never queued, so the drain must release.
+      if (this.writeThrows) {
+        throw new Error("write data discarded, use flow control");
+      }
       const bytes = Array.from(data as Uint8Array);
       this.writes.push(bytes);
-      this.screen.push(bytes);
+      const complete = () => {
+        this.screen.push(bytes);
+        callback?.();
+      };
+      if (xterm.autoCompleteWrites) {
+        queueMicrotask(complete);
+      } else {
+        this.pendingWriteCallbacks.push(complete);
+      }
     }
     reset(): void {
       this.resets += 1;
       this.screen.length = 0;
+      // xterm 6.0.0: reset() does NOT discard the pending write queue, so the
+      // parked completions survive; the buffer metrics are zeroed and `type`
+      // is left untouched (tests set it explicitly).
+      this.buffer.active.viewportY = 0;
+      this.buffer.active.baseY = 0;
+      this.buffer.active.length = 0;
     }
-    scrollToBottom(): void {}
+    scrollToBottom(): void {
+      this.scrollToBottomCalls += 1;
+      this.buffer.active.viewportY = this.buffer.active.baseY;
+    }
     paste(): void {}
     hasSelection(): boolean {
       return false;
@@ -93,6 +150,7 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose: () => {} };
     }
     resize(cols: number, rows: number): void {
+      this.resizes.push({ cols, rows });
       this.cols = cols;
       this.rows = rows;
     }
@@ -101,10 +159,22 @@ vi.mock("@xterm/xterm", () => ({
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
-    activate(): void {}
-    fit = vi.fn();
+    private terminal: FakeTerminalInstance | null = null;
+
+    activate(terminal: FakeTerminalInstance): void {
+      this.terminal = terminal;
+    }
+
+    fit = vi.fn(() => {
+      const terminal = this.terminal;
+      if (!terminal) return;
+      if (terminal.cols === fitViewport.cols && terminal.rows === fitViewport.rows) {
+        return;
+      }
+      terminal.resize(fitViewport.cols, fitViewport.rows);
+    });
     proposeDimensions(): { cols: number; rows: number } {
-      return { cols: 80, rows: 24 };
+      return { cols: fitViewport.cols, rows: fitViewport.rows };
     }
   },
 }));
@@ -142,6 +212,43 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+// Fixture: five viewports of 24 rows of 80-column line bytes (5 * 24 * 80 =
+// 9600 bytes), the multi-viewport idle history a Codex lifecycle accumulates.
+const MULTIVIEW: number[] = Array.from(
+  { length: 5 * 24 * 80 },
+  (_, index) => (index * 31) % 256
+);
+
+// Fixture: a 64 * 1024 byte ring batch, the near-64-KiB history bound.
+const RING_64K: number[] = Array.from(
+  { length: 64 * 1024 },
+  (_, index) => (index * 17 + 3) % 256
+);
+
+// Drains the instance's pending write completions FIFO. A completion may
+// synchronously release a drain whose continuation (reset, next queued write)
+// lands on a microtask, so callers interleave this with flushPromises.
+function completeWriteCallbacks(instance: FakeTerminalInstance): void {
+  const callbacks = instance.pendingWriteCallbacks.splice(0);
+  for (const callback of callbacks) {
+    callback();
+  }
+}
+
+// Models xterm having parsed `lines` of scrollback: the buffer holds `lines`
+// rows, `baseY` sits above a `rows`-tall viewport, and the view shows the top.
+function simulateParsedHistory(instance: FakeTerminalInstance, lines: number): void {
+  instance.buffer.active.length = lines;
+  instance.buffer.active.baseY = lines - instance.rows;
+  instance.buffer.active.viewportY = 0;
+}
+
+// Models an intentional user scroll-up (wheel listener side effect or direct
+// scrollbar drag): the viewport leaves the bottom.
+function simulateUserScrollUp(instance: FakeTerminalInstance): void {
+  instance.buffer.active.viewportY = 0;
 }
 
 function setupTransport(fake: FakeTransport): void {
@@ -182,7 +289,14 @@ describe("TerminalView attachment (#1363)", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    xterm.autoCompleteWrites = true;
+    for (const instance of xterm.instances) {
+      instance.pendingWriteCallbacks.length = 0;
+      instance.writeThrows = false;
+    }
     xterm.instances.length = 0;
+    fitViewport.cols = 80;
+    fitViewport.rows = 24;
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     debug = vi.spyOn(console, "debug").mockImplementation(() => {});
   });
@@ -222,8 +336,9 @@ describe("TerminalView attachment (#1363)", () => {
       // Switch back before the detach settles, then let it settle.
       terminalStore.setActiveSessionForTests(SESSION_A);
       detachGate.resolve();
-      await flushPromises();
-      await flushPromises();
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_A])
+      );
 
       // B was visible for a moment but never attached: its transition was
       // superseded before it could issue one.
@@ -448,6 +563,9 @@ describe("TerminalView attachment (#1363)", () => {
 
       terminalStore.setActiveSessionForTests(SESSION_B);
       await waitFor(() => expect(detachedSessionIds(fake)).toEqual([SESSION_A]));
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B])
+      );
 
       terminalStore.setActiveSessionForTests(SESSION_A);
       await waitFor(() => expect(terminal.writes).toHaveLength(2));
@@ -520,9 +638,11 @@ describe("TerminalView attachment (#1363)", () => {
       for (const instance of instancesFor(SESSION_A)) {
         expect(instance.writes).toEqual([SNAP, LIVE]);
       }
-      for (const instance of instancesFor(SESSION_B)) {
-        expect(instance.writes).toEqual([SNAP]);
-      }
+      await waitFor(() => {
+        for (const instance of instancesFor(SESSION_B)) {
+          expect(instance.writes).toEqual([SNAP]);
+        }
+      });
     } finally {
       rendered.cleanup();
     }
@@ -570,14 +690,22 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
       const terminal = instancesFor(SESSION_A)[0];
 
-      // Priming: the first attach settle schedules `scheduleViewportSync`,
-      // whose two rAF frames are setTimeout(0) under the DOM stubs, so
-      // waitFor's real sleeps flush them. Exactly one pty_resize carries the
-      // fit dims: `lastSentViewport` now equals what the re-attach will refit.
-      await waitFor(() => expect(resizesOfA()).toEqual([{ cols: 80, rows: 24 }]));
+      // The priming sync, pre-seed imposition, and the
+      // {second priming frame, settle} pair each contribute one send in the
+      // harness ordering. All carry this window's fitted grid.
+      await waitFor(() =>
+        expect(resizesOfA()).toEqual([
+          { cols: 80, rows: 24 },
+          { cols: 80, rows: 24 },
+          { cols: 80, rows: 24 },
+        ])
+      );
 
       terminalStore.setActiveSessionForTests(SESSION_B);
       await waitFor(() => expect(detachedSessionIds(fake)).toEqual([SESSION_A]));
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B])
+      );
 
       // Segment the invoke log: only re-attach calls count from here on.
       const resizesBeforeReattach = resizesOfA().length;
@@ -587,12 +715,13 @@ describe("TerminalView attachment (#1363)", () => {
         expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
       );
 
-      // The attach settled with no seed; flushing the sync's two rAF frames
-      // must re-impose this window's grid on the PTY. Without the dedup-key
-      // invalidation the refit equals the primed key and this send never
-      // happens: the incident geometry, and this wait times out.
+      // The pre-seed imposition and the {second priming frame, seedless
+      // resync} pair each re-impose this window's grid. Without the dedup-key
+      // invalidation the refit equals the primed key and these sends disappear:
+      // the incident geometry returns, and this wait times out.
       await waitFor(() =>
         expect(resizesOfA().slice(resizesBeforeReattach)).toEqual([
+          { cols: 80, rows: 24 },
           { cols: 80, rows: 24 },
         ])
       );
@@ -611,6 +740,1055 @@ describe("TerminalView attachment (#1363)", () => {
       // pre-detach buffer content survived the whole cycle.
       expect(terminal.resets).toBe(1);
       expect(terminal.screen).toEqual([SNAP, LIVE]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 - the attach replay must be ordered: every retained live byte was
+  // written on arrival and queued BEFORE the reset+snapshot, so the snapshot
+  // write must have parsed completely before the retained replay is written.
+  // The snapshot carries sequence 1 (pinned below LIVE's 5: with sequence >= 5
+  // the replay watermark would drop LIVE and the pre-fix red assertion would
+  // not occur). PRE-FIX RED: screen == [LIVE, SNAP, LIVE] (the straddled,
+  // duplicated replay).
+  it("waits for the snapshot write to parse before replaying retained live output", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const attachGate = deferred<PtyScreenSnapshot | null>();
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        return attachGate.promise;
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Retained live output while the seed is in flight: queued, not applied.
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 });
+      expect(terminal.writes).toEqual([LIVE]);
+      expect(terminal.screen).toEqual([]);
+
+      attachGate.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 1,
+      });
+      await flushPromises();
+
+      // The drain holds: the live byte is still queued, the snapshot is not
+      // yet written, nothing is on screen.
+      expect(terminal.writes).toEqual([LIVE]);
+      expect(terminal.screen).toEqual([]);
+
+      // Complete the live write: the drain releases, the reset runs, and the
+      // snapshot write is queued — before its callback completes.
+      completeWriteCallbacks(terminal);
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE, SNAP]);
+
+      // Complete the snapshot write: the replay write is queued.
+      completeWriteCallbacks(terminal);
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE, SNAP, LIVE]);
+
+      // Complete the replay write: snapshot bytes then live bytes, exactly
+      // once.
+      completeWriteCallbacks(terminal);
+      await flushPromises();
+      expect(terminal.screen).toEqual([SNAP, LIVE]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 - after replay and the fitted resize, the attach must bottom the
+  // viewport to the current screen exactly once. The attach fetch is held so
+  // the selectSession priming sync fires with the PRE-snapshot grid (80x24),
+  // exactly as in production where the attach IPC round-trip spans animation
+  // frames; the snapshot carries rows 27 / cols 81, so after the #1439 dedup
+  // key invalidation the settle's own resize is NOT deduplicated. pty_resize
+  // is gated so the history simulation provably lands after the reset (the
+  // reset zeroes the buffer metrics) and before the bottoming. PRE-FIX RED:
+  // no settle at all — scrollToBottomCalls stays 0 and viewportY (0) <
+  // baseY (108).
+  it("settles the viewport to the current screen exactly once after replay and fit", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const attachGate = deferred<PtyScreenSnapshot | null>();
+    const resizeGate = deferred<void>();
+    fake.onInvoke("pty_resize", (args) => {
+      if (Number(args.cols) === 81 && Number(args.rows) === 27) {
+        return resizeGate.promise;
+      }
+      return undefined;
+    });
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        return attachGate.promise;
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+    const resizesOfA = () =>
+      fake
+        .callsFor("pty_resize")
+        .filter((call) => String(call.args.sessionId) === SESSION_A)
+        .map((call) => ({
+          cols: Number(call.args.cols),
+          rows: Number(call.args.rows),
+        }));
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // The priming sync and the awaited pre-seed imposition carry the
+      // pre-snapshot grid. The second sync frame deduplicates against the key
+      // re-primed by the pre-seed send.
+      await waitFor(() =>
+        expect(resizesOfA()).toEqual([
+          { cols: 80, rows: 24 },
+          { cols: 80, rows: 24 },
+        ])
+      );
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(resizesOfA()).toEqual([
+        { cols: 80, rows: 24 },
+        { cols: 80, rows: 24 },
+      ]);
+
+      fitViewport.cols = 81;
+      fitViewport.rows = 27;
+      attachGate.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: 27,
+        cols: 81,
+        sequence: 0,
+      });
+
+      // The settle's pty_resize carries the snapshot grid: proof the replay
+      // and the reset ran (the reset zeroes the buffer metrics, so the
+      // history simulation must come after it).
+      await waitFor(() =>
+        expect(resizesOfA()).toContainEqual({ cols: 81, rows: 27 })
+      );
+      simulateParsedHistory(terminal, 135);
+
+      // No bottoming before the resize outcome.
+      expect(terminal.scrollToBottomCalls).toBe(0);
+
+      resizeGate.resolve();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      expect(terminal.buffer.active.viewportY).toBe(108);
+      expect(terminal.buffer.active.baseY).toBe(108);
+
+      // The single settled record carries the full evidence set: viewport
+      // metrics, terminal grid, snapshot grid, seed size, buffer type.
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled).toContain("viewportY=108");
+      expect(settled).toContain("baseY=108");
+      expect(settled).toContain("bufferLength=135");
+      expect(settled).toContain("cols=81");
+      expect(settled).toContain("rows=27");
+      expect(settled).toContain("type=normal");
+      expect(settled).toContain("snapshotCols=81");
+      expect(settled).toContain("snapshotRows=27");
+      expect(settled).toContain("seedBytes=4");
+      expect(settled).toContain("resize=sent");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("sends the fitted container grid to the PTY before requesting the seed snapshot", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fitViewport.cols = 100;
+    fitViewport.rows = 30;
+    fake.onInvoke("activate_terminal_output", (args) => ({
+      sessionId: String(args.sessionId),
+      data: SNAP,
+      rows: 30,
+      cols: 100,
+      sequence: 0,
+    }));
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() =>
+        expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1)
+      );
+      const terminal = instancesFor(SESSION_A)[0];
+      const fittedResize = fake.callsFor("pty_resize").find(
+        (call) =>
+          String(call.args.sessionId) === SESSION_A &&
+          Number(call.args.cols) === 100 &&
+          Number(call.args.rows) === 30
+      );
+      const seedRequest = fake
+        .callsFor("activate_terminal_output")
+        .find((call) => String(call.args.sessionId) === SESSION_A);
+      if (!fittedResize || !seedRequest) {
+        throw new Error("expected the fitted resize and seed request");
+      }
+
+      expect(fake.calls.indexOf(fittedResize)).toBeLessThan(fake.calls.indexOf(seedRequest));
+      expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({ cols: 100, rows: 30 });
+      expect(terminal.resizes).toEqual([{ cols: 100, rows: 30 }]);
+
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled).toContain("cols=100");
+      expect(settled).toContain("rows=30");
+      expect(settled).toContain("snapshotCols=100");
+      expect(settled).toContain("snapshotRows=30");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("initial attach ends with the same geometry as detach -> reattach", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fitViewport.cols = 100;
+    fitViewport.rows = 30;
+    fake.onInvoke("activate_terminal_output", (args) => ({
+      sessionId: String(args.sessionId),
+      data: String(args.sessionId) === SESSION_A ? MULTIVIEW : SNAP,
+      rows: 30,
+      cols: 100,
+      sequence: 0,
+    }));
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([MULTIVIEW]));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 120);
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      const initialGeometry = {
+        cols: terminal.cols,
+        rows: terminal.rows,
+        viewportY: terminal.buffer.active.viewportY,
+        baseY: terminal.buffer.active.baseY,
+        bufferLength: terminal.buffer.active.length,
+      };
+
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B])
+      );
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      await waitFor(() => expect(terminal.writes).toEqual([MULTIVIEW, MULTIVIEW]));
+
+      simulateParsedHistory(terminal, 120);
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(2));
+
+      expect({
+        cols: terminal.cols,
+        rows: terminal.rows,
+        viewportY: terminal.buffer.active.viewportY,
+        baseY: terminal.buffer.active.baseY,
+        bufferLength: terminal.buffer.active.length,
+      }).toEqual(initialGeometry);
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+      expect(terminal.screen).toEqual([MULTIVIEW]);
+
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled).toHaveLength(2);
+      for (const line of settled) {
+        expect(line).toContain("cols=100");
+        expect(line).toContain("rows=30");
+        expect(line).toContain("snapshotCols=100");
+        expect(line).toContain("snapshotRows=30");
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("snapshot replay never resizes a populated buffer on the aligned path", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fitViewport.cols = 100;
+    fitViewport.rows = 30;
+    const attachGate = deferred<PtyScreenSnapshot | null>();
+    fake.onInvoke("activate_terminal_output", () => attachGate.promise);
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      expect(terminal.resizes).toEqual([{ cols: 100, rows: 30 }]);
+      expect(terminal.writes).toEqual([]);
+
+      // Let the original second priming frame dedup while the snapshot is
+      // still gated. Once the snapshot clears the key, the settle send is the
+      // observable `sent` outcome pinned below.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      attachGate.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: 30,
+        cols: 100,
+        sequence: 0,
+      });
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP]));
+      expect(terminal.resizes).toEqual([{ cols: 100, rows: 30 }]);
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled).toContain("cols=100");
+      expect(settled).toContain("rows=30");
+      expect(settled).toContain("snapshotCols=100");
+      expect(settled).toContain("snapshotRows=30");
+      expect(settled).toContain("resize=sent");
+      expect(terminal.resizes).toEqual([{ cols: 100, rows: 30 }]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("initial attach completes without an animation frame while the document is hidden, and settles on restore", async () => {
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    let cleanupRendered: (() => void) | null = null;
+
+    try {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      cleanupRendered = rendered.cleanup;
+
+      await flushPromises();
+      await flushPromises();
+      expect(attachedSessionIds(fake)).toEqual([SESSION_A]);
+
+      const currentGridResize = fake
+        .callsFor("pty_resize")
+        .find((call) => String(call.args.sessionId) === SESSION_A);
+      const seedRequest = fake
+        .callsFor("activate_terminal_output")
+        .find((call) => String(call.args.sessionId) === SESSION_A);
+      if (!currentGridResize || !seedRequest) {
+        throw new Error("expected the hidden-path resize and seed request");
+      }
+      expect(fake.calls.indexOf(currentGridResize)).toBeLessThan(
+        fake.calls.indexOf(seedRequest)
+      );
+
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+      const terminal = instancesFor(SESSION_A)[0];
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+      expect(
+        debug.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .filter((line: string) =>
+            line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+          )
+      ).toHaveLength(1);
+    } finally {
+      cleanupRendered?.();
+      if (hiddenDescriptor) {
+        Object.defineProperty(document, "hidden", hiddenDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "hidden");
+      }
+    }
+  });
+
+  // #1489 - every async continuation of an attach transaction must be inert
+  // once a newer attach owns the session. Four scenarios: a held
+  // generation-1 snapshot callback fenced by the shared drain (main, the
+  // snapshot-class variant), a generation-1 live byte still queued when
+  // generation 2 resets (sub-step A: the shared drain fences the FIFO
+  // residue), a synchronous 50-MiB queue-guard throw (sub-step B: the drain
+  // must release, not strand), and a generation-1 replay residue (sub-step C:
+  // the fenced-replay registration makes generation 2's fence await it).
+  it("a stale attach generation cannot mutate a newer replay", async () => {
+    // ── main: generation 1's held snapshot callback stays inert ──
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fake.onInvoke("activate_terminal_output", (args) => ({
+      sessionId: String(args.sessionId),
+      data: SNAP,
+      rows: null,
+      cols: null,
+      sequence: 0,
+    }));
+    const resizesOfA = () =>
+      fake
+        .callsFor("pty_resize")
+        .filter((call) => String(call.args.sessionId) === SESSION_A)
+        .length;
+    const settledRecordsOf = (sessionId: string) =>
+      debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter((line: string) =>
+          line.startsWith("[terminal] attach " + sessionId + " settled:")
+        ).length;
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Generation 1: the snapshot write is queued and held (gated).
+      expect(terminal.writes).toEqual([SNAP]);
+
+      // Switch to B: auto-complete, settles once.
+      xterm.autoCompleteWrites = true;
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() =>
+        expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1)
+      );
+
+      // Switch back to A: generation 2's snapshot write is NOT queued while
+      // generation 1's gated snapshot callback is still held - the shared
+      // drain fences the older generation's still-queued snapshot bytes (the
+      // snapshot-class fence variant, proven before the release).
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      await flushPromises();
+      expect(terminal.writes).toEqual([SNAP]);
+      expect(terminal.scrollToBottomCalls).toBe(0);
+
+      // Let the re-attach's priming sync frames run before counting resizes.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      const writesBefore = terminal.writes.length;
+      const bottomsBefore = terminal.scrollToBottomCalls;
+      const resizesBefore = resizesOfA();
+      const recordsBefore = settledRecordsOf(SESSION_A) + settledRecordsOf(SESSION_B);
+
+      // Complete generation 1's held callback: the drain releases, generation
+      // 2's snapshot write queues and settles once, and generation 1's later
+      // continuation (its flush) is inert - no additional writes, no
+      // additional bottoming, no additional pty_resize, and no settled record
+      // for generation 1.
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP, SNAP]));
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      expect(terminal.writes).toHaveLength(writesBefore + 1);
+      expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1);
+      expect(resizesOfA()).toBe(resizesBefore);
+      expect(settledRecordsOf(SESSION_A) + settledRecordsOf(SESSION_B)).toBe(
+        recordsBefore + 1
+      );
+    } finally {
+      rendered.cleanup();
+    }
+
+    // ── sub-step A: FIFO residue fenced by the shared drain ──
+    xterm.autoCompleteWrites = false;
+    const fakeA = new FakeTransport();
+    setupTransport(fakeA);
+    const attachGateA = deferred<PtyScreenSnapshot | null>();
+    let attachesOfA = 0;
+    fakeA.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        attachesOfA += 1;
+        if (attachesOfA === 1) {
+          return attachGateA.promise;
+        }
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const renderedA = renderWithFakeTransport(() => <TerminalView />, fakeA);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fakeA)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Generation-1 live byte: queued, not applied, while the fetch is held.
+      fakeA.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 5,
+      });
+      expect(terminal.writes).toEqual([LIVE]);
+      expect(terminal.screen).toEqual([]);
+
+      attachGateA.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 0,
+      });
+      await flushPromises();
+
+      // Switch to B and back to A; generation 2 has no live events of its own.
+      xterm.autoCompleteWrites = true;
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() =>
+        expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1)
+      );
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fakeA)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      await flushPromises();
+
+      // Generation 2's snapshot write is NOT queued until generation 1's
+      // gated live write is completed: the shared drain fences the residue.
+      expect(terminal.writes).toEqual([LIVE]);
+      expect(terminal.screen).toEqual([]);
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.writes).toEqual([LIVE, SNAP]));
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      // Final screen: no generation-1 byte before the generation-2 snapshot;
+      // exactly-once content; one settle per generation.
+      expect(terminal.screen).toEqual([SNAP]);
+      expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1);
+    } finally {
+      renderedA.cleanup();
+    }
+
+    // ── sub-step B: synchronous 50-MiB queue-guard throw releases the drain ──
+    xterm.autoCompleteWrites = false;
+    const fakeB = new FakeTransport();
+    setupTransport(fakeB);
+    const attachGateB = deferred<PtyScreenSnapshot | null>();
+    fakeB.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        return attachGateB.promise;
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const renderedB = renderWithFakeTransport(() => <TerminalView />, fakeB);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fakeB)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // The queue guard throws synchronously before queueing; the transport
+      // calls listeners synchronously, so the throw propagates out.
+      terminal.writeThrows = true;
+      expect(() =>
+        fakeB.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 })
+      ).toThrow();
+      terminal.writeThrows = false;
+
+      attachGateB.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 0,
+      });
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP]));
+
+      // The drain released (the snapshot write was queued); the retained byte
+      // replays exactly once and the settle completes: inFlight never strands.
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP, LIVE]));
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.screen).toEqual([SNAP, LIVE]);
+    } finally {
+      renderedB.cleanup();
+    }
+
+    // ── sub-step C: unregistered replay residue fenced by the shared drain ──
+    xterm.autoCompleteWrites = false;
+    const fakeC = new FakeTransport();
+    setupTransport(fakeC);
+    const attachGateC = deferred<PtyScreenSnapshot | null>();
+    let attachesOfC = 0;
+    fakeC.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        attachesOfC += 1;
+        if (attachesOfC === 1) {
+          return attachGateC.promise;
+        }
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const renderedC = renderWithFakeTransport(() => <TerminalView />, fakeC);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fakeC)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+      const settledBeforeC = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter(
+          (line: string) =>
+            line.startsWith("[terminal] attach ") && line.includes(" settled:")
+        ).length;
+
+      // Generation 1: a live byte queued (not applied) while the fetch is
+      // held; the seed resolves and the flush queues the retained replay
+      // bytes - all gated.
+      fakeC.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 5,
+      });
+      attachGateC.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: null,
+        cols: null,
+        sequence: 0,
+      });
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE]);
+
+      completeWriteCallbacks(terminal);
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE, SNAP]);
+
+      completeWriteCallbacks(terminal);
+      await flushPromises();
+      // Generation 1's replay byte is queued but not complete.
+      expect(terminal.writes).toEqual([LIVE, SNAP, LIVE]);
+
+      // Switch to B and back to A before generation 1's replay bytes
+      // complete; generation 2's snapshot write is NOT queued until they do
+      // (the fenced-replay registration makes the next generation's drain
+      // await them).
+      xterm.autoCompleteWrites = true;
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() =>
+        expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1)
+      );
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fakeC)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE, SNAP, LIVE]);
+      expect(terminal.scrollToBottomCalls).toBe(0);
+
+      // Complete generation 1's replay bytes: the drain releases, generation 2
+      // re-seeds and settles once; generation 1's flush finalize is inert.
+      completeWriteCallbacks(terminal);
+      await waitFor(() =>
+        expect(terminal.writes).toEqual([LIVE, SNAP, LIVE, SNAP])
+      );
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      // No generation-1 byte before the generation-2 snapshot; exactly-once
+      // screen content; exactly one settle per generation in this sub-step.
+      expect(terminal.screen).toEqual([SNAP]);
+      expect(instancesFor(SESSION_B)[0]?.screen).toEqual([SNAP]);
+      const settledCount = () =>
+        debug.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .filter(
+            (line: string) =>
+              line.startsWith("[terminal] attach ") && line.includes(" settled:")
+          ).length;
+      expect(settledCount()).toBe(settledBeforeC + 2);
+    } finally {
+      renderedC.cleanup();
+    }
+  });
+
+  // #1489 - ordinary live output must never bottom a viewport the user
+  // deliberately scrolled up. The settle sequence is the only bottoming path;
+  // `writeLivePtyOutput` never calls `scrollToBottom`. The settle-window
+  // sub-step proves the wheel guard (4.5): a real wheel event in the
+  // post-replay/pre-settle window suppresses the one-shot bottoming while the
+  // settled record is still emitted.
+  it("ordinary live output never bottoms a user who scrolled up", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const settledRecordsOf = (sessionId: string) =>
+      debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter((line: string) =>
+          line.startsWith("[terminal] attach " + sessionId + " settled:")
+        ).length;
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Settled attach: the one-shot bottom ran exactly once.
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      simulateUserScrollUp(terminal);
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 });
+      await waitFor(() => expect(terminal.writes).toEqual([SNAP, LIVE]));
+
+      expect(terminal.scrollToBottomCalls).toBe(1);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+
+      // Settle-window sub-step (wheel guard, #1489 4.5): switch away and back
+      // (second generation, gated writes); complete the second replay; before
+      // the settle's rAF (a setTimeout(0) in this harness) fires, dispatch a
+      // real wheel event on `terminal.element` - the marker suppresses only
+      // the bottoming, not the settled record.
+      xterm.autoCompleteWrites = false;
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)[0]?.writes).toEqual([SNAP]));
+      completeWriteCallbacks(instancesFor(SESSION_B)[0]);
+      await waitFor(() =>
+        expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1)
+      );
+
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      // Generation 2's snapshot write is queued and gated; the second replay
+      // runs when it completes.
+      expect(terminal.writes).toEqual([SNAP, LIVE, SNAP]);
+
+      // Complete the second replay. The settle's rAF is a setTimeout(0) and
+      // has not fired yet when the completion returns, so the wheel event
+      // lands inside the settle window.
+      completeWriteCallbacks(terminal);
+      terminal.element?.dispatchEvent(new WheelEvent("wheel"));
+
+      await waitFor(() => expect(settledRecordsOf(SESSION_A)).toBe(2));
+      expect(terminal.scrollToBottomCalls).toBe(1);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 - an attach settle over a meaningful multi-viewport history must
+  // bottom to the current screen: bufferLength and baseY reflect the parsed
+  // history, and the settled record carries the normal-buffer evidence.
+  it("attach settle preserves meaningful multi-viewport history", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId !== SESSION_A) {
+        return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+      }
+      return {
+        sessionId,
+        data: MULTIVIEW,
+        rows: 24,
+        cols: 80,
+        sequence: 0,
+      };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // The snapshot write is queued but not applied; the reset has already
+      // zeroed the buffer metrics, so the parsed history can be simulated
+      // before the write completes and the settle runs.
+      simulateParsedHistory(terminal, 120);
+      completeWriteCallbacks(terminal);
+
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(96);
+      expect(terminal.buffer.active.baseY).toBe(96);
+      expect(terminal.buffer.active.length).toBe(120);
+
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled).toContain("type=normal");
+      expect(settled).toContain("snapshotCols=80");
+      expect(settled).toContain("snapshotRows=24");
+      expect(settled).toContain("seedBytes=" + String(MULTIVIEW.length));
+
+      // Scrolling to the top shows the reconstructed history, not a synthetic
+      // empty region.
+      simulateUserScrollUp(terminal);
+      expect(terminal.screen).not.toEqual([]);
+      expect(terminal.screen[0]).toEqual(MULTIVIEW);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 - a near-64-KiB ring replay stays exactly-once with one settle:
+  // the live bytes are written on arrival, the snapshot re-seeds, and the
+  // retention replays after it — never duplicated.
+  it("near-64-KiB ring replay stays exactly-once with one settle", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const attachGate = deferred<PtyScreenSnapshot | null>();
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        return attachGate.promise;
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Overlapping live events while the seed is in flight.
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 });
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 6 });
+      attachGate.resolve({
+        sessionId: SESSION_A,
+        data: RING_64K,
+        rows: null,
+        cols: null,
+        sequence: 0,
+      });
+
+      // Ring bytes, then the overlapping live bytes, exactly once.
+      await waitFor(() => expect(terminal.screen).toEqual([RING_64K, LIVE, LIVE]));
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+      expect(terminal.writes).toEqual([LIVE, LIVE, RING_64K, LIVE, LIVE]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 Codex lifecycle: an idle multi-viewport scrollback with overlapping
+  // live events settles at the bottom; a user scroll-up survives ordinary live
+  // output and the re-attach; the second attach's settle records the
+  // alternate-screen evidence (the alternate buffer has no scrollback, so the
+  // bottoming is a no-op there).
+  it("Codex lifecycle: idle multi-viewport replay, overlap, scroll-up, and re-attach", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const attachGates = [
+      deferred<PtyScreenSnapshot | null>(),
+      deferred<PtyScreenSnapshot | null>(),
+    ];
+    let attachesOfA = 0;
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        const gate = attachGates[attachesOfA];
+        attachesOfA += 1;
+        return gate.promise;
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Idle multi-viewport replay with overlapping live events.
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 });
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: GONE, sequence: 6 });
+      attachGates[0].resolve({
+        sessionId: SESSION_A,
+        data: MULTIVIEW,
+        rows: 24,
+        cols: 80,
+        sequence: 0,
+      });
+
+      await waitFor(() => expect(terminal.screen).toEqual([MULTIVIEW, LIVE, GONE]));
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+
+      // Scroll up: further live output stays put. (`writes` also records the
+      // live arrivals: LIVE, GONE, then the snapshot, the replay, and LIVE.)
+      simulateUserScrollUp(terminal);
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 7 });
+      await waitFor(() =>
+        expect(terminal.writes).toEqual([LIVE, GONE, MULTIVIEW, LIVE, GONE, LIVE])
+      );
+      expect(terminal.scrollToBottomCalls).toBe(1);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+
+      // Switch away and back: exactly one settle per attach.
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(detachedSessionIds(fake)).toEqual([SESSION_A]));
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B])
+      );
+
+      // Alternate-screen evidence: before the second attach's settle.
+      terminal.buffer.active.type = "alternate";
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      attachGates[1].resolve({
+        sessionId: SESSION_A,
+        data: MULTIVIEW,
+        rows: 24,
+        cols: 80,
+        sequence: 0,
+      });
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(2));
+
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter((line: string) =>
+          line.startsWith("[terminal] attach " + SESSION_A + " settled:")
+        );
+      expect(settled[0]).toContain("type=normal");
+      expect(settled[1]).toContain("type=alternate");
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+
+      // No stale mutation: the re-seed wiped the pre-switch content and the
+      // second seed stands exactly once.
+      expect(terminal.screen).toEqual([MULTIVIEW]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // #1489 Pi lifecycle: a near-64-KiB ring replay with a switch away
+  // mid-replay and back. Both generations' pipelines are held on gated
+  // writes; completing them in reverse order (B's generation, then A's)
+  // proves exactly-once screen content, one settle per attach, and inert
+  // stale callbacks.
+  it("Pi lifecycle: ring replay with switch-away/back and exactly-once live bytes", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const attachGate = deferred<PtyScreenSnapshot | null>();
+    let attachesOfA = 0;
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId === SESSION_A) {
+        attachesOfA += 1;
+        if (attachesOfA === 1) {
+          return attachGate.promise;
+        }
+        return { sessionId, data: RING_64K, rows: null, cols: null, sequence: 0 };
+      }
+      return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+    });
+
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+
+      // Generation 1: a live byte queued (not applied) while the fetch is
+      // held; the ring snapshot arrives after it.
+      fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE, sequence: 5 });
+      expect(terminal.writes).toEqual([LIVE]);
+      attachGate.resolve({
+        sessionId: SESSION_A,
+        data: RING_64K,
+        rows: null,
+        cols: null,
+        sequence: 0,
+      });
+      await flushPromises();
+
+      // Switch away mid-replay: B attaches and its snapshot write is queued.
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)[0]?.writes).toEqual([SNAP]));
+
+      // Complete B's held generation while B is still current: it settles
+      // exactly once (one settle per attach), so the later stale A callbacks
+      // have nothing left to mutate.
+      completeWriteCallbacks(instancesFor(SESSION_B)[0]);
+      await waitFor(() =>
+        expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1)
+      );
+      expect(instancesFor(SESSION_B)[0]?.screen).toEqual([SNAP]);
+
+      // Switch back: generation 2's ring write must NOT be queued until
+      // generation 1's gated live byte has parsed (the shared drain fences
+      // the FIFO residue).
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() =>
+        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A])
+      );
+      await flushPromises();
+      expect(terminal.writes).toEqual([LIVE]);
+      expect(terminal.screen).toEqual([]);
+
+      // Complete A's FIFO: generation 1's live byte releases the drain —
+      // generation 1's continuation aborts as stale (inert) and generation 2
+      // proceeds: reset, then its own ring write, then its settle.
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.writes).toEqual([LIVE, RING_64K]));
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+
+      // Exactly-once screen content, one settle per attach, no stale byte
+      // inside the newer replay.
+      expect(terminal.screen).toEqual([RING_64K]);
+      expect(instancesFor(SESSION_B)[0]?.screen).toEqual([SNAP]);
+      const settled = debug.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .filter(
+          (line: string) =>
+            line.startsWith("[terminal] attach ") && line.includes(" settled:")
+        );
+      expect(settled).toHaveLength(2);
     } finally {
       rendered.cleanup();
     }

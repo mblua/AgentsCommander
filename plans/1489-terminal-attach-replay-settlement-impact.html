@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan de impacto - #1489 - Settlement de replay y viewport de attach de terminal</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --panel: #12121a;
+    --panel2: #181824;
+    --ink: #e8e8e8;
+    --muted: #9aa0b4;
+    --accent: #00d4ff;
+    --green: #33ff99;
+    --red: #ff5c6c;
+    --amber: #ffcc33;
+    --violet: #c792ea;
+    --line: #2a2a3a;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+    padding: 32px 16px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; color: var(--accent); }
+  h2 { font-size: 18px; margin: 40px 0 12px; color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { font-size: 15px; margin: 20px 0 8px; color: var(--ink); }
+  p { margin: 8px 0; }
+  code, pre { font-family: var(--mono); font-size: 13px; }
+  code { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  .meta { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 12px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .tag { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+  .tag.mod { background: rgba(51,255,153,.12); color: var(--green); border: 1px solid rgba(51,255,153,.4); }
+  .tag.rel { background: rgba(0,212,255,.10); color: var(--accent); border: 1px solid rgba(0,212,255,.35); }
+  .tag.fix { background: rgba(255,92,108,.12); color: var(--red); border: 1px solid rgba(255,92,108,.4); }
+  .tag.prob { background: rgba(255,204,51,.10); color: var(--amber); border: 1px solid rgba(255,204,51,.4); }
+  .tag.ev { background: rgba(199,146,234,.10); color: var(--violet); border: 1px solid rgba(199,146,234,.4); }
+  ul { margin: 8px 0 8px 22px; padding: 0; }
+  li { margin: 5px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: var(--accent); font-size: 13px; }
+  .ok { color: var(--green); }
+  .bad { color: var(--red); }
+  .warn { color: var(--amber); }
+  .small { font-size: 13px; color: var(--muted); }
+  .verdict { font-size: 17px; font-weight: 700; color: var(--amber); }
+  .evref { font-family: var(--mono); font-size: 12px; color: var(--violet); }
+  .diagram-note { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  svg text { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>#1489 - Cierre del orden de replay y del settlement de viewport en el attach de terminal</h1>
+<p class="meta">Documento de impacto sincronizado con <code>plans/1489-terminal-attach-replay-settlement.md</code> &middot; Verdict: <span class="verdict">READY_FOR_IMPLEMENTATION</span> (certificado por el arquitecto en Step 7, ronda 2; no implementado)</p>
+<p class="meta">Repo: <code>repo-AgentsCommander</code> &middot; Rama: <code>fix/1489-terminal-attach-replay-settlement</code> &middot; Base: <code>45530b46b0a3d4bfe8715ac8b19916df98b6f8cd</code> == origin/main (rama ya no limpia: 2 archivos en scope modificados sin commitear, estado preservado del Step 8)</p>
+<p class="meta">Codebase Memory: proyecto <code>D-0_repos-AgentsCommander_iac-.ac-wg-17-dev-v5-team-repo-AgentsCommander</code> &middot; head_sha <code>45530b46b0a3d4bfe8715ac8b19916df98b6f8cd</code> &middot; nodos 24427 / aristas 131871 &middot; estado <code>ready</code></p>
+
+<h2>1. Objetivo</h2>
+<div class="card">
+<p>Cerrar la regresion de attach de terminal como una unica transaccion frontend atomica en exactamente cuatro archivos existentes (un archivo de producto, tres de pruebas). Borrador del Step 4 del restart completo, enriquecido por dev (Step 5, ronda 2, reporte 20260822-070714) y Grinch (Step 6, ronda 2, reporte 20260822-071549), adjudicado en el consenso del Step 7 (ronda 2) y certificado <code>READY_FOR_IMPLEMENTATION</code>:</p>
+<ul>
+<li><span class="ok">Determinismo:</span> completar el arnes de pruebas de attach con finalizacion asincrona de escritura xterm y estado de viewport observable (<code>viewportY</code>/<code>baseY</code>/<code>bufferLength</code>).</li>
+<li><span class="ok">Cerca (fence):</span> los bytes de snapshot terminan de parsear primero; cada byte vivo retenido se reproduce despues, exactamente una vez; las generaciones de attach/detach obsoletas no pueden mutar un replay mas nuevo.</li>
+<li><span class="ok">Settlement unico:</span> fijar el viewport a la pantalla actual exactamente una vez, solo tras completar replay/parser y el limite de fit; nunca hacer bottom-scroll en escrituras vivas ordinarias.</li>
+<li><span class="ok">Cobertura viva:</span> attach, detach/reattach, switch away/back, generacion obsoleta, preservacion del scroll-up intencional, historial significativo de multiples viewports, historial de anillo cercano a 64 KiB, y ciclos de vida Codex y Pi.</li>
+<li><span class="ok">Compatibilidad de arnes:</span> los dos fakes existentes que comparten el contrato xterm (<code>TerminalView.render-gate.test.tsx</code> y <code>App.workflow.test.tsx</code>) ganan exactamente los miembros que el mecanismo de produccion congelado lee: el callback opcional de <code>write</code> y las metricas de <code>buffer.active</code>; sin cambiar ninguna asercion ni comportamiento de producto (seccion 4.8 del plan).</li>
+</ul>
+</div>
+
+<h2>2. Causa identificada (evidencia verificada)</h2>
+<div class="card">
+<p>La auditoria especialista identifica una unica transaccion causal en <code>TerminalView.tsx</code>, re-verificada contra el codigo fuente:</p>
+<table>
+<tr><th>#</th><th>Hecho verificado</th><th>Evidencia</th></tr>
+<tr><td>1</td><td><code>transitionAttachment</code> comienza y espera el seed; el output vivo se retiene y a la vez se escribe de inmediato.</td><td class="evref">TerminalView.tsx:696-753, 478-491, 466-476</td></tr>
+<tr><td>2</td><td><code>rebuildFromSnapshot</code> hace reset, escribe los bytes de snapshot y luego descarga los eventos vivos retenidos sin ninguna cerca de escritura xterm (write sin callback).</td><td class="evref">TerminalView.tsx:557-568; writeTerminalBytes 127-131</td></tr>
+<tr><td>3</td><td><code>applySnapshot</code> agenda ademas fit/resize diferidos por rAF sin barrera de parseo.</td><td class="evref">TerminalView.tsx:570-628, scheduleViewportSync 381-395</td></tr>
+<tr><td>4</td><td>El camino de attach actual no tiene settlement inferior de un solo disparo: <code>scrollToBottom</code> no se llama en ningun punto del archivo.</td><td class="evref">TerminalView.tsx (barrido completo 47-900)</td></tr>
+<tr><td>5</td><td>Semantica real de xterm 6.0.0: <code>write(data, cb)</code> encola FIFO y el callback dispara solo cuando el chunk fue parseado y aplicado; <code>reset()</code> NO descarta la cola pendiente; <code>scrollToBottom()</code> = <code>scrollLines(ybase - ydisp)</code>.</td><td class="evref">node_modules/@xterm/xterm/lib/xterm.mjs (write/_innerWrite/reset/scrollToBottom); typings/xterm.d.ts:1253</td></tr>
+<tr><td>6</td><td>Consecuencia: los bytes vivos retenidos quedan encolados ANTES del reset+snapshot; al parsear despues del reset y antes del snapshot, el replay final los duplica y los deja a horcajadas del snapshot: la regresion de orden.</td><td class="evref">derivacion de 1+2+5</td></tr>
+<tr><td>7</td><td>El arnes actual oculta el defecto: el fake de <code>reset()</code> limpia <code>screen</code> sincronicamente, modelando un descarte de cola que xterm real no hace; no tiene metrics de buffer ni contador de bottom.</td><td class="evref">TerminalView.attachment.test.tsx:60-104 (mock Terminal)</td></tr>
+<tr><td>8</td><td>No existe identidad de generacion: ninguna continuacion asincrona del attach valida ser la captura vigente.</td><td class="evref">TerminalView.tsx (barrido completo)</td></tr>
+<tr><td>9</td><td>Bloqueo probado (Step 8): el fake de <code>render-gate</code> (write sin callback, sin buffer) atasca el drain del plan: <code>inFlight</code> nunca vuelve a 0 y reset+replay no corren; 2 tests rojos (<code>expected +0 to be 1</code> en <code>resets</code> tras 1000 ms).</td><td class="evref">TerminalView.render-gate.test.tsx:89-93; bloqueo 20260822-061610</td></tr>
+<tr><td>10</td><td>Bloqueo probado (Step 8): el fake de <code>App.workflow</code> dispara el callback (drain libera, settle corre) pero no expone <code>buffer</code>; el settle lee <code>buffer.active</code> (TerminalView.tsx:819) y lanza <code>TypeError</code> como 4 errores no manejados, con sus 30 aserciones verdes.</td><td class="evref">App.workflow.test.tsx:97-102; TerminalView.tsx:819; bloqueo 20260822-061610</td></tr>
+<tr><td>11</td><td>Ronda 2: la invariante del drain cubre TRES clases de escritura (vivas de ventana 4.2, el write de snapshot 4.4 paso 6, los writes de replay fenced 4.4 paso 4); el write de snapshot se registra con la misma forma 0→1, liberacion throw-safe y orden libera-primero/flush-despues; sin registro, los bytes de snapshot viejos podrian parsear dentro del buffer mas nuevo (variante de snapshot del hallazgo 2, cuerpo del test 12).</td><td class="evref">plan 4.1/4.4/6.5; reportes ronda 2 20260822-070714 y 20260822-071549</td></tr>
+</table>
+<p>Baseline de bloqueo observado (corridas frescas, evidencia durable en <code>scratch/1489-step8/</code>): enfocado <span class="ok">17 verdes</span>; suite completa <span class="bad">2 fallidos / 1599 pasados (1601); 4 errores no manejados</span>; <code>typecheck</code>, <code>check:frontend-dependencies</code> y <code>build</code> <span class="ok">PASS</span>. La correccion de compatibilidad (2 fakes) debe producir <span class="ok">1601 verdes y cero errores</span> sin cambiar aserciones. El plan heredado de #1478 es solo evidencia de diagnostico superada; no se reutiliza como autoridad.</p>
+</div>
+
+<h2>3. Diagrama de impacto (modificados vs relacionados)</h2>
+<div class="card">
+<svg viewBox="0 0 1000 780" width="100%" role="img" aria-label="Diagrama de impacto del plan 1489">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#9aa0b4"/>
+    </marker>
+    <marker id="arrowmod" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#33ff99"/>
+    </marker>
+  </defs>
+
+  <!-- Fondo -->
+  <rect x="0" y="0" width="1000" height="780" fill="#12121a" rx="12"/>
+
+  <!-- Nodos modificados (4, exactos del scope exclusivo) -->
+  <g>
+    <rect x="330" y="40" width="340" height="86" rx="10" fill="#0f1f18" stroke="#33ff99" stroke-width="2"/>
+    <text x="345" y="64" fill="#33ff99" font-size="13" font-weight="bold">MODIFICADO</text>
+    <text x="345" y="86" fill="#e8e8e8" font-size="13">src/terminal/components/TerminalView.tsx</text>
+    <text x="345" y="106" fill="#9aa0b4" font-size="11">900 -&gt; 1187 lineas - unico archivo de producto</text>
+  </g>
+  <g>
+    <rect x="330" y="150" width="340" height="86" rx="10" fill="#0f1f18" stroke="#33ff99" stroke-width="2"/>
+    <text x="345" y="174" fill="#33ff99" font-size="13" font-weight="bold">MODIFICADO</text>
+    <text x="345" y="196" fill="#e8e8e8" font-size="13">src/terminal/components/TerminalView.attachment.test.tsx</text>
+    <text x="345" y="216" fill="#9aa0b4" font-size="11">9 -&gt; 17 tests - arnes exclusivo de verificacion</text>
+  </g>
+  <g>
+    <rect x="330" y="260" width="340" height="86" rx="10" fill="#0f1f18" stroke="#33ff99" stroke-width="2"/>
+    <text x="345" y="284" fill="#33ff99" font-size="13" font-weight="bold">MODIFICADO</text>
+    <text x="345" y="306" fill="#e8e8e8" font-size="13">src/terminal/components/TerminalView.render-gate.test.tsx</text>
+    <text x="345" y="326" fill="#9aa0b4" font-size="11">8 tests - compatibilidad: write callback + buffer</text>
+  </g>
+  <g>
+    <rect x="330" y="370" width="340" height="86" rx="10" fill="#0f1f18" stroke="#33ff99" stroke-width="2"/>
+    <text x="345" y="394" fill="#33ff99" font-size="13" font-weight="bold">MODIFICADO</text>
+    <text x="345" y="416" fill="#e8e8e8" font-size="13">src/terminal/App.workflow.test.tsx</text>
+    <text x="345" y="436" fill="#9aa0b4" font-size="11">30 tests - compatibilidad: solo buffer</text>
+  </g>
+
+  <!-- Nodos relacionados (solo lectura) -->
+  <g>
+    <rect x="40" y="490" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="55" y="512" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="55" y="532" fill="#e8e8e8" font-size="12">terminal-session-registry.ts</text>
+    <text x="55" y="550" fill="#9aa0b4" font-size="11">SessionTerminalEntry (claves WeakMap)</text>
+  </g>
+  <g>
+    <rect x="375" y="490" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="390" y="512" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="390" y="532" fill="#e8e8e8" font-size="12">shared/ipc.ts</text>
+    <text x="390" y="550" fill="#9aa0b4" font-size="11">attachOutput / detachOutput / PtyAPI.resize</text>
+  </g>
+  <g>
+    <rect x="710" y="490" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="725" y="512" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="725" y="532" fill="#e8e8e8" font-size="12">shared/types.ts</text>
+    <text x="725" y="550" fill="#9aa0b4" font-size="11">PtyScreenSnapshot / PtyOutputEvent</text>
+  </g>
+  <g>
+    <rect x="40" y="590" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="55" y="612" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="55" y="632" fill="#e8e8e8" font-size="12">shared/testing/ui-harness.tsx</text>
+    <text x="55" y="650" fill="#9aa0b4" font-size="11">renderWithFakeTransport / waitFor / stubs</text>
+  </g>
+  <g>
+    <rect x="375" y="590" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="390" y="612" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="390" y="632" fill="#e8e8e8" font-size="12">shared/testing/fake-transport.ts</text>
+    <text x="390" y="650" fill="#9aa0b4" font-size="11">FakeTransport (invoke/emit observables)</text>
+  </g>
+  <g>
+    <rect x="710" y="590" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="725" y="612" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="725" y="632" fill="#e8e8e8" font-size="12">@xterm/xterm 6.0.0 (node_modules)</text>
+    <text x="725" y="650" fill="#9aa0b4" font-size="11">semantica write/reset/scrollToBottom</text>
+  </g>
+  <g>
+    <rect x="40" y="690" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="55" y="712" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="55" y="732" fill="#e8e8e8" font-size="12">shared/terminal-viewport.ts</text>
+    <text x="55" y="750" fill="#9aa0b4" font-size="11">takeSpawnViewport / rememberSpawnViewport</text>
+  </g>
+  <g>
+    <rect x="375" y="690" width="250" height="74" rx="10" fill="#101624" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="390" y="712" fill="#00d4ff" font-size="12" font-weight="bold">RELACIONADO (solo lectura)</text>
+    <text x="390" y="732" fill="#e8e8e8" font-size="12">terminal-options.ts</text>
+    <text x="390" y="750" fill="#9aa0b4" font-size="11">scrollback: 10000 (evidencia de historial)</text>
+  </g>
+
+  <!-- Aristas etiquetadas -->
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,126 L500,150" marker-end="url(#arrow)"/>
+    <text x="512" y="142" fill="#9aa0b4" font-size="11">escrituras observables (screen/writes/resets)</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,126 C500,240 280,340 205,490" marker-end="url(#arrow)"/>
+    <text x="255" y="300" fill="#9aa0b4" font-size="11">entry (clave WeakMap)</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,126 C500,240 500,340 500,490" marker-end="url(#arrow)"/>
+    <text x="510" y="300" fill="#9aa0b4" font-size="11">invoke/resize</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,126 C500,240 700,340 830,490" marker-end="url(#arrow)"/>
+    <text x="640" y="300" fill="#9aa0b4" font-size="11">tipos IPC</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M330,193 C250,260 180,400 165,590" marker-end="url(#arrow)"/>
+    <text x="185" y="420" fill="#9aa0b4" font-size="11">helpers de render/waitFor</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,193 C500,280 500,420 500,590" marker-end="url(#arrow)"/>
+    <text x="510" y="420" fill="#9aa0b4" font-size="11">transport fake</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M670,193 C700,280 760,420 830,590" marker-end="url(#arrow)"/>
+    <text x="690" y="420" fill="#9aa0b4" font-size="11">contrato de escritura/parseo</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M330,193 C250,300 170,500 165,690" marker-end="url(#arrow)"/>
+    <text x="185" y="520" fill="#9aa0b4" font-size="11">viewport de spawn</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M500,193 C500,350 500,520 500,690" marker-end="url(#arrow)"/>
+    <text x="510" y="520" fill="#9aa0b4" font-size="11">opciones del Terminal</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M670,303 C700,380 760,500 830,590" marker-end="url(#arrow)"/>
+    <text x="690" y="500" fill="#9aa0b4" font-size="11">write con callback (contrato)</text>
+  </g>
+  <g stroke="#9aa0b4" stroke-width="1.4" fill="none">
+    <path d="M670,413 C700,470 770,530 830,590" marker-end="url(#arrow)"/>
+    <text x="700" y="540" fill="#9aa0b4" font-size="11">buffer.active (settle)</text>
+  </g>
+</svg>
+<p class="diagram-note">Leyenda: borde verde continuo = archivo MODIFICADO (4, exactos del scope exclusivo: 1 producto + 3 pruebas); borde azul = archivo RELACIONADO solo-lectura (evidencia respaldada, no se toca). Flechas etiquetadas = relacion que conecta cada par. No existe ningun otro archivo modificado o creado.</p>
+</div>
+
+<h2>4. Razones por archivo y referencias de evidencia verificada</h2>
+<div class="card">
+<table>
+<tr><th>Archivo (ruta repo-relativa)</th><th>Estado</th><th>Razon del cambio o de la relacion</th><th>Referencia de evidencia</th></tr>
+<tr>
+<td><code>src/terminal/components/TerminalView.tsx</code></td><td><span class="tag mod">MODIFICADO</span></td>
+<td>Unico propietario del camino de attach: seed, retencion, reset/rebuild, fit/resize y el unico punto valido de settlement. Recibe el fence de escritura (drain por entrada, nunca reemplazado, tres clases: vivas de ventana, write de snapshot, writes de replay fenced), la guarda de generacion, el replay fenced, el settlement one-shot con guarda de scroll de rueda (wheel), el resize awaitable y las escrituras/callbacks throw-safe. Estado preservado del Step 8 (+326/-39, sin commitear); tres deltas de implementador de la ronda 2: write de snapshot throw-safe, registro en drain del write de snapshot, registro en drain de cada write de replay fenced (plan 8 paso 3).</td>
+<td class="evref">TerminalView.tsx:127-131, 466-491, 514-568, 570-628, 632-688, 696-753, 777-831 (snippets CBM); reportes ronda 2</td>
+</tr>
+<tr>
+<td><code>src/terminal/components/TerminalView.attachment.test.tsx</code></td><td><span class="tag mod">MODIFICADO</span></td>
+<td>Superficie de verificacion exclusiva. Recibe semantica de cola xterm 6.0.0 (write con callback, reset que conserva la cola, <code>writeThrows</code> para el guard de 50 MiB), metrics de buffer observables, contador de bottom, control de completado asincrono, fixtures multi-viewport/64 KiB y 8 tests nuevos con sub-pasos (cuerpo del test 12 re-secuenciado como variante de clase-snapshot del fence; variantes A/B/C; alternate-screen en el 16; wheel en el 13) - total 17. Estado preservado del Step 8: 17/17 verdes.</td>
+<td class="evref">TerminalView.attachment.test.tsx:36-55, 60-104, 130-175; lectura completa del archivo</td>
+</tr>
+<tr>
+<td><code>src/terminal/components/TerminalView.render-gate.test.tsx</code></td><td><span class="tag mod">MODIFICADO</span></td>
+<td>Compatibilidad del fake del arnes (correccion probada del bloqueo, seccion 4.8 del plan): <code>write(data, callback?)</code> invoca el callback opcional al completar (desatasca el drain y permite reset+replay) y expone <code>buffer.active</code> con <code>viewportY</code>/<code>baseY</code>/<code>length</code>/<code>type</code> (seguro para el settle). Sin cambios de aserciones: sus 8 tests siguen intactos.</td>
+<td class="evref">TerminalView.render-gate.test.tsx:38-49, 89-93; bloqueo 20260822-061610</td>
+</tr>
+<tr>
+<td><code>src/terminal/App.workflow.test.tsx</code></td><td><span class="tag mod">MODIFICADO</span></td>
+<td>Compatibilidad del fake del arnes: expone <code>buffer.active</code> con las mismas metricas (el settle lee <code>buffer.active</code> en TerminalView.tsx:819 y hoy lanza TypeError como 4 errores no manejados). El callback de <code>write</code> ya se dispara (admission #1283) y se conserva intacto. Sin cambios de aserciones: sus 30 tests siguen intactos.</td>
+<td class="evref">App.workflow.test.tsx:39-53, 97-103; TerminalView.tsx:819; bloqueo 20260822-061610</td>
+</tr>
+<tr>
+<td><code>src/terminal/components/terminal-session-registry.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Propietario de <code>SessionTerminalEntry</code>: el plan lo usa como clave de los WeakMaps de generacion/drain y NO le agrega campos; el archivo no cambia (limite de cuatro archivos).</td>
+<td class="evref">terminal-session-registry.ts:36-67 (SessionTerminalEntry), 117-267</td>
+</tr>
+<tr>
+<td><code>src/shared/ipc.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Contrato de invocacion existente: <code>attachOutput</code>/<code>detachOutput</code> (camino de attach) y <code>PtyAPI.resize</code> (resize awaitable). Sin cambios.</td>
+<td class="evref">ipc.ts: attachOutput (snip CBM), detachOutput; PtyAPI.resize usado en sendPtyResize 319-347</td>
+</tr>
+<tr>
+<td><code>src/shared/types.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Tipos del contrato: <code>PtyScreenSnapshot</code> (343-349) y <code>PtyOutputEvent</code> (332-336) consumidos por el fence y el watermark. Sin cambios.</td>
+<td class="evref">types.ts:332-349 (snippets CBM)</td>
+</tr>
+<tr>
+<td><code>src/shared/testing/ui-harness.tsx</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Infraestructura del arnes usada por los tests: <code>renderWithFakeTransport</code> (27-49), <code>waitFor</code> (71-92), <code>installBrowserDomStubs</code> (298-394; rAF = setTimeout(0)). Sin cambios.</td>
+<td class="evref">ui-harness.tsx:27-49, 71-92, 298-394 (snippets CBM)</td>
+</tr>
+<tr>
+<td><code>src/shared/testing/fake-transport.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Transporte fake observado por los tests: <code>invoke</code> (62-72), <code>onInvoke</code> (48-50), <code>callsFor</code> (129-131), <code>emitFromBackend</code> (120-127). Sin cambios.</td>
+<td class="evref">fake-transport.ts:48-72, 120-131 (snippets CBM)</td>
+</tr>
+<tr>
+<td><code>@xterm/xterm 6.0.0 (node_modules)</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Dependencia cuyo contrato real (cola FIFO, callback de parseo, reset que no descarta cola, scrollToBottom, rebanada de parseo ~12 ms) fundamenta el fence, el modelo del fake y el contrato de compatibilidad (seccion 4.8 del plan). Sin cambios.</td>
+<td class="evref">node_modules/@xterm/xterm/lib/xterm.mjs (write/_innerWrite/reset/scrollToBottom); typings/xterm.d.ts:1253</td>
+</tr>
+<tr>
+<td><code>src/shared/terminal-viewport.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td>Viewport de spawn usado por el terminal y por el test 9 (<code>rememberSpawnViewport</code>) para forzar envios de resize observables. Sin cambios.</td>
+<td class="evref">terminal-viewport.ts:70-78 (takeSpawnViewport); uso en test 9</td>
+</tr>
+<tr>
+<td><code>src/terminal/components/terminal-options.ts</code></td><td><span class="tag rel">RELACIONADO</span></td>
+<td><code>scrollback: 10000</code> (linea 15) evidencia que el historial multi-viewport y el anillo cercano a 64 KiB caben en el buffer xterm; sustenta las pruebas 14-17. Sin cambios.</td>
+<td class="evref">terminal-options.ts:4-45 (snippet CBM)</td>
+</tr>
+</table>
+</div>
+
+<h2>5. Decision tecnica (una sola, decidida)</h2>
+<div class="card">
+<p>Transaccion de attach como pipeline con fence de escritura, scope de generacion y settlement unico, todo dentro de <code>TerminalView.tsx</code>:</p>
+<pre>attach resuelve
+  -> drain: esperar el parseo completo de toda escritura encolada desde beginSeed
+     (tres clases: vivas de ventana 4.2, write de snapshot 4.4 paso 6, writes de
+     replay fenced 4.4 paso 4; el write de snapshot y cada replay se registran en
+     el drain compartido con reemplazo 0-&gt;1, liberacion throw-safe y orden
+     libera-primero / flush-despues)
+  -> validar isCurrentAttach (misma entrada, no destruida, misma generacion,
+     sesion deseada + adjunta + visible)
+  -> re-chequear el presupuesto de reconcile (pudo abandonarse durante el drain)
+  -> capturar eventos retenidos; cerrar la ventana de reconcile
+  -> reset(); escribir bytes de snapshot con callback de completado
+  -> al completar el snapshot: reproducir retenidos (filtro watermark) exactamente
+     una vez; la ultima escritura lleva el disparador de settle
+  -> al completar el replay: 1 rAF -> fit() -> await resize tipado
+     -> validar otra vez -> scrollToBottom() una sola vez -> registrar metricas</pre>
+<ul>
+<li><span class="tag fix">ESTADO</span> WeakMaps por componente <code>attachGenerations</code> y <code>attachDrains</code> (clave: entry). El drain es por ENTRADA, create-if-absent, y nunca se reemplaza ni se borra: <code>inFlight</code> cerca las TRES clases de escritura que los caminos de escritura del plan encolan - vivas de ventana (4.2), el write de snapshot (4.4 paso 6) y los writes de replay fenced (4.4 paso 4) - a traves de las generaciones (el residuo FIFO de una generacion vieja no puede parsear dentro del replay nuevo); el registry y <code>SessionTerminalEntry</code> no se tocan.</li>
+<li><span class="tag fix">FENCE</span> <code>drainPendingWrites</code> espera los callbacks de las escrituras previas al reset (xterm no descarta la cola en reset); <code>replaySnapshotFenced</code> + <code>flushPendingEventsFenced</code> ordenan snapshot-primero y vivos-despues-exactamente-una-vez. Disciplina de liberacion exactamente una vez (los caminos de throw y de callback son mutuamente excluyentes: el guard de 50 MiB lanza ANTES de encolar); el orden libera-primero/flush-despues es carga estructural (una cerca de generacion mas nueva despierta solo como microtask, re-chequea <code>while (inFlight &gt; 0)</code> y re-espera el promise fresco).</li>
+<li><span class="tag fix">GENERACION</span> <code>isCurrentAttach</code> valida toda continuacion asincrona (drain, callback de snapshot, finalize, rAF, continuacion de resize); una continuacion obsoleta es inerte.</li>
+<li><span class="tag fix">SETTLE</span> <code>beginAttachSettle</code> + <code>settleAttachViewport</code>: rAF -> fit -> resize awaitable -> scrollToBottom una vez -> <code>console.debug</code> con <code>viewportY</code>/<code>baseY</code>/<code>bufferLength</code>/<code>cols</code>/<code>rows</code>/<code>type</code>/<code>snapshotCols</code>/<code>snapshotRows</code>/<code>seedBytes</code>/<code>resize</code>. Guarda de scroll de rueda: listener pasivo <code>wheel</code> en <code>terminal.element</code> marca <code>userScrolled</code> y el settle salta el bottom sin anular un scroll intencional; las escrituras vivas ordinarias jamas hacen bottom. El camino wheel lo ejercita el sub-paso del test 13 (WheelEvent real antes del rAF del settle).</li>
+<li><span class="tag fix">RESIZE</span> <code>sendPtyResize</code> devuelve <code>Promise&lt;"sent" | "deduplicated" | "failed"&gt;</code>; los 3 call sites ordinarios usan <code>void</code>; solo el settle lo espera. El bottom se ejecuta una vez con cualquier resultado (<code>resize="failed"</code> explicito + retry existente).</li>
+<li><span class="tag prob">COMPAT</span> Contrato de compatibilidad de arnes (seccion 4.8 del plan, correccion probada del bloqueo): los dos fakes existentes ganan exactamente los miembros que el mecanismo congelado lee - <code>write(data, callback?)</code> invocando el callback (render-gate) y <code>buffer.active</code> con <code>viewportY</code>/<code>baseY</code>/<code>length</code>/<code>type</code> (ambos). Sin tests nuevos, sin helpers nuevos, sin dependencias, sin fallback de produccion, sin deadlines; aserciones intactas (8 + 30). Resultado exigido: suite completa 1601 verdes y cero errores.</li>
+<li><span class="tag prob">RESIDUAL</span> Frontera documentada de la invariante del drain (adjudicada en el Step 7, ronda 2; plan 4.1/6.5): un byte vivo post-close encolado DESPUES de la ultima escritura contada, seguido de un switch A-&gt;B-&gt;A completo en menos de ~12 ms, podria parsear antes del snapshot mas nuevo (impacto: unos pocos bytes duplicados, ya reflejados en ese snapshot). Residual pre-existente (#961: los vivos no se gatean), no modelable por el arnes, fuera de scope por construccion (la unica correccion reabriria el analisis de compatibilidad 2.6 y violaria el limite de cuatro archivos); no contradice la aceptacion del issue. El implementador NO debe corregirlo.</li>
+<li><span class="tag prob">INVARIANTES</span> <code>writeTerminalBytes</code> sigue siendo el unico call site de <code>terminal.write</code> (#1355); contrato del seed #961 intacto (los vivos no se gatean detras del seed); dedup de viewport #1439 intacto; invariantes de serializacion de cadena registradas (4.7 del Markdown).</li>
+</ul>
+</div>
+
+<h2>6. Alcance</h2>
+<div class="card">
+<div class="grid">
+<div>
+<h3>Dentro (exactamente 4 archivos)</h3>
+<ul>
+<li><span class="ok">TerminalView.tsx</span> (producto, unico)</li>
+<li><span class="ok">TerminalView.attachment.test.tsx</span> (verificacion, exclusivo)</li>
+<li><span class="ok">TerminalView.render-gate.test.tsx</span> (compatibilidad del fake: write callback + buffer)</li>
+<li><span class="ok">App.workflow.test.tsx</span> (compatibilidad del fake: solo buffer)</li>
+</ul>
+<p class="small">#1489 es dueno exclusivo de los cuatro; ningun issue hijo posterior puede reabrirlos por este defecto.</p>
+</div>
+<div>
+<h3>Fuera (prohibido)</h3>
+<ul>
+<li>registry, shared/types, shared/ipc, transport, terminal-viewport, ui-harness, fake-transport, terminal-options, stores, cualquier otro archivo fuente o de test</li>
+<li>Dependencias, abstracciones, protocolos, IPC, esquemas, persistencia, backend Rust, config, archivos nuevos, trabajo de framework generico, refactors ajenos</li>
+<li>En los dos archivos de compatibilidad, cualquier adicion mas alla del contrato congelado: sin tests nuevos, sin helpers nuevos, sin fallback de produccion, sin timeout/deadline, sin otro archivo</li>
+<li>Registrar escrituras vivas post-close en el drain, o maquinaria de deadline para el residual adjudicado (plan 4.1/6.5)</li>
+<li>Bottom incondicional en escrituras vivas; gatear vivos detras del seed; diagnosticos mas alla del registro <code>console.debug</code> acotado</li>
+</ul>
+</div>
+</div>
+</div>
+
+<h2>7. Comportamiento, casos borde y fallos</h2>
+<div class="card">
+<ul>
+<li><span class="ok">Con retenidos:</span> drain -> reset -> snapshot -> replay filtrado exactamente una vez.</li>
+<li><span class="ok">Sin retenidos / todos dentro del snapshot:</span> settle inmediato tras el callback del snapshot; cero bytes duplicados.</li>
+<li><span class="warn">Desborde de reconcile durante el drain:</span> descarte con el warning existente; sin reset, sin replay; el contenido vivo queda (misma semantica que hoy).</li>
+<li><span class="warn">Switch A-&gt;B-&gt;A:</span> generacion nueva en cada attach; continuaciones viejas inertes; un solo settle por generacion; el drain compartido conserva el conteo de las escrituras viejas aun encoladas (residuo FIFO: vivas de ventana, write de snapshot y writes de replay fenced) para que el reset mas nuevo las espere.</li>
+<li><span class="warn">Residuo FIFO entre generaciones (3 clases):</span> el drain por entrada nunca se reemplaza; cuando <code>inFlight</code> llega a cero, todo byte encolado antes de la ultima escritura contada ya parseo y el reset es seguro (orden FIFO); los vivos post-close cabalgan delante de los writes fenced y quedan cubiertos por ellos.</li>
+<li><span class="warn">Throw-safe:</span> si <code>terminal.write</code> lanza (guard de 50 MiB) el onWritten corre igual y el error se re-lanza en el camino vivo o se registra con <code>console.warn</code> y detiene esa generacion en los caminos fire-and-forget (snapshot y replay); un callback que lanza se captura y detiene esa generacion sin atascar la cola de parseo.</li>
+<li><span class="warn">Scroll de rueda en la ventana de settle:</span> el marcador <code>userScrolled</code> (listener pasivo wheel) suprime el bottom del settle; las metricas se registran igualmente (sub-paso del test 13).</li>
+<li><span class="warn">Dispose durante attach:</span> identidad o destroyed detienen drain, callbacks y frames; sin mutacion posterior.</li>
+<li><span class="warn">Callback que nunca llega:</span> el bucle de parseo de xterm garantiza progreso por chunk (verificado en <code>_innerWrite</code>); sin maquinaria de deadline nueva.</li>
+<li><span class="warn">Resize rechazado:</span> <code>"failed"</code> + retry existente; settle baja una vez y registra <code>resize="failed"</code>.</li>
+<li><span class="ok">Scroll-up intencional:</span> las escrituras vivas jamas llaman scrollToBottom; el usuario permanece donde esta.</li>
+<li><span class="warn">Fake sin callback de write (render-gate, bloqueo probado):</span> el drain esperaria para siempre; el contrato de compatibilidad lo elimina por construccion: el fake invoca el callback al completar, <code>inFlight</code> vuelve a 0 y el drain resuelve.</li>
+<li><span class="warn">Fake sin buffer (App.workflow, bloqueo probado):</span> el settle lanzaria TypeError como error no manejado; el contrato de compatibilidad lo elimina por construccion: ambos fakes exponen <code>buffer.active</code>; el producto sigue leyendo el buffer incondicionalmente (instrumentacion mandada, seccion 4.5).</li>
+<li><span class="warn">Residual adjudicado (ronda 2):</span> byte vivo post-close encolado despues de la ultima escritura contada inmediatamente antes de un switch sub-12 ms - documentado en 4.1/6.5 del plan como pre-existente y fuera de scope; no se corrige.</li>
+<li><span class="ok">Eventos sin secuencia, anillo 64 KiB, snapshot vacio:</span> comportamientos especificados en el plan (seccion 6 del Markdown).</li>
+</ul>
+</div>
+
+<h2>8. Compatibilidad, rendimiento, privacidad y seguridad</h2>
+<div class="card">
+<ul>
+<li><span class="ok">Compatibilidad:</span> flujo PTY intacto; invariable de un solo call site #1355; serializacion de cadena #1363 y dedup #1439 intactos; sin cambios de IPC, tipos, backend, config ni dependencias; el fake modela fielmente la cola real de xterm 6.0.0. Las dos correcciones de compatibilidad (4.8) agregan solo los miembros que el mecanismo congelado lee: sin imports, sin aserciones, sin cambios de conteo de tests en render-gate (8) ni App.workflow (30).</li>
+<li><span class="ok">Rendimiento:</span> un callback por escritura viva solo durante la ventana de attach mas un registro por write de snapshot/replay solo durante el pipeline fenced; el settle agrega un fit, un resize con dedup, un bottom y una linea debug por generacion; sin timers nuevos.</li>
+<li><span class="ok">Privacidad/seguridad:</span> la instrumentacion registra solo metricas numericas y el resultado del resize; sin bytes, contenido, prompts ni datos de usuario; sin permisos, transportes ni persistencia nuevos.</li>
+</ul>
+</div>
+
+<h2>9. Orden de implementacion</h2>
+<div class="card">
+<ol>
+<li>Extension del arnes (solo test): semantica de cola, metrics de buffer, contador de bottom, control gateado, helpers, fixtures, reset en beforeEach. Los 9 tests existentes deben seguir verdes. <span class="ok">[Ejecutado y preservado del Step 8: 17/17 verdes.]</span></li>
+<li>Evidencia pre-fix determinista (contra el producto sin tocar): los tests 10 y 11 fallan de forma determinista y se registran en el comentario final del issue #1489 (registro durable exigido por el criterio de cierre del epico #1478) y se repiten en el cuerpo del PR al mergear. Nunca se mergea un PR rojo intermedio. <span class="ok">[Ejecutado y preservado: evidencia verificada en scratch/1489-step8/pre-fix-red-evidence.txt.]</span></li>
+<li>Fix de produccion (TerminalView.tsx): secciones 4.2-4.7 del plan; <code>npm run typecheck</code> verde. <span class="ok">[Ejecutado y preservado: +326/-39, auditado fiel.]</span> La ronda 2 agrega TRES deltas al archivo preservado: write de snapshot throw-safe; registro en drain del write de snapshot; registro en drain de cada write de replay fenced (4.2/4.4, hallazgos 1-2) - el implementador los aplica aqui y re-verifica con el archivo enfocado y la suite completa.</li>
+<li>Los 6 tests de comportamiento restantes; archivo enfocado con 17 tests verdes. <span class="ok">[Ejecutado y preservado.]</span></li>
+<li>Correcciones de compatibilidad de fakes (seccion 4.8): render-gate (write callback + buffer) y App.workflow (buffer). Los tres archivos enfocados: 17 + 8 + 30 verdes, sin aserciones cambiadas.</li>
+<li>Verificacion completa: los tres archivos enfocados, <code>npm test</code> (1601 verdes y cero errores), <code>npm run typecheck</code>, <code>npm run check:frontend-dependencies</code>, <code>npm run build</code> y la puerta Step-N (seccion 11 del plan).</li>
+<li>Un unico PR verde con exactamente los cuatro archivos; el commit convencional final referencia #1489 y contiene exactamente seis rutas: los cuatro TS/TSX mas los dos artefactos de plan byte-identicos (force-add, seccion 9.4 del plan).</li>
+</ol>
+</div>
+
+<h2>10. Pruebas y aceptacion objetiva</h2>
+<div class="card">
+<p>Archivo de attach final: 17 tests (9 existentes con aserciones intactas + 8 nuevos). Archivos de compatibilidad: render-gate 8 tests y App.workflow 30 tests, todos con aserciones intactas (solo cambian los fakes, secciones 5.3/5.4 del plan).</p>
+<table>
+<tr><th>#</th><th>Test nuevo</th><th>Evidencia que produce</th></tr>
+<tr><td>10</td><td>waits for the snapshot write to parse before replaying retained live output</td><td>Rojo pre-fix de orden de replay: <code>screen == [LIVE, SNAP, LIVE]</code> vs <code>[SNAP, LIVE]</code>; snapshot con <code>sequence: 1</code> fijada (con sequence &gt;= 5 el watermark descartaria LIVE y no habria rojo pre-fix)</td></tr>
+<tr><td>11</td><td>settles the viewport to the current screen exactly once after replay and fit</td><td>Rojo pre-fix de posicion de attach: <code>scrollToBottomCalls == 0</code>, <code>viewportY (0) &lt; baseY (108)</code>; grid 27x81 para resize no-dedup; <code>simulateParsedHistory</code> DESPUES del reset; registro settle completo (cols/rows/type == "normal"/snapshotCols/snapshotRows/seedBytes/resize == "sent")</td></tr>
+<tr><td>12</td><td>a stale attach generation cannot mutate a newer replay</td><td>Secuencia A-&gt;B-&gt;A fijada; cuerpo re-secuenciado en ronda 2: con el callback de snapshot de la generacion 1 gateado, PRIMERO se aserta que el write de snapshot de la generacion 2 NO se encola (el fence del drain corregido lo retiene: variante de clase-snapshot del sub-paso A, probada antes de la liberacion); luego se completa el callback de la generacion 1; se aserta que el write de la generacion 2 se encola, que la generacion 2 settlea una vez y que el flush de la generacion 1 es inerte (sin writes, bottoms, resizes ni registros extra). Variante A: residuo FIFO vivo (write gateado de la generacion 1 cerca el snapshot de la generacion 2); variante B: throw release (<code>writeThrows</code>; el drain no se queda colgado); variante C: residuo de replay (los bytes de replay gateados de la generacion 1 cerca el snapshot de la generacion 2)</td></tr>
+<tr><td>13</td><td>ordinary live output never bottoms a user who scrolled up</td><td>Preservacion del scroll-up intencional; sub-paso de ventana de settle (guarda wheel, hallazgo 3): switch away/back, completar el segundo replay, despachar <code>new WheelEvent("wheel")</code> en <code>terminal.element</code> antes del rAF del settle, asertar <code>scrollToBottomCalls</code> sin cambios y que el registro settle del segundo attach se emite igual</td></tr>
+<tr><td>14</td><td>attach settle preserves meaningful multi-viewport history</td><td>Historial de 5 viewports: <code>viewportY == baseY == 96</code>, <code>bufferLength == 120</code>, top con contenido</td></tr>
+<tr><td>15</td><td>near-64-KiB ring replay stays exactly-once with one settle</td><td>Anillo 64 KiB + vivos: exactamente una vez, un solo settle</td></tr>
+<tr><td>16</td><td>Codex lifecycle: idle multi-viewport replay, overlap, scroll-up, and re-attach</td><td>Evidencia alternate-screen: <code>buffer.type = "alternate"</code> antes del segundo settle; el registro settle lleva <code>type == "alternate"</code> y <code>viewportY == baseY</code>; ciclo de vida Codex completo</td></tr>
+<tr><td>17</td><td>Pi lifecycle: ring replay with switch-away/back and exactly-once live bytes</td><td>Ciclo de vida Pi completo: anillo cercano a 64 KiB, generaciones completadas en orden inverso, exactamente una vez, un settle por attach</td></tr>
+</table>
+<p class="small">Comandos canonicos resueltos (plan s.9.1, entorno Node 22 / npm 11.6.2 / npm ci): enfocado attach <code>npm test -- src/terminal/components/TerminalView.attachment.test.tsx --reporter=default</code> (17 verdes); enfocado render-gate <code>npm test -- src/terminal/components/TerminalView.render-gate.test.tsx --reporter=default</code> (8 verdes); enfocado App.workflow <code>npm test -- src/terminal/App.workflow.test.tsx --reporter=default</code> (30 verdes); completo <code>npm test -- --reporter=default</code> (baseline de bloqueo 2 fallidos / 1599 pasados, 4 errores; final exigido 1601 verdes y cero errores, sin cambio de aserciones); <code>npm run typecheck</code>; <code>npm run check:frontend-dependencies</code>; <code>npm run build</code>. Sin comandos Rust (no hay cambio en src-tauri); no existe script de lint y no se inventa uno; el hook pre-push solo valida el nombre de rama. Puerta Step-N (plan s.11.2): detector Rust sobre base limpia vs head final, arcos byte-identicos, SCC intactos, sin aristas cross-boundary, layering intacto.</p>
+</div>
+
+<h2>11. Sincronizacion con el plan Markdown</h2>
+<div class="card">
+<p>Este HTML reproduce cada item operativo del plan certificado: objetivo (s.1), causa y bloqueo (s.2 con evidencia del Step 8), alcance exacto de cuatro archivos (s.3), solucion decidida unica (s.4) con las TRES clases de escritura registradas en el drain compartido, la disciplina de liberacion exactamente una vez, el orden libera-primero/flush-despues, el contrato de compatibilidad de fakes, el residual adjudicado y los invariantes, archivos y simbolos exactos (s.5), comportamiento/edge/failure (s.6), compatibilidad/seguridad (s.7), orden (s.8 con los tres deltas), decisiones operativas resueltas y registro de certificacion (s.9), pruebas y aceptacion (s.10 con el cuerpo re-secuenciado del test 12, las variantes A/B/C y el sub-paso wheel del test 13), puerta de ciclos (s.11) y verdict (s.12). Esta sincronizado con TODAS las correcciones de la ronda 2: invariante de tres clases (4.1), registro del write de snapshot componiendo los hallazgos 1-2 (4.4 paso 6), oracion de cobertura de 6.5, re-secuenciacion determinista del cuerpo del test 12 (10.2, trazada fin a fin por el Grinch), tres deltas de implementador (8 paso 3), nota de adjudicacion del Step 7 en el Grinch Review, y normalizacion U+2014 (cero). La observacion residual del Grinch (byte vivo post-close tras la ultima escritura contada inmediatamente antes de un switch sub-12 ms) queda adjudicada por el arquitecto como residual documentado, fuera de scope y pre-existente (plan 4.1/6.5/9.3): no contradice la aceptacion del issue y el implementador no debe corregirla.</p>
+<p class="verdict">Verdict: READY_FOR_IMPLEMENTATION (certificado por el arquitecto en Step 7, ronda 2; no implementado).</p>
+<p class="small">Decisiones operativas resueltas (plan s.9): (1) conjunto canonico de comandos = tres enfocados + suite completa + typecheck + check:frontend-dependencies + build, entorno Node 22 / npm 11.6.2 / npm ci, sin lint (no existe script) y sin comandos Rust (no hay cambio en src-tauri); (2) evidencia pre-fix registrada en el comentario final del issue #1489 (durable, exigido por el epico #1478) y repetida en el cuerpo del PR al mergear; sin archivos nuevos en el repo; (3) registro de certificacion de la ronda 2 (s.9.3): la ronda 1 devolvio NEEDS_ANOTHER_ROUND (mensaje 20260822-070237), la ronda 2 aplico las siete correcciones (dev 20260822-070714) y el Grinch las verifico adversarialmente con una edicion de consistencia (20260822-071549); la observacion residual se adjudica como fuera de scope y pre-existente; el registro Step-N de base limpia (scratch/1489-step7/) queda preservado y valido (sin cambios Rust); (4) waiver de usuario preservado como decision fija (s.9.3): el usuario eximio la pausa de aprobacion del Step 7.5 - sin aprobacion humana del HTML, sin esperas Browser/raised-hand; todos los gates no-usuario permanecen obligatorios (READY, hashes, validacion/freeze, reportes, idle check, purge dry-run, digest, purge real, implementacion en frio, review, current-main, landing, build/deploy); (5) commit final: exactamente seis rutas (cuatro TS/TSX + los dos artefactos force-add con hashes preservados), #1489 dueno exclusivo de los cuatro archivos. No quedan preguntas abiertas.</p>
+</div>
+
+</div>
+</body>
+</html>

@@ -45,6 +45,14 @@ interface FakeTerminalInstance {
   screen: unknown[];
   resets: number;
   disposed: boolean;
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      length: number;
+      type: "normal" | "alternate";
+    };
+  };
   reset(): void;
   resizes: { cols: number; rows: number }[];
   emitData(data: string): void;
@@ -70,6 +78,14 @@ vi.mock("@xterm/xterm", () => ({
     screen: unknown[] = [];
     resets = 0;
     disposed = false;
+    buffer: {
+      active: {
+        viewportY: number;
+        baseY: number;
+        length: number;
+        type: "normal" | "alternate";
+      };
+    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
     resizes: { cols: number; rows: number }[] = [];
     private dataHandlers = new Set<(data: string) => void>();
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
@@ -420,20 +436,16 @@ describe("TerminalApp workflow", () => {
       expect(hasPtyResizeCall(fake, SESSION_A, 120, 30)).toBe(false);
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
 
-      // #973. The snapshot resized xterm to the PTY's size, and the re-fit then
-      // puts xterm back to the tile's size. But the PTY was ALREADY told that
-      // size — by the mount fit, before `fake.clearCalls()` — and it never moved
-      // since. Re-sending it is exactly the redundant resize #973 removed.
-      //
-      // The assertion requires the end state: xterm is back at the fitted size,
-      // and the PTY was not spoken to for nothing.
+      // The only post-clear resize comes from the {second priming frame,
+      // settle} pair and carries the fitted grid. The pre-seed imposition lands
+      // before `fake.clearCalls()`; the 120x30 snapshot grid is never echoed.
       await waitFor(() =>
         expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({
           cols: fitViewport.cols,
           rows: fitViewport.rows,
         })
       );
-      expect(fake.callsFor("pty_resize")).toHaveLength(0);
+      expect(fake.callsFor("pty_resize")).toHaveLength(1);
       expect(terminal.writes).toHaveLength(1);
     } finally {
       rendered.cleanup();
@@ -605,10 +617,16 @@ describe("TerminalApp workflow", () => {
     try {
       await waitFor(() => expect(xterm.instances).toHaveLength(1));
       await waitFor(() => expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1)
+      );
 
       fake.emitFromBackend("session_switched", userLiveSelection(SESSION_B, 2));
       await waitFor(() => expect(xterm.instances).toHaveLength(2));
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(2)
+      );
 
       fake.emitFromBackend("session_switched", userLiveSelection(SESSION_A, 3));
       await waitFor(() => {
@@ -621,7 +639,9 @@ describe("TerminalApp workflow", () => {
       // Each selection attaches once and seeds from that attach; the legacy
       // snapshot surface stays untouched. Switching away detached first.
       expect(fake.callsFor("get_screen_snapshot")).toHaveLength(0);
-      expect(fake.callsFor("activate_terminal_output")).toHaveLength(3);
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(3)
+      );
       expect(fake.callsFor("detach_terminal_output")).toHaveLength(2);
     } finally {
       rendered.cleanup();
