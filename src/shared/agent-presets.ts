@@ -81,6 +81,21 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     updateCommands: [],
     autoUpdate: false,
   },
+  {
+    key: "antigravity",
+    label: "Antigravity",
+    description: "Coding Agent by Google",
+    color: "#4285F4",
+    command: "agy",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
+    // #1482 — mirror of the embedded default: no verified upstream update
+    // command, so Antigravity ships none (autoUpdate stays false).
+    updateCommands: [],
+    autoUpdate: false,
+  },
 ];
 
 export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, "id"> {
