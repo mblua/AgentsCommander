@@ -28,7 +28,11 @@ import {
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import { rememberSpawnViewport } from "../../shared/terminal-viewport";
+import {
+  executeUiTerminalController,
+  rememberSpawnViewport,
+  resetUiTerminalControllerForTests,
+} from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
 import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
 import type { PtyScreenSnapshot } from "../../shared/types";
@@ -48,11 +52,20 @@ interface FakeTerminalInstance {
       baseY: number;
       length: number;
       type: "normal" | "alternate";
+      cursorX: number;
+      getLine(index: number): { isWrapped: boolean } | undefined;
     };
   };
+  selection: boolean;
+  scrollOperations: string[];
   scrollToBottomCalls: number;
   pendingWriteCallbacks: Array<() => void>;
   writeThrows: boolean;
+  scrollToTop(): void;
+  scrollToBottom(): void;
+  scrollToLine(line: number): void;
+  scrollLines(amount: number): void;
+  scrollPages(amount: number): void;
   resize(cols: number, rows: number): void;
 }
 
@@ -83,8 +96,22 @@ vi.mock("@xterm/xterm", () => ({
         baseY: number;
         length: number;
         type: "normal" | "alternate";
+        cursorX: number;
+        getLine(index: number): { isWrapped: boolean } | undefined;
       };
-    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
+    } = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        length: 0,
+        type: "normal",
+        cursorX: 0,
+        getLine: (index: number) =>
+          index >= 0 && index < this.buffer.active.length ? { isWrapped: false } : undefined,
+      },
+    };
+    selection = false;
+    scrollOperations: string[] = [];
     scrollToBottomCalls = 0;
     pendingWriteCallbacks: Array<() => void> = [];
     writeThrows = false;
@@ -97,6 +124,7 @@ vi.mock("@xterm/xterm", () => ({
       addon?.activate?.(this);
     }
     open(element: HTMLElement): void {
+      this.assertLive();
       this.element = element;
     }
     focus(): void {}
@@ -104,6 +132,7 @@ vi.mock("@xterm/xterm", () => ({
       this.disposed = true;
     }
     write(data: unknown, callback?: () => void): void {
+      this.assertLive();
       // xterm's 50-MiB flow-control guard throws synchronously BEFORE the
       // chunk is queued; the byte was never queued, so the drain must release.
       if (this.writeThrows) {
@@ -122,6 +151,7 @@ vi.mock("@xterm/xterm", () => ({
       }
     }
     reset(): void {
+      this.assertLive();
       this.resets += 1;
       this.screen.length = 0;
       // xterm 6.0.0: reset() does NOT discard the pending write queue, so the
@@ -131,13 +161,42 @@ vi.mock("@xterm/xterm", () => ({
       this.buffer.active.baseY = 0;
       this.buffer.active.length = 0;
     }
+    scrollToTop(): void {
+      this.assertLive();
+      this.scrollOperations.push("top");
+      this.buffer.active.viewportY = 0;
+    }
     scrollToBottom(): void {
+      this.assertLive();
       this.scrollToBottomCalls += 1;
+      this.scrollOperations.push("bottom");
       this.buffer.active.viewportY = this.buffer.active.baseY;
+    }
+    scrollToLine(line: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`line:${line}`);
+      this.buffer.active.viewportY = Math.max(0, Math.min(this.buffer.active.baseY, line));
+    }
+    scrollLines(amount: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`lines:${amount}`);
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount),
+      );
+    }
+    scrollPages(amount: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`pages:${amount}`);
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount * this.rows),
+      );
     }
     paste(): void {}
     hasSelection(): boolean {
-      return false;
+      this.assertLive();
+      return this.selection;
     }
     getSelection(): string {
       return "";
@@ -150,9 +209,16 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose: () => {} };
     }
     resize(cols: number, rows: number): void {
+      this.assertLive();
       this.resizes.push({ cols, rows });
       this.cols = cols;
       this.rows = rows;
+    }
+
+    private assertLive(): void {
+      if (this.disposed) {
+        throw new Error("terminal disposed");
+      }
     }
   },
 }));
@@ -289,6 +355,7 @@ describe("TerminalView attachment (#1363)", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    resetUiTerminalControllerForTests();
     xterm.autoCompleteWrites = true;
     for (const instance of xterm.instances) {
       instance.pendingWriteCallbacks.length = 0;
@@ -305,6 +372,7 @@ describe("TerminalView attachment (#1363)", () => {
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
+    resetUiTerminalControllerForTests();
     xterm.instances.length = 0;
     warn.mockRestore();
     debug.mockRestore();
@@ -415,6 +483,254 @@ describe("TerminalView attachment (#1363)", () => {
     } finally {
       rendered.cleanup();
     }
+  });
+
+  it("executes all visible-terminal operations through public xterm APIs with no PTY effects", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const terminal = instancesFor(SESSION_A)[0];
+      terminal.buffer.active.length = 124;
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      terminal.scrollOperations.length = 0;
+      const ptyWritesBefore = fake.callsFor("pty_write").length;
+      const ptyResizesBefore = fake.callsFor("pty_resize").length;
+      const localResizesBefore = terminal.resizes.length;
+      const execute = (operation:
+        | { kind: "query" | "top" | "bottom" }
+        | { kind: "line" | "lines" | "pages"; value: number }) =>
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation,
+        });
+
+      expect(execute({ kind: "query" })).toMatchObject({
+        ok: true,
+        target: {
+          sessionId: SESSION_A,
+          baseY: 100,
+          viewportY: 100,
+          length: 124,
+          cols: 80,
+          rows: 24,
+          type: "normal",
+          atBottom: true,
+        },
+      });
+      expect(execute({ kind: "top" })).toMatchObject({
+        ok: true,
+        target: { viewportY: 0, atBottom: false },
+      });
+      expect(execute({ kind: "bottom" })).toMatchObject({
+        ok: true,
+        target: { viewportY: 100, atBottom: true },
+      });
+      expect(execute({ kind: "line", value: 9 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 9, atBottom: false },
+      });
+      expect(execute({ kind: "lines", value: -4 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 5, atBottom: false },
+      });
+      expect(execute({ kind: "pages", value: 1 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 29, atBottom: false },
+      });
+
+      expect(terminal.scrollOperations).toEqual([
+        "top",
+        "bottom",
+        "line:9",
+        "lines:-4",
+        "pages:1",
+      ]);
+      expect(fake.callsFor("pty_write")).toHaveLength(ptyWritesBefore);
+      expect(fake.callsFor("pty_resize")).toHaveLength(ptyResizesBefore);
+      expect(terminal.resizes).toHaveLength(localResizesBefore);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ui-terminal top during the settle window marks scroll intent and prevents bottoming", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 124);
+      terminal.buffer.active.viewportY = terminal.buffer.active.baseY;
+
+      const result = executeUiTerminalController({
+        element: terminal.element!,
+        sessionId: SESSION_A,
+        operation: { kind: "top" },
+      });
+      expect(result).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() =>
+        expect(
+          debug.mock.calls.some((call: unknown[]) =>
+            String(call[0]).startsWith(`[terminal] attach ${SESSION_A} settled:`),
+          ),
+        ).toBe(true),
+      );
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ui-terminal query during the settle window is read-only and does not suppress bottoming", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 124);
+      terminal.buffer.active.viewportY = 0;
+      expect(
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("fails closed for hidden, mismatched, replaced, disconnected, and destroyed terminal entries", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const terminalA = instancesFor(SESSION_A)[0];
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
+      const terminalB = instancesFor(SESSION_B)[0];
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A]));
+
+      expect(
+        executeUiTerminalController({
+          element: terminalB.element!,
+          sessionId: SESSION_B,
+          operation: { kind: "top" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_session_not_visible" });
+      expect(terminalB.scrollOperations).not.toContain("top");
+
+      terminalA.element!.setAttribute("data-ac-session-id", SESSION_B);
+      expect(
+        executeUiTerminalController({
+          element: terminalA.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_target_mismatch" });
+      terminalA.element!.setAttribute("data-ac-session-id", SESSION_A);
+
+      const replacement = document.createElement("div");
+      replacement.setAttribute("data-ac-testid", `terminal.session.${SESSION_A}`);
+      replacement.setAttribute("data-ac-session-id", SESSION_A);
+      document.body.append(replacement);
+      expect(
+        executeUiTerminalController({
+          element: replacement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_target_mismatch" });
+
+      const oldElement = terminalA.element!;
+      oldElement.remove();
+      expect(
+        executeUiTerminalController({
+          element: oldElement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+      rendered.root.append(oldElement);
+
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      expect(terminalA.disposed).toBe(true);
+      expect(
+        executeUiTerminalController({
+          element: oldElement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("unregisters the controller on unmount and a remount owns the replacement", async () => {
+    const fakeA = new FakeTransport();
+    setupTransport(fakeA);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const first = renderWithFakeTransport(() => <TerminalView />, fakeA);
+    await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+    const oldElement = instancesFor(SESSION_A)[0].element!;
+    first.cleanup();
+    expect(
+      executeUiTerminalController({
+        element: oldElement,
+        sessionId: SESSION_A,
+        operation: { kind: "query" },
+      }),
+    ).toBeNull();
+
+    resetUiStoresForTests();
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const fakeB = new FakeTransport();
+    setupTransport(fakeB);
+    const second = renderWithFakeTransport(() => <TerminalView />, fakeB);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const current = instancesFor(SESSION_A)[0];
+      first.cleanup();
+      expect(
+        executeUiTerminalController({
+          element: current.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: true, target: { sessionId: SESSION_A } });
+    } finally {
+      second.cleanup();
+    }
+    expect(
+      executeUiTerminalController({
+        element: oldElement,
+        sessionId: SESSION_A,
+        operation: { kind: "query" },
+      }),
+    ).toBeNull();
   });
 
   // ORDERING, not outcome: the attach must not reach the backend until this

@@ -13,6 +13,7 @@ import {
 import { isBrowser, isTauri } from "../../shared/platform";
 import {
   registerPtyViewportProbe,
+  registerUiTerminalController,
   takeSpawnViewport,
 } from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
@@ -721,6 +722,103 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const attachGenerations = new WeakMap<SessionTerminalEntry, number>();
   const attachDrains = new WeakMap<SessionTerminalEntry, AttachDrain>();
+
+  onCleanup(
+    registerUiTerminalController(({ element, sessionId, operation }) => {
+      if (
+        element.getAttribute("data-ac-testid") !== `terminal.session.${sessionId}` ||
+        element.getAttribute("data-ac-session-id") !== sessionId
+      ) {
+        return {
+          ok: false,
+          error: "terminal_target_mismatch",
+          message: "Terminal target metadata no longer matches the requested session.",
+        };
+      }
+
+      const entry = registry.get(sessionId);
+      if (!entry || entry.destroyed) {
+        return {
+          ok: false,
+          error: "terminal_entry_stale",
+          message: "The requested terminal entry is no longer live.",
+        };
+      }
+      if (entry.container !== element) {
+        return {
+          ok: false,
+          error: "terminal_target_mismatch",
+          message: "The requested terminal container is not the current session entry.",
+        };
+      }
+
+      const terminalElement = entry.terminal.element;
+      if (
+        !entry.container.isConnected ||
+        terminalElement?.isConnected !== true ||
+        !entry.container.contains(terminalElement)
+      ) {
+        return {
+          ok: false,
+          error: "terminal_entry_stale",
+          message: "The requested terminal entry is disconnected.",
+        };
+      }
+      if (
+        visibleSessionId !== sessionId ||
+        registry.getVisible() !== sessionId ||
+        entry.container.hidden
+      ) {
+        return {
+          ok: false,
+          error: "terminal_session_not_visible",
+          message: "The requested terminal session is not visible in this WebView.",
+        };
+      }
+
+      switch (operation.kind) {
+        case "query":
+          break;
+        case "top":
+          entry.terminal.scrollToTop();
+          break;
+        case "bottom":
+          entry.terminal.scrollToBottom();
+          break;
+        case "line":
+          entry.terminal.scrollToLine(operation.value);
+          break;
+        case "lines":
+          entry.terminal.scrollLines(operation.value);
+          break;
+        case "pages":
+          entry.terminal.scrollPages(operation.value);
+          break;
+      }
+
+      const active = entry.terminal.buffer.active;
+      if (operation.kind !== "query" && active.viewportY < active.baseY) {
+        const drain = attachDrains.get(entry);
+        if (drain) {
+          drain.userScrolled = true;
+        }
+      }
+
+      return {
+        ok: true,
+        target: {
+          sessionId,
+          baseY: active.baseY,
+          viewportY: active.viewportY,
+          length: active.length,
+          cols: entry.terminal.cols,
+          rows: entry.terminal.rows,
+          type: active.type,
+          atBottom: active.viewportY === active.baseY,
+        },
+      };
+    }),
+  );
 
   const concludeSnapshotFetch = (
     sessionId: string,

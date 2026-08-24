@@ -1,4 +1,8 @@
-import { AutomationAPI, onUiAutomationRequest } from "./ipc";
+import {
+  AutomationAPI,
+  onUiAutomationRequest,
+  type UiTerminalOperation,
+} from "./ipc";
 import { isTauri } from "./platform";
 import type {
   UiAutomationAction,
@@ -7,6 +11,7 @@ import type {
   UiAutomationResponse,
   UiAutomationTarget,
   UiAutomationTargetRect,
+  UiTerminalAutomationTarget,
 } from "./types";
 
 const MAX_AVAILABLE_TARGETS = 50;
@@ -28,7 +33,9 @@ const SAFE_METADATA_ATTRIBUTES = [
   ["data-ac-detail", "detail"],
 ] as const;
 
-type UiAutomationErrorCode = Extract<UiAutomationResponse, { ok: false }>["error"];
+type AnyUiAutomationRequest = UiAutomationRequest<UiAutomationAction>;
+type AnyUiAutomationResponse = UiAutomationResponse<UiAutomationAction>;
+type UiAutomationErrorCode = Extract<AnyUiAutomationResponse, { ok: false }>["error"];
 
 let started = false;
 
@@ -68,12 +75,25 @@ export function resetAutomationBridgeForTests(): void {
   started = false;
   hoveredElement = null;
   hoveredChain = [];
+  AutomationAPI.resetTerminalControllerForTests();
 }
 
-export async function executeAutomationRequest(
+export function executeAutomationRequest(
+  windowLabel: string,
+  request: UiAutomationRequest<"terminal">,
+): Promise<UiAutomationResponse<"terminal">>;
+export function executeAutomationRequest(
   windowLabel: string,
   request: UiAutomationRequest,
-): Promise<UiAutomationResponse> {
+): Promise<UiAutomationResponse>;
+export function executeAutomationRequest(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+): Promise<UiAutomationResponse>;
+export async function executeAutomationRequest(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+): Promise<AnyUiAutomationResponse> {
   try {
     return await executeAutomationRequestInner(windowLabel, request);
   } catch (error) {
@@ -88,11 +108,24 @@ export async function executeAutomationRequest(
 
 async function executeAutomationRequestInner(
   windowLabel: string,
-  request: UiAutomationRequest,
-): Promise<UiAutomationResponse> {
+  request: AnyUiAutomationRequest,
+): Promise<AnyUiAutomationResponse> {
   const diagnostics = baseDiagnostics();
   const expiredBeforeQuery = expiredRequestResponse(windowLabel, request, diagnostics);
   if (expiredBeforeQuery) return expiredBeforeQuery;
+
+  const terminalOperation =
+    request.action === "terminal" ? parseUiTerminalOperation(request.value) : null;
+  if (request.action === "terminal" && terminalOperation === null) {
+    return errorResponse(
+      windowLabel,
+      request,
+      "value_not_supported",
+      `Automation action "terminal" requires a canonical terminal operation (got ${JSON.stringify(request.value ?? null)}).`,
+      availableTargets(),
+      diagnostics,
+    );
+  }
 
   if (request.action === "hover") {
     if (request.value != null && request.value !== "leave") {
@@ -179,6 +212,59 @@ async function executeAutomationRequestInner(
     );
   }
 
+  if (request.action === "terminal") {
+    const prefix = "terminal.session.";
+    const sessionId = request.selector.startsWith(prefix)
+      ? request.selector.slice(prefix.length)
+      : null;
+    if (
+      sessionId === null ||
+      !validUiTerminalSessionId(sessionId) ||
+      element.getAttribute("data-ac-testid") !== request.selector ||
+      element.getAttribute("data-ac-session-id") !== sessionId
+    ) {
+      return errorResponse(
+        windowLabel,
+        request,
+        "terminal_target_mismatch",
+        `Automation terminal target "${request.selector}" did not match its session metadata.`,
+        availableTargets(),
+        diagnostics,
+      );
+    }
+
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
+
+    const result = AutomationAPI.executeTerminalController({
+      element,
+      sessionId,
+      operation: terminalOperation!,
+    });
+    if (result === null) {
+      return errorResponse(
+        windowLabel,
+        request,
+        "terminal_controller_unavailable",
+        "No live terminal controller is registered in this WebView.",
+        availableTargets(),
+        diagnostics,
+      );
+    }
+    if (!result.ok) {
+      return errorResponse(
+        windowLabel,
+        request,
+        result.error,
+        result.message,
+        availableTargets(),
+        diagnostics,
+      );
+    }
+
+    return terminalSuccessResponse(windowLabel, request, result.target, diagnostics);
+  }
+
   if (request.action === "hover") {
     const expired = expiredMutationResponse(windowLabel, request, diagnostics);
     if (expired) return expired;
@@ -225,10 +311,10 @@ async function executeAutomationRequestInner(
 
 async function setElementValue(
   windowLabel: string,
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
   element: HTMLElement,
   diagnostics: UiAutomationDiagnostics,
-): Promise<UiAutomationResponse> {
+): Promise<AnyUiAutomationResponse> {
   if (
     !(element instanceof HTMLInputElement) &&
     !(element instanceof HTMLTextAreaElement) &&
@@ -262,17 +348,17 @@ async function settleAfterDomMutation(): Promise<void> {
 
 function expiredMutationResponse(
   windowLabel: string,
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
   diagnostics: UiAutomationDiagnostics,
-): UiAutomationResponse | null {
+): AnyUiAutomationResponse | null {
   return expiredRequestResponse(windowLabel, request, diagnostics);
 }
 
 function expiredRequestResponse(
   windowLabel: string,
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
   diagnostics: UiAutomationDiagnostics,
-): UiAutomationResponse | null {
+): AnyUiAutomationResponse | null {
   const nowUnixMs = Date.now();
   if (!requestExpired(request, nowUnixMs)) return null;
 
@@ -290,35 +376,92 @@ function expiredRequestResponse(
   );
 }
 
-function requestExpired(request: UiAutomationRequest, nowUnixMs: number): boolean {
+function requestExpired(request: AnyUiAutomationRequest, nowUnixMs: number): boolean {
   return typeof request.expiresAtUnixMs === "number" && request.expiresAtUnixMs <= nowUnixMs;
 }
 
 function successResponse(
   windowLabel: string,
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
   target: UiAutomationTarget,
   diagnostics?: UiAutomationDiagnostics,
-): UiAutomationResponse {
+): AnyUiAutomationResponse {
   return {
     ok: true,
     requestId: request.requestId,
     window: windowLabel,
-    action: request.action,
+    action: request.action as Exclude<UiAutomationAction, "terminal">,
     selector: request.selector,
     target,
     diagnostics,
   };
 }
 
+function terminalSuccessResponse(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  target: UiTerminalAutomationTarget,
+  diagnostics?: UiAutomationDiagnostics,
+): AnyUiAutomationResponse {
+  return {
+    ok: true,
+    requestId: request.requestId,
+    window: windowLabel,
+    action: "terminal",
+    selector: request.selector,
+    target,
+    diagnostics,
+  };
+}
+
+const UI_TERMINAL_UNSIGNED_VALUE = /^(?:0|[1-9][0-9]*)$/;
+const UI_TERMINAL_SIGNED_VALUE = /^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/;
+const UI_TERMINAL_CONTROL_CHARACTER = /\p{Cc}/u;
+
+function parseUiTerminalOperation(
+  value: string | null | undefined,
+): UiTerminalOperation | null {
+  if (value === "query" || value === "top" || value === "bottom") {
+    return { kind: value };
+  }
+  if (typeof value !== "string") return null;
+
+  const variants = [
+    ["line:", "line", UI_TERMINAL_UNSIGNED_VALUE],
+    ["lines:", "lines", UI_TERMINAL_SIGNED_VALUE],
+    ["pages:", "pages", UI_TERMINAL_SIGNED_VALUE],
+  ] as const;
+  for (const [prefix, kind, grammar] of variants) {
+    if (!value.startsWith(prefix)) continue;
+    const operand = value.slice(prefix.length);
+    if (!grammar.test(operand)) return null;
+    const parsed = Number(operand);
+    if (!Number.isInteger(parsed) || parsed < -2147483648 || parsed > 2147483647) {
+      return null;
+    }
+    if (kind === "line" && parsed < 0) return null;
+    return { kind, value: parsed };
+  }
+  return null;
+}
+
+function validUiTerminalSessionId(sessionId: string): boolean {
+  const byteLength = new TextEncoder().encode(sessionId).byteLength;
+  return (
+    byteLength >= 1 &&
+    byteLength <= 256 &&
+    !UI_TERMINAL_CONTROL_CHARACTER.test(sessionId)
+  );
+}
+
 function errorResponse(
   windowLabel: string,
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
   error: UiAutomationErrorCode,
   message: string,
   available?: UiAutomationTarget[],
   diagnostics?: UiAutomationDiagnostics,
-): UiAutomationResponse {
+): AnyUiAutomationResponse {
   return {
     ok: false,
     requestId: request.requestId,
@@ -338,7 +481,7 @@ function queryAutomationTargets(testId: string): HTMLElement[] {
 }
 
 async function queryAutomationTargetsWithBriefRetry(
-  request: UiAutomationRequest,
+  request: AnyUiAutomationRequest,
 ): Promise<HTMLElement[]> {
   let matches = queryAutomationTargets(request.selector);
   if (matches.length > 0) return matches;
@@ -370,12 +513,15 @@ async function queryAutomationTargetsWithBriefRetry(
   return matches;
 }
 
-function missingSelectorRetryBudgetMs(request: UiAutomationRequest): number {
+function missingSelectorRetryBudgetMs(request: AnyUiAutomationRequest): number {
   if (typeof request.expiresAtUnixMs !== "number") return MISSING_SELECTOR_RETRY_MS;
   return Math.max(0, Math.min(MISSING_SELECTOR_RETRY_MS, request.expiresAtUnixMs - Date.now()));
 }
 
-function requestExpiryRemainingMs(request: UiAutomationRequest, nowUnixMs: number): number | null {
+function requestExpiryRemainingMs(
+  request: AnyUiAutomationRequest,
+  nowUnixMs: number,
+): number | null {
   if (typeof request.expiresAtUnixMs !== "number") return null;
   return Math.max(0, request.expiresAtUnixMs - nowUnixMs);
 }

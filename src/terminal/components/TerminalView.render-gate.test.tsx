@@ -33,7 +33,12 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import { initialSelection, liveSelection, SESSION_A } from "../../shared/testing/session-selection";
+import {
+  dormantSelection,
+  initialSelection,
+  liveSelection,
+  SESSION_A,
+} from "../../shared/testing/session-selection";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -42,12 +47,15 @@ interface FakeTerminalInstance {
   writes: unknown[];
   screen: unknown[];
   resets: number;
+  disposed: boolean;
   buffer: {
     active: {
       viewportY: number;
       baseY: number;
       length: number;
       type: "normal" | "alternate";
+      cursorX: number;
+      getLine(index: number): { isWrapped: boolean } | undefined;
     };
   };
   resizes: { cols: number; rows: number }[];
@@ -73,14 +81,27 @@ vi.mock("@xterm/xterm", () => ({
     writes: unknown[] = [];
     screen: unknown[] = [];
     resets = 0;
+    disposed = false;
     buffer: {
       active: {
         viewportY: number;
         baseY: number;
         length: number;
         type: "normal" | "alternate";
+        cursorX: number;
+        getLine(index: number): { isWrapped: boolean } | undefined;
       };
-    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
+    } = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        length: 0,
+        type: "normal",
+        cursorX: 0,
+        getLine: (index: number) =>
+          index >= 0 && index < this.buffer.active.length ? { isWrapped: false } : undefined,
+      },
+    };
     resizes: { cols: number; rows: number }[] = [];
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
@@ -99,10 +120,12 @@ vi.mock("@xterm/xterm", () => ({
     focus(): void {}
 
     dispose(): void {
+      this.disposed = true;
       this.resizeHandlers.clear();
     }
 
     write(data: unknown, callback?: () => void): void {
+      this.assertLive();
       this.writes.push(data);
       this.screen.push(data);
       // The #1489 attach pipeline awaits the optional parse-completion
@@ -114,11 +137,38 @@ vi.mock("@xterm/xterm", () => ({
 
     /** Real xterm RIS: clears the screen and scrollback. */
     reset(): void {
+      this.assertLive();
       this.resets += 1;
       this.screen.length = 0;
     }
 
     scrollToBottom(): void {}
+
+    scrollToTop(): void {
+      this.assertLive();
+      this.buffer.active.viewportY = 0;
+    }
+
+    scrollToLine(line: number): void {
+      this.assertLive();
+      this.buffer.active.viewportY = Math.max(0, Math.min(this.buffer.active.baseY, line));
+    }
+
+    scrollLines(amount: number): void {
+      this.assertLive();
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount),
+      );
+    }
+
+    scrollPages(amount: number): void {
+      this.assertLive();
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount * this.rows),
+      );
+    }
 
     paste(): void {}
 
@@ -144,6 +194,7 @@ vi.mock("@xterm/xterm", () => ({
     }
 
     emitResize(cols: number, rows: number): void {
+      this.assertLive();
       this.cols = cols;
       this.rows = rows;
       this.resizes.push({ cols, rows });
@@ -154,6 +205,10 @@ vi.mock("@xterm/xterm", () => ({
 
     resize(cols: number, rows: number): void {
       this.emitResize(cols, rows);
+    }
+
+    private assertLive(): void {
+      if (this.disposed) throw new Error("terminal disposed");
     }
   },
 }));
@@ -169,6 +224,9 @@ vi.mock("@xterm/addon-fit", () => ({
     fit = vi.fn(() => {
       this.terminal?.resize(fitViewport.cols, fitViewport.rows);
     });
+    proposeDimensions(): { cols: number; rows: number } {
+      return { cols: fitViewport.cols, rows: fitViewport.rows };
+    }
   },
 }));
 
@@ -570,6 +628,66 @@ describe("TerminalView snapshot render gate (#955)", () => {
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("outran the reconcile budget")
       );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("disposes xterm when the real render gate closes and leaves queued work inert", async () => {
+    const fake = new FakeTransport();
+    const snapshot = deferred<PtyScreenSnapshot | null>();
+    setupTerminalTransport(fake, [onlySession()]);
+    fake.onInvoke("activate_terminal_output", () => snapshot.promise);
+
+    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(xterm.instances).toHaveLength(1));
+      await waitFor(() =>
+        expect(fake.callsFor("activate_terminal_output")).toHaveLength(1),
+      );
+      const terminal = xterm.instances[0];
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: LIVE,
+        sequence: 1,
+      });
+      await waitFor(() => expect(terminal.writes).toHaveLength(1));
+
+      fake.emitFromBackend("session_switched", dormantSelection(SESSION_A, 2));
+      await waitFor(() => expect(terminal.disposed).toBe(true));
+      const before = {
+        writes: terminal.writes.length,
+        screen: terminal.screen.length,
+        resets: terminal.resets,
+        resizes: terminal.resizes.length,
+        ptyResizes: fake.callsFor("pty_resize").length,
+      };
+
+      fake.emitFromBackend("pty_output", {
+        sessionId: SESSION_A,
+        data: NEXT,
+        sequence: 2,
+      });
+      snapshot.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: 24,
+        cols: 80,
+        sequence: 1,
+      });
+      await flushPromises();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      expect(terminal.disposed).toBe(true);
+      expect({
+        writes: terminal.writes.length,
+        screen: terminal.screen.length,
+        resets: terminal.resets,
+        resizes: terminal.resizes.length,
+        ptyResizes: fake.callsFor("pty_resize").length,
+      }).toEqual(before);
+      expect(() => terminal.resize(90, 30)).toThrow("terminal disposed");
     } finally {
       rendered.cleanup();
     }

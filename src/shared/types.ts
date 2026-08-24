@@ -926,13 +926,16 @@ export type UiAutomationAction =
   | "hover"
   | "setValue"
   | "typeText"
-  | "backend";
+  | "backend"
+  | "terminal";
 
-export interface UiAutomationRequest {
+export interface UiAutomationRequest<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> {
   requestId: string;
   token: string;
   window: string;
-  action: UiAutomationAction;
+  action: A;
   selector: string;
   value?: string | null;
   expiresAtUnixMs?: number | null;
@@ -961,6 +964,17 @@ export interface UiAutomationTarget {
   rect: UiAutomationTargetRect | null;
 }
 
+export interface UiTerminalAutomationTarget {
+  sessionId: string;
+  baseY: number;
+  viewportY: number;
+  length: number;
+  cols: number;
+  rows: number;
+  type: "normal" | "alternate";
+  atBottom: boolean;
+}
+
 export interface UiAutomationDiagnostics {
   devicePixelRatio: number;
   viewport: { width: number; height: number };
@@ -977,21 +991,36 @@ export interface UiAutomationDiagnostics {
   };
 }
 
-export type UiAutomationResponse =
-  | {
-      ok: true;
-      requestId: string;
-      window: string;
-      action: UiAutomationAction;
-      selector: string;
-      target: UiAutomationTarget;
-      diagnostics?: UiAutomationDiagnostics;
-    }
+type UiAutomationSuccessResponse<A extends UiAutomationAction> =
+  A extends "terminal"
+    ? {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: "terminal";
+        selector: string;
+        target: UiTerminalAutomationTarget;
+        diagnostics?: UiAutomationDiagnostics;
+      }
+    : {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: Exclude<A, "terminal">;
+        selector: string;
+        target: UiAutomationTarget;
+        diagnostics?: UiAutomationDiagnostics;
+      };
+
+export type UiAutomationResponse<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> =
+  | UiAutomationSuccessResponse<A>
   | {
       ok: false;
       requestId: string;
       window: string;
-      action: UiAutomationAction;
+      action: A;
       selector: string;
       error:
         | "missing_selector"
@@ -1002,6 +1031,10 @@ export type UiAutomationResponse =
         | "timeout"
         | "unsupported_action"
         | "value_not_supported"
+        | "terminal_controller_unavailable"
+        | "terminal_target_mismatch"
+        | "terminal_entry_stale"
+        | "terminal_session_not_visible"
         | "automation_bridge_exception";
       message: string;
       available?: UiAutomationTarget[];
