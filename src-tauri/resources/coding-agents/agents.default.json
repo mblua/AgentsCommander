@@ -72,6 +72,18 @@
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".opencode" },
       "removable": true
+    },
+    {
+      "key": "antigravity",
+      "label": "Antigravity",
+      "description": "Coding Agent by Google",
+      "color": "#4285F4",
+      "command": "agy",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true,
+      "updateCommands": []
     }
   ]
 }

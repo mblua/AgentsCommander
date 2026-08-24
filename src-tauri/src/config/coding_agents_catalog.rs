@@ -978,12 +978,12 @@ fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// (key, label, description, color, command, instructionsFilename) for the 6
+    /// (key, label, description, color, command, instructionsFilename) for the 7
     /// current presets. Drift guard: the embedded default must equal these exact
     /// values so the externalized catalog is byte-for-byte the pre-#769 list. The
     /// frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
     #[allow(clippy::type_complexity)]
-    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 6] = [
+    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 7] = [
         (
             "claude",
             "Claude Code",
@@ -1038,6 +1038,15 @@ mod tests {
             "AGENTS.md",
             Some(".opencode"),
         ),
+        (
+            "antigravity",
+            "Antigravity",
+            "Coding Agent by Google",
+            "#4285F4",
+            "agy",
+            "AGENTS.md",
+            None,
+        ),
     ];
 
     fn manifest_json(agents_json: &str) -> String {
@@ -1049,21 +1058,20 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_parses_with_six_agents_in_order() {
+    fn embedded_default_parses_with_seven_agents_in_order() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
         let keys: Vec<&str> = catalog.agents.iter().map(|a| a.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["claude", "codex", "hermes", "cursor", "pi", "opencode"]
+            [
+                "claude", "codex", "hermes", "cursor", "pi", "opencode", "antigravity"
+            ]
         );
-        // OpenCode is last and carries the #768 "by Anomaly" subtitle.
+        // Antigravity is last, after OpenCode.
         let last = catalog.agents.last().unwrap();
-        assert_eq!(last.key, "opencode");
-        assert_eq!(
-            last.description,
-            "Open-source terminal coding agent by Anomaly"
-        );
+        assert_eq!(last.key, "antigravity");
+        assert_eq!(last.command, "agy");
     }
 
     #[test]
@@ -1139,7 +1147,7 @@ mod tests {
     fn load_missing_manifest_returns_embedded_default() {
         let dir = seed_dir();
         let agents = load_catalog(dir.path());
-        assert_eq!(agents.len(), 6);
+        assert_eq!(agents.len(), 7);
         assert_eq!(agents[0].key, "claude");
     }
 
@@ -1154,7 +1162,7 @@ mod tests {
         let agents = load_catalog(dir.path());
         assert_eq!(
             agents.len(),
-            6,
+            7,
             "corrupt file self-heals to embedded default"
         );
         // G3: the corrupt file is preserved byte-for-byte, never overwritten.
@@ -1216,7 +1224,7 @@ mod tests {
 
         ensure_seeded(dir.path(), None);
         assert!(path.exists(), "seed writes the manifest when absent");
-        assert_eq!(load_catalog(dir.path()).len(), 6);
+        assert_eq!(load_catalog(dir.path()).len(), 7);
 
         // Idempotent + never clobbers a user edit: hand-edit to a single custom
         // agent, re-seed, and confirm the edit is preserved.
@@ -1445,18 +1453,18 @@ mod tests {
         let project = seed_dir();
         let legacy = legacy_dir();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
 
         // Legacy agents.json is a DIRECTORY -> not a regular file -> embedded.
         let project = seed_dir();
         std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
 
         // No legacy at all -> embedded default.
         let project = seed_dir();
         ensure_seeded(project.path(), None);
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
     }
 
     #[test]
@@ -1589,7 +1597,7 @@ mod tests {
         };
 
         // Primary file absent -> embedded default (self-heal).
-        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
 
         // Hand-edited primary file is observable (primary wins over everything).
         let custom = manifest_json(
@@ -1603,7 +1611,7 @@ mod tests {
 
         // Primary file DELETED -> embedded default, never a legacy copy.
         std::fs::remove_file(manifest_path(&ac_dir)).unwrap();
-        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
     }
 
     #[test]
@@ -1663,11 +1671,11 @@ mod tests {
             "corrupt legacy content is user data and is copied verbatim"
         );
         // The read path self-heals to the embedded default in memory.
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
         // Recovery: deleting the project file re-seeds the embedded default.
         std::fs::remove_file(&project_file).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
     }
 
     #[test]
@@ -1773,7 +1781,7 @@ mod tests {
         // command; the other three ship none; every entry defaults autoUpdate
         // to false.
         let catalog = embedded_default_catalog();
-        assert_eq!(catalog.agents.len(), 6);
+        assert_eq!(catalog.agents.len(), 7);
         for def in &catalog.agents {
             assert!(
                 !def.auto_update,
