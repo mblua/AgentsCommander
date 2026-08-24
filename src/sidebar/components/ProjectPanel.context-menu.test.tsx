@@ -6,6 +6,7 @@ import {
   click,
   contextMenu,
   discovery,
+  input,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
@@ -33,10 +34,14 @@ const memberPath = `${workgroupPath}\\__agent_dev-rust`;
 const memberMatrixPath = `${projectPath}\\.ac\\_agent_dev-rust`;
 const originAgentPath = `${projectPath}\\.ac\\_agent_dev-docs`;
 const otherProjectPath = "D:\\OtherProject";
+const otherWorkgroupPath = `${projectPath}\\.ac\\wg-3-other-team`;
+const otherCoordPath = `${otherWorkgroupPath}\\__agent_dev-webpage-ui`;
+const otherMemberPath = `${otherWorkgroupPath}\\__agent_dev-rust`;
 // renderReplicaItem builds rowTestId() from rowContext + wg.name + replica.name
 // via automationIdPart (which keeps these slugs verbatim). The non-coordinator
 // member always renders in the "workgroups" section.
 const memberRowTestId = "replica.row.workgroups.wg-2-dev-team.dev-rust";
+const otherRowTestId = "replica.row.workgroups.wg-3-other-team.dev-rust";
 const coordQuickRowTestId = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
 
 // #545: taskTitle/task are parametrized so tests can drive the broom's
@@ -118,6 +123,73 @@ function memberSession(overrides: Partial<Session> = {}): Session {
   });
 }
 
+// #1536 - a second workgroup for A->B menu-replacement tests. Same agent names
+// as wg-2 but distinct paths, so rows and sessions stay unambiguous.
+function otherSession(overrides: Partial<Session> = {}): Session {
+  return session({
+    id: "other-session",
+    name: "wg-3-other-team/dev-rust",
+    workingDirectory: otherMemberPath,
+    status: "running",
+    ...overrides,
+  });
+}
+
+// #1536 - wg-2-dev-team (same shape as projectDiscovery) plus wg-3-other-team.
+function projectDiscoveryTwoWorkgroups(
+  taskTitle: string | null = "Context menu states",
+  task: string | null = null
+): AcDiscoveryResult {
+  return discovery({
+    workgroups: [
+      {
+        name: "wg-2-dev-team",
+        path: workgroupPath,
+        task,
+        taskTitle,
+        agents: [
+          {
+            name: "dev-webpage-ui",
+            path: coordPath,
+            identityPath: "../../_agent_dev-webpage-ui",
+            repoPaths: [],
+            isCoordinator: true,
+          },
+          {
+            name: "dev-rust",
+            path: memberPath,
+            identityPath: "../../_agent_dev-rust",
+            repoPaths: [],
+            isCoordinator: false,
+          },
+        ],
+      },
+      {
+        name: "wg-3-other-team",
+        path: otherWorkgroupPath,
+        task: null,
+        taskTitle: "Other team title",
+        agents: [
+          {
+            name: "dev-webpage-ui",
+            path: otherCoordPath,
+            identityPath: "../../_agent_dev-webpage-ui",
+            repoPaths: [],
+            isCoordinator: true,
+          },
+          {
+            name: "dev-rust",
+            path: otherMemberPath,
+            identityPath: "../../_agent_dev-rust",
+            repoPaths: [],
+            isCoordinator: false,
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function replicaMenu(): HTMLElement | null {
   // Context menus render through a Portal into document.body, not the panel root.
   return document.querySelector<HTMLElement>(".session-context-menu");
@@ -129,6 +201,23 @@ function findBroom(menu: HTMLElement): HTMLButtonElement | null {
       b.textContent?.includes("Clear task title")
     ) ?? null
   );
+}
+
+// #1536 - the Edit TASK title item (mirrors findBroom; no data-ac-testid).
+function findEditTitleButton(menu: HTMLElement): HTMLButtonElement | null {
+  return (
+    Array.from(menu.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Edit TASK title")
+    ) ?? null
+  );
+}
+
+function findTitleInput(menu: HTMLElement): HTMLInputElement | null {
+  return menu.querySelector<HTMLInputElement>(".session-context-title-input");
+}
+
+function findSaveTitleButton(menu: HTMLElement): HTMLButtonElement | null {
+  return menu.querySelector<HTMLButtonElement>(".session-context-title-btn.save");
 }
 
 function findMatrixFolderAction(menu: HTMLElement): HTMLButtonElement | null {
@@ -414,6 +503,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "Open Matrix folder",
       "Open in new window",
       "Add to Group",
+      "Edit TASK title",
       "Clear task title",
     ]);
 
@@ -508,6 +598,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
         "docs",
         "Open Matrix folder",
         "Add to Group",
+        "Edit TASK title",
         "Clear task title",
       ]);
     });
@@ -1166,6 +1257,459 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => {
+  let cleanupDom: (() => void) | null = null;
+  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+
+  async function setupPanel(
+    sessions: Session[] = [],
+    discoveryResult: AcDiscoveryResult = projectDiscovery(),
+    expectedText = "dev-rust"
+  ): Promise<FakeTransport> {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", discoveryResult);
+    fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("open_in_explorer", null);
+    if (sessions.length > 0) sessionsStore.setSessions(sessions);
+    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    await projectStore.createAndLoad(projectPath);
+    await waitFor(() => expect(rendered!.root.textContent).toContain(expectedText));
+    return fake;
+  }
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    rendered?.cleanup();
+    rendered = null;
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  // 9.2.1 - the item renders in BOTH menus, between Add to Group and the broom
+  // on coordinator rows (which own the Add to Group entry), directly above the
+  // broom on member rows (which never render Add to Group).
+  it("shows Edit TASK title between Add to Group and the broom on a coordinator row (active menu)", async () => {
+    await setupPanel([coordSession(), memberSession()], projectDiscovery(), "dev-webpage-ui");
+
+    contextMenu(findRow(rendered!.root, coordQuickRowTestId));
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(findEditTitleButton(menu!)).not.toBeNull();
+    });
+    const labels = menuButtonLabels(replicaMenu()!);
+    expect(labels.indexOf("Edit TASK title")).toBeGreaterThan(labels.indexOf("Add to Group"));
+    expect(labels.indexOf("Edit TASK title")).toBeLessThan(labels.indexOf("Clear task title"));
+  });
+
+  it("shows Edit TASK title between Add to Group and the broom on a coordinator row (gray menu)", async () => {
+    await setupPanel([memberSession()], projectDiscovery(), "dev-webpage-ui");
+
+    contextMenu(findRow(rendered!.root, coordQuickRowTestId));
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).not.toContain("Restart Session");
+      expect(findEditTitleButton(menu!)).not.toBeNull();
+    });
+    const labels = menuButtonLabels(replicaMenu()!);
+    expect(labels.indexOf("Edit TASK title")).toBeGreaterThan(labels.indexOf("Add to Group"));
+    expect(labels.indexOf("Edit TASK title")).toBeLessThan(labels.indexOf("Clear task title"));
+  });
+
+  it("shows Edit TASK title directly above the broom on a member row (active menu)", async () => {
+    await setupPanel([coordSession(), memberSession()]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let edit: HTMLButtonElement | null = null;
+    let broom: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      broom = findBroom(menu!);
+      expect(edit).not.toBeNull();
+      expect(broom).not.toBeNull();
+    });
+    const buttons = Array.from(replicaMenu()!.querySelectorAll("button"));
+    expect(buttons.indexOf(edit!)).toBe(buttons.indexOf(broom!) - 1);
+  });
+
+  it("shows Edit TASK title directly above the broom on a member row (gray menu)", async () => {
+    await setupPanel([]);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let edit: HTMLButtonElement | null = null;
+    let broom: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).not.toContain("Restart Session");
+      edit = findEditTitleButton(menu!);
+      broom = findBroom(menu!);
+      expect(edit).not.toBeNull();
+      expect(broom).not.toBeNull();
+    });
+    const buttons = Array.from(replicaMenu()!.querySelectorAll("button"));
+    expect(buttons.indexOf(edit!)).toBe(buttons.indexOf(broom!) - 1);
+  });
+
+  // 9.2.2 - active session save: session-based task_set_title with the live
+  // coordinator session (first live non-inactive in wg.agents), backend getTitle
+  // prefill wins over the discovery taskTitle, menu closes on success.
+  it("saves via task_set_title with the live coordinator session when one exists", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()], projectDiscovery("Local Title"));
+    fake.resolve("task_get_title", "Backend Title");
+    fake.resolve("task_set_title", { workgroupRoot: workgroupPath, task: null });
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+
+    let inputEl: HTMLInputElement | null = null;
+    await waitFor(() => {
+      const el = findTitleInput(replicaMenu()!);
+      expect(el).not.toBeNull();
+      inputEl = el;
+      // The backend getTitle value wins over the local discovery prefill.
+      expect(inputEl!.value).toBe("Backend Title");
+    });
+    input(inputEl!, "Sidebar Edited Title");
+    click(findSaveTitleButton(replicaMenu()!)!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("task_set_title");
+      expect(call).toBeDefined();
+      expect(call!.args.sessionId).toBe("coord-session");
+      expect(call!.args.title).toBe("Sidebar Edited Title");
+    });
+    await waitFor(() => expect(replicaMenu()).toBeNull());
+  });
+
+  // 9.2.3 - cold (no-session) save: path-based task_set_title_at with the
+  // workgroup root; the session command must never fire. task_get_title is
+  // deliberately unregistered: an accidental session-path call would throw
+  // "Unhandled fake transport invoke" and fail this test.
+  it("saves a cold workgroup via task_set_title_at and never falls back to the session command", async () => {
+    const fake = await setupPanel([], projectDiscovery("Local Title"));
+    fake.resolve("task_set_title_at", { workgroupRoot: workgroupPath, task: null });
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+
+    let inputEl: HTMLInputElement | null = null;
+    await waitFor(() => {
+      const el = findTitleInput(replicaMenu()!);
+      expect(el).not.toBeNull();
+      inputEl = el;
+      // Cold prefill comes from the discovery taskTitle (no task_get_title_at).
+      expect(inputEl!.value).toBe("Local Title");
+    });
+    input(inputEl!, "Cold Edited Title");
+    click(findSaveTitleButton(replicaMenu()!)!);
+
+    await waitFor(() => {
+      const call = fake.lastCall("task_set_title_at");
+      expect(call).toBeDefined();
+      expect(call!.args).toEqual({ workgroupRoot: workgroupPath, title: "Cold Edited Title" });
+    });
+    // The cold path must NOT fall back to the session-based command.
+    expect(fake.lastCall("task_set_title")).toBeUndefined();
+    await waitFor(() => expect(replicaMenu()).toBeNull());
+  });
+
+  // 9.2.4 - Save is enabled only for a non-empty trimmed draft.
+  it("disables Save while the trimmed draft is empty", async () => {
+    const fake = await setupPanel([], projectDiscovery(null));
+    fake.resolve("task_set_title_at", { workgroupRoot: workgroupPath, task: null });
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+
+    let inputEl: HTMLInputElement | null = null;
+    let saveBtn: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      inputEl = findTitleInput(replicaMenu()!);
+      expect(inputEl).not.toBeNull();
+      saveBtn = findSaveTitleButton(replicaMenu()!);
+      expect(saveBtn).not.toBeNull();
+    });
+    expect(saveBtn!.disabled).toBe(true);
+    input(inputEl!, "   ");
+    expect(saveBtn!.disabled).toBe(true);
+    input(inputEl!, "Real title");
+    expect(saveBtn!.disabled).toBe(false);
+    expect(fake.lastCall("task_set_title_at")).toBeUndefined();
+  });
+
+  // 9.2.5 - Enter saves (and closes the menu); Escape cancels the editor and
+  // keeps the menu open without any IPC call.
+  it("saves on Enter and cancels on Escape without dismissing the menu", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()], projectDiscovery("Enter Title"));
+    fake.resolve("task_get_title", "Enter Title");
+    fake.resolve("task_set_title", { workgroupRoot: workgroupPath, task: null });
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+    let inputEl: HTMLInputElement | null = null;
+    await waitFor(() => {
+      const el = findTitleInput(replicaMenu()!);
+      expect(el).not.toBeNull();
+      inputEl = el;
+    });
+    inputEl!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+    );
+    await waitFor(() => {
+      const call = fake.lastCall("task_set_title");
+      expect(call).toBeDefined();
+      expect(call!.args.sessionId).toBe("coord-session");
+      expect(call!.args.title).toBe("Enter Title");
+    });
+    await waitFor(() => expect(replicaMenu()).toBeNull());
+
+    // Reopen; Escape cancels the editor only.
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+    await waitFor(() => expect(findTitleInput(replicaMenu()!)).not.toBeNull());
+    findTitleInput(replicaMenu()!)!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+    );
+    await waitFor(() => expect(findTitleInput(replicaMenu()!)).toBeNull());
+    expect(replicaMenu()).not.toBeNull();
+    expect(fake.callsFor("task_set_title")).toHaveLength(1);
+  });
+
+  // 9.2.6 - save failure: inline error, menu stays open, draft preserved, and
+  // the broom-style "Failed to edit task title:" console line fires.
+  it("keeps the menu open and shows the inline error when the save is rejected", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()], projectDiscovery("Local Title"));
+    fake.resolve("task_get_title", "Backend Title");
+    fake.reject("task_set_title", "boom");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      contextMenu(findRow(rendered!.root, memberRowTestId));
+      let edit: HTMLButtonElement | null = null;
+      await waitFor(() => {
+        const menu = replicaMenu();
+        expect(menu).not.toBeNull();
+        edit = findEditTitleButton(menu!);
+        expect(edit).not.toBeNull();
+      });
+      click(edit!);
+      let inputEl: HTMLInputElement | null = null;
+      await waitFor(() => {
+        const el = findTitleInput(replicaMenu()!);
+        expect(el).not.toBeNull();
+        inputEl = el;
+        expect(inputEl!.value).toBe("Backend Title");
+      });
+      input(inputEl!, "Keep Me");
+      click(findSaveTitleButton(replicaMenu()!)!);
+
+      await waitFor(() => {
+        const error = replicaMenu()!.querySelector<HTMLElement>(".session-context-title-error");
+        expect(error).not.toBeNull();
+        expect(error!.textContent).toContain("boom");
+      });
+      expect(replicaMenu()).not.toBeNull();
+      expect(findTitleInput(replicaMenu()!)!.value).toBe("Keep Me");
+      expect(
+        errorSpy.mock.calls.some(
+          (args) => args[0] === "Failed to edit task title:" && args[1] === "boom"
+        )
+      ).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // 9.2.7 - getTitle failure: the editor briefly mounts and unmounts on
+  // rejection; the inline error shows as a sibling, the menu stays open.
+  it("unmounts the editor and shows the inline error when getTitle is rejected", async () => {
+    const fake = await setupPanel([coordSession(), memberSession()], projectDiscovery("Local Title"));
+    fake.reject("task_get_title", "boom");
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.querySelector(".session-context-title-edit")).toBeNull();
+      const error = menu!.querySelector<HTMLElement>(".session-context-title-error");
+      expect(error).not.toBeNull();
+      expect(error!.textContent).toContain("boom");
+    });
+    expect(replicaMenu()).not.toBeNull();
+    expect(fake.lastCall("task_set_title")).toBeUndefined();
+  });
+
+  // 9.2.8 - A->B replacement regression (BLOCKER 1): right-clicking another
+  // replica replaces the menu directly (never through null, #943); no stale
+  // editor or captured save target may survive into the new menu.
+  it("never lets a stale editor survive a right-click replacement onto another workgroup", async () => {
+    const fake = await setupPanel([coordSession(), otherSession()], projectDiscoveryTwoWorkgroups());
+    fake.resolve("task_get_title", "A title");
+    fake.resolve("task_set_title", { workgroupRoot: otherWorkgroupPath, task: null });
+
+    // wg-2 member row has no session (gray menu), but the live wg-2 coordinator
+    // resolves, so the editor fetches getTitle("coord-session").
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+    await waitFor(() => {
+      expect(replicaMenu()!.querySelector(".session-context-title-edit")).not.toBeNull();
+    });
+
+    // Right-click the wg-3 member row: #943 direct replacement, never through null.
+    contextMenu(findRow(rendered!.root, otherRowTestId));
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).toContain("Restart Session");
+      expect(menu!.querySelector(".session-context-title-edit")).toBeNull();
+      expect(findSaveTitleButton(menu!)).toBeNull();
+    });
+    expect(fake.lastCall("task_set_title")).toBeUndefined();
+    expect(fake.lastCall("task_set_title_at")).toBeUndefined();
+
+    // Editing + saving on wg-3 targets wg-3's session, never wg-2.
+    edit = findEditTitleButton(replicaMenu()!);
+    expect(edit).not.toBeNull();
+    click(edit!);
+    await waitFor(() => expect(findTitleInput(replicaMenu()!)).not.toBeNull());
+    click(findSaveTitleButton(replicaMenu()!)!);
+    await waitFor(() => {
+      const call = fake.lastCall("task_set_title");
+      expect(call).toBeDefined();
+      expect(call!.args.sessionId).toBe("other-session");
+    });
+  });
+
+  // 9.2.9 - stale getTitle continuation vs a newer editor (BLOCKER 2): wg-2's
+  // getTitle stays pending across the A->B replacement; when it finally settles
+  // it must bail BEFORE any shared-state mutation - wg-3's draft, error, busy,
+  // and mounted editor stay untouched, and saving still targets wg-3.
+  it("ignores a stale getTitle continuation when a newer editor opened on another workgroup", async () => {
+    const fake = await setupPanel([coordSession(), otherSession()], projectDiscoveryTwoWorkgroups());
+    let resolveCoordGetTitle!: (value: string) => void;
+    const coordPending = new Promise<string>((res) => {
+      resolveCoordGetTitle = res;
+    });
+    fake.onInvoke("task_get_title", (args) =>
+      args.sessionId === "coord-session" ? coordPending : Promise.resolve("Other team title")
+    );
+    fake.resolve("task_set_title", { workgroupRoot: otherWorkgroupPath, task: null });
+
+    // wg-2 editor: getTitle("coord-session") stays PENDING.
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    let edit: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      edit = findEditTitleButton(menu!);
+      expect(edit).not.toBeNull();
+    });
+    click(edit!);
+    await waitFor(() => expect(findTitleInput(replicaMenu()!)).not.toBeNull());
+
+    // Right-click wg-3 and open its editor: getTitle("other-session") resolves
+    // immediately; the editor mounts with the wg-3 draft.
+    contextMenu(findRow(rendered!.root, otherRowTestId));
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      expect(menu!.textContent).toContain("Restart Session");
+    });
+    edit = findEditTitleButton(replicaMenu()!);
+    expect(edit).not.toBeNull();
+    click(edit!);
+    await waitFor(() => {
+      const el = findTitleInput(replicaMenu()!);
+      expect(el).not.toBeNull();
+      expect(el!.value).toBe("Other team title");
+    });
+
+    // Now wg-2's continuation settles: it must bail without touching wg-3 state.
+    resolveCoordGetTitle("A title");
+    await waitFor(() => {
+      const el = findTitleInput(replicaMenu()!);
+      expect(el).not.toBeNull();
+      expect(el!.value).toBe("Other team title");
+    });
+    expect(replicaMenu()!.querySelector(".session-context-title-error")).toBeNull();
+
+    // Saving still targets wg-3 with its intact draft.
+    click(findSaveTitleButton(replicaMenu()!)!);
+    await waitFor(() => {
+      const call = fake.lastCall("task_set_title");
+      expect(call).toBeDefined();
+      expect(call!.args.sessionId).toBe("other-session");
+      expect(call!.args.title).toBe("Other team title");
+    });
   });
 });
 

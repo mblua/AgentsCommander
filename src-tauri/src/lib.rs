@@ -2910,6 +2910,7 @@ pub fn run(
             commands::task::task_set_title,
               commands::task::task_clean,
             commands::task::task_clean_at,
+            commands::task::task_set_title_at,
             commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::get_screen_snapshot,
