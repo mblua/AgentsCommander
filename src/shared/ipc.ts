@@ -686,6 +686,9 @@ export const TaskAPI = {
 
   cleanAt: (workgroupRoot: string) =>
     transport.invoke<TaskUpdateResult>("task_clean_at", { workgroupRoot }),
+
+  setTitleAt: (workgroupRoot: string, title: string) =>
+    transport.invoke<TaskUpdateResult>("task_set_title_at", { workgroupRoot, title }),
 };
 
 export const TelegramAPI = {

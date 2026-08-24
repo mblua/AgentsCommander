@@ -1,9 +1,20 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 use crate::cli::create_agent_matrix;
 use crate::config;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
+
+/// Test-only serialization for every test that writes or consumes files in
+/// the process-shared `config_dir()/session-requests/` (the C1-C5 tests here
+/// and the M1-M5 poll tests in `phone::mailbox`). `config_dir()` is a
+/// process-wide `OnceLock`, so those tests share ONE directory; without the
+/// lock a poll test could consume (or delete) another test's request/result
+/// file mid-test.
+#[cfg(test)]
+pub(crate) static SESSION_REQUESTS_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -14,7 +25,7 @@ VALIDATION:\n  \
   --project is a registered AC project folder name from settings.projectPaths. Paths are not accepted.\n  \
   --name is trimmed before use. It must not be empty after trim, and it must not contain path separators (/ or \\) or NUL.\n\n\
 OUTPUT:\n  \
-  Prints the same JSON as create-agent-matrix: agentPath, agentName, rolePath, launched, launchAgent.")]
+  Prints the same JSON as create-agent-matrix: agentPath, agentName, rolePath, launched, launchStatus, launchError, launchAgent.")]
 pub struct CreateAgentArgs {
     /// Registered AC project folder name. Paths are not accepted.
     #[arg(long, value_name = "PROJECT")]
@@ -141,6 +152,116 @@ pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), Stri
     std::fs::write(&path, json).map_err(|e| format!("Failed to write session request: {}", e))?;
 
     Ok(())
+}
+
+/// #1163 - the outcome the running app recorded for a session request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionRequestResultStatus {
+    Created,
+    Rejected,
+}
+
+/// #1163 - the running app answers each session request with a result sidecar
+/// (`<id>.result.json` in the session-requests dir) so the CLI can report a
+/// truthful launch outcome.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRequestResult {
+    pub id: String,
+    pub status: SessionRequestResultStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `<config_dir>/session-requests/<id>.result.json`
+pub(crate) fn session_request_result_path(config_dir: &Path, id: &str) -> PathBuf {
+    config_dir
+        .join(SESSION_REQUESTS_DIR_NAME)
+        .join(format!("{id}.result.json"))
+}
+
+/// True when `path` is a result sidecar (`<id>.result.json`), never a request.
+pub(crate) fn is_session_request_result_path(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.ends_with(".result"))
+}
+
+/// Mirror of [`write_session_request`] for the result sidecar.
+pub(crate) fn write_session_request_result(result: &SessionRequestResult) -> Result<(), String> {
+    let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
+    let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
+    std::fs::create_dir_all(&requests_dir)
+        .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
+    let path = session_request_result_path(&config_dir, &result.id);
+    let json = serde_json::to_string_pretty(result)
+        .map_err(|e| format!("Failed to serialize session request result: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write session request result: {}", e))?;
+    Ok(())
+}
+
+/// Read and CONSUME `<id>.result.json`: on success parse and delete the file;
+/// on missing or unparseable, delete-if-present and return `None`.
+pub(crate) fn read_session_request_result(id: &str) -> Option<SessionRequestResult> {
+    let config_dir = config::config_dir()?;
+    let path = session_request_result_path(&config_dir, id);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return None,
+    };
+    match serde_json::from_str::<SessionRequestResult>(&content) {
+        Ok(result) => {
+            let _ = std::fs::remove_file(&path);
+            Some(result)
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+/// #1163 - how long the CLI waits for the running app's result sidecar before
+/// reporting `pending`. The app polls every 3 s, so a running app answers in
+/// ~3-6 s plus spawn time; 30 s covers slow spawns without hanging scripts.
+pub(crate) const SESSION_REQUEST_RESULT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// #1163 - the CLI's truthful launch verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LaunchOutcome {
+    Pending,
+    Launched { session_id: String },
+    Rejected { error: String },
+}
+
+/// Poll [`read_session_request_result`] every 250 ms until `timeout` elapses;
+/// `Created` → `Launched`, `Rejected` → `Rejected`, deadline → `Pending`.
+pub(crate) fn wait_for_session_request_result(
+    request_id: &str,
+    timeout: std::time::Duration,
+) -> LaunchOutcome {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(result) = read_session_request_result(request_id) {
+            return match result.status {
+                SessionRequestResultStatus::Created => LaunchOutcome::Launched {
+                    session_id: result.session_id.unwrap_or_default(),
+                },
+                SessionRequestResultStatus::Rejected => LaunchOutcome::Rejected {
+                    error: result.error.unwrap_or_default(),
+                },
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            return LaunchOutcome::Pending;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 
 #[cfg(test)]
@@ -278,6 +399,10 @@ mod tests {
 
     #[test]
     fn write_session_request_is_still_json_camel_case() {
+        let _guard = SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
         let request = SessionRequest {
             id: format!("test-{}", uuid::Uuid::new_v4().simple()),
             cwd: "C:/repo/.ac/_agent_architect".to_string(),
@@ -302,5 +427,112 @@ mod tests {
         assert!(json.contains("\"agentId\""));
         assert!(!json.contains("session_name"));
         assert!(!json.contains("agent_id"));
+    }
+
+    // #1163: the result sidecar must stay camelCase JSON so the CLI/app
+    // contract is stable.
+    #[test]
+    fn write_session_request_result_is_still_json_camel_case() {
+        let _guard = SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let result = SessionRequestResult {
+            id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+            status: SessionRequestResultStatus::Created,
+            session_id: Some("sess-1".to_string()),
+            error: None,
+        };
+
+        write_session_request_result(&result).expect("write result");
+
+        let path = crate::config::config_dir()
+            .expect("config dir")
+            .join(SESSION_REQUESTS_DIR_NAME)
+            .join(format!("{}.result.json", result.id));
+        let json = std::fs::read_to_string(&path).expect("read result");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(json.contains("\"status\""));
+        assert!(json.contains("\"sessionId\""));
+        assert!(!json.contains("session_id"));
+        assert!(!json.contains("created_at"));
+    }
+
+    #[test]
+    fn read_session_request_result_consumes_and_deletes() {
+        let _guard = SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let result = SessionRequestResult {
+            id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+            status: SessionRequestResultStatus::Created,
+            session_id: Some("sess-1".to_string()),
+            error: None,
+        };
+        write_session_request_result(&result).expect("write result");
+        let path = crate::config::config_dir()
+            .expect("config dir")
+            .join(SESSION_REQUESTS_DIR_NAME)
+            .join(format!("{}.result.json", result.id));
+
+        let read = read_session_request_result(&result.id).expect("read result");
+        assert_eq!(read.status, SessionRequestResultStatus::Created);
+        assert_eq!(read.session_id.as_deref(), Some("sess-1"));
+        assert!(!path.exists(), "consumed result must be deleted");
+    }
+
+    #[test]
+    fn wait_for_session_request_result_returns_launched() {
+        let _guard = SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let result = SessionRequestResult {
+            id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+            status: SessionRequestResultStatus::Created,
+            session_id: Some("sess-1".to_string()),
+            error: None,
+        };
+        write_session_request_result(&result).expect("write result");
+
+        let outcome = wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
+        assert_eq!(
+            outcome,
+            LaunchOutcome::Launched {
+                session_id: "sess-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn wait_for_session_request_result_returns_rejected() {
+        let _guard = SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let result = SessionRequestResult {
+            id: format!("test-{}", uuid::Uuid::new_v4().simple()),
+            status: SessionRequestResultStatus::Rejected,
+            session_id: None,
+            error: Some("sessionRace".to_string()),
+        };
+        write_session_request_result(&result).expect("write result");
+
+        let outcome = wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
+        assert_eq!(
+            outcome,
+            LaunchOutcome::Rejected {
+                error: "sessionRace".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn wait_for_session_request_result_times_out_as_pending() {
+        let id = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let outcome = wait_for_session_request_result(&id, std::time::Duration::from_millis(300));
+        assert_eq!(outcome, LaunchOutcome::Pending);
     }
 }
