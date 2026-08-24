@@ -18,6 +18,7 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.prepare.outputs.release_id }}
+      release_mode: ${{ steps.prepare.outputs.release_mode }}
       repository_id: ${{ steps.prepare.outputs.repository_id }}
       tag_object_sha: ${{ steps.prepare.outputs.tag_object_sha }}
       release_sha: ${{ steps.prepare.outputs.release_sha }}
@@ -35,7 +36,7 @@ jobs:
           node-version: 22.23.2
           package-manager-cache: false
 
-      - name: Validate authority and create the draft release
+      - name: Validate authority and classify the release
         id: prepare
         shell: bash
         env:
@@ -105,8 +106,103 @@ jobs:
             awk '/^HTTP\// { gsub("\r", "", $2); status=$2 } END { print status }' \
               "$RUNNER_TEMP/release-query.txt"
           )"
-          [[ "$query_rc" -ne 0 ]]
-          [[ "$query_status" == "404" ]]
+
+          if [[ "$query_status" == "404" ]]; then
+            [[ "$query_rc" -ne 0 ]]
+            release_mode="fresh"
+          elif [[ "$query_status" == "200" ]]; then
+            [[ "$query_rc" -eq 0 ]]
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              /repos/mblua/AgentsCommander/releases/tags/v0.30.1 \
+              > "$RUNNER_TEMP/release-query.json"
+
+            classification="$(
+              NOTES_PATH="$RUNNER_TEMP/release-notes.md" \
+              RELEASE_SHA="$release_sha" \
+              SNAPSHOT="$RUNNER_TEMP/release-query.json" \
+              node <<'NODE'
+          const fs = require('node:fs');
+          const expectedNames = [
+            'Agents.Commander-0.30.1-1.x86_64.rpm',
+            'Agents.Commander_0.30.1_aarch64.dmg',
+            'Agents.Commander_0.30.1_amd64.AppImage',
+            'Agents.Commander_0.30.1_amd64.deb',
+            'Agents.Commander_0.30.1_x64-setup.exe',
+            'Agents.Commander_0.30.1_x64.dmg',
+            'Agents.Commander_aarch64.app.tar.gz',
+            'Agents.Commander_x64.app.tar.gz',
+            'SHASUMS256.txt',
+            'agentscommander-linux-x86_64',
+            'agentscommander-mac-aarch64',
+            'agentscommander-mac-aarch64.app.tar.gz',
+            'agentscommander-mac-x86_64',
+            'agentscommander-mac-x86_64.app.tar.gz',
+            'agentscommander-testeable-windows-x86_64.exe',
+            'agentscommander-windows-x86_64.exe',
+          ];
+          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
+          const expectedBody = fs.readFileSync(process.env.NOTES_PATH, 'utf8');
+          if (
+            !Number.isInteger(release.id)
+            || release.id <= 0
+            || release.tag_name !== 'v0.30.1'
+            || release.target_commitish !== process.env.RELEASE_SHA
+            || release.name !== 'Agents Commander v0.30.1'
+            || release.body !== expectedBody
+            || release.prerelease !== false
+            || !Array.isArray(release.assets)
+          ) {
+            throw new Error('existing Release identity is conflicting or ambiguous');
+          }
+          if (release.draft === true && release.immutable === false) {
+            process.stdout.write('compatible-draft');
+          } else if (release.draft === false && release.immutable === true) {
+            const byName = new Map();
+            const ids = new Set();
+            for (const asset of release.assets) {
+              if (
+                !expectedNames.includes(asset.name)
+                || byName.has(asset.name)
+                || !Number.isInteger(asset.id)
+                || asset.id <= 0
+                || ids.has(asset.id)
+                || !Number.isInteger(asset.size)
+                || asset.size <= 0
+                || asset.state !== 'uploaded'
+                || !/^sha256:[0-9a-f]{64}$/.test(asset.digest)
+                || asset.url
+                  !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
+              ) {
+                throw new Error(`immutable Release asset is invalid: ${asset.name}`);
+              }
+              byName.set(asset.name, asset);
+              ids.add(asset.id);
+            }
+            if (
+              byName.size !== expectedNames.length
+              || expectedNames.some((name) => !byName.has(name))
+            ) {
+              throw new Error('immutable Release asset inventory is not exact');
+            }
+            process.stdout.write('resume');
+          } else {
+            throw new Error('existing Release state is conflicting or ambiguous');
+          }
+          NODE
+            )"
+
+            if [[ "$classification" == "compatible-draft" ]]; then
+              echo "A compatible draft already exists. Follow the approved owner recovery rule before a full rerun." >&2
+              exit 1
+            fi
+            [[ "$classification" == "resume" ]]
+            release_mode="resume"
+            release_id="$(jq -r '.id' "$RUNNER_TEMP/release-query.json")"
+          else
+            echo "Release query returned an ambiguous status: rc=$query_rc status=$query_status" >&2
+            exit 1
+          fi
 
           repository_id="$(
             gh api \
@@ -116,43 +212,47 @@ jobs:
           )"
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
 
-          jq -n \
-            --arg tag_name "v0.30.1" \
-            --arg target_commitish "$release_sha" \
-            --arg name "Agents Commander v0.30.1" \
-            --rawfile body "$RUNNER_TEMP/release-notes.md" \
-            '{
-              tag_name: $tag_name,
-              target_commitish: $target_commitish,
-              name: $name,
-              body: $body,
-              draft: true,
-              prerelease: false
-            }' > "$RUNNER_TEMP/create-release.json"
+          if [[ "$release_mode" == "fresh" ]]; then
+            jq -n \
+              --arg tag_name "v0.30.1" \
+              --arg target_commitish "$release_sha" \
+              --arg name "Agents Commander v0.30.1" \
+              --rawfile body "$RUNNER_TEMP/release-notes.md" \
+              '{
+                tag_name: $tag_name,
+                target_commitish: $target_commitish,
+                name: $name,
+                body: $body,
+                draft: true,
+                prerelease: false
+              }' > "$RUNNER_TEMP/create-release.json"
 
-          gh api \
-            --method POST \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/releases \
-            --input "$RUNNER_TEMP/create-release.json" \
-            > "$RUNNER_TEMP/draft-release-created.json"
+            gh api \
+              --method POST \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              /repos/mblua/AgentsCommander/releases \
+              --input "$RUNNER_TEMP/create-release.json" \
+              > "$RUNNER_TEMP/draft-release-created.json"
 
-          jq -e \
-            --arg target "$release_sha" \
-            '
-              (.id | type == "number" and . > 0)
-              and .tag_name == "v0.30.1"
-              and .target_commitish == $target
-              and .name == "Agents Commander v0.30.1"
-              and .draft == true
-              and .prerelease == false
-              and .immutable == false
-              and (.assets | type == "array" and length == 0)
-            ' "$RUNNER_TEMP/draft-release-created.json" > /dev/null
+            jq -e \
+              --arg target "$release_sha" \
+              '
+                (.id | type == "number" and . > 0)
+                and .tag_name == "v0.30.1"
+                and .target_commitish == $target
+                and .name == "Agents Commander v0.30.1"
+                and .draft == true
+                and .prerelease == false
+                and .immutable == false
+                and (.assets | type == "array" and length == 0)
+              ' "$RUNNER_TEMP/draft-release-created.json" > /dev/null
 
-          release_id="$(jq -r '.id' "$RUNNER_TEMP/draft-release-created.json")"
+            release_id="$(jq -r '.id' "$RUNNER_TEMP/draft-release-created.json")"
+          fi
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           {
             echo "release_id=$release_id"
+            echo "release_mode=$release_mode"
             echo "repository_id=$repository_id"
             echo "tag_object_sha=$tag_object_sha"
             echo "release_sha=$release_sha"
@@ -160,6 +260,7 @@ jobs:
 
   build-release:
     needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
     permissions:
       contents: read
     strategy:
@@ -575,6 +676,7 @@ jobs:
     needs:
       - prepare-release
       - build-release
+    if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -1558,6 +1660,7 @@ jobs:
     needs:
       - prepare-release
       - assemble-release
+    if: ${{ always() && !cancelled() && needs.prepare-release.result == 'success' && (needs.prepare-release.outputs.release_mode == 'resume' || (needs.prepare-release.outputs.release_mode == 'fresh' && needs.assemble-release.result == 'success')) }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -1596,6 +1699,7 @@ jobs:
           tar --version | head -n 1 | grep -Fq 'GNU tar'
 
       - name: Verify the handoff artifact record
+        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
         shell: bash
         env:
           EXPECTED_DIGEST: ${{ needs.assemble-release.outputs.handoff_digest }}
@@ -1638,6 +1742,7 @@ jobs:
           NODE
 
       - name: Download the verified handoff only by ID
+        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.assemble-release.outputs.handoff_id }}
@@ -1645,18 +1750,315 @@ jobs:
           path: ${{ runner.temp }}/release-handoff
           merge-multiple: true
 
-      - name: Verify the complete handoff locally
+      - name: Reconstruct the verified handoff from the immutable release
+        id: reconstruct
+        if: ${{ needs.prepare-release.outputs.release_mode == 'resume' }}
+        timeout-minutes: 10
         shell: bash
         env:
-          EXPECTED_MANIFEST_HASH: ${{ needs.assemble-release.outputs.manifest_hash }}
-          HANDOFF: ${{ runner.temp }}/release-handoff
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
           REPOSITORY_ID: ${{ needs.prepare-release.outputs.repository_id }}
           TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
         run: |
           set -euo pipefail
+
+          git fetch \
+            --no-tags \
+            origin \
+            "+refs/tags/v0.30.1:refs/tags/ac-release-v0.30.1"
+          [[ "$(git cat-file -t refs/tags/ac-release-v0.30.1)" == "tag" ]]
+          remote_tag_object="$(git rev-parse refs/tags/ac-release-v0.30.1)"
+          remote_release_sha="$(git rev-parse refs/tags/ac-release-v0.30.1^{commit})"
+          [[ "$remote_tag_object" == "$TAG_OBJECT_SHA" ]]
+          [[ "$(git cat-file -t "$remote_release_sha")" == "commit" ]]
+          [[ "$remote_release_sha" == "$RELEASE_SHA" ]]
+
+          git fetch \
+            --no-tags \
+            origin \
+            "+refs/heads/main:refs/remotes/origin/ac-release-main"
+          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/ac-release-main
+          git show "$RELEASE_SHA:.github/workflows/release.yml" \
+            > "$RUNNER_TEMP/release-workflow-resume.yml"
+          git show "refs/remotes/origin/ac-release-main:.github/workflows/release.yml" \
+            > "$RUNNER_TEMP/main-workflow-resume.yml"
+          cmp --silent "$RUNNER_TEMP/release-workflow-resume.yml" "$RUNNER_TEMP/main-workflow-resume.yml"
+
+          NOTES_PATH="$RUNNER_TEMP/release-notes-resume.md" node <<'NODE'
+          const fs = require('node:fs');
+          const text = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const heading = /^## 0\.30\.1[ \t]*$/gm;
+          const matches = [...text.matchAll(heading)];
+          if (matches.length !== 1) {
+            throw new Error(`expected one 0.30.1 changelog heading, found ${matches.length}`);
+          }
+          const start = matches[0].index + matches[0][0].length;
+          const rest = text.slice(start);
+          const next = rest.search(/^## [^\r\n]+$/m);
+          const body = (next === -1 ? rest : rest.slice(0, next)).trim();
+          if (!body) {
+            throw new Error('0.30.1 changelog body is empty');
+          }
+          fs.writeFileSync(process.env.NOTES_PATH, `${body}\n`, { flag: 'wx' });
+          NODE
+
+          gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            /repos/mblua/AgentsCommander/immutable-releases \
+            > "$RUNNER_TEMP/immutable-setting-resume.json"
+          gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/immutable-release-resume.json"
+
+          handoff="$RUNNER_TEMP/release-handoff"
+          mkdir "$handoff"
+          ASSET_RECORDS="$RUNNER_TEMP/release-asset-records-resume.json" \
+          HANDOFF="$handoff" \
+          IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-resume.json" \
+          NOTES_PATH="$RUNNER_TEMP/release-notes-resume.md" \
+          SNAPSHOT="$RUNNER_TEMP/immutable-release-resume.json" \
           node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          function canonical(value) {
+            if (Array.isArray(value)) {
+              return value.map(canonical);
+            }
+            if (value && typeof value === 'object') {
+              return Object.fromEntries(
+                Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
+              );
+            }
+            return value;
+          }
+          const expectedNames = [
+            'Agents.Commander-0.30.1-1.x86_64.rpm',
+            'Agents.Commander_0.30.1_aarch64.dmg',
+            'Agents.Commander_0.30.1_amd64.AppImage',
+            'Agents.Commander_0.30.1_amd64.deb',
+            'Agents.Commander_0.30.1_x64-setup.exe',
+            'Agents.Commander_0.30.1_x64.dmg',
+            'Agents.Commander_aarch64.app.tar.gz',
+            'Agents.Commander_x64.app.tar.gz',
+            'SHASUMS256.txt',
+            'agentscommander-linux-x86_64',
+            'agentscommander-mac-aarch64',
+            'agentscommander-mac-aarch64.app.tar.gz',
+            'agentscommander-mac-x86_64',
+            'agentscommander-mac-x86_64.app.tar.gz',
+            'agentscommander-testeable-windows-x86_64.exe',
+            'agentscommander-windows-x86_64.exe',
+          ];
+          const setting = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_SETTING, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
+          const expectedBody = fs.readFileSync(process.env.NOTES_PATH, 'utf8');
+          if (
+            setting.enabled !== true
+            || Number(release.id) !== Number(process.env.RELEASE_ID)
+            || release.tag_name !== 'v0.30.1'
+            || release.target_commitish !== process.env.RELEASE_SHA
+            || release.name !== 'Agents Commander v0.30.1'
+            || release.body !== expectedBody
+            || release.draft !== false
+            || release.prerelease !== false
+            || release.immutable !== true
+            || !Array.isArray(release.assets)
+            || release.assets.length !== expectedNames.length
+          ) {
+            throw new Error('resume Release identity or immutable state is not exact');
+          }
+          const byName = new Map();
+          const ids = new Set();
+          for (const asset of release.assets) {
+            if (
+              !expectedNames.includes(asset.name)
+              || byName.has(asset.name)
+              || !Number.isInteger(asset.id)
+              || asset.id <= 0
+              || ids.has(asset.id)
+              || !Number.isInteger(asset.size)
+              || asset.size <= 0
+              || asset.state !== 'uploaded'
+              || !/^sha256:[0-9a-f]{64}$/.test(asset.digest)
+              || asset.url
+                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
+            ) {
+              throw new Error(`resume Release asset is invalid: ${asset.name}`);
+            }
+            byName.set(asset.name, asset);
+            ids.add(asset.id);
+          }
+          if (expectedNames.some((name) => !byName.has(name))) {
+            throw new Error('resume Release asset inventory is not exact');
+          }
+          const records = expectedNames.map((name) => {
+            const asset = byName.get(name);
+            return {
+              digest: asset.digest,
+              id: asset.id,
+              name: asset.name,
+              size: asset.size,
+              state: asset.state,
+              url: asset.url,
+            };
+          });
+          fs.writeFileSync(
+            process.env.ASSET_RECORDS,
+            `${JSON.stringify(records, null, 2)}\n`,
+            { flag: 'wx' },
+          );
+          const compareNames = (left, right) => (
+            left.name === right.name ? 0 : (left.name < right.name ? -1 : 1)
+          );
+          const assets = records.map((asset) => ({
+            digest: asset.digest,
+            id: asset.id,
+            name: asset.name,
+            size: asset.size,
+          })).sort(compareNames);
+          const manifest = canonical({
+            assets,
+            release: {
+              draft: true,
+              id: Number(process.env.RELEASE_ID),
+              immutable: false,
+              name: 'Agents Commander v0.30.1',
+              prerelease: false,
+              tagName: 'v0.30.1',
+              tagObjectSha: process.env.TAG_OBJECT_SHA,
+              targetCommitish: process.env.RELEASE_SHA,
+            },
+            repository: {
+              id: Number(process.env.REPOSITORY_ID),
+              name: 'mblua/AgentsCommander',
+            },
+          });
+          fs.writeFileSync(
+            path.join(process.env.HANDOFF, 'release-manifest-draft.json'),
+            `${JSON.stringify(manifest)}\n`,
+            { flag: 'wx' },
+          );
+          NODE
+
+          manifest="$handoff/release-manifest-draft.json"
+          manifest_hash="$(sha256sum -- "$manifest" | awk '{print $1}')"
+          [[ "$manifest_hash" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' \
+            "$manifest_hash" \
+            "release-manifest-draft.json" \
+            > "$handoff/release-manifest-draft.json.sha256"
+
+          records="$RUNNER_TEMP/release-asset-records-resume.json"
+          [[ "$(jq 'length' "$records")" -eq 16 ]]
+          for index in $(seq 0 15); do
+            name="$(jq -r ".[$index].name" "$records")"
+            asset_id="$(jq -r ".[$index].id" "$records")"
+            expected_size="$(jq -r ".[$index].size" "$records")"
+            expected_digest="$(jq -r ".[$index].digest" "$records")"
+            [[ "$name" != *"/"* ]]
+            [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
+
+            headers="$RUNNER_TEMP/resume-release-asset-$index.headers"
+            response="$RUNNER_TEMP/resume-release-asset-$index.body"
+            status="$(
+              printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
+                | curl \
+                    --disable \
+                    --silent \
+                    --show-error \
+                    --max-redirs 0 \
+                    --config - \
+                    --header "Accept: application/octet-stream" \
+                    --header "X-GitHub-Api-Version: 2026-03-10" \
+                    --dump-header "$headers" \
+                    --output "$response" \
+                    --write-out '%{http_code}' \
+                    "https://api.github.com/repos/mblua/AgentsCommander/releases/assets/$asset_id"
+            )"
+
+            destination="$handoff/$name"
+            if [[ "$status" == "200" ]]; then
+              mv "$response" "$destination"
+            elif [[ "$status" == "302" ]]; then
+              mapfile -t locations < <(
+                awk '
+                  BEGIN { IGNORECASE=1 }
+                  /^Location:/ {
+                    sub(/^Location:[[:space:]]+/, "")
+                    sub(/\r$/, "")
+                    print
+                  }
+                ' "$headers"
+              )
+              [[ "${#locations[@]}" -eq 1 ]]
+              location="$(
+                LOCATION="${locations[0]}" node <<'NODE'
+          const value = process.env.LOCATION;
+          const parsed = new URL(value);
+          if (
+            parsed.protocol !== 'https:'
+            || (parsed.port !== '' && parsed.port !== '443')
+            || parsed.username !== ''
+            || parsed.password !== ''
+            || parsed.hash !== ''
+          ) {
+            throw new Error('asset redirect is not absolute credential-free HTTPS on port 443');
+          }
+          process.stdout.write(parsed.href);
+          NODE
+              )"
+              second_status="$(
+                env -u GH_TOKEN curl \
+                  --disable \
+                  --silent \
+                  --show-error \
+                  --max-redirs 0 \
+                  --proto '=https' \
+                  --tlsv1.2 \
+                  --output "$destination" \
+                  --write-out '%{http_code}' \
+                  "$location"
+              )"
+              [[ "$second_status" == "200" ]]
+            else
+              echo "unexpected resume asset download status: $status" >&2
+              exit 1
+            fi
+
+            [[ -f "$destination" && ! -L "$destination" ]]
+            [[ "$(stat -c '%s' "$destination")" == "$expected_size" ]]
+            actual_digest="$(sha256sum -- "$destination" | awk '{print $1}')"
+            [[ "sha256:$actual_digest" == "$expected_digest" ]]
+          done
+
+          {
+            echo "manifest_hash=$manifest_hash"
+            echo "reconstruction_status=verified"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the complete handoff locally
+        shell: bash
+        env:
+          FRESH_MANIFEST_HASH: ${{ needs.assemble-release.outputs.manifest_hash }}
+          HANDOFF: ${{ runner.temp }}/release-handoff
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
+          REPOSITORY_ID: ${{ needs.prepare-release.outputs.repository_id }}
+          RESUME_MANIFEST_HASH: ${{ steps.reconstruct.outputs.manifest_hash }}
+          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_MODE" in
+            fresh) expected_manifest_hash="$FRESH_MANIFEST_HASH" ;;
+            resume) expected_manifest_hash="$RESUME_MANIFEST_HASH" ;;
+            *) echo "invalid release mode: $RELEASE_MODE" >&2; exit 1 ;;
+          esac
+          [[ "$expected_manifest_hash" =~ ^[0-9a-f]{64}$ ]]
+          EXPECTED_MANIFEST_HASH="$expected_manifest_hash" node <<'NODE'
           const crypto = require('node:crypto');
           const fs = require('node:fs');
           const path = require('node:path');
@@ -1775,6 +2177,20 @@ jobs:
             }
           });
 
+          const installerNames = [
+            'agentscommander-linux-x86_64',
+            'agentscommander-windows-x86_64.exe',
+            'agentscommander-mac-aarch64.app.tar.gz',
+            'agentscommander-mac-x86_64.app.tar.gz',
+          ];
+          for (const requested of installerNames) {
+            const matches = checksum.filter((line) => line.includes(requested));
+            const token = /^([0-9a-f]{64})  ([^\r\n]+)$/.exec(matches[0] ?? '')?.[2];
+            if (matches.length !== 1 || token !== requested) {
+              throw new Error(`installer checksum selection is not exact: ${requested}`);
+            }
+          }
+
           function sameBytes(left, right) {
             return fs.readFileSync(path.join(process.env.HANDOFF, left))
               .equals(fs.readFileSync(path.join(process.env.HANDOFF, right)));
@@ -1798,6 +2214,7 @@ jobs:
           NODE
 
       - name: Revalidate the complete draft
+        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1852,6 +2269,7 @@ jobs:
 
       - name: Publish through the single authorized mutation
         id: publish
+        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
@@ -1958,11 +2376,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HANDOFF: ${{ runner.temp }}/release-handoff
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          RECONSTRUCTION_STATUS: ${{ steps.reconstruct.outputs.reconstruction_status }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
           TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
         run: |
           set -euo pipefail
+          [[ "$RELEASE_MODE" == "fresh" || "$RELEASE_MODE" == "resume" ]]
+          if [[ "$RELEASE_MODE" == "resume" ]]; then
+            [[ "$PUBLISH_OUTCOME" == "skipped" ]]
+            [[ "$RECONSTRUCTION_STATUS" == "verified" ]]
+          else
+            [[ -z "$RECONSTRUCTION_STATUS" ]]
+          fi
           published=0
           for attempt in $(seq 1 60); do
             gh api \
@@ -2180,6 +2607,16 @@ jobs:
           const draft = JSON.parse(
             fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
           );
+          const releaseMode = process.env.RELEASE_MODE;
+          if (releaseMode !== 'fresh' && releaseMode !== 'resume') {
+            throw new Error(`invalid release mode in final evidence: ${releaseMode}`);
+          }
+          const reconstructionStatus = releaseMode === 'resume'
+            ? process.env.RECONSTRUCTION_STATUS
+            : 'not-required';
+          if (releaseMode === 'resume' && reconstructionStatus !== 'verified') {
+            throw new Error('resume reconstruction was not verified');
+          }
           const immutable = canonical({
             ...draft,
             release: {
@@ -2206,7 +2643,9 @@ jobs:
           const finalRecord = canonical({
             immutableManifestHash: immutableHash,
             publishStepOutcome: process.env.PUBLISH_OUTCOME,
+            reconstructionStatus,
             releaseId: Number(process.env.RELEASE_ID),
+            releaseMode,
             releaseSha: process.env.RELEASE_SHA,
             runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
             runId: Number(process.env.GITHUB_RUN_ID),
@@ -2229,6 +2668,7 @@ jobs:
             publishPatchStepOutcome: process.env.PUBLISH_OUTCOME,
             reconciliation: 0,
             releaseVerify: 0,
+            resumeReconstruction: releaseMode === 'resume' ? 0 : null,
           });
           fs.writeFileSync(
             path.join(process.env.EVIDENCE, 'command-statuses.json'),
@@ -2307,6 +2747,7 @@ jobs:
           ARTIFACT_URL: ${{ steps.final-evidence-upload.outputs.artifact-url }}
           IMMUTABLE_MANIFEST_HASH: ${{ steps.reconcile.outputs.immutable_manifest_hash }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
           RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
           TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
         run: |
@@ -2319,6 +2760,7 @@ jobs:
             --argjson runId "$GITHUB_RUN_ID" \
             --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
             --argjson releaseId "$RELEASE_ID" \
+            --arg releaseMode "$RELEASE_MODE" \
             --arg tagObjectSha "$TAG_OBJECT_SHA" \
             --arg releaseSha "$RELEASE_SHA" \
             --argjson artifactId "$ARTIFACT_ID" \
@@ -2329,6 +2771,7 @@ jobs:
               runId: $runId,
               runAttempt: $runAttempt,
               releaseId: $releaseId,
+              releaseMode: $releaseMode,
               tagObjectSha: $tagObjectSha,
               releaseSha: $releaseSha,
               artifactId: $artifactId,

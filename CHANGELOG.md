@@ -21,6 +21,14 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 - **The titlebar web server toggle now follows runtime state.** A failed bind no longer shows a contradictory `Stop Server`, and starting the server only persists the "enable web server" setting once the server has actually started, so a failed attempt no longer turns it on for every future launch. The `Enable web server` checkbox in Settings remains the way to change that setting directly. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))
 - **Settings no longer reports a web server that failed to start as `Running`.** The Start button in Settings now reflects the actual result of the start attempt. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))
 
+## 0.30.1
+
+### Changed
+
+- Advanced all desktop, Cargo, root/npm wrapper, lockfile, Tauri, and installer Release references to 0.30.1.
+- Routed v0.30.1 through the repository's enabled immutable-Release path.
+- Prepared `@mblua/agentscommander@0.30.1` for a separate protected OIDC publication after immutable Release verification.
+
 ## 0.30.0
 
 ### Added
@@ -92,14 +100,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ### Security
 
 - Warned in settings that API keys and bot tokens are stored in plaintext ([#1353](https://github.com/mblua/AgentsCommander/pull/1353)).
-
-## 0.30.1
-
-### Changed
-
-- Advanced all desktop, Cargo, root/npm wrapper, lockfile, Tauri, and installer Release references to 0.30.1.
-- Routed v0.30.1 through the repository's enabled immutable-Release path.
-- Prepared `@mblua/agentscommander@0.30.1` for a separate protected OIDC publication after immutable Release verification.
 
 ## 0.20.0 – 2026-07-23
 
