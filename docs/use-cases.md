@@ -2,7 +2,7 @@
 
 For developers deciding whether AgentsCommander fits their workflow. Four worked examples — pick the one closest to your problem and adapt.
 
-Every example assumes you have the [Quickstart](quickstart.md) finished: a project with a Project AC Root (`.ac/`) and at least one coding agent (Claude Code, Codex, Gemini, or Pi) installed.
+Every example assumes you have the [Quickstart](quickstart.md) finished: a project with a Project AC Root (`.ac/`) and at least one coding agent (Claude Code, Codex, Antigravity, or Pi) installed.
 
 ## 1. Parallel feature development
 
@@ -32,7 +32,7 @@ You watch all three terminals at once. When the green dot lights up on the coord
 wg-2-review/
   __agent_shipper/           # opens the PR — Codex
   __agent_reviewer-claude/   # Claude Code
-  __agent_reviewer-gemini/   # Gemini
+  __agent_reviewer-antigravity/   # Antigravity
 ```
 
 Workflow:

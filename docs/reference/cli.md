@@ -121,7 +121,7 @@ printf '%s' "$PROMPT" | agentscommander send \
 | `--root` | Yes | Sender's root directory (your CWD inside the workgroup or matrix). Used to derive your canonical name. |
 | `--to` | Yes | Destination peer's canonical FQN. Get this from `list-peers-lean`. |
 | `--send` | * | Filename only, not a path. The file must already exist in `<workgroup-root>/messaging/`. |
-| `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Gemini-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
+| `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Antigravity-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
 | `--pty-input` | * | Exact UTF-8 text argument. Hyphen-leading values are accepted. The caller's shell applies quoting and expansion before AC receives the value. |
 | `--pty-input-stdin` | * | Read exact UTF-8 bytes from stdin. Recommended for multiline, clipboard, hyphen-leading, process-list-sensitive, or otherwise sensitive text. |
 | `--mode` | No | Delivery mode. Default and only supported value: `wake`. |
@@ -167,7 +167,7 @@ See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the ordinary
 
 ### `self-handoff-and-clear`
 
-`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Gemini-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
+`self-handoff-and-clear` is a token-authorized operation on the caller's own session. Write `SELF-HANDOFF.md` first. Phase 1 waits for 30 seconds of continuous idle, then injects provider-resolved logical-clear text: `/new` for an exact-stem direct Pi shell or `/clear` for direct Claude/Codex/Antigravity-family and Cursor `agent` shells. Phase 2 starts only after the full phase-1 injection returns, waits for a fresh 30 seconds of sustained idle, archives the handoff into `self-clear/`, and injects a resume prompt naming that archive.
 
 Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart or failed phase-1 injection abandons the cycle. Outer `cmd`/`pwsh` wrappers remain unsupported.
 
@@ -598,7 +598,7 @@ Subcommands:
 | `--from-catalog <key>` | (add) Seed label/command/color/envs/isolatedHome (and optional instructions/seed) from a catalog entry; explicit flags below override. Without it, `--label` and `--command` are required. The final label must still be non-empty: a catalog entry with an empty label requires `--label`. |
 | `--id <id>` | (add) Custom id, `^[a-z0-9][a-z0-9_-]{0,63}$`. Default: a minted `agent_<ms>_<hex>` id. Ids are unique case-insensitively. |
 | `--label <s>` | Display label (non-empty, trimmed). |
-| `--command <s>` | Launch command. Banned for AC-managed providers: Claude `--continue`/`-c`, Codex `resume`/`--last`, and Gemini `--resume`. Pi is the intentional exception: canonical Pi commands may contain `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`, including long `--name=value` forms. These user-authored controls remain configured and veto AC injection. See [Pi resume behavior](../integrations/coding-agents.md#pi-resume-behavior). |
+| `--command <s>` | Launch command. Banned for AC-managed providers: Claude `--continue`/`-c`, Codex `resume`/`--last`, and Antigravity `--continue`/`-c`. Pi is the intentional exception: canonical Pi commands may contain `-c`, `-r`, `--continue`, `--resume`, `--session`, `--session-id`, `--fork`, or `--no-session`, including long `--name=value` forms. These user-authored controls remain configured and veto AC injection. See [Pi resume behavior](../integrations/coding-agents.md#pi-resume-behavior). |
 | `--color <#rrggbb>` | Strict 6-digit hex (only enforced for the explicit flag; catalog-seeded colors are accepted as-is). Default `#6366f1` for custom agents. |
 | `--env KEY=VALUE` | Repeatable. Split on the first `=` (`FOO=a=b` -> value `a=b`). All CLI envs are `source=user`, `enabled=true`. On `update`, any `--env` REPLACES the whole env list (including `source=system` rows). |
 | `--clear-envs` | (update) Empty the env list. Conflicts with `--env`. |

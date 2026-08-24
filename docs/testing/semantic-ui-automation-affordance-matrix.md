@@ -9,7 +9,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Detect onboarding dialog | `onboarding.modal` | `query`, `wait` |
 | Select Claude Code preset | `onboarding.agentPreset.claude` | `click` |
 | Select Codex preset | `onboarding.agentPreset.codex` | `click` |
-| Select Gemini preset | `onboarding.agentPreset.gemini` | `click` |
+| Select Antigravity preset | `onboarding.agentPreset.antigravity` | `click` |
 | Select custom preset | `onboarding.agentPreset.custom` | `click` |
 | Enter custom label | `onboarding.custom.label` | `setValue` |
 | Enter custom command | `onboarding.custom.command` | `setValue` |

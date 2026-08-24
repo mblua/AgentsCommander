@@ -8,7 +8,7 @@ An append-only JSONL file recording when each session started working and when i
 
 ## Agent
 
-A directory with a role-prompt file at its root (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`). The directory IS the agent's identity.
+A directory with a role-prompt file at its root (`CLAUDE.md` or `AGENTS.md`). The directory IS the agent's identity.
 
 ## Agents Agency
 
@@ -24,7 +24,7 @@ The plain-language description of a workgroup's goal. Lives at `<workgroup>/TASK
 
 ## Coding agent
 
-The CLI process that runs the LLM work: Claude Code, Codex, Gemini, or Pi. AC is **not** a coding agent.
+The CLI process that runs the LLM work: Claude Code, Codex, Antigravity, or Pi. AC is **not** a coding agent.
 
 ## Config seed
 

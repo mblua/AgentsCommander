@@ -4,11 +4,11 @@ For developers with the questions that come up before they install. Thirteen ans
 
 ## Is AgentsCommander an AI?
 
-No. AC does not include an LLM. It spawns and coordinates the coding-agent CLIs you already use (Claude Code, Codex, Gemini, and Pi). You bring the models; AC commands them.
+No. AC does not include an LLM. It spawns and coordinates the coding-agent CLIs you already use (Claude Code, Codex, Antigravity, and Pi). You bring the models; AC commands them.
 
 ## Which coding agents are supported?
 
-Claude Code, Codex, Gemini, and Pi have first-class tuned integrations. Pi uses exact command-position detection and continues eligible known-state conversations with `--continue`; see [Coding agents](integrations/coding-agents.md#pi-resume-behavior). OpenCode works today through the separate custom coding-agent path, where you can point it at any provider or model. A first-class OpenCode integration and an Nvidia agent are on the [roadmap](../ROADMAP.md).
+Claude Code, Codex, Antigravity, and Pi have first-class tuned integrations. Pi uses exact command-position detection and continues eligible known-state conversations with `--continue`; see [Coding agents](integrations/coding-agents.md#pi-resume-behavior). OpenCode works today through the separate custom coding-agent path, where you can point it at any provider or model. A first-class OpenCode integration and an Nvidia agent are on the [roadmap](../ROADMAP.md).
 
 ## What about OpenCode?
 
