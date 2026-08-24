@@ -972,25 +972,42 @@ fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
     });
 }
 
+#[cfg(test)]
+struct RetryPruneProbeBarrier {
+    origin_absent: std::sync::Arc<std::sync::Barrier>,
+    restore_complete: std::sync::Arc<std::sync::Barrier>,
+}
+
 /// (#1399) Drop retry state only after both durable source spellings were
 /// successfully observed absent. An observation error is pending state, not
 /// evidence that an already-counted delivery attempt disappeared.
 fn prune_retry_tracker(
     retry_tracker: &mut std::collections::HashMap<PathBuf, RetryState>,
+    live_claims: &std::collections::HashSet<PathBuf>,
+    #[cfg(test)] probe_barrier: Option<&RetryPruneProbeBarrier>,
 ) {
     retry_tracker.retain(|path, _| match path.try_exists() {
         Ok(true) => true,
         Ok(false) => {
             let claim = wake_claim_path(path);
-            match claim.try_exists() {
-                Ok(claim_present) => claim_present,
-                Err(error) => {
-                    log::warn!(
-                        "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining retry state",
-                        claim,
-                        error
-                    );
-                    true
+            #[cfg(test)]
+            if let Some(probe_barrier) = probe_barrier {
+                probe_barrier.origin_absent.wait();
+                probe_barrier.restore_complete.wait();
+            }
+            if live_claims.contains(&claim) {
+                true
+            } else {
+                match claim.try_exists() {
+                    Ok(claim_present) => claim_present,
+                    Err(error) => {
+                        log::warn!(
+                            "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining retry state",
+                            claim,
+                            error
+                        );
+                        true
+                    }
                 }
             }
         }
@@ -3630,10 +3647,15 @@ impl MailboxPoller {
 
         self.snapshot_scanner.finish_cycle();
 
-        // (#1399) Prune only after fallible probes prove both the origin and
-        // claim are absent. Observation failure retains the counted attempt
-        // so MAX_DELIVERY_ATTEMPTS remains reachable.
-        prune_retry_tracker(&mut self.retry_tracker);
+        // (#1399) A live claim owns its retry state. Otherwise prune only after
+        // fallible probes prove both durable spellings absent, so counted state
+        // remains able to reach MAX_DELIVERY_ATTEMPTS.
+        prune_retry_tracker(
+            &mut self.retry_tracker,
+            &self.live_claims,
+            #[cfg(test)]
+            None,
+        );
 
         // Poll project-refresh-requests directory from create-agent-matrix CLI.
         self.poll_project_refresh_requests(app).await;
@@ -22445,13 +22467,64 @@ mod tests {
             },
         );
 
-        prune_retry_tracker(&mut retry_tracker);
+        let live_claims = std::collections::HashSet::new();
+        prune_retry_tracker(&mut retry_tracker, &live_claims, None);
 
         assert_eq!(retry_tracker.len(), 1);
         let retained = retry_tracker.get(&unobservable).unwrap();
         assert_eq!(retained.attempt_count, 7);
         assert!(retained.logged);
         assert!(!retry_tracker.contains_key(&missing));
+    }
+
+    /// (#1399 T13) A worker restoring the origin between the two absence probes
+    /// must not lose the counted attempt: the live ledger retains the entry.
+    #[test]
+    fn retry_prune_retains_state_when_live_claim_restores_between_probes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let origin = temp.path().join("restore-race.json");
+        let claim = wake_claim_path(&origin);
+        std::fs::write(&claim, "{}").unwrap();
+        let mut live_claims = std::collections::HashSet::new();
+        live_claims.insert(claim.clone());
+        let mut retry_tracker = std::collections::HashMap::new();
+        retry_tracker.insert(
+            origin.clone(),
+            RetryState {
+                attempt_count: MAX_DELIVERY_ATTEMPTS - 1,
+                logged: true,
+            },
+        );
+
+        let probe_barrier = RetryPruneProbeBarrier {
+            origin_absent: std::sync::Arc::new(std::sync::Barrier::new(2)),
+            restore_complete: std::sync::Arc::new(std::sync::Barrier::new(2)),
+        };
+        let worker_origin = origin.clone();
+        let worker_claim = claim.clone();
+        let barrier_first = probe_barrier.origin_absent.clone();
+        let barrier_second = probe_barrier.restore_complete.clone();
+        let worker = std::thread::spawn(move || {
+            barrier_first.wait();
+            release_wake_claim(&worker_claim, &worker_origin);
+            let origin_present = worker_origin.try_exists();
+            let claim_present = worker_claim.try_exists();
+            barrier_second.wait();
+            (origin_present, claim_present)
+        });
+
+        prune_retry_tracker(&mut retry_tracker, &live_claims, Some(&probe_barrier));
+
+        let (origin_present, claim_present) = worker.join().unwrap();
+        assert!(matches!(origin_present, Ok(true)));
+        assert!(matches!(claim_present, Ok(false)));
+        assert_eq!(retry_tracker.len(), 1);
+        let state = retry_tracker.get(&origin).unwrap();
+        assert_eq!(state.attempt_count, MAX_DELIVERY_ATTEMPTS - 1);
+        assert!(state.logged);
+        assert!(origin.exists());
+        assert!(!claim.exists());
+        assert!(live_claims.contains(&claim));
     }
 
     /// (#1399 AC-2) Two messages to one target inside one cycle: the first is
