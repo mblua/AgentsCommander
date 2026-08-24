@@ -959,8 +959,16 @@ fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
             }
             is_new
         }
-        // Unverifiable: keep it, and let the existing `is_dir()` guard decide.
-        Err(_) => true,
+        // Fail closed for this cycle: no raw alias may survive to a later
+        // successful reclamation check while a worker owns the canonical key.
+        Err(error) => {
+            log::warn!(
+                "[mailbox] #1399 skipping unverifiable outbox {:?} for this cycle: {}; scan and reclamation deferred",
+                dir,
+                error
+            );
+            false
+        }
     });
 }
 
@@ -22206,6 +22214,123 @@ mod tests {
         );
         assert!(!wake_claim_path(&source).exists());
         assert!(source.exists());
+    }
+
+    /// (#1399 T12) A real Windows exclusive directory handle makes production
+    /// verification fail for both raw spellings; the cycle drops both aliases
+    /// before any scan or reclamation, and the next cycle recovers exactly one
+    /// canonical survivor whose live claim is untouched.
+    #[cfg(windows)]
+    #[test]
+    fn outbox_verification_failure_drops_aliases_before_reclamation() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let outbox = temp.path().join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+
+        // Verify before locking, derive the canonical spelling, seed a live
+        // claim under the canonical key, and move the physical origin to its
+        // ordinary claim.
+        let identity = crate::path_identity::verify_directory(&outbox).expect("verify outbox");
+        let canonical_outbox =
+            crate::path_utils::normalize_windows_verbatim_path_buf(&identity.canonical_path);
+        let ordinary_origin = outbox.join("m.json");
+        let ordinary_claim = wake_claim_path(&ordinary_origin);
+        std::fs::write(&ordinary_origin, "{}").unwrap();
+        std::fs::rename(&ordinary_origin, &ordinary_claim).unwrap();
+        let canonical_origin = canonical_outbox.join("m.json");
+        let canonical_live_claim = wake_claim_path(&canonical_origin);
+        let mut poller = MailboxPoller::new();
+        assert!(poller.live_claims.insert(canonical_live_claim.clone()));
+
+        // The ordinary spelling and a case-altered alias differ as raw values
+        // and verify to the same object before locking. NTFS is case-insensitive
+        // by default, so the uppercased final component resolves to the same
+        // physical directory on every standard Windows host, while the raw
+        // `OsStr` is guaranteed distinct from the canonical spelling.
+        let escaped_alias = outbox.with_file_name(
+            outbox
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_uppercase(),
+        );
+        assert_ne!(escaped_alias.as_os_str(), canonical_outbox.as_os_str());
+        assert_eq!(
+            crate::path_identity::verify_directory(&escaped_alias)
+                .expect("alias verifies to the same object")
+                .object_id,
+            identity.object_id
+        );
+        let mut current_cycle_candidates = vec![escaped_alias.clone(), canonical_outbox.clone()];
+
+        // Hold a real exclusive directory handle through the ordinary spelling:
+        // share_mode 0 plus FILE_FLAG_BACKUP_SEMANTICS (0x0200_0000).
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .custom_flags(0x0200_0000)
+            .open(&outbox)
+            .expect("exclusive directory handle");
+
+        // While the handle is alive both spellings still pass `is_dir()`, both
+        // verifier calls fail, and production dedup drops every alias.
+        assert!(outbox.is_dir());
+        assert!(canonical_outbox.is_dir());
+        assert!(crate::path_identity::verify_directory(&outbox).is_err());
+        assert!(crate::path_identity::verify_directory(&canonical_outbox).is_err());
+        dedup_outbox_dirs_by_object_id(&mut current_cycle_candidates);
+        assert!(current_cycle_candidates.is_empty());
+
+        // The emptied vector means zero scan and zero reclamation work.
+        let mut visits = 0usize;
+        let mut scans = 0usize;
+        let mut reclamations = 0usize;
+        for outbox_dir in &current_cycle_candidates {
+            visits += 1;
+            let Ok(rd) = std::fs::read_dir(outbox_dir) else {
+                continue;
+            };
+            scans += 1;
+            let claims: Vec<PathBuf> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
+                .collect();
+            if crate::path_identity::verify_directory(outbox_dir).is_ok() {
+                poller.reclaim_unowned_wake_claims(outbox_dir, &claims);
+                reclamations += 1;
+            }
+        }
+        assert_eq!((visits, scans, reclamations), (0, 0, 0));
+
+        // Durable state is untouched while the handle is held; drop it.
+        drop(handle);
+        assert!(!ordinary_origin.exists());
+        assert!(ordinary_claim.exists());
+        assert!(poller.live_claims.contains(&canonical_live_claim));
+        assert!(!outbox.join("delivered").join("m.json").exists());
+        assert!(!outbox.join("rejected").join("m.json").exists());
+
+        // The next cycle rebuilds candidates in reverse alias order, dedups to
+        // exactly the canonical survivor, and reclamation leaves the live
+        // claim untouched under its canonical key.
+        let mut next_cycle_candidates = vec![canonical_outbox.clone(), escaped_alias.clone()];
+        dedup_outbox_dirs_by_object_id(&mut next_cycle_candidates);
+        assert_eq!(next_cycle_candidates.len(), 1);
+        assert_eq!(next_cycle_candidates[0].as_os_str(), canonical_outbox.as_os_str());
+        let claims: Vec<PathBuf> = std::fs::read_dir(&next_cycle_candidates[0])
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
+            .collect();
+        poller.reclaim_unowned_wake_claims(&next_cycle_candidates[0], &claims);
+        assert!(!ordinary_origin.exists());
+        assert!(ordinary_claim.exists());
+        assert!(poller.live_claims.contains(&canonical_live_claim));
+        assert_eq!(poller.live_claims.len(), 1);
     }
 
     /// (#1399 T10) Ten real guard drops from claim-only state restore the
