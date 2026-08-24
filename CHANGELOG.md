@@ -93,6 +93,14 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 - Warned in settings that API keys and bot tokens are stored in plaintext ([#1353](https://github.com/mblua/AgentsCommander/pull/1353)).
 
+## 0.30.1
+
+### Changed
+
+- Advanced all desktop, Cargo, root/npm wrapper, lockfile, Tauri, and installer Release references to 0.30.1.
+- Routed v0.30.1 through the repository's enabled immutable-Release path.
+- Prepared `@mblua/agentscommander@0.30.1` for a separate protected OIDC publication after immutable Release verification.
+
 ## 0.20.0 – 2026-07-23
 
 Large release covering everything merged since `0.10.0` (616 commits across ~110 PRs). Headlines: **containerized coding agents** (Docker / "Camino 2" backend), an **in-daemon Control Plane API**, a **coding-agent catalog overhaul** (Hermes / Cursor CLI / Pi), **live context-usage visibility** (CTX badges + alerts), **workgroup UI Groups** (Telegram-style sidebar rail), a **single self-contained web-server executable**, plus a deep PTY/terminal reliability and settings-persistence hardening pass.
