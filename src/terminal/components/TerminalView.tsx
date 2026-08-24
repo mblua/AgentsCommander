@@ -439,6 +439,95 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
+  const fitTerminalWithReversibleResizePulse = (
+    entry: SessionTerminalEntry,
+  ): void => {
+    const proposed = entry.fitAddon.proposeDimensions();
+    if (
+      !proposed ||
+      !Number.isSafeInteger(proposed.cols) ||
+      !Number.isSafeInteger(proposed.rows) ||
+      proposed.cols < 1 ||
+      proposed.cols >= Number.MAX_SAFE_INTEGER ||
+      proposed.rows < 1
+    ) {
+      entry.fitAddon.fit();
+      return;
+    }
+
+    const original = {
+      cols: entry.terminal.cols,
+      rows: entry.terminal.rows,
+    };
+    if (original.cols !== proposed.cols || original.rows !== proposed.rows) {
+      entry.fitAddon.fit();
+      return;
+    }
+
+    const active = entry.terminal.buffer.active;
+    let eligible =
+      active.type === "normal" &&
+      active.viewportY === active.baseY &&
+      !entry.terminal.hasSelection() &&
+      Number.isSafeInteger(active.length) &&
+      active.length > 0 &&
+      Number.isSafeInteger(active.cursorX) &&
+      active.cursorX >= 0 &&
+      active.cursorX < original.cols;
+    if (eligible) {
+      for (let index = 0; index < active.length; index += 1) {
+        const line = active.getLine(index);
+        if (!line || line.isWrapped) {
+          eligible = false;
+          break;
+        }
+      }
+    }
+    if (!eligible) {
+      entry.fitAddon.fit();
+      return;
+    }
+
+    const previousResizeSuppressed = entry.snapshotResizeSuppressed;
+    entry.snapshotResizeSuppressed = true;
+    try {
+      try {
+        entry.terminal.resize(original.cols + 1, original.rows);
+        if (
+          entry.terminal.cols !== original.cols + 1 ||
+          entry.terminal.rows !== original.rows
+        ) {
+          throw new Error("Terminal resize pulse did not reach expanded grid");
+        }
+
+        entry.terminal.resize(original.cols, original.rows);
+        if (
+          entry.terminal.cols !== original.cols ||
+          entry.terminal.rows !== original.rows
+        ) {
+          throw new Error("Terminal resize pulse did not restore original grid");
+        }
+      } catch (primaryError) {
+        if (
+          entry.terminal.cols !== original.cols ||
+          entry.terminal.rows !== original.rows
+        ) {
+          try {
+            entry.terminal.resize(original.cols, original.rows);
+          } catch (restorationError) {
+            throw new AggregateError(
+              [primaryError, restorationError],
+              "Terminal resize pulse and dimension restoration failed",
+            );
+          }
+        }
+        throw primaryError;
+      }
+    } finally {
+      entry.snapshotResizeSuppressed = previousResizeSuppressed;
+    }
+  };
+
   const writeAutomationInput = (value: string) => {
     if (!visibleSessionId || !value) return;
     const terminalInput = value.replace(/\r?\n/g, "\r");
@@ -962,7 +1051,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       if (!isCurrentAttach(sessionId, entry, generation)) {
         return;
       }
-      void settleAttachViewport(sessionId, entry, generation, snapshot);
+      void settleAttachViewport(sessionId, entry, generation, snapshot).catch((error) => {
+        console.warn(`[terminal] attach settle ${sessionId} failed:`, error);
+      });
     });
   };
 
@@ -978,7 +1069,11 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     generation: number,
     snapshot: PtyScreenSnapshot
   ): Promise<void> => {
-    entry.fitAddon.fit();
+    if (snapshot.data.length > 0) {
+      fitTerminalWithReversibleResizePulse(entry);
+    } else {
+      entry.fitAddon.fit();
+    }
     const resizeOutcome = await sendPtyResize(
       sessionId,
       entry,
