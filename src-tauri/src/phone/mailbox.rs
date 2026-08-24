@@ -12804,7 +12804,19 @@ mod tests {
 
     fn make_mailbox_fixture() -> MailboxFixture {
         let temp = tempfile::TempDir::new().unwrap();
-        let project = temp.path().join("proj-a");
+        // (#1399 CI regression) Build every fixture path from the canonical
+        // spelling. `dedup_outbox_dirs_by_object_id` rewrites each scanned
+        // outbox dir to `verify_directory(...).canonical_path`, so the retry
+        // ledger is keyed by the canonical form; on hosts whose `%TEMP%`
+        // spelling differs from the on-disk canonical form (Windows 8.3 short
+        // names or case variants, e.g. GitHub runners), a raw `temp.path()`
+        // spelling makes every `retry_tracker.get(&source)` assertion miss.
+        // Canonicalizing the root keeps fixture paths byte-identical to the
+        // scan spelling on every host.
+        let root = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(temp.path()).expect("canonicalize fixture temp"),
+        );
+        let project = root.join("proj-a");
         let ac_root = project.join(".ac");
         let team_dir = ac_root.join("_team_dev-team");
         let origin_tech_lead = ac_root.join("_agent_tech-lead");
@@ -12839,7 +12851,7 @@ mod tests {
         )
         .unwrap();
 
-        let app = make_mailbox_app(temp.path());
+        let app = make_mailbox_app(&root);
         MailboxFixture {
             _temp: temp,
             sender_cwd,
