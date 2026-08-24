@@ -23,7 +23,7 @@ fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
 #[derive(Args)]
 #[command(after_help = "\
 Hands off, then clears the CALLER'S OWN agent context and resumes from the handoff file. Two deferred phases:\n\n\
-  Phase 1 (clear): waits until this session is continuously idle for 30s, then injects provider-resolved clear text: /new for an exact-stem direct Pi shell, /clear for direct Claude/Codex/Gemini-family and Cursor agent shells.\n\
+  Phase 1 (clear): waits until this session is continuously idle for 30s, then injects provider-resolved clear text: /new for an exact-stem direct Pi shell, /clear for direct Claude/Codex/Antigravity-family and Cursor agent shells.\n\
   Phase 2 (handoff): after the clear, waits a FRESH 30s of sustained idle, archives \
 SELF-HANDOFF.md -> self-clear/<timestamp>_SELF-HANDOFF.md in your root, then injects a prompt naming \
 that exact archived path to resume from. If the archive rename fails, the prompt points at \
@@ -41,7 +41,7 @@ owns the token you present.\n\n\
 BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never reaches 30s sustained \
 idle, or a daemon restart mid-cycle, drops the remainder (a greppable warn line is logged). Re-issue \
 if your context is still present later.\n\n\
-SCOPE: direct Claude / Codex / Gemini-family shells, Cursor agent, and exact-stem direct Pi shells. Outer cmd / pwsh wrappers remain unsupported; matching is lexical, not binary attestation.")]
+SCOPE: direct Claude / Codex / Antigravity-family shells, Cursor agent, and exact-stem direct Pi shells. Outer cmd / pwsh wrappers remain unsupported; matching is lexical, not binary attestation.")]
 pub struct SelfClearArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
@@ -75,7 +75,7 @@ pub(crate) fn resolve_self_clear_sender(root: &str) -> String {
 
 fn self_clear_queued_status(settle_secs: u64) -> String {
     format!(
-        "self-handoff-and-clear requested. Phase 1 injects provider-resolved clear text only after this session is continuously idle for {settle_secs}s: /new for an exact-stem direct Pi shell, or /clear for direct Claude/Codex/Gemini-family and Cursor agent shells. Phase 2 then waits a fresh {settle_secs}s of post-clear idle, archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming the exact archived file to resume from. If SELF-FORGET.md was present at queue time, that prompt includes a compact closed-background forgotten summary. Best-effort and NOT guaranteed (a busy session or a daemon restart drops it). If your context is still present later, re-issue."
+        "self-handoff-and-clear requested. Phase 1 injects provider-resolved clear text only after this session is continuously idle for {settle_secs}s: /new for an exact-stem direct Pi shell, or /clear for direct Claude/Codex/Antigravity-family and Cursor agent shells. Phase 2 then waits a fresh {settle_secs}s of post-clear idle, archives SELF-HANDOFF.md into self-clear/ and injects a prompt naming the exact archived file to resume from. If SELF-FORGET.md was present at queue time, that prompt includes a compact closed-background forgotten summary. Best-effort and NOT guaranteed (a busy session or a daemon restart drops it). If your context is still present later, re-issue."
     )
 }
 
