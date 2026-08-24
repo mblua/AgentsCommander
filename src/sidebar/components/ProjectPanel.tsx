@@ -632,6 +632,37 @@ const ProjectPanel: Component = () => {
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
+        // #1536 - inline TASK-title editor state (shared by both menu branches;
+        // only one menu is ever open). titleEdit pins the raw wg.path + the
+        // resolved live-session id at click time, so guards compare strings,
+        // never menu/wg object identity (positionReplicaCtxMenu rewrites the
+        // menu object on every reclamp; store events replace wg objects).
+        const [titleEdit, setTitleEdit] = createSignal<{ wgPath: string; sessionId: string | null } | null>(null);
+        const [titleDraft, setTitleDraft] = createSignal("");
+        const [titleBusy, setTitleBusy] = createSignal(false);
+        const [titleError, setTitleError] = createSignal<string | null>(null);
+        // Monotonic invocation epoch (#1536 BLOCKER-2 token): every
+        // startReplicaTitleEdit captures the current value after setting state;
+        // resetTitleEditState() bumps it, so menu close, menu replacement, and
+        // cancel invalidate every in-flight getTitle continuation SYNCHRONOUSLY
+        // (no microtask window). A stale continuation must never touch shared
+        // editor state that a newer editor owns.
+        let titleEditEpoch = 0;
+
+        const resetTitleEditState = () => {
+          titleEditEpoch += 1;
+          setTitleEdit(null);
+          setTitleDraft("");
+          setTitleBusy(false);
+          setTitleError(null);
+        };
+        // #1536 BLOCKER-1 net 1: the reset effect fires on menu CLOSE (the null
+        // transition). Menu REPLACEMENT (never through null, #943) is covered by
+        // the resetTitleEditState() calls in both menu-open handlers; the render
+        // guard in the editor JSX is the structural third net.
+        createEffect(() => {
+          if (!replicaCtxMenu()) resetTitleEditState();
+        });
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -1686,6 +1717,95 @@ const ProjectPanel: Component = () => {
           }
         };
 
+        // #1536 - liveness-aware session resolution for the EDITOR only. The
+        // broom keeps the existing resolveWorkgroupSessionId (first non-inactive
+        // id, live or not). An exited/dropped session would make the
+        // session-based commands reject with "session not found", so the editor
+        // falls through to the path-based task_set_title_at for those workgroups.
+        const resolveLiveWorkgroupSessionId = (wg: AcWorkgroup): string | null => {
+          for (const peer of wg.agents) {
+            const s = replicaSession(wg, peer);
+            if (s && !s.id.startsWith("inactive-") && isSessionLive(s)) return s.id;
+          }
+          return null;
+        };
+
+        const startReplicaTitleEdit = async (wg: AcWorkgroup) => {
+          const sessionId = resolveLiveWorkgroupSessionId(wg);
+          setTitleError(null);
+          setTitleDraft(wg.taskTitle ?? "");
+          setTitleEdit({ wgPath: wg.path, sessionId });
+          // Invocation token (#1536 BLOCKER-2). Each start bumps the epoch; any
+          // later resetTitleEditState() (menu close, replacement, cancel) or
+          // newer start bumps it again, so this invocation detects staleness
+          // with zero microtask window - including same-wg-same-session
+          // double-clicks.
+          const epoch = ++titleEditEpoch;
+          const stillCurrent = () =>
+            titleEditEpoch === epoch &&
+            !!titleEdit() &&
+            titleEdit()!.wgPath === wg.path &&
+            titleEdit()!.sessionId === sessionId;
+          if (sessionId) {
+            setTitleBusy(true);
+            try {
+              const fromBackend = await TaskAPI.getTitle(sessionId);
+              // Stale: bail BEFORE any shared-state mutation.
+              if (!stillCurrent()) return;
+              if (fromBackend !== null && fromBackend !== undefined) {
+                setTitleDraft(fromBackend);
+              }
+            } catch (err) {
+              // Stale: never reset a newer editor's state.
+              if (!stillCurrent()) return;
+              resetTitleEditState();
+              setTitleError(String(err));
+              return;
+            } finally {
+              // Busy belongs to the CURRENT invocation only; a stale continuation
+              // must not clear a newer invocation's busy flag.
+              if (stillCurrent()) setTitleBusy(false);
+            }
+          }
+          if (!stillCurrent()) return;
+          // The editor grows the menu: re-clamp so it stays inside the viewport.
+          reclampReplicaCtxMenu();
+        };
+
+        const saveReplicaTitle = async () => {
+          const target = titleEdit();
+          if (!target) return;
+          const title = titleDraft().trim();
+          if (!title) {
+            setTitleError("Title cannot be empty.");
+            return;
+          }
+          setTitleBusy(true);
+          setTitleError(null);
+          try {
+            if (target.sessionId) {
+              await TaskAPI.setTitle(target.sessionId, title);
+            } else {
+              await TaskAPI.setTitleAt(target.wgPath, title);
+            }
+            // Close only if the same workgroup's menu is still open (raw path
+            // equality - store events replace wg objects, so reference identity
+            // would fail right after the save event lands).
+            if (replicaCtxMenu() && replicaCtxMenu()!.wg.path === target.wgPath) {
+              closeReplicaCtxMenu();
+            }
+          } catch (e) {
+            console.error("Failed to edit task title:", e);
+            setTitleError(String(e));
+          } finally {
+            setTitleBusy(false);
+          }
+        };
+
+        const cancelReplicaTitleEdit = () => {
+          resetTitleEditState();
+        };
+
         const openMatrixFolder = async (path: string) => {
           setAgentCtxMenu(null);
           setReplicaCtxMenu(null);
@@ -1975,6 +2095,7 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
+          resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
           closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
           setReplicaCtxMenu({
             kind: "active",
@@ -2015,6 +2136,7 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
+          resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
           closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
@@ -3376,6 +3498,13 @@ const ProjectPanel: Component = () => {
                   onMouseEnter={cancelReplicaCtxMenuClose}
                   onMouseLeave={() => {
                     scheduleRepoFlyoutClose();
+                    // #1536 - the editor keeps the menu open while the user is
+                    // interacting with it (mirrors the groupErrorPinned guard
+                    // inside scheduleReplicaCtxMenuClose).
+                    if (titleEdit()) {
+                      cancelReplicaCtxMenuClose();
+                      return;
+                    }
                     scheduleReplicaCtxMenuClose(); // #977
                   }}
                 >
@@ -3442,6 +3571,64 @@ const ProjectPanel: Component = () => {
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
+                          title="Edit TASK title"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void startReplicaTitleEdit(menu().wg);
+                          }}
+                        >
+                          <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                        </button>
+                        <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
+                          <div
+                            class="session-context-title-edit"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <input
+                              ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
+                              class="session-context-title-input"
+                              value={titleDraft()}
+                              onInput={(e) => setTitleDraft(e.currentTarget.value)}
+                              onKeyDown={(e) => {
+                                // Strictly required: keydown is not covered by the
+                                // container's onClick, and the window keydown dismiss
+                                // fires on Escape. Escape must cancel the editor, not
+                                // close the whole menu.
+                                e.stopPropagation();
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  if (!titleBusy()) void saveReplicaTitle();
+                                } else if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelReplicaTitleEdit();
+                                }
+                              }}
+                              placeholder="Title"
+                              disabled={titleBusy()}
+                            />
+                            <button
+                              class="session-context-title-btn save"
+                              onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
+                              disabled={titleBusy() || !titleDraft().trim()}
+                              type="button"
+                            >
+                              Save
+                            </button>
+                            <button
+                              class="session-context-title-btn cancel"
+                              onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
+                              disabled={titleBusy()}
+                              type="button"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </Show>
+                        <Show when={titleError()}>
+                          <div class="session-context-title-error">{titleError()}</div>
+                        </Show>
+                        <button
+                          class="session-context-option"
                           classList={{ "context-option-disabled": broomDisabled() }}
                           disabled={broomDisabled()}
                           title={broomTitle()}
@@ -3498,6 +3685,64 @@ const ProjectPanel: Component = () => {
                             )}
                           </Show>
                           {renderAddToGroupItem(menu().wg, menu().replica)}
+                          <button
+                            class="session-context-option"
+                            title="Edit TASK title"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void startReplicaTitleEdit(menu().wg);
+                            }}
+                          >
+                            <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                          </button>
+                          <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
+                            <div
+                              class="session-context-title-edit"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <input
+                                ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
+                                class="session-context-title-input"
+                                value={titleDraft()}
+                                onInput={(e) => setTitleDraft(e.currentTarget.value)}
+                                onKeyDown={(e) => {
+                                  // Strictly required: keydown is not covered by the
+                                  // container's onClick, and the window keydown dismiss
+                                  // fires on Escape. Escape must cancel the editor, not
+                                  // close the whole menu.
+                                  e.stopPropagation();
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    if (!titleBusy()) void saveReplicaTitle();
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    cancelReplicaTitleEdit();
+                                  }
+                                }}
+                                placeholder="Title"
+                                disabled={titleBusy()}
+                              />
+                              <button
+                                class="session-context-title-btn save"
+                                onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
+                                disabled={titleBusy() || !titleDraft().trim()}
+                                type="button"
+                              >
+                                Save
+                              </button>
+                              <button
+                                class="session-context-title-btn cancel"
+                                onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
+                                disabled={titleBusy()}
+                                type="button"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </Show>
+                          <Show when={titleError()}>
+                            <div class="session-context-title-error">{titleError()}</div>
+                          </Show>
                           <button
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}

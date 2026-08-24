@@ -3294,6 +3294,82 @@ html.light-theme .settings-api-client-warning {
   line-height: 1;
 }
 
+/* #1536 - inline TASK-title editor inside the replica context menu. Mirrors
+   the terminal's workgroup-task-title-* proportions (terminal.css) but stays
+   in the sidebar's session-context-* namespace; do not reuse terminal classes. */
+.session-context-title-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.session-context-title-input {
+  flex: 1;
+  min-width: 0;
+  width: 180px;
+  padding: 2px 6px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+.session-context-title-input:focus {
+  border-color: var(--sidebar-accent);
+}
+
+.session-context-title-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.session-context-title-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.session-context-title-btn:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.session-context-title-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.session-context-title-error {
+  padding: 0 var(--spacing-md) 5px;
+  font-size: 11px;
+  color: var(--danger, #ff6b6b);
+}
+
+/* Light-theme variants, mirroring the terminal's html.light-theme
+   workgroup-task-title-* rules and the sidebar's own light-theme pattern. */
+html.light-theme .session-context-title-input {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+html.light-theme .session-context-title-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.10);
+}
+
+html.light-theme .session-context-title-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.10);
+}
+
 .session-context-group-option span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
