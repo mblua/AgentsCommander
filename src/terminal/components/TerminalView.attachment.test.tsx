@@ -24,14 +24,27 @@ import TerminalView from "./TerminalView";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   installBrowserDomStubs,
+  installDeterministicAnimationFrames,
   renderWithFakeTransport,
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import { rememberSpawnViewport } from "../../shared/terminal-viewport";
+import {
+  executeUiTerminalController,
+  rememberSpawnViewport,
+  resetUiTerminalControllerForTests,
+} from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
 import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
-import type { PtyScreenSnapshot } from "../../shared/types";
+import {
+  MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT,
+  type MainTerminalLayoutPulseReason,
+  type MainTerminalLayoutPulseRequest,
+  type MainTerminalLayoutPulseResult,
+  type MainTerminalLayoutPulseSample,
+  type MainTerminalLayoutPulseStatus,
+  type PtyScreenSnapshot,
+} from "../../shared/types";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -40,6 +53,9 @@ interface FakeTerminalInstance {
   writes: number[][];
   screen: number[][];
   resizes: { cols: number; rows: number }[];
+  resizeAttempts: { cols: number; rows: number }[];
+  resizeListenerEvents: { cols: number; rows: number }[];
+  ordinaryFitCalls: number;
   resets: number;
   disposed: boolean;
   buffer: {
@@ -48,11 +64,25 @@ interface FakeTerminalInstance {
       baseY: number;
       length: number;
       type: "normal" | "alternate";
+      cursorX: number;
+      getLine(index: number): { isWrapped: boolean } | undefined;
     };
   };
+  selection: boolean;
+  missingLines: Set<number>;
+  wrappedLines: Set<number>;
+  scrollOperations: string[];
   scrollToBottomCalls: number;
   pendingWriteCallbacks: Array<() => void>;
   writeThrows: boolean;
+  scrollToTop(): void;
+  scrollToBottom(): void;
+  scrollToLine(line: number): void;
+  scrollLines(amount: number): void;
+  scrollPages(amount: number): void;
+  onResize(listener: (size: { cols: number; rows: number }) => void): {
+    dispose: () => void;
+  };
   resize(cols: number, rows: number): void;
 }
 
@@ -67,6 +97,62 @@ const xterm = vi.hoisted(() => ({
 
 const fitViewport = vi.hoisted(() => ({ cols: 80, rows: 24 }));
 
+class ControllableResizeObserver implements ResizeObserver {
+  readonly observed = new Set<Element>();
+  disconnected = false;
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    resizeObserverControl.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.disconnected = true;
+    this.observed.clear();
+  }
+
+  deliver(): void {
+    if (!this.disconnected && this.observed.size > 0) {
+      this.callback([], this);
+    }
+  }
+}
+
+const resizeObserverControl = {
+  instances: [] as ControllableResizeObserver[],
+  latest(): ControllableResizeObserver {
+    const observer = this.instances[this.instances.length - 1];
+    if (!observer) {
+      throw new Error("No ResizeObserver was constructed");
+    }
+    return observer;
+  },
+};
+
+function installControllableResizeObserver(): () => void {
+  const previous = globalThis.ResizeObserver;
+  resizeObserverControl.instances.length = 0;
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: ControllableResizeObserver,
+  });
+  return () => {
+    resizeObserverControl.instances.length = 0;
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: previous,
+    });
+  };
+}
 vi.mock("@xterm/xterm", () => ({
   Terminal: class implements FakeTerminalInstance {
     cols = 80;
@@ -75,6 +161,9 @@ vi.mock("@xterm/xterm", () => ({
     writes: number[][] = [];
     screen: number[][] = [];
     resizes: { cols: number; rows: number }[] = [];
+    resizeAttempts: { cols: number; rows: number }[] = [];
+    resizeListenerEvents: { cols: number; rows: number }[] = [];
+    ordinaryFitCalls = 0;
     resets = 0;
     disposed = false;
     buffer: {
@@ -83,11 +172,36 @@ vi.mock("@xterm/xterm", () => ({
         baseY: number;
         length: number;
         type: "normal" | "alternate";
+        cursorX: number;
+        getLine(index: number): { isWrapped: boolean } | undefined;
       };
-    } = { active: { viewportY: 0, baseY: 0, length: 0, type: "normal" } };
+    } = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        length: 0,
+        type: "normal",
+        cursorX: 0,
+        getLine: (index: number) => {
+          if (
+            index < 0 ||
+            index >= this.buffer.active.length ||
+            this.missingLines.has(index)
+          ) {
+            return undefined;
+          }
+          return { isWrapped: this.wrappedLines.has(index) };
+        },
+      },
+    };
+    selection = false;
+    missingLines = new Set<number>();
+    wrappedLines = new Set<number>();
+    scrollOperations: string[] = [];
     scrollToBottomCalls = 0;
     pendingWriteCallbacks: Array<() => void> = [];
     writeThrows = false;
+    private resizeListener: ((size: { cols: number; rows: number }) => void) | null = null;
 
     constructor() {
       xterm.instances.push(this);
@@ -97,13 +211,18 @@ vi.mock("@xterm/xterm", () => ({
       addon?.activate?.(this);
     }
     open(element: HTMLElement): void {
+      this.assertLive();
       this.element = element;
     }
-    focus(): void {}
+    focus(): void {
+      this.assertLive();
+    }
     dispose(): void {
       this.disposed = true;
+      this.resizeListener = null;
     }
     write(data: unknown, callback?: () => void): void {
+      this.assertLive();
       // xterm's 50-MiB flow-control guard throws synchronously BEFORE the
       // chunk is queued; the byte was never queued, so the drain must release.
       if (this.writeThrows) {
@@ -122,6 +241,7 @@ vi.mock("@xterm/xterm", () => ({
       }
     }
     reset(): void {
+      this.assertLive();
       this.resets += 1;
       this.screen.length = 0;
       // xterm 6.0.0: reset() does NOT discard the pending write queue, so the
@@ -131,28 +251,87 @@ vi.mock("@xterm/xterm", () => ({
       this.buffer.active.baseY = 0;
       this.buffer.active.length = 0;
     }
+    scrollToTop(): void {
+      this.assertLive();
+      this.scrollOperations.push("top");
+      this.buffer.active.viewportY = 0;
+    }
     scrollToBottom(): void {
+      this.assertLive();
       this.scrollToBottomCalls += 1;
+      this.scrollOperations.push("bottom");
       this.buffer.active.viewportY = this.buffer.active.baseY;
     }
-    paste(): void {}
+    scrollToLine(line: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`line:${line}`);
+      this.buffer.active.viewportY = Math.max(0, Math.min(this.buffer.active.baseY, line));
+    }
+    scrollLines(amount: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`lines:${amount}`);
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount),
+      );
+    }
+    scrollPages(amount: number): void {
+      this.assertLive();
+      this.scrollOperations.push(`pages:${amount}`);
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + amount * this.rows),
+      );
+    }
+    paste(): void {
+      this.assertLive();
+    }
     hasSelection(): boolean {
-      return false;
+      this.assertLive();
+      return this.selection;
     }
     getSelection(): string {
+      this.assertLive();
       return "";
     }
-    attachCustomKeyEventHandler(): void {}
+    attachCustomKeyEventHandler(): void {
+      this.assertLive();
+    }
     onData(): { dispose: () => void } {
+      this.assertLive();
       return { dispose: () => {} };
     }
-    onResize(): { dispose: () => void } {
-      return { dispose: () => {} };
+    onResize(listener: (size: { cols: number; rows: number }) => void): {
+      dispose: () => void;
+    } {
+      this.assertLive();
+      this.resizeListener = listener;
+      return {
+        dispose: () => {
+          if (this.resizeListener === listener) {
+            this.resizeListener = null;
+          }
+        },
+      };
     }
     resize(cols: number, rows: number): void {
-      this.resizes.push({ cols, rows });
+      this.assertLive();
+      this.resizeAttempts.push({ cols, rows });
+      if (this.cols === cols && this.rows === rows) {
+        return;
+      }
       this.cols = cols;
       this.rows = rows;
+      const size = { cols, rows };
+      this.resizes.push(size);
+      this.resizeListenerEvents.push(size);
+      this.resizeListener?.(size);
+    }
+
+    private assertLive(): void {
+      if (this.disposed) {
+        throw new Error("terminal disposed");
+      }
     }
   },
 }));
@@ -168,12 +347,13 @@ vi.mock("@xterm/addon-fit", () => ({
     fit = vi.fn(() => {
       const terminal = this.terminal;
       if (!terminal) return;
+      terminal.ordinaryFitCalls += 1;
       if (terminal.cols === fitViewport.cols && terminal.rows === fitViewport.rows) {
         return;
       }
       terminal.resize(fitViewport.cols, fitViewport.rows);
     });
-    proposeDimensions(): { cols: number; rows: number } {
+    proposeDimensions(): { cols: number; rows: number } | undefined {
       return { cols: fitViewport.cols, rows: fitViewport.rows };
     }
   },
@@ -200,18 +380,99 @@ const LIVE = [76, 73, 86, 69]; // "LIVE"
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+function setTerminalContainerWidth(element: HTMLElement, width: number): void {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: 600,
+        width,
+        height: 600,
+        toJSON: () => ({}),
+      }) as DOMRect,
+  });
+}
+
+function pulseResult(
+  request: MainTerminalLayoutPulseRequest,
+  status: MainTerminalLayoutPulseStatus,
+  reason: MainTerminalLayoutPulseReason,
+): MainTerminalLayoutPulseResult {
+  const emptyPhase = {
+    sidebarWidth: null,
+    hostWidth: null,
+    cols: null,
+    rows: null,
+    baselineObservedEpoch: null,
+    completedObserverAck: null,
+  };
+  return {
+    status,
+    reason,
+    trace: {
+      version: 1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      attachGeneration: request.attachGeneration,
+      status,
+      reason,
+      original: { ...emptyPhase },
+      expanded: { ...emptyPhase },
+      restored: { ...emptyPhase },
+      dwellMs: status === "completed" ? 200 : 0,
+      settingsWritesDelta: 0,
+    },
+  };
+}
+
+function queryTerminalTarget(element: HTMLElement, sessionId = SESSION_A) {
+  const result = executeUiTerminalController({
+    element,
+    sessionId,
+    operation: { kind: "query" },
+  });
+  if (!result || !result.ok) {
+    throw new Error(
+      `Expected live terminal target, got ${result?.error ?? "controller unavailable"}`,
+    );
+  }
+  return result.target;
 }
 
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function flushFramesUntil(
+  frames: ReturnType<typeof installDeterministicAnimationFrames>,
+  predicate: () => boolean,
+): Promise<void> {
+  for (let pass = 0; pass < 30; pass += 1) {
+    await flushPromises();
+    await frames.flush();
+    if (predicate()) {
+      return;
+    }
+  }
+  throw new Error("Timed out while driving deterministic animation frames");
 }
 
 // Fixture: five viewports of 24 rows of 80-column line bytes (5 * 24 * 80 =
@@ -251,6 +512,24 @@ function simulateUserScrollUp(instance: FakeTerminalInstance): void {
   instance.buffer.active.viewportY = 0;
 }
 
+function ptyResizeTuples(
+  fake: FakeTransport,
+  sessionId: string,
+): Array<{ cols: number; rows: number }> {
+  return fake
+    .callsFor("pty_resize")
+    .filter((call) => String(call.args.sessionId) === sessionId)
+    .map((call) => ({
+      cols: Number(call.args.cols),
+      rows: Number(call.args.rows),
+    }));
+}
+
+async function passTwoAnimationFrames(): Promise<void> {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 function setupTransport(fake: FakeTransport): void {
   fake.resolve("pty_write", undefined);
   fake.resolve("pty_resize", undefined);
@@ -283,12 +562,15 @@ function detachedSessionIds(fake: FakeTransport): string[] {
 
 describe("TerminalView attachment (#1363)", () => {
   let cleanupDom: (() => void) | null = null;
+  let cleanupResizeObserver: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;
   let debug: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
+    cleanupResizeObserver = installControllableResizeObserver();
     resetUiStoresForTests();
+    resetUiTerminalControllerForTests();
     xterm.autoCompleteWrites = true;
     for (const instance of xterm.instances) {
       instance.pendingWriteCallbacks.length = 0;
@@ -302,9 +584,12 @@ describe("TerminalView attachment (#1363)", () => {
   });
 
   afterEach(() => {
+    cleanupResizeObserver?.();
+    cleanupResizeObserver = null;
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
+    resetUiTerminalControllerForTests();
     xterm.instances.length = 0;
     warn.mockRestore();
     debug.mockRestore();
@@ -417,6 +702,259 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
+  it("executes all visible-terminal operations through public xterm APIs with no PTY effects", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const terminal = instancesFor(SESSION_A)[0];
+      terminal.buffer.active.length = 124;
+      terminal.buffer.active.baseY = 100;
+      terminal.buffer.active.viewportY = 100;
+      terminal.scrollOperations.length = 0;
+      const ptyWritesBefore = fake.callsFor("pty_write").length;
+      const ptyResizesBefore = fake.callsFor("pty_resize").length;
+      const localResizesBefore = terminal.resizes.length;
+      const execute = (operation:
+        | { kind: "query" | "top" | "bottom" }
+        | { kind: "line" | "lines" | "pages"; value: number }) =>
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation,
+        });
+
+      expect(execute({ kind: "query" })).toMatchObject({
+        ok: true,
+        target: {
+          sessionId: SESSION_A,
+          baseY: 100,
+          viewportY: 100,
+          length: 124,
+          cols: 80,
+          rows: 24,
+          type: "normal",
+          atBottom: true,
+        },
+      });
+      expect(execute({ kind: "top" })).toMatchObject({
+        ok: true,
+        target: { viewportY: 0, atBottom: false },
+      });
+      expect(execute({ kind: "bottom" })).toMatchObject({
+        ok: true,
+        target: { viewportY: 100, atBottom: true },
+      });
+      expect(execute({ kind: "line", value: 9 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 9, atBottom: false },
+      });
+      expect(execute({ kind: "lines", value: -4 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 5, atBottom: false },
+      });
+      expect(execute({ kind: "pages", value: 1 })).toMatchObject({
+        ok: true,
+        target: { viewportY: 29, atBottom: false },
+      });
+
+      expect(terminal.scrollOperations).toEqual([
+        "top",
+        "bottom",
+        "line:9",
+        "lines:-4",
+        "pages:1",
+      ]);
+      expect(fake.callsFor("pty_write")).toHaveLength(ptyWritesBefore);
+      expect(fake.callsFor("pty_resize")).toHaveLength(ptyResizesBefore);
+      expect(terminal.resizes).toHaveLength(localResizesBefore);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ui-terminal top during the settle window marks scroll intent and prevents bottoming", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
+      const terminal = instancesFor(SESSION_A)[0];
+      await passTwoAnimationFrames();
+      simulateParsedHistory(terminal, 124);
+      terminal.buffer.active.viewportY = terminal.buffer.active.baseY;
+
+      const result = executeUiTerminalController({
+        element: terminal.element!,
+        sessionId: SESSION_A,
+        operation: { kind: "top" },
+      });
+      expect(result).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+      const attemptsBefore = terminal.resizeAttempts.length;
+      const fitsBefore = terminal.ordinaryFitCalls;
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() =>
+        expect(
+          debug.mock.calls.some((call: unknown[]) =>
+            String(call[0]).startsWith(`[terminal] attach ${SESSION_A} settled:`),
+          ),
+        ).toBe(true),
+      );
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+      expect(terminal.ordinaryFitCalls).toBe(fitsBefore + 1);
+      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("ui-terminal query during the settle window is read-only and does not suppress bottoming", async () => {
+    xterm.autoCompleteWrites = false;
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 124);
+      terminal.buffer.active.viewportY = 0;
+      expect(
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+
+      completeWriteCallbacks(terminal);
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(terminal.buffer.active.viewportY).toBe(terminal.buffer.active.baseY);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("fails closed for hidden, mismatched, replaced, disconnected, and destroyed terminal entries", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const terminalA = instancesFor(SESSION_A)[0];
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
+      const terminalB = instancesFor(SESSION_B)[0];
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A]));
+
+      expect(
+        executeUiTerminalController({
+          element: terminalB.element!,
+          sessionId: SESSION_B,
+          operation: { kind: "top" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_session_not_visible" });
+      expect(terminalB.scrollOperations).not.toContain("top");
+
+      terminalA.element!.setAttribute("data-ac-session-id", SESSION_B);
+      expect(
+        executeUiTerminalController({
+          element: terminalA.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_target_mismatch" });
+      terminalA.element!.setAttribute("data-ac-session-id", SESSION_A);
+
+      const replacement = document.createElement("div");
+      replacement.setAttribute("data-ac-testid", `terminal.session.${SESSION_A}`);
+      replacement.setAttribute("data-ac-session-id", SESSION_A);
+      document.body.append(replacement);
+      expect(
+        executeUiTerminalController({
+          element: replacement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_target_mismatch" });
+
+      const oldElement = terminalA.element!;
+      oldElement.remove();
+      expect(
+        executeUiTerminalController({
+          element: oldElement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+      rendered.root.append(oldElement);
+
+      fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+      expect(terminalA.disposed).toBe(true);
+      expect(
+        executeUiTerminalController({
+          element: oldElement,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("unregisters the controller on unmount and a remount owns the replacement", async () => {
+    const fakeA = new FakeTransport();
+    setupTransport(fakeA);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const first = renderWithFakeTransport(() => <TerminalView />, fakeA);
+    await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+    const oldElement = instancesFor(SESSION_A)[0].element!;
+    first.cleanup();
+    expect(
+      executeUiTerminalController({
+        element: oldElement,
+        sessionId: SESSION_A,
+        operation: { kind: "query" },
+      }),
+    ).toBeNull();
+
+    resetUiStoresForTests();
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const fakeB = new FakeTransport();
+    setupTransport(fakeB);
+    const second = renderWithFakeTransport(() => <TerminalView />, fakeB);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      const current = instancesFor(SESSION_A)[0];
+      first.cleanup();
+      expect(
+        executeUiTerminalController({
+          element: current.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "query" },
+        }),
+      ).toMatchObject({ ok: true, target: { sessionId: SESSION_A } });
+    } finally {
+      second.cleanup();
+    }
+    expect(
+      executeUiTerminalController({
+        element: oldElement,
+        sessionId: SESSION_A,
+        operation: { kind: "query" },
+      }),
+    ).toBeNull();
+  });
+
   // ORDERING, not outcome: the attach must not reach the backend until this
   // window is listening. Issuing the `listen` first does not order the two —
   // `plugin:event|listen` is an async Tauri command on the async runtime while
@@ -524,13 +1062,18 @@ describe("TerminalView attachment (#1363)", () => {
       // Unsequenced: the backend's parser is unavailable for this session.
       fake.emitFromBackend("pty_output", { sessionId: SESSION_A, data: LIVE });
       await waitFor(() => expect(terminal.writes).toEqual([LIVE]));
+      await passTwoAnimationFrames();
+      const attemptsBefore = terminal.resizeAttempts.length;
+      const fitsBefore = terminal.ordinaryFitCalls;
 
       attach.resolve(null);
       await flushPromises();
-      await flushPromises();
+      await passTwoAnimationFrames();
 
       expect(terminal.writes).toEqual([LIVE]);
       expect(terminal.resets).toBe(0);
+      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
+      expect(terminal.ordinaryFitCalls).toBeGreaterThan(fitsBefore);
     } finally {
       rendered.cleanup();
     }
@@ -918,6 +1461,950 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
+  // #1532 replaces the falsified direct xterm round-trip with one real,
+  // App-owned split-layout pulse. The observer/settlement cases below use a
+  // controllable ResizeObserver and the shared deterministic frame queue.
+
+  it("dispatches one non-empty request and publishes the bounded unhandled trace after settlement", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const capture = (event: Event) => {
+      requests.push(
+        (event as CustomEvent<MainTerminalLayoutPulseRequest>).detail,
+      );
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      expect(requests).toHaveLength(1);
+      expect(requests[0].accepted).toBe(false);
+      expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!)).toMatchObject({
+        layoutPulse: {
+          version: 1,
+          requestId: requests[0].requestId,
+          sessionId: SESSION_A,
+          attachGeneration: requests[0].attachGeneration,
+          status: "skipped",
+          reason: "unhandled",
+        },
+      });
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
+    }
+  });
+
+  it.each([
+    ["completed", "completed"],
+    ["skipped", "busy"],
+    ["cancelled", "stale"],
+    ["failed", "request_timeout"],
+  ] as const)(
+    "resumes ordinary final fit/send after a %s/%s pulse result",
+    async (status, reason) => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const respond = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+        request.complete(pulseResult(request, status, reason));
+        request.complete(pulseResult(request, "failed", "exception"));
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      try {
+        await waitFor(() =>
+          expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1),
+        );
+        expect(requests).toHaveLength(1);
+        expect(ptyResizeTuples(fake, SESSION_A).length).toBeGreaterThan(0);
+        expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+          status,
+          reason,
+          attachGeneration: requests[0].attachGeneration,
+        });
+      } finally {
+        rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      }
+    },
+  );
+
+  it("preserves user scroll intent while the accepted layout pulse is pending", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(requests).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 120);
+      expect(
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "top" },
+        }),
+      ).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+
+      requests[0].complete(pulseResult(requests[0], "completed", "completed"));
+      await waitFor(() =>
+        expect(
+          debug.mock.calls.some((call: unknown[]) =>
+            String(call[0]).startsWith(`[terminal] attach ${SESSION_A} settled:`),
+          ),
+        ).toBe(true),
+      );
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    }
+  });
+
+  it("records delivered epochs immediately and only publishes two-fit same-entry acknowledgements", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+
+      expect(request.sample()).toMatchObject({
+        hostWidth: 800,
+        cols: 80,
+        rows: 24,
+        observedObserverEpoch: 0,
+        completedObserverAck: null,
+      });
+
+      resizeObserverControl.latest().deliver();
+      expect(request.sample()).toMatchObject({
+        observedObserverEpoch: 1,
+        completedObserverAck: null,
+      });
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toBeNull();
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 1,
+        first: { hostWidth: 800, cols: 80, rows: 24 },
+        second: { hostWidth: 816, cols: 82, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 2,
+        first: { hostWidth: 816, cols: 82, rows: 24 },
+        second: { hostWidth: 816, cols: 82, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      expect(await frames.flushFrame()).toBe(true);
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 3,
+        first: { hostWidth: 816, cols: 82, rows: 24 },
+        second: { hostWidth: 800, cols: 80, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 4,
+        first: { hostWidth: 800, cols: 80, rows: 24 },
+        second: { hostWidth: 800, cols: 80, rows: 24 },
+      });
+      expect(ptyResizeTuples(fake, SESSION_A)).toEqual(
+        expect.arrayContaining([
+          { cols: 82, rows: 24 },
+          { cols: 80, rows: 24 },
+        ]),
+      );
+
+      const beforeDirectControl = request.sample();
+      terminal.resize(80, 24);
+      expect(request.sample()).toEqual(beforeDirectControl);
+
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it("does not qualify a same-width event-only observer delivery as an expansion acknowledgement", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+      const boundary = request.sample()!;
+
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      const eventOnly = request.sample()!;
+      expect(eventOnly.completedObserverAck).toEqual({
+        epoch: 1,
+        first: { hostWidth: 800, cols: 80, rows: 24 },
+        second: { hostWidth: 800, cols: 80, rows: 24 },
+      });
+      expect(eventOnly.observedObserverEpoch).toBeGreaterThan(
+        boundary.observedObserverEpoch,
+      );
+      expect(eventOnly.hostWidth).not.toBeGreaterThan(boundary.hostWidth);
+      expect(eventOnly.cols).not.toBeGreaterThan(boundary.cols);
+
+      request.complete(pulseResult(request, "cancelled", "stale"));
+      await flushPromises();
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it.each([
+    [
+      "non-finite host width",
+      (terminal: FakeTerminalInstance) => setTerminalContainerWidth(terminal.element!, Number.NaN),
+      (sample: MainTerminalLayoutPulseSample) => Number.isNaN(sample.hostWidth),
+    ],
+    [
+      "negative host width",
+      (terminal: FakeTerminalInstance) => setTerminalContainerWidth(terminal.element!, -1),
+      (sample: MainTerminalLayoutPulseSample) => sample.hostWidth === -1,
+    ],
+    [
+      "unsafe column count",
+      (terminal: FakeTerminalInstance) => {
+        terminal.cols = Number.MAX_SAFE_INTEGER + 1;
+      },
+      (sample: MainTerminalLayoutPulseSample) =>
+        sample.cols === Number.MAX_SAFE_INTEGER + 1,
+    ],
+    [
+      "negative row count",
+      (terminal: FakeTerminalInstance) => {
+        terminal.rows = -1;
+      },
+      (sample: MainTerminalLayoutPulseSample) => sample.rows === -1,
+    ],
+  ] as const)(
+    "keeps a current live %s sample non-null for App numeric validation",
+    async (_label, corrupt, matchesCorruption) => {
+      const frames = installDeterministicAnimationFrames();
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const hold = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      try {
+        await flushFramesUntil(frames, () => requests.length === 1);
+        const request = requests[0];
+        const terminal = instancesFor(SESSION_A)[0];
+        setTerminalContainerWidth(terminal.element!, 800);
+        corrupt(terminal);
+
+        const liveSample = request.sample();
+        expect(liveSample).not.toBeNull();
+        expect(matchesCorruption(liveSample!)).toBe(true);
+
+        request.complete(pulseResult(request, "failed", "exception"));
+        await flushPromises();
+      } finally {
+        rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+        frames.restore();
+      }
+    },
+  );
+
+  it.each([
+    "hidden",
+    "disconnected",
+    "visibility",
+    "destroyed",
+    "same-session entry replacement",
+    "teardown",
+  ] as const)(
+    "abandons an observer record after %s invalidates the captured entry",
+    async (scenario) => {
+      const frames = installDeterministicAnimationFrames();
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const hold = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      let cleaned = false;
+      try {
+        await flushFramesUntil(frames, () => requests.length === 1);
+        const request = requests[0];
+        const terminal = instancesFor(SESSION_A)[0];
+        setTerminalContainerWidth(terminal.element!, 800);
+        resizeObserverControl.latest().deliver();
+        expect(await frames.flushFrame()).toBe(true);
+        expect(request.sample()?.completedObserverAck).toBeNull();
+
+        if (scenario === "hidden") {
+          terminal.element!.hidden = true;
+        } else if (scenario === "disconnected") {
+          terminal.element!.remove();
+        } else if (scenario === "visibility") {
+          terminalStore.setActiveSessionForTests(SESSION_B);
+        } else if (scenario === "destroyed") {
+          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+        } else if (scenario === "same-session entry replacement") {
+          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+          terminalStore.setActiveSessionForTests(SESSION_B);
+          await flushFramesUntil(frames, () =>
+            requests.some((candidate) => candidate.sessionId === SESSION_B),
+          );
+          terminalStore.setActiveSessionForTests(SESSION_A);
+          await flushFramesUntil(
+            frames,
+            () =>
+              requests.filter((candidate) => candidate.sessionId === SESSION_A).length === 2,
+          );
+          const replacement = instancesFor(SESSION_A)[0];
+          expect(replacement).not.toBe(terminal);
+          const replacementRequest = requests.filter(
+            (candidate) => candidate.sessionId === SESSION_A,
+          )[1];
+          expect(replacementRequest.sample()).toMatchObject({
+            observedObserverEpoch: 0,
+            completedObserverAck: null,
+          });
+        } else {
+          rendered.cleanup();
+          cleaned = true;
+        }
+
+        await frames.flushFrame();
+        expect(request.sample()).toBeNull();
+      } finally {
+        if (!cleaned) rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+        frames.restore();
+      }
+    },
+  );
+
+  it("joins the restored observer resize and publishes its trace only after transport success", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const restoredResize = deferred<void>();
+    let holdRestoredResize = false;
+    let heldRestoredResize = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        holdRestoredResize &&
+        !heldRestoredResize &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        heldRestoredResize = true;
+        return restoredResize.promise;
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+      holdRestoredResize = true;
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(heldRestoredResize).toBe(true);
+
+      const restoredCallsBeforeSettle = ptyResizeTuples(fake, SESSION_A).filter(
+        ({ cols, rows }) => cols === 80 && rows === 24,
+      ).length;
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+      expect(
+        ptyResizeTuples(fake, SESSION_A).filter(
+          ({ cols, rows }) => cols === 80 && rows === 24,
+        ),
+      ).toHaveLength(restoredCallsBeforeSettle);
+
+      restoredResize.resolve();
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(queryTerminalTarget(terminal.element!).layoutPulse).toEqual(
+        pulseResult(request, "completed", "completed").trace,
+      );
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it.each([
+    ["attachment generation advance", "generation"],
+    ["same-session entry replacement", "replacement"],
+    ["entry disposal", "disposal"],
+    ["teardown", "teardown"],
+  ] as const)(
+    "does not publish late joined-success trace after %s",
+    async (_label, scenario) => {
+      const frames = installDeterministicAnimationFrames();
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const restoredResize = deferred<void>();
+      let holdRestoredResize = false;
+      let heldRestoredResize = false;
+      fake.onInvoke("pty_resize", (args) => {
+        if (
+          holdRestoredResize &&
+          !heldRestoredResize &&
+          Number(args.cols) === 80 &&
+          Number(args.rows) === 24
+        ) {
+          heldRestoredResize = true;
+          return restoredResize.promise;
+        }
+        return undefined;
+      });
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const hold = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      let cleaned = false;
+      try {
+        await flushFramesUntil(frames, () => requests.length === 1);
+        const request = requests[0];
+        const terminal = instancesFor(SESSION_A)[0];
+        const oldElement = terminal.element!;
+        setTerminalContainerWidth(oldElement, 800);
+        holdRestoredResize = true;
+
+        setTerminalContainerWidth(oldElement, 816);
+        fitViewport.cols = 82;
+        resizeObserverControl.latest().deliver();
+        await frames.flush();
+        setTerminalContainerWidth(oldElement, 800);
+        fitViewport.cols = 80;
+        resizeObserverControl.latest().deliver();
+        await frames.flush();
+        expect(heldRestoredResize).toBe(true);
+
+        request.complete(pulseResult(request, "completed", "completed"));
+        await flushPromises();
+        expect(queryTerminalTarget(oldElement)).not.toHaveProperty("layoutPulse");
+
+        if (scenario === "generation") {
+          terminalStore.setActiveSessionForTests(SESSION_B);
+          await flushFramesUntil(frames, () =>
+            requests.some((candidate) => candidate.sessionId === SESSION_B),
+          );
+          terminalStore.setActiveSessionForTests(SESSION_A);
+          await flushFramesUntil(
+            frames,
+            () =>
+              requests.filter((candidate) => candidate.sessionId === SESSION_A).length === 2,
+          );
+          expect(instancesFor(SESSION_A)[0]).toBe(terminal);
+          expect(request.sample()).toBeNull();
+          expect(queryTerminalTarget(oldElement)).not.toHaveProperty("layoutPulse");
+        } else if (scenario === "replacement") {
+          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+          terminalStore.setActiveSessionForTests(SESSION_B);
+          await flushFramesUntil(frames, () =>
+            requests.some((candidate) => candidate.sessionId === SESSION_B),
+          );
+          terminalStore.setActiveSessionForTests(SESSION_A);
+          await flushFramesUntil(
+            frames,
+            () =>
+              requests.filter((candidate) => candidate.sessionId === SESSION_A).length === 2,
+          );
+          const replacement = instancesFor(SESSION_A)[0];
+          expect(replacement).not.toBe(terminal);
+          expect(request.sample()).toBeNull();
+          expect(
+            executeUiTerminalController({
+              element: oldElement,
+              sessionId: SESSION_A,
+              operation: { kind: "query" },
+            }),
+          ).toMatchObject({ ok: false, error: "terminal_target_mismatch" });
+          expect(queryTerminalTarget(replacement.element!)).not.toHaveProperty("layoutPulse");
+        } else if (scenario === "disposal") {
+          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+          expect(terminal.disposed).toBe(true);
+          expect(request.sample()).toBeNull();
+          expect(
+            executeUiTerminalController({
+              element: oldElement,
+              sessionId: SESSION_A,
+              operation: { kind: "query" },
+            }),
+          ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+        } else {
+          rendered.cleanup();
+          cleaned = true;
+          expect(request.sample()).toBeNull();
+          expect(
+            executeUiTerminalController({
+              element: oldElement,
+              sessionId: SESSION_A,
+              operation: { kind: "query" },
+            }),
+          ).toBeNull();
+        }
+
+        restoredResize.resolve();
+        await flushPromises();
+        await frames.flush();
+
+        if (scenario === "generation") {
+          expect(queryTerminalTarget(oldElement)).not.toHaveProperty("layoutPulse");
+        } else if (scenario === "replacement") {
+          expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!)).not.toHaveProperty(
+            "layoutPulse",
+          );
+        } else if (scenario === "disposal") {
+          expect(
+            executeUiTerminalController({
+              element: oldElement,
+              sessionId: SESSION_A,
+              operation: { kind: "query" },
+            }),
+          ).toMatchObject({ ok: false, error: "terminal_entry_stale" });
+        } else {
+          expect(
+            executeUiTerminalController({
+              element: oldElement,
+              sessionId: SESSION_A,
+              operation: { kind: "query" },
+            }),
+          ).toBeNull();
+        }
+      } finally {
+        if (!cleaned) rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+        frames.restore();
+      }
+    },
+  );
+
+  it("keeps a joined failure trace-free before, during, and after its ordinary retry", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const restoredResize = deferred<void>();
+    let holdRestoredResize = false;
+    let heldRestoredResize = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        holdRestoredResize &&
+        !heldRestoredResize &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        heldRestoredResize = true;
+        return restoredResize.promise;
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+      holdRestoredResize = true;
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      const callsBeforeFailure = ptyResizeTuples(fake, SESSION_A).length;
+      restoredResize.reject(new Error("restored resize failed"));
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      await waitFor(() =>
+        expect(ptyResizeTuples(fake, SESSION_A).length).toBeGreaterThan(callsBeforeFailure),
+      );
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it("bypasses a cached tuple for direct final confirmation and never publishes after failure/retry", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    let failFinalConfirmation = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        failFinalConfirmation &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        failFinalConfirmation = false;
+        throw new Error("direct final resize failed");
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(requests).toHaveLength(1));
+      await flushPromises();
+      const terminal = instancesFor(SESSION_A)[0];
+      const callsBeforeFinal = ptyResizeTuples(fake, SESSION_A).length;
+      failFinalConfirmation = true;
+      requests[0].complete(pulseResult(requests[0], "completed", "completed"));
+
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(ptyResizeTuples(fake, SESSION_A)).toHaveLength(callsBeforeFinal + 1);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(ptyResizeTuples(fake, SESSION_A)).toHaveLength(callsBeforeFinal + 1);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    }
+  });
+
+  it.each(["null", "empty", "rejected", "discarded snapshot", "replay failure"] as const)(
+    "invalidates the prior generation before a pending seed and keeps %s re-attach trace-free",
+    async (outcome) => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const reattach = deferred<PtyScreenSnapshot | null>();
+      let aAttachments = 0;
+      fake.onInvoke("activate_terminal_output", (args) => {
+        const sessionId = String(args.sessionId);
+        if (sessionId !== SESSION_A) {
+          return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+        }
+        aAttachments += 1;
+        if (aAttachments === 1) {
+          return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+        }
+        return reattach.promise;
+      });
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const respond = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+        request.complete(pulseResult(request, "completed", "completed"));
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      try {
+        await waitFor(() =>
+          expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+            attachGeneration: 1,
+          }),
+        );
+        const terminalA = instancesFor(SESSION_A)[0];
+
+        terminalStore.setActiveSessionForTests(SESSION_B);
+        await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
+        terminalStore.setActiveSessionForTests(SESSION_A);
+        await waitFor(() => expect(aAttachments).toBe(2));
+
+        // `beginSeed` deleted generation 1 before attachOutput could settle.
+        expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+
+        if (outcome === "null") {
+          reattach.resolve(null);
+        } else if (outcome === "empty") {
+          reattach.resolve({
+            sessionId: SESSION_A,
+            data: [],
+            rows: 24,
+            cols: 80,
+            sequence: 1,
+          });
+        } else if (outcome === "rejected") {
+          reattach.reject(new Error("snapshot fetch failed"));
+        } else if (outcome === "discarded snapshot") {
+          for (let sequence = 1; sequence <= 33; sequence += 1) {
+            fake.emitFromBackend("pty_output", {
+              sessionId: SESSION_A,
+              data: RING_64K,
+              sequence,
+            });
+          }
+          reattach.resolve({
+            sessionId: SESSION_A,
+            data: SNAP,
+            rows: 24,
+            cols: 80,
+            sequence: 0,
+          });
+        } else {
+          terminalA.writeThrows = true;
+          reattach.resolve({
+            sessionId: SESSION_A,
+            data: SNAP,
+            rows: 24,
+            cols: 80,
+            sequence: 1,
+          });
+        }
+        await flushPromises();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+        expect(
+          requests.filter((request) => request.sessionId === SESSION_A),
+        ).toHaveLength(1);
+        if (outcome === "discarded snapshot") {
+          expect(
+            warn.mock.calls.some((call: unknown[]) =>
+              String(call[0]).includes(`snapshot ${SESSION_A} discarded`),
+            ),
+          ).toBe(true);
+        }
+        terminalA.writeThrows = false;
+      } finally {
+        rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      }
+    },
+  );
+
+  it("omits the new generation trace while snapshot parsing is pending and publishes only after settlement", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const reattach = deferred<PtyScreenSnapshot | null>();
+    let aAttachments = 0;
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId !== SESSION_A) {
+        return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+      }
+      aAttachments += 1;
+      return aAttachments === 1
+        ? { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 }
+        : reattach.promise;
+    });
+    const respond = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      request.complete(pulseResult(request, "completed", "completed"));
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() =>
+        expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+          attachGeneration: 1,
+        }),
+      );
+      const terminalA = instancesFor(SESSION_A)[0];
+      terminalStore.setActiveSessionForTests(SESSION_B);
+      await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
+
+      xterm.autoCompleteWrites = false;
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() => expect(aAttachments).toBe(2));
+      reattach.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: 24,
+        cols: 80,
+        sequence: 1,
+      });
+      await waitFor(() => expect(terminalA.pendingWriteCallbacks.length).toBeGreaterThan(0));
+      expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+
+      completeWriteCallbacks(terminalA);
+      xterm.autoCompleteWrites = true;
+      await flushPromises();
+      await waitFor(() =>
+        expect(queryTerminalTarget(terminalA.element!).layoutPulse).toMatchObject({
+          attachGeneration: 2,
+        }),
+      );
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+    }
+  });
+
+  it("keeps an empty snapshot on the ordinary viewport-sync path without an adjacent-column pulse", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const capture = (event: Event) => {
+      requests.push(
+        (event as CustomEvent<MainTerminalLayoutPulseRequest>).detail,
+      );
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
+    fake.onInvoke("activate_terminal_output", (args) => ({
+      sessionId: String(args.sessionId),
+      data: [],
+      rows: 24,
+      cols: 80,
+      sequence: 0,
+    }));
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(attachedSessionIds(fake)).toEqual([SESSION_A]));
+      const terminal = instancesFor(SESSION_A)[0];
+      await passTwoAnimationFrames();
+      expect(terminal.writes).toEqual([]);
+      expect(terminal.resets).toBe(0);
+      expect(terminal.ordinaryFitCalls).toBeGreaterThan(0);
+      expect(terminal.resizeAttempts).not.toContainEqual({ cols: 70, rows: 24 });
+      expect(requests).toEqual([]);
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
+    }
+  });
+
   it("sends the fitted container grid to the PTY before requesting the seed snapshot", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
@@ -1214,18 +2701,21 @@ describe("TerminalView attachment (#1363)", () => {
       // Complete generation 1's held callback: the drain releases, generation
       // 2's snapshot write queues and settles once, and generation 1's later
       // continuation (its flush) is inert - no additional writes, no
-      // additional bottoming, no additional pty_resize, and no settled record
-      // for generation 1.
+      // additional bottoming and no settled record for generation 1. The one
+      // added pty_resize is generation 2's required real final confirmation.
       completeWriteCallbacks(terminal);
       await waitFor(() => expect(terminal.writes).toEqual([SNAP, SNAP]));
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
 
       expect(terminal.writes).toHaveLength(writesBefore + 1);
       expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1);
-      expect(resizesOfA()).toBe(resizesBefore);
+      expect(resizesOfA()).toBe(resizesBefore + 1);
       expect(settledRecordsOf(SESSION_A) + settledRecordsOf(SESSION_B)).toBe(
         recordsBefore + 1
       );
+      expect(queryTerminalTarget(terminal.element!).layoutPulse).toMatchObject({
+        attachGeneration: 2,
+      });
     } finally {
       rendered.cleanup();
     }

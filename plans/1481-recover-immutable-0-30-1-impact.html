@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Issue #1481 | Immutable v0.30.1 recovery impact</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f3f7ff;
+      --muted: #aebbd0;
+      --faint: #73819a;
+      --page: #07101d;
+      --panel: #0d1929;
+      --panel-2: #111f32;
+      --line: #263a56;
+      --blue: #69b7ff;
+      --cyan: #54e1d2;
+      --green: #69e19b;
+      --amber: #ffc970;
+      --red: #ff8798;
+      --violet: #bd9bff;
+      --shadow: 0 22px 55px rgba(0, 0, 0, .28);
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { max-width: 100%; overflow-x: hidden; scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      max-width: 100%;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 12% -5%, rgba(71, 145, 255, .19), transparent 34rem),
+        radial-gradient(circle at 90% 9%, rgba(84, 225, 210, .11), transparent 30rem),
+        var(--page);
+      color: var(--ink);
+      font: 15px/1.62 var(--sans);
+    }
+
+    a { color: var(--blue); }
+    code, .mono {
+      font-family: var(--mono);
+      font-size: .93em;
+      overflow-wrap: anywhere;
+    }
+    code {
+      padding: .11rem .34rem;
+      border: 1px solid rgba(105, 183, 255, .17);
+      border-radius: 6px;
+      background: rgba(105, 183, 255, .08);
+      color: #d9edff;
+    }
+    h1, h2, h3, h4 { line-height: 1.18; letter-spacing: -.02em; }
+    h1 { max-width: 15ch; margin: .65rem 0 1rem; font-size: clamp(2.35rem, 6vw, 5.4rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(1.55rem, 3vw, 2.35rem); }
+    h3 { margin: 0 0 .7rem; font-size: 1.08rem; }
+    h4 { margin: 0 0 .42rem; font-size: .9rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+    p { margin: .45rem 0 1rem; }
+    ul, ol { padding-left: 1.28rem; }
+    li + li { margin-top: .38rem; }
+    strong { color: #fff; }
+
+    .shell { width: min(1240px, calc(100% - 32px)); min-width: 0; margin: 0 auto; }
+    .hero { padding: 68px 0 38px; }
+    .eyebrow {
+      display: inline-flex;
+      gap: .5rem;
+      align-items: center;
+      padding: .35rem .65rem;
+      border: 1px solid rgba(255, 201, 112, .38);
+      border-radius: 999px;
+      background: rgba(255, 201, 112, .08);
+      color: var(--amber);
+      font: 700 .76rem/1 var(--mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .7fr); gap: 28px; align-items: end; }
+    .lede { max-width: 68ch; color: #cfdaea; font-size: 1.08rem; }
+    .status-card, .card, .lane, .impact-group, .phase, .accept, .failure-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(17, 31, 50, .95), rgba(10, 22, 37, .94));
+      box-shadow: var(--shadow);
+    }
+    .status-card { padding: 1.25rem; }
+    .status-card dl { display: grid; grid-template-columns: auto 1fr; gap: .52rem .9rem; margin: 0; }
+    .status-card dt { color: var(--faint); }
+    .status-card dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+    .status-ready { color: var(--green); font-weight: 800; }
+
+    .nav-wrap { position: sticky; top: 0; z-index: 20; border-block: 1px solid rgba(38, 58, 86, .85); background: rgba(7, 16, 29, .88); backdrop-filter: blur(16px); }
+    .nav { display: flex; gap: .4rem; max-width: 100%; overflow-x: auto; padding: .7rem 0; scrollbar-width: thin; }
+    .nav a { flex: 0 0 auto; padding: .42rem .68rem; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: .82rem; }
+    .nav a:hover, .nav a:focus { background: var(--panel-2); color: var(--ink); }
+
+    main { padding: 24px 0 70px; }
+    section { scroll-margin-top: 72px; padding: 38px 0; }
+    .section-kicker { margin-bottom: .45rem; color: var(--cyan); font: 700 .75rem/1 var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    .section-intro { max-width: 80ch; color: var(--muted); }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .card { padding: 1.25rem; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .tone-blue { border-top: 3px solid var(--blue); }
+    .tone-green { border-top: 3px solid var(--green); }
+    .tone-amber { border-top: 3px solid var(--amber); }
+    .tone-red { border-top: 3px solid var(--red); }
+    .tone-violet { border-top: 3px solid var(--violet); }
+    .metric { font-size: 2rem; font-weight: 800; letter-spacing: -.04em; }
+    .muted { color: var(--muted); }
+    .fine { color: var(--faint); font-size: .84rem; }
+
+    .identity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); }
+    .identity { min-height: 98px; padding: 1rem; background: var(--panel); }
+    .identity span { display: block; margin-bottom: .35rem; color: var(--faint); font-size: .76rem; text-transform: uppercase; letter-spacing: .07em; }
+    .identity b { display: block; overflow-wrap: anywhere; }
+
+    .timeline { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 1.5rem; }
+    .timeline::before { content: ""; position: absolute; top: 22px; left: 10%; right: 10%; height: 2px; background: linear-gradient(90deg, var(--green), var(--red), var(--amber)); opacity: .55; }
+    .moment { position: relative; padding-top: 46px; }
+    .moment::before { content: ""; position: absolute; top: 14px; left: 1rem; width: 16px; height: 16px; border: 4px solid var(--page); border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 1px var(--line); }
+    .moment.fail::before { background: var(--red); }
+    .moment.stop::before { background: var(--amber); }
+    .moment h3 { font-size: .96rem; }
+
+    .impact-root {
+      max-width: 880px;
+      margin: 0 auto 26px;
+      padding: 1.25rem;
+      border: 1px solid rgba(105, 225, 155, .55);
+      border-radius: var(--radius);
+      background: linear-gradient(130deg, rgba(105, 225, 155, .13), rgba(84, 225, 210, .05));
+      text-align: center;
+      box-shadow: 0 0 0 5px rgba(105, 225, 155, .04), var(--shadow);
+    }
+    .impact-root .tag { color: var(--green); }
+    .impact-root code { font-size: 1rem; }
+    .connector { width: 2px; height: 32px; margin: -26px auto 0; background: var(--line); }
+    .impact-map { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 16px; }
+    .impact-group { position: relative; padding: 1.1rem; box-shadow: none; }
+    .impact-group::before { content: attr(data-link); display: inline-block; margin-bottom: .8rem; padding: .25rem .48rem; border-radius: 5px; background: rgba(105, 183, 255, .12); color: var(--blue); font: 700 .7rem/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .path-row { padding: .72rem 0; border-top: 1px solid rgba(38, 58, 86, .68); }
+    .path-row:first-of-type { border-top: 0; }
+    .path-row code { display: block; margin-bottom: .28rem; border: 0; padding: 0; background: transparent; color: #fff; }
+    .path-row p { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .no-touch { color: var(--amber); font: 700 .72rem/1 var(--mono); }
+
+    .flow { display: grid; grid-template-columns: 1fr 48px 1fr 48px 1fr 48px 1.1fr; gap: 0; align-items: stretch; margin: 1.4rem 0; }
+    .lane { padding: 1rem; box-shadow: none; min-height: 170px; }
+    .lane .step { color: var(--faint); font: 700 .7rem/1 var(--mono); }
+    .lane .job { margin: .5rem 0; font-weight: 800; }
+    .lane .condition { color: var(--cyan); font-size: .78rem; }
+    .arrow { display: grid; place-items: center; color: var(--faint); font-size: 1.6rem; }
+    .branch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+    .branch { padding: 1.1rem; border: 1px solid var(--line); border-radius: 14px; background: rgba(13, 25, 41, .8); }
+    .branch.fresh { border-color: rgba(105, 225, 155, .48); }
+    .branch.resume { border-color: rgba(105, 183, 255, .48); }
+    .branch.conflict { border-color: rgba(255, 135, 152, .48); }
+    .branch .mode { font: 800 .78rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .branch.fresh .mode { color: var(--green); }
+    .branch.resume .mode { color: var(--blue); }
+    .branch.conflict .mode { color: var(--red); }
+
+    .token-map { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .token { padding: 1.2rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+    .token.admin { border-color: rgba(255, 201, 112, .45); }
+    .token.normal { border-color: rgba(105, 183, 255, .45); }
+    .token h3 { display: flex; align-items: center; gap: .55rem; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; box-shadow: 0 0 16px currentColor; }
+    .token.admin h3 { color: var(--amber); }
+    .token.normal h3 { color: var(--blue); }
+    .get-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 1rem; }
+    .get-strip div { padding: .65rem .35rem; border: 1px solid rgba(255, 201, 112, .25); border-radius: 8px; color: var(--muted); text-align: center; font-size: .72rem; }
+
+    .table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; background: rgba(13, 25, 41, .82); }
+    th, td { padding: .72rem .82rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: #13233a; color: #dce8fa; font-size: .76rem; text-transform: uppercase; letter-spacing: .06em; }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { color: var(--muted); }
+
+    .gate-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; counter-reset: gate; }
+    .gate { position: relative; min-height: 96px; padding: 1rem 1rem 1rem 3.2rem; border: 1px solid var(--line); border-radius: 13px; background: rgba(13, 25, 41, .75); }
+    .gate::before { counter-increment: gate; content: counter(gate, decimal-leading-zero); position: absolute; left: 1rem; top: 1.05rem; color: var(--cyan); font: 800 .77rem/1 var(--mono); }
+
+    .mutation-ledger { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .mutation { padding: 1.15rem; border: 1px solid rgba(255, 135, 152, .36); border-radius: var(--radius); background: linear-gradient(160deg, rgba(255, 135, 152, .08), rgba(13, 25, 41, .8)); }
+    .mutation .count { color: var(--red); font: 800 2.2rem/1 var(--mono); }
+    .mutation h3 { margin-top: .65rem; }
+
+    .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .phase { padding: 1.15rem; box-shadow: none; }
+    .phase .number { display: inline-grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; background: rgba(84, 225, 210, .12); color: var(--cyan); font-weight: 800; }
+
+    .failure-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .failure-card { padding: 1rem; box-shadow: none; }
+    .failure-card h3 { color: var(--amber); }
+
+    .accept-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .accept { padding: 1.15rem; box-shadow: none; }
+    .accept h3 { color: var(--green); }
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { position: relative; padding-left: 1.4rem; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 900; }
+    .ban-list li::marker { color: var(--red); }
+
+    .draft-stop { margin-top: 28px; padding: 1.4rem; border: 1px solid rgba(255, 201, 112, .48); border-radius: var(--radius); background: rgba(255, 201, 112, .08); }
+    .draft-stop strong { color: var(--amber); }
+    footer { padding: 26px 0 50px; color: var(--faint); text-align: center; font-size: .82rem; }
+
+    @media (max-width: 980px) {
+      .hero-grid, .impact-map, .flow, .token-map, .phase-grid { grid-template-columns: 1fr; }
+      .identity-grid, .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow .arrow { min-height: 42px; transform: rotate(90deg); }
+      .get-strip { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .shell { width: min(100% - 22px, 1240px); }
+      .hero { padding-top: 42px; }
+      .grid-2, .grid-3, .identity-grid, .timeline, .branch-grid, .gate-list, .mutation-ledger, .failure-grid, .accept-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 2.45rem; }
+      .status-card dl { grid-template-columns: 1fr; }
+      .status-card dd { text-align: left; margin-bottom: .4rem; }
+    }
+    @media print {
+      :root { color-scheme: light; --ink: #101828; --muted: #344054; --faint: #667085; --page: #fff; --panel: #fff; --panel-2: #f8fafc; --line: #cbd5e1; }
+      body { background: #fff; font-size: 10pt; }
+      .nav-wrap { display: none; }
+      .hero { padding-top: 20px; }
+      .card, .status-card, .lane, .impact-group, .phase, .accept, .failure-card { box-shadow: none; break-inside: avoid; }
+      section { padding: 18px 0; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="shell hero-grid">
+      <div>
+        <span class="eyebrow">Full delivery path | Step 7 consensus complete</span>
+        <h1>Recover immutable v0.30.1</h1>
+        <p class="lede">A one-shot, no-input GitHub Actions recovery creates the missing Release for the existing annotated tag. It reuses the frozen release state machine, isolates the Administration-read credential, admits only exact absence or exact immutable success, and never moves or recreates the tag.</p>
+      </div>
+      <aside class="status-card" aria-label="Plan status">
+        <dl>
+          <dt>Status</dt><dd class="status-ready">READY_FOR_IMPLEMENTATION</dd>
+          <dt>Issue</dt><dd>mblua/AgentsCommander#1481</dd>
+          <dt>Branch</dt><dd class="mono">fix/1481-recover-immutable-0301</dd>
+          <dt>Base</dt><dd class="mono">ce60240a2bfacabe60d27371c0a90e2d114a56d3</dd>
+          <dt>Specification</dt><dd class="mono">plans/1481-recover-immutable-0-30-1.md</dd>
+        </dl>
+      </aside>
+    </div>
+  </header>
+
+  <div class="nav-wrap">
+    <nav class="shell nav" aria-label="Report sections">
+      <a href="#decision">Decision</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#impact">File impact</a>
+      <a href="#flow">Recovery flow</a>
+      <a href="#authority">Authority</a>
+      <a href="#gates">Gates</a>
+      <a href="#build">Build contract</a>
+      <a href="#assets">Assets</a>
+      <a href="#failures">Failure rules</a>
+      <a href="#delivery">Delivery</a>
+      <a href="#acceptance">Acceptance</a>
+    </nav>
+  </div>
+
+  <main class="shell">
+    <section id="decision">
+      <div class="section-kicker">01 | Decided solution</div>
+      <h2>One temporary workflow, no production refactor</h2>
+      <p class="section-intro">Copy the reviewed release workflow at its frozen Git blob and change only the trigger context, fixed identity gates, failed-run proof, credential routing, and recovery evidence names. The implementation diff adds exactly one file.</p>
+
+      <div class="grid-3">
+        <article class="card tone-green">
+          <div class="metric">1</div>
+          <h3>Implementation path</h3>
+          <p><code>.github/workflows/recover-immutable-v0.30.1.yml</code></p>
+        </article>
+        <article class="card tone-blue">
+          <div class="metric">0</div>
+          <h3>Runtime inputs</h3>
+          <p>Only an empty <code>workflow_dispatch</code>. No version, tag, SHA, Release ID, title, body, asset, repository, failed-run ID, or confirmation input.</p>
+        </article>
+        <article class="card tone-amber">
+          <div class="metric">3</div>
+          <h3>Mutation sources</h3>
+          <p>One draft POST, one serial 16-file upload loop, and one PATCH containing only <code>{"draft":false}</code>.</p>
+        </article>
+      </div>
+
+      <div class="identity-grid" style="margin-top:18px">
+        <div class="identity"><span>Repository</span><b>mblua/AgentsCommander</b></div>
+        <div class="identity"><span>Dispatch ref</span><b class="mono">refs/heads/main</b></div>
+        <div class="identity"><span>Tag</span><b class="mono">v0.30.1</b></div>
+        <div class="identity"><span>Annotated tag object</span><b class="mono">5e4da64d42acf341580ff5de623d18539e267c8e</b></div>
+        <div class="identity"><span>Peeled release commit</span><b class="mono">da116e0b2463d6ebec6ace5495e2954d6d8ccbee</b></div>
+        <div class="identity"><span>Release title</span><b>Agents Commander v0.30.1</b></div>
+        <div class="identity"><span>Concurrency</span><b class="mono">release-v0.30.1</b></div>
+        <div class="identity"><span>Immutable setting</span><b class="mono">enabled:true / enforced_by_owner:false</b></div>
+        <div class="identity"><span>Historical failed run</span><b class="mono">32791566112 / attempt 1</b></div>
+      </div>
+
+      <div class="card tone-blue" style="margin-top:18px">
+        <h3>Locked workflow envelope</h3>
+        <ul>
+          <li><code>name</code> and fixed <code>run-name</code> are both <code>Recover immutable Release v0.30.1</code>.</li>
+          <li>The only trigger is an empty <code>workflow_dispatch</code>; top-level <code>permissions:{}</code>; no push, pull request, schedule, workflow call, repository dispatch, Release trigger, environment, or deployment gate.</li>
+          <li>Concurrency is the literal <code>release-v0.30.1</code> with <code>cancel-in-progress:false</code>. Matrix <code>fail-fast:false</code>; assembly requires all four builders.</li>
+          <li>No workflow-level token or secret environment variable. Shell blocks fail fast and receive GitHub expressions only through step environment, never interpolated executable source.</li>
+          <li>Every GitHub CLI or REST operation selects <code>mblua/AgentsCommander</code> explicitly.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="evidence">
+      <div class="section-kicker">02 | Cause and state gap</div>
+      <h2>The tag succeeded; authority failed before Release creation</h2>
+      <p class="section-intro">Run <code>32791566112</code> used the normal workflow token for the immutable-release settings endpoint. That token had Contents write and Metadata read, while the endpoint requires repository Administration read. HTTP 403 occurred before the Release 404 classifier and before every mutation.</p>
+
+      <div class="timeline" aria-label="Failure timeline">
+        <article class="moment">
+          <h3>Tag exists</h3>
+          <p class="fine">Annotated object <code>5e4da64...</code> peels to approved commit <code>da116e0...</code>.</p>
+        </article>
+        <article class="moment fail">
+          <h3>Authority check fails</h3>
+          <p class="fine">Job <code>97633984311</code>, step 4, exact name <code>Validate authority and classify the release</code>, HTTP 403.</p>
+        </article>
+        <article class="moment stop">
+          <h3>Downstream work skips</h3>
+          <p class="fine">Build, assembly, and publisher jobs never run. Original run artifact count is exactly zero.</p>
+        </article>
+        <article class="moment">
+          <h3>Gap remains</h3>
+          <p class="fine">Release <code>v0.30.1</code> is exact 404; npm <code>@mblua/agentscommander@0.30.1</code> is absent.</p>
+        </article>
+      </div>
+
+      <div class="grid-2" style="margin-top:22px">
+        <article class="card tone-red">
+          <h3>Why rerun is prohibited</h3>
+          <p>A rerun retains the tag commit, frozen workflow bytes, <code>GITHUB_SHA</code>, <code>GITHUB_REF</code>, and the same unauthorized credential class. It is neither corrective nor useful.</p>
+        </article>
+        <article class="card tone-green">
+          <h3>Why a main-only recovery works</h3>
+          <p><code>workflow_dispatch</code> runs from a workflow present on the default branch. The new file can bind the historical tag and commit while using a narrowly scoped Administration-read PAT only for immutable-setting GETs.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="impact">
+      <div class="section-kicker">03 | Evidence-backed file impact</div>
+      <h2>One modified path, twelve related-only paths</h2>
+      <p class="section-intro">The green node is the entire implementation surface. Every lower node constrains its bytes or behavior and must remain byte-identical. If implementation changes a related-only path, adds another path, or edits an existing path, planning stops.</p>
+
+      <div class="impact-root">
+        <div class="tag mono">ADD | SOLE IMPLEMENTATION CHANGE</div>
+        <h3><code>.github/workflows/recover-immutable-v0.30.1.yml</code></h3>
+        <p>Main-branch, no-input, version-specific recovery for the existing tag and missing Release.</p>
+      </div>
+      <div class="connector" aria-hidden="true"></div>
+      <div class="impact-map">
+        <article class="impact-group" data-link="copy and constrain">
+          <h3>Release state machine</h3>
+          <div class="path-row"><code>.github/workflows/release.yml</code><p>Copy four jobs, action pins, permissions pattern, matrix, transport, classifier, mutation boundaries, attestation checks, and evidence retention. Blob <span class="mono">a5e437996ea3a91e0688842f80e6c466f35cff19</span>.</p></div>
+          <div class="path-row"><code>CHANGELOG.md</code><p>Sole Release body source. Blob <span class="mono">b0095eac4158e3fa575de36b1f4be9ada94b542e</span>. No body hash is frozen.</p></div>
+          <p class="no-touch">RELATED ONLY | DO NOT EDIT</p>
+        </article>
+
+        <article class="impact-group" data-link="version and install contract">
+          <h3>Consumer-facing identity</h3>
+          <div class="path-row"><code>scripts/check-version-sync.mjs</code><p>Existing <span class="mono">npm run version:check</span> oracle. Blob <span class="mono">0ef5d4507f43873d3bd1062fcb78bd2d6a59d83f</span>.</p></div>
+          <div class="path-row"><code>package.json</code><p>Root version and build commands. Blob <span class="mono">9c821a40c7e74c8c7e1e8dacb0694f18ac5b717b</span>.</p></div>
+          <div class="path-row"><code>npm/package.json</code><p>Wrapper version anchor. Blob <span class="mono">40c9d0c706a609254eff0c053ea3edddfdf1393d</span>.</p></div>
+          <div class="path-row"><code>npm/install.js</code><p>Asset selection, SHASUMS download, and checksum enforcement. Blob <span class="mono">b99725505ffc6937b9a85bee796e0668d6dd20a6</span>.</p></div>
+          <p class="no-touch">RELATED ONLY | DO NOT EDIT OR PUBLISH</p>
+        </article>
+
+        <article class="impact-group" data-link="frozen build inputs">
+          <h3>Locked source and bundle contract</h3>
+          <div class="path-row"><code>package-lock.json</code><p>Exact Node dependency graph. Blob <span class="mono">5212baf5c045b665990a3734e1a0628fa82f1960</span>.</p></div>
+          <div class="path-row"><code>Cargo.lock</code><p>Exact Rust dependency graph. Blob <span class="mono">f3fe3d2c9acc2c5acf531ffa9208768500223b7e</span>.</p></div>
+          <div class="path-row"><code>src-tauri/Cargo.toml</code><p>Rust package version. Blob <span class="mono">4c254ebb849346ee678824562a2d4d2b642636cd</span>.</p></div>
+          <div class="path-row"><code>src-tauri/tauri.conf.json</code><p>Tauri app version. Blob <span class="mono">36a0915839395ea228705ffd6e788ddbc1472a44</span>.</p></div>
+          <div class="path-row"><code>src-tauri/tauri.prod.conf.json</code><p>Production bundle configuration. Blob <span class="mono">794c9f54191b8e73aa113d0e707e58201e16f0ba</span>.</p></div>
+          <div class="path-row"><code>scripts/copy-testable-binary.mjs</code><p>Windows testable/raw staging contract. Blob <span class="mono">6a58510b4b351846bdd33af494494b867cdf6983</span>.</p></div>
+          <p class="no-touch">RELATED ONLY | DO NOT EDIT</p>
+        </article>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px">
+        <article class="card tone-green">
+          <h3>In scope</h3>
+          <ul>
+            <li>Add the temporary recovery workflow and reuse the frozen state machine.</li>
+            <li>Bind the existing tag, tag object, commit, failed run, body source, action pins, toolchains, matrix, assets, and checksums.</li>
+            <li>Use the PAT for exactly five immutable-setting GET steps and the normal token for Release operations.</li>
+            <li>Preserve v0.30.0 and every pre-existing Release; retain run/attempt-qualified evidence.</li>
+            <li>Plan later deletion as a separate reviewed one-file cleanup.</li>
+          </ul>
+        </article>
+        <article class="card tone-red">
+          <h3>Out of scope</h3>
+          <ul class="ban-list">
+            <li>No tag move, delete, recreate, force update, or synthetic fallback.</li>
+            <li>No rerun of historical run <code>32791566112</code>.</li>
+            <li>No edit to the production workflow, app, package, changelog, lock, config, documentation, or test files.</li>
+            <li>No npm publish, OIDC, registry credential, dist-tag, or Phase B work.</li>
+            <li>No Release/asset repair, clobber, delete, recreate, retag, or generic recovery abstraction.</li>
+            <li>No PAT/secret rotation, revocation, rename, copy, disclosure, or settings mutation.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="flow">
+      <div class="section-kicker">04 | Recovery state machine</div>
+      <h2>Query first; mutate only from exact absence</h2>
+      <p class="section-intro">Use the copied four-job graph. Fresh mode builds and assembles; exact immutable resume skips every Release mutation and reconstructs evidence by numeric asset ID. Every other state blocks.</p>
+
+      <div class="flow" aria-label="Workflow job graph">
+        <article class="lane tone-blue"><div class="step">JOB 01 | 15 MIN</div><div class="job">prepare-recovery</div><div class="condition">always starts</div><p class="fine">Validate dispatch, main, blobs, failed run, tag, body, immutable setting, historical snapshot, and Release classifier.</p></article>
+        <div class="arrow" aria-hidden="true">→</div>
+        <article class="lane tone-green"><div class="step">JOB 02 | 90 MIN</div><div class="job">build-release[4]</div><div class="condition">fresh only</div><p class="fine">Four fixed builders at the peeled commit; no Release credential; 4/3/4/4 staged payloads.</p></article>
+        <div class="arrow" aria-hidden="true">→</div>
+        <article class="lane tone-green"><div class="step">JOB 03 | 45 MIN</div><div class="job">assemble-release</div><div class="condition">fresh only</div><p class="fine">ID-bound transport, exact SHASUMS, one serial non-clobber upload loop, verified draft evidence.</p></article>
+        <div class="arrow" aria-hidden="true">→</div>
+        <article class="lane tone-violet"><div class="step">JOB 04 | 30 MIN</div><div class="job">publish-and-verify-release</div><div class="condition">fresh or resume</div><p class="fine">One publication PATCH in fresh mode, then common immutable verification and final evidence. <code>always()</code> admits intentional resume skips only.</p></article>
+      </div>
+
+      <div class="branch-grid">
+        <article class="branch fresh">
+          <div class="mode">fresh</div>
+          <h3>Exact HTTP 404</h3>
+          <p>Expected nonzero client status, no parseable Release object, and every preceding gate passes. Recheck the race boundary, then allow the sole draft POST, build, upload loop, and publication PATCH.</p>
+        </article>
+        <article class="branch resume">
+          <div class="mode">resume</div>
+          <h3>Exact immutable success</h3>
+          <p>Stable ID; exact tag, target, title, body, flags, and all 16 unique uploaded positive-size <code>sha256:</code> assets. Skip POST, builds, uploads, and PATCH; download by asset ID and verify read-only.</p>
+        </article>
+        <article class="branch conflict">
+          <div class="mode">conflict</div>
+          <h3>Everything else</h3>
+          <p>Any draft, mutable publication, wrong identity, partial/extra/duplicate asset, auth/rate-limit/5xx, timeout, malformed JSON, multiple candidate, or ambiguity stops with zero further mutation.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="authority">
+      <div class="section-kicker">05 | Authority separation</div>
+      <h2>Two credentials never share a mutation boundary</h2>
+      <div class="token-map">
+        <article class="token admin">
+          <h3><span class="dot"></span>Administration-read PAT</h3>
+          <p><code>secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN</code> exists only as step-scoped <code>GH_TOKEN</code> on five isolated reads of <code>/repos/mblua/AgentsCommander/immutable-releases</code> using API version <code>2026-03-10</code>.</p>
+          <div class="get-strip" aria-label="Five immutable settings checks">
+            <div>initial authority</div><div>pre-POST</div><div>pre-upload</div><div>pre-PATCH</div><div>final verify</div>
+          </div>
+          <ul>
+            <li>Reject empty secret without printing value or length.</li>
+            <li>Require exact HTTP 200 and parsed <code>enabled:true</code>, <code>enforced_by_owner:false</code>.</li>
+            <li>No other API, git, action, or tool call while the PAT is in scope.</li>
+            <li>No secret-derived output, artifact, persisted credential, or mutation method.</li>
+          </ul>
+        </article>
+        <article class="token normal">
+          <h3><span class="dot"></span>Normal GITHUB_TOKEN</h3>
+          <p><code>${{ github.token }}</code> is step-scoped for Actions, Git database, Release, asset, and attestation operations. It alone performs the three permitted Release mutation sources.</p>
+          <ul>
+            <li><strong>prepare-recovery:</strong> <code>actions:read</code>, <code>contents:write</code>.</li>
+            <li><strong>build-release:</strong> <code>contents:read</code> only; checkout does not persist credentials.</li>
+            <li><strong>assemble-release:</strong> <code>actions:read</code>, <code>contents:write</code>.</li>
+            <li><strong>publish-and-verify-release:</strong> <code>actions:read</code>, <code>contents:write</code>, <code>attestations:read</code>.</li>
+            <li>Never pass either credential to a third-party action, build, process argument, output, Release asset, artifact, or log.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="gates">
+      <div class="section-kicker">06 | Fail-closed gates</div>
+      <h2>Every mutable edge is preceded by live revalidation</h2>
+      <div class="gate-list">
+        <article class="gate"><h3>Dispatch and repository</h3><p>Require <code>workflow_dispatch</code>, repository <code>mblua/AgentsCommander</code>, <code>refs/heads/main</code>, ref name <code>main</code>, exact workflow path, default branch <code>main</code>, and dispatch SHA equal current remote main.</p></article>
+        <article class="gate"><h3>Current-main ancestry and blobs</h3><p>Release commit <code>da116e0...</code> must be an ancestor. Release workflow blob <code>a5e43799...</code> and changelog blob <code>b0095eac...</code> must match at both release commit and dispatch SHA.</p></article>
+        <article class="gate"><h3>Frozen failed-run context</h3><p>Require run <code>32791566112</code>, workflow <code>249288854</code>, attempt 1, event <code>push</code>, ref <code>refs/tags/v0.30.1</code>, head SHA <code>da116e0...</code>, path <code>.github/workflows/release.yml</code>, created <code>2026-08-24T23:56:42Z</code>, completed <code>2026-08-24T23:56:57Z</code>, failed job <code>97633984311</code>, exact failed step 4, skipped downstream work, and zero artifacts. A surprise rerun blocks.</p></article>
+        <article class="gate"><h3>Tag object and peel</h3><p>Remote and local Git object checks must agree that <code>refs/tags/v0.30.1</code> points to annotated tag object <code>5e4da64...</code> and recursively peels only to <code>da116e0...</code>.</p></article>
+        <article class="gate"><h3>Version and Release body</h3><p>Checkout only the peeled commit with full history and no persisted credential. Run existing version synchronization. Read the checked-out <code>CHANGELOG.md</code> as UTF-8 and derive the exact body contract below.</p></article>
+        <article class="gate"><h3>Historical preservation</h3><p>Snapshot all existing Releases and assets through complete 100-record pagination. Require explicit v0.30.0 ID <code>374749117</code>, peeled commit <code>45530b46b0a3d4bfe8715ac8b19916df98b6f8cd</code>, public non-prerelease state, and 16 assets. Sort Releases and assets by numeric ID/name; record identity, body hash, flags, timestamps, and every asset ID/name/size/state/digest/API/browser URL. Duplicate, malformed, or incomplete data blocks. Compare canonical pre/post snapshots excluding only new v0.30.1.</p></article>
+        <article class="gate"><h3>Concurrency and prior attempts</h3><p>Literal group <code>release-v0.30.1</code>, cancellation disabled, and only the current recovery run in progress. A later attempt may mutate only from exact 404 when no prior recovery crossed POST; exact immutable state permits read-only resume.</p></article>
+        <article class="gate"><h3>Mutation-adjacent race checks</h3><p>Requery main, tag, failed-run proof, immutable setting, Release ID/state/inventory, and preservation snapshot immediately before POST, first upload, and PATCH. Never adapt constants inside a run.</p></article>
+      </div>
+
+      <div class="card tone-blue" style="margin-top:18px">
+        <h3>Exact title and body algorithm</h3>
+        <ol>
+          <li>Release name is the literal <code>Agents Commander v0.30.1</code>; the annotated-tag message is not the Release name.</li>
+          <li>Require exactly one line matching <code>/^## 0\.30\.1[ \t]*$/gm</code>.</li>
+          <li>Slice immediately after that heading through immediately before the next <code>/^## [^\r\n]+$/m</code> heading, or EOF.</li>
+          <li>Apply one ECMAScript <code>.trim()</code> to the slice and reject an empty result.</li>
+          <li>Exclusive-create the notes file with <code>wx</code> and write exactly the trimmed body plus one LF. Never append, overwrite, reuse, normalize again, or include the heading.</li>
+          <li>Do not separately normalize CRLF to LF or validate, strip, or reject a BOM. UTF-8 decode, the exact regexes, slice, one <code>.trim()</code>, and one appended LF are the complete transformation.</li>
+          <li>Construct Release JSON with jq <code>--rawfile body</code> pointed at that same exclusive-created notes file. Materialize every parsed API <code>release.body</code> as UTF-8 without transformation and compare it byte-for-byte to the same file; compare <code>release.name</code> separately to the fixed literal.</li>
+        </ol>
+        <p class="fine">No Release-body hash is frozen. Do not use <code>4c04c234e2286479c78f701ae7029d998351047da394481a7a597039f40ce7dd</code>; it includes the heading. Changelog ordering was corrected before the tagged merge.</p>
+      </div>
+    </section>
+
+    <section id="build">
+      <div class="section-kicker">07 | Frozen build and transport contract</div>
+      <h2>Build exact historical bytes with reviewed pins</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Matrix key</th><th>Runner</th><th>Build argument</th><th>Payloads</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">linux-x86_64</td><td>ubuntu-22.04</td><td class="mono">--config src-tauri/tauri.prod.conf.json</td><td>4</td></tr>
+            <tr><td class="mono">windows-x86_64</td><td>windows-latest</td><td class="mono">--config src-tauri/tauri.prod.conf.json --bundles nsis</td><td>3</td></tr>
+            <tr><td class="mono">mac-aarch64</td><td>macos-latest</td><td class="mono">--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin</td><td>4</td></tr>
+            <tr><td class="mono">mac-x86_64</td><td>macos-latest</td><td class="mono">--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin</td><td>4</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card"><h3>Toolchains</h3><ul><li>Node <code>22.23.2</code></li><li>npm <code>10.9.8</code></li><li>Rust <code>1.98.0</code></li><li>GitHub CLI <code>2.86.0</code></li></ul></article>
+        <article class="card"><h3>Builder boundary</h3><ul><li>Checkout exact <code>da116e0...</code>.</li><li>No Release ID or Release/admin credential.</li><li><code>npm ci</code> plus existing version check.</li><li>Preserve Windows SignPath placeholder.</li><li>Reject traversal, reparse, symlink, mode, and basename surprises.</li></ul></article>
+        <article class="card"><h3>Transport boundary</h3><ul><li>One mode-preserving outer tar per matrix.</li><li>Artifact name includes run ID, attempt, matrix key.</li><li>Overwrite false; hidden excluded; missing fatal.</li><li>Resolve and download by exact Actions artifact ID and service digest.</li><li>Assembler has no checkout.</li></ul></article>
+      </div>
+
+      <h3 style="margin-top:24px">Seven permitted action pins</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Action</th><th>Full commit pin</th></tr></thead>
+          <tbody>
+            <tr><td>actions/checkout v5.1.0</td><td class="mono">fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09</td></tr>
+            <tr><td>actions/setup-node v5.0.0</td><td class="mono">a0853c24544627f65ddf259abe73b1d18a591444</td></tr>
+            <tr><td>dtolnay/rust-toolchain snapshot</td><td class="mono">4360b52568e2003a75bf9bc1d59f33a8e3fc893c</td></tr>
+            <tr><td>Swatinem/rust-cache v2.9.2</td><td class="mono">6323deb102c322ba6fcbdcafc7e3dddab59af2b6</td></tr>
+            <tr><td>tauri-apps/tauri-action v0.6.2</td><td class="mono">84b9d35b5fc46c1e45415bdb6144030364f7ebc5</td></tr>
+            <tr><td>actions/upload-artifact v7.0.1</td><td class="mono">043fb46d1a93c77aae656e7c1c64a875d1fc6a0a</td></tr>
+            <tr><td>actions/download-artifact v8.0.1</td><td class="mono">3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="assets">
+      <div class="section-kicker">08 | Closed Release payload</div>
+      <h2>Fifteen build payloads plus one checksum file</h2>
+      <p class="section-intro"><code>SHASUMS256.txt</code> is exactly 15 bytewise-sorted LF-terminated rows. Each row is lowercase 64-hex SHA-256, two ASCII spaces, and the exact basename. It has no self-entry, prefix, blank row, duplicate, extra, or missing record.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Exact asset name</th><th>Source or invariant</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td class="mono">Agents.Commander-0.30.1-1.x86_64.rpm</td><td>Linux RPM renamed from the exact <span class="mono">Agents Commander</span> basename.</td></tr>
+            <tr><td>2</td><td class="mono">Agents.Commander_0.30.1_aarch64.dmg</td><td>macOS ARM64 Tauri DMG.</td></tr>
+            <tr><td>3</td><td class="mono">Agents.Commander_0.30.1_amd64.AppImage</td><td>Linux Tauri AppImage.</td></tr>
+            <tr><td>4</td><td class="mono">Agents.Commander_0.30.1_amd64.deb</td><td>Linux Tauri DEB.</td></tr>
+            <tr><td>5</td><td class="mono">Agents.Commander_0.30.1_x64-setup.exe</td><td>Windows Tauri NSIS installer.</td></tr>
+            <tr><td>6</td><td class="mono">Agents.Commander_0.30.1_x64.dmg</td><td>macOS Intel Tauri DMG.</td></tr>
+            <tr><td>7</td><td class="mono">Agents.Commander_aarch64.app.tar.gz</td><td>macOS ARM64 Tauri app archive.</td></tr>
+            <tr><td>8</td><td class="mono">Agents.Commander_x64.app.tar.gz</td><td>macOS Intel Tauri app archive.</td></tr>
+            <tr><td>9</td><td class="mono">agentscommander-linux-x86_64</td><td>Raw Linux release binary.</td></tr>
+            <tr><td>10</td><td class="mono">agentscommander-mac-aarch64</td><td>Raw macOS ARM64 release binary.</td></tr>
+            <tr><td>11</td><td class="mono">agentscommander-mac-aarch64.app.tar.gz</td><td>Byte-identical to item 7.</td></tr>
+            <tr><td>12</td><td class="mono">agentscommander-mac-x86_64</td><td>Raw macOS Intel release binary.</td></tr>
+            <tr><td>13</td><td class="mono">agentscommander-mac-x86_64.app.tar.gz</td><td>Byte-identical to item 8.</td></tr>
+            <tr><td>14</td><td class="mono">agentscommander-testeable-windows-x86_64.exe</td><td>Preserve repository spelling and testable/raw copy contract.</td></tr>
+            <tr><td>15</td><td class="mono">agentscommander-windows-x86_64.exe</td><td>Byte-identical to item 14.</td></tr>
+            <tr><td>16</td><td class="mono">SHASUMS256.txt</td><td>Generated by Ubuntu assembler from items 1 through 15.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mutation-ledger" style="margin-top:22px">
+        <article class="mutation"><div class="count">01</div><h3>Draft POST</h3><p>Fresh mode only, after exact 404 race check. Fixed tag, target, title, body, <code>draft:true</code>, <code>prerelease:false</code>. Exact 201 required. Never POST twice.</p></article>
+        <article class="mutation"><div class="count">01</div><h3>Serial upload loop</h3><p>Fresh mode only. Upload the 16 files in table order with explicit repository and no <code>--clobber</code>. Require exact prefix inventory after each file.</p></article>
+        <article class="mutation"><div class="count">01</div><h3>Publication PATCH</h3><p>Fresh mode only. One request by captured numeric Release ID; body contains only <code>{"draft":false}</code>. No retry loop and no other field.</p></article>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px">
+        <article class="card tone-blue"><h3>Before publication</h3><ul><li>Exact mutable draft, identity, zero-to-prefix-to-full inventory, positive sizes, uploaded states, and API digests.</li><li>Download all 16 by captured REST asset ID into an empty directory.</li><li>Accept direct 200 or one absolute credential-free HTTPS 302 only; never forward Authorization to redirect.</li><li>Reverify name, size, digest, SHASUMS, three alias equalities, and installer selections.</li><li>Retain a verified-draft Actions artifact with 16 files plus canonical identity and manifest records.</li></ul></article>
+        <article class="card tone-violet"><h3>After publication or in resume</h3><ul><li>Require exact published immutable identity and all 16 assets.</li><li>Assert GitHub CLI <code>2.86.0</code>, then run <code>gh release verify v0.30.1 --repo mblua/AgentsCommander --format json</code> and parse signed tag, commit, and asset subjects.</li><li>Run <code>gh release verify-asset v0.30.1 &lt;exact-local-path&gt; --repo mblua/AgentsCommander --format json</code> once for each of the 16 local files.</li><li>Compare all historical Release/asset snapshots byte-state-equivalently.</li><li>Emit a canonical record with mode, run/attempt/path/head, failed-run proof, tag/peel, Release identity/body hash, all asset records, checksum hash, attestations, history hash, and mutation invocation/outcome flags.</li><li>Upload <code>recover-v0.30.1-&lt;run_id&gt;-&lt;run_attempt&gt;-final-evidence</code> with overwrite false and report its artifact ID/service digest.</li><li>Read-only polling is bounded to 30 attempts at ten seconds; it never repeats a mutation.</li></ul></article>
+      </div>
+    </section>
+
+    <section id="failures">
+      <div class="section-kicker">09 | Failure and retry rules</div>
+      <h2>Uncertainty is state to inspect, never permission to retry</h2>
+      <div class="failure-grid">
+        <article class="failure-card"><h3>Before POST, still exact 404</h3><p>No Release mutation exists. Review the cause and confirm no prior recovery crossed POST. A new main dispatch or later attempt may re-enter <code>fresh</code> only through the full classifier.</p></article>
+        <article class="failure-card"><h3>Admin read or evidence differs</h3><p>Stop before the next mutation. Never fall back to the normal token, another credential, cached data, or an assumption.</p></article>
+        <article class="failure-card"><h3>POST invoked, response uncertain</h3><p>Query once. Exact immutable success may enter read-only resume; every draft, partial, or ambiguous state blocks. Never issue a second POST.</p></article>
+        <article class="failure-card"><h3>Build or assembly fails after POST</h3><p>Leave the confirmed mutable draft untouched. No delete, clobber, partial upload, repair, or blind rerun. Require a separate owner-reviewed decision.</p></article>
+        <article class="failure-card"><h3>Draft asset mismatch</h3><p>Duplicate, partial, extra, zero-byte, pending, unexpected, or wrong-digest asset stops before publication. Never repair one asset in place.</p></article>
+        <article class="failure-card"><h3>PATCH invoked or uncertain</h3><p>Query exact state first. Exact immutable success continues read-only; an exact draft or any mismatch blocks. Never blindly repeat PATCH.</p></article>
+        <article class="failure-card"><h3>Immutable success, evidence fails</h3><p>A later run can enter only exact read-only <code>resume</code>, reconstruct by numeric asset ID, and retry verification/evidence retention.</p></article>
+        <article class="failure-card"><h3>Immutable identity differs</h3><p>The version cannot be repaired in place. Stop and plan a new version. Never delete, recreate, reupload, or retag.</p></article>
+      </div>
+      <p class="draft-stop"><strong>Universal post-mutation rule:</strong> query exact external state first. Do not rerun, rebuild, reupload, retag, delete, recreate, republish, or roll back from an uncertain result.</p>
+    </section>
+
+    <section id="delivery">
+      <div class="section-kicker">10 | Implementation order</div>
+      <h2>Recovery and cleanup remain separate changes</h2>
+      <div class="phase-grid">
+        <article class="phase">
+          <span class="number">1</span>
+          <h3>One-file implementation</h3>
+          <ol>
+            <li>Reconfirm base and fixed Git identities read-only.</li>
+            <li>Copy the frozen production workflow blob.</li>
+            <li>Apply only recovery substitutions from the Markdown.</li>
+            <li>Run static and temporary executable fixtures.</li>
+            <li>Commit exactly the new workflow and review the one-file diff.</li>
+            <li>Merge normally to main; record merge SHA and workflow SHA-256 externally.</li>
+          </ol>
+        </article>
+        <article class="phase">
+          <span class="number">2</span>
+          <h3>Owner-controlled dispatch</h3>
+          <ol>
+            <li>Reconfirm secret validity without reading its value.</li>
+            <li>Reconfirm tag, Release 404, failed run, settings, blobs, history, npm absence.</li>
+            <li>Dispatch once from main with no inputs.</li>
+            <li>Monitor to terminal state and query before any follow-up.</li>
+            <li>Record actual mutating run/attempt and verifier run/attempt, Release and asset IDs, checksums, attestations, evidence artifact, and unchanged history.</li>
+          </ol>
+        </article>
+        <article class="phase">
+          <span class="number">3</span>
+          <h3>Separate cleanup PR</h3>
+          <ol>
+            <li>Proceed only after exact immutable success and retained evidence.</li>
+            <li>Require no queued/running recovery run.</li>
+            <li>Delete only <code>.github/workflows/recover-immutable-v0.30.1.yml</code>.</li>
+            <li>Verify it is no longer dispatchable from main.</li>
+            <li>Do not alter the PAT or secret during cleanup.</li>
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section id="acceptance">
+      <div class="section-kicker">11 | Objective acceptance</div>
+      <h2>Static proof, executable fixtures, live postconditions</h2>
+      <div class="accept-grid">
+        <article class="accept"><h3>Static workflow proof</h3><ul class="checklist"><li>YAML parses; exactly four jobs and four matrix entries.</li><li>Only empty <code>workflow_dispatch</code>; top-level permissions empty; literal concurrency and no cancellation.</li><li>Only the seven full action pins; no tag/branch action reference.</li><li>Exactly five references to the named admin secret, each on one isolated settings GET.</li><li>Exactly one draft POST source, one serial upload source, and one <code>draft:false</code> PATCH source.</li><li>No clobber, Release/tag/settings delete or repair, tag mutation, npm publish, mutation retry wrapper, or user-controlled identity.</li><li>Exact release-commit checkouts, no persisted credentials, no assembler checkout, no builder Release credentials.</li><li>Static inspection proves one UTF-8 changelog read, the exact two heading regexes, one ECMAScript <code>.trim()</code>, one exclusive <code>wx</code> notes-file creation with exactly one appended LF, no separate CRLF/BOM handling, jq <code>--rawfile</code> from that notes file, and byte-for-byte comparison of every parsed Release body to the same file.</li><li>Run/attempt-qualified artifact names, overwrite false, downloads by ID.</li><li>Every shell/inline program passes syntax checks; fixed-tree version and Node checks pass.</li><li><code>git diff --check</code> passes and implementation diff is exactly one workflow path.</li></ul></article>
+        <article class="accept"><h3>Executable state fixtures</h3><ul class="checklist"><li>Exact absence selects <code>fresh</code>; exact immutable 16-asset state selects zero-mutation <code>resume</code>.</li><li>Every draft, partial, mutable, wrong, malformed, unauthorized, timeout, 5xx, or ambiguous state selects <code>conflict</code>.</li><li>Fresh mock observes one POST, 16 uploads, and one PATCH only.</li><li>Wrong tag/run/blob/ref/token/history fails before the next mutation.</li><li>Release-metadata fixtures cover the next-level-two-heading and EOF boundaries; reject missing or duplicate <code>0.30.1</code> headings and an empty trimmed body; prove heading exclusion, one ECMAScript <code>.trim()</code>, exactly one appended LF, and no separate CRLF or BOM normalization path.</li><li>Four transport archives reconstruct 15 safe payloads and reject traversal, links, devices, duplicates, modes, stale attempts, or wrong service digest.</li><li>SHASUMS is byte-deterministic and exact.</li><li>Bounded 200/302 download behavior is enforced.</li><li>Lost PATCH plus exact immutable readback never causes a second PATCH.</li><li>Fresh and resume produce byte-identical canonical manifests; resume can mutate only final Actions evidence.</li></ul></article>
+        <article class="accept"><h3>Live immutable result</h3><ul class="checklist"><li>Record every recovery run ID/attempt and distinguish the mutating run from the terminal verifier when different.</li><li>Tag object and peeled commit remain exact; no tag mutation command ran.</li><li>One exact Release has correct target, title/body bytes, public non-prerelease immutable state.</li><li>All 16 named assets are unique, uploaded, positive, and match local/API SHA-256.</li><li>SHASUMS covers exactly the other 15 assets; all three alias pairs are byte-identical.</li><li>Release attestation and all 16 asset attestations verify.</li><li>Final canonical manifest and Actions evidence ID/digest are retained.</li><li>v0.30.0 and all historical Release/asset records are unchanged.</li><li>npm 0.30.1 remains absent; no npm mutation occurred.</li><li>PAT and secret remain undisclosed and unchanged; implementation worktree is clean.</li></ul></article>
+        <article class="accept"><h3>Compatibility and structural gate</h3><ul class="checklist"><li>No application runtime, UI, CLI, PTY/ConPTY, IPC, config, persistence, Rust API, TypeScript type, package dependency, or consumer asset-name behavior changes.</li><li>Windows path guards normalize drive/case, stay within workspace, reject reparse/traversal, and do not introduce <code>cmd.exe /C</code> wrapping.</li><li>Final module arc enumeration is <code>0 added / 0 removed</code>; the one workflow YAML path is outside every application module root, no SCC can be created or grown, and no lower layer gains <code>AppHandle</code>, <code>tauri</code>, or UI transport.</li><li>The workgroup <code>rust-levelization-run</code> detector is unavailable, so certification uses the explicit per-arc manual fallback and does not claim remeasurement of pre-existing SCCs. Require the exact one-workflow diff and byte-identical arc record; if scope expands, stop and require unchanged <code>cyclicSccs</code>, identical SCC member sets, zero cross-boundary arcs, byte-identical arc record, and green layering guards.</li><li>Cleanup passes only when its diff deletes the one temporary workflow, no run is active, exact immutable evidence still verifies, history is unchanged, and the workflow is no longer dispatchable.</li></ul></article>
+      </div>
+
+      <div class="card tone-amber" style="margin-top:18px">
+        <h3>Explicit residual risks</h3>
+        <ul>
+          <li>GitHub-hosted runners, GitHub REST, immutable enforcement, Release attestations, and the pinned action repositories remain external dependencies.</li>
+          <li>A failure after draft creation can leave a mutable draft that requires separate owner reconciliation; the workflow will not repair it.</li>
+          <li>A failure after PATCH invocation can leave committed immutable state before final evidence is stored. Exact read-only resume recovers evidence, not rollback.</li>
+          <li>The existing Windows SignPath placeholder remains accepted release policy and is neither fixed nor worsened here.</li>
+          <li>Main can advance between review and dispatch. Runtime binds the executing file to the dispatched default-branch SHA and the frozen release/changelog blobs; PR review and human dispatch ownership remain controls.</li>
+        </ul>
+      </div>
+
+      <div class="draft-stop">
+        <strong>READY_FOR_IMPLEMENTATION.</strong> Step 5 developer enrichment is complete and its Release-body byte contract is synchronized here. The user-authorized independent shipper issued <code>FORMAL_STEP_6_PASS</code> at head <code>fbb3e4103eb08502b25f8469b9968c98a6587f36</code>, with no blocking release-risk defect and no required plan addition. Final architect consensus revalidated the frozen one-workflow surface, Markdown/HTML parity, and the dependency/layering gate: module arcs are 0 added / 0 removed, no SCC or cross-boundary-arc exposure exists, and no lower layer gains UI transport. No open decision, unresolved placeholder, competing alternative, or implementer choice remains. Step 7.5 must still freeze and verify the exact artifact bytes, obtain explicit human approval, and purge raw planning context. Until then, no implementation, merge, dispatch, publication, cleanup, or external mutation is authorized by this artifact.
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell">
+    Standalone impact report for issue #1481. All styles and visual elements are inline. The Markdown plan is the sole implementation specification.
+  </footer>
+</body>
+</html>

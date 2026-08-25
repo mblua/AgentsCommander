@@ -42,6 +42,17 @@ pub struct UiQueryArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct UiTerminalArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+    pub operation: String,
+}
+
+#[derive(Debug, Args)]
 pub struct UiClickArgs {
     #[arg(long, default_value = "main")]
     pub window: String,
@@ -159,6 +170,7 @@ pub enum UiAutomationAction {
     SetValue,
     TypeText,
     Backend,
+    Terminal,
 }
 
 impl UiAutomationAction {
@@ -176,7 +188,8 @@ impl UiAutomationAction {
             Self::Hover => Self::SetValue,
             Self::SetValue => Self::TypeText,
             Self::TypeText => Self::Backend,
-            Self::Backend => return None,
+            Self::Backend => Self::Terminal,
+            Self::Terminal => return None,
         })
     }
 
@@ -814,6 +827,99 @@ pub fn execute_query(args: UiQueryArgs) -> i32 {
         value: None,
         timeout_ms: args.timeout_ms,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiTerminalOperation {
+    Query,
+    Top,
+    Bottom,
+    Line(i32),
+    Lines(i32),
+    Pages(i32),
+}
+
+fn parse_terminal_operation(value: &str) -> Option<UiTerminalOperation> {
+    match value {
+        "query" => return Some(UiTerminalOperation::Query),
+        "top" => return Some(UiTerminalOperation::Top),
+        "bottom" => return Some(UiTerminalOperation::Bottom),
+        _ => {}
+    }
+
+    let parse_unsigned = |operand: &str| {
+        let bytes = operand.as_bytes();
+        let canonical = bytes == b"0"
+            || (bytes
+                .first()
+                .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+                && bytes[1..].iter().all(u8::is_ascii_digit));
+        canonical.then(|| operand.parse::<i32>().ok()).flatten()
+    };
+    let parse_signed = |operand: &str| {
+        let bytes = operand.as_bytes();
+        let canonical_unsigned = bytes == b"0"
+            || (bytes
+                .first()
+                .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+                && bytes[1..].iter().all(u8::is_ascii_digit));
+        let canonical_negative = bytes.first() == Some(&b'-')
+            && bytes.get(1).is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+            && bytes[2..].iter().all(u8::is_ascii_digit);
+        (canonical_unsigned || canonical_negative)
+            .then(|| operand.parse::<i32>().ok())
+            .flatten()
+    };
+
+    if let Some(operand) = value.strip_prefix("line:") {
+        return parse_unsigned(operand).map(UiTerminalOperation::Line);
+    }
+    if let Some(operand) = value.strip_prefix("lines:") {
+        return parse_signed(operand).map(UiTerminalOperation::Lines);
+    }
+    if let Some(operand) = value.strip_prefix("pages:") {
+        return parse_signed(operand).map(UiTerminalOperation::Pages);
+    }
+    None
+}
+
+fn valid_terminal_session_id(session_id: &str) -> bool {
+    !session_id.is_empty() && session_id.len() <= 256 && !session_id.chars().any(char::is_control)
+}
+
+fn terminal_cli_request(args: UiTerminalArgs) -> Result<CliRequest, Value> {
+    if !valid_terminal_session_id(&args.session_id) {
+        return Err(preflight_error(
+            "invalid_terminal_session_id",
+            "Terminal session id must contain 1 to 256 UTF-8 bytes and no control characters.",
+            None,
+        ));
+    }
+    if parse_terminal_operation(&args.operation).is_none() {
+        return Err(preflight_error(
+            "invalid_terminal_operation",
+            "Terminal operation must be query, top, bottom, line:N, lines:N, or pages:N in the signed 32-bit range.",
+            None,
+        ));
+    }
+
+    Ok(CliRequest {
+        window: args.window,
+        selector: format!("terminal.session.{}", args.session_id),
+        action: UiAutomationAction::Terminal,
+        value: Some(args.operation),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_terminal(args: UiTerminalArgs) -> i32 {
+    match terminal_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
 }
 
 pub fn execute_click(args: UiClickArgs) -> i32 {
@@ -2190,6 +2296,7 @@ mod tests {
             UiAutomationAction::SetValue => "setValue",
             UiAutomationAction::TypeText => "typeText",
             UiAutomationAction::Backend => "backend",
+            UiAutomationAction::Terminal => "terminal",
         }
     }
 
@@ -2570,6 +2677,145 @@ mod tests {
                 format!("\"{}\"", action_wire_name(action))
             );
         }
+    }
+
+    #[test]
+    fn terminal_operation_parser_accepts_exact_i32_boundaries() {
+        assert_eq!(
+            parse_terminal_operation("query"),
+            Some(UiTerminalOperation::Query)
+        );
+        assert_eq!(
+            parse_terminal_operation("top"),
+            Some(UiTerminalOperation::Top)
+        );
+        assert_eq!(
+            parse_terminal_operation("bottom"),
+            Some(UiTerminalOperation::Bottom)
+        );
+        assert_eq!(
+            parse_terminal_operation("line:0"),
+            Some(UiTerminalOperation::Line(0))
+        );
+        assert_eq!(
+            parse_terminal_operation("line:2147483647"),
+            Some(UiTerminalOperation::Line(i32::MAX))
+        );
+        for (prefix, constructor) in [
+            (
+                "lines:",
+                UiTerminalOperation::Lines as fn(i32) -> UiTerminalOperation,
+            ),
+            (
+                "pages:",
+                UiTerminalOperation::Pages as fn(i32) -> UiTerminalOperation,
+            ),
+        ] {
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}-2147483648")),
+                Some(constructor(i32::MIN))
+            );
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}0")),
+                Some(constructor(0))
+            );
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}2147483647")),
+                Some(constructor(i32::MAX))
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_operation_parser_rejects_every_noncanonical_grammar_class() {
+        for value in [
+            "",
+            "QUERY",
+            " query",
+            "query ",
+            "line:",
+            "line:+1",
+            "line:-1",
+            "line:00",
+            "line:01",
+            "line:-0",
+            "line:1.0",
+            "line:1e2",
+            "line:1:2",
+            "line:2147483648",
+            "lines:",
+            "lines:+1",
+            "lines:01",
+            "lines:-0",
+            "lines:1.0",
+            "lines:1e2",
+            "lines:1:2",
+            "lines:2147483648",
+            "lines:-2147483649",
+            "pages:+1",
+            "pages:01",
+            "pages:-0",
+            "pages:2147483648",
+            "pages:-2147483649",
+            "unknown:1",
+        ] {
+            assert_eq!(
+                parse_terminal_operation(value),
+                None,
+                "unexpectedly accepted {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_session_id_validation_uses_exact_utf8_bytes_and_control_rule() {
+        assert!(!valid_terminal_session_id(""));
+        assert!(!valid_terminal_session_id("bad\nvalue"));
+        assert!(!valid_terminal_session_id("bad\u{7f}value"));
+        assert!(valid_terminal_session_id("a"));
+        assert!(valid_terminal_session_id(&"a".repeat(256)));
+        assert!(!valid_terminal_session_id(&"a".repeat(257)));
+        assert!(valid_terminal_session_id(&"é".repeat(128)));
+        assert!(!valid_terminal_session_id(&"é".repeat(129)));
+    }
+
+    #[test]
+    fn terminal_cli_request_preserves_session_and_derives_fixed_selector() {
+        let session_id = " exact-é session ".to_string();
+        let request = terminal_cli_request(UiTerminalArgs {
+            window: "terminal".to_string(),
+            session_id: session_id.clone(),
+            timeout_ms: 4321,
+            operation: "pages:-2".to_string(),
+        })
+        .expect("valid terminal request");
+
+        assert_eq!(request.window, "terminal");
+        assert_eq!(request.selector, format!("terminal.session.{session_id}"));
+        assert_eq!(request.action, UiAutomationAction::Terminal);
+        assert_eq!(request.value.as_deref(), Some("pages:-2"));
+        assert_eq!(request.timeout_ms, 4321);
+    }
+
+    #[test]
+    fn terminal_cli_request_rejects_before_request_construction() {
+        let invalid_session = terminal_cli_request(UiTerminalArgs {
+            window: "main".to_string(),
+            session_id: "bad\nvalue".to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: "query".to_string(),
+        })
+        .unwrap_err();
+        assert_eq!(invalid_session["error"], "invalid_terminal_session_id");
+
+        let invalid_operation = terminal_cli_request(UiTerminalArgs {
+            window: "main".to_string(),
+            session_id: "session-a".to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: "line:01".to_string(),
+        })
+        .unwrap_err();
+        assert_eq!(invalid_operation["error"], "invalid_terminal_operation");
     }
 
     /// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`

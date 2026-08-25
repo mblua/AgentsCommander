@@ -21,10 +21,13 @@ import { FakeTransport } from "./testing/fake-transport";
 import { session } from "./testing/ui-harness";
 import {
   BACKEND_SPAWN_FLOOR,
+  executeUiTerminalController,
   measurePtyViewport,
   registerPtyViewportProbe,
+  registerUiTerminalController,
   rememberSpawnViewport,
   resetPtyViewportForTests,
+  resetUiTerminalControllerForTests,
   takeSpawnViewport,
 } from "./terminal-viewport";
 
@@ -40,12 +43,14 @@ describe("pty spawn viewport (#973)", () => {
 
   beforeEach(() => {
     resetPtyViewportForTests();
+    resetUiTerminalControllerForTests();
   });
 
   afterEach(() => {
     restoreTransport?.();
     restoreTransport = null;
     resetPtyViewportForTests();
+    resetUiTerminalControllerForTests();
     vi.restoreAllMocks();
   });
 
@@ -203,6 +208,68 @@ describe("pty spawn viewport (#973)", () => {
       // Browser mode measured nothing, so the terminal must be free to fit and
       // resize this PTY normally.
       expect(takeSpawnViewport("created")).toBeNull();
+    });
+  });
+
+  describe("ui terminal controller", () => {
+    const input = () => ({
+      element: document.createElement("div"),
+      sessionId: "session-1",
+      operation: { kind: "query" } as const,
+    });
+    const success = (sessionId: string) => ({
+      ok: true as const,
+      target: {
+        sessionId,
+        baseY: 10,
+        viewportY: 10,
+        length: 34,
+        cols: 80,
+        rows: 24,
+        type: "normal" as const,
+        atBottom: true,
+      },
+    });
+
+    it("returns null without a live registration", () => {
+      expect(executeUiTerminalController(input())).toBeNull();
+    });
+
+    it("replaces controllers without allowing stale cleanup to clear the replacement", () => {
+      const controllerA = vi.fn(() => success("a"));
+      const controllerB = vi.fn(() => success("b"));
+      const cleanupA = registerUiTerminalController(controllerA);
+      expect(executeUiTerminalController(input())).toEqual(success("a"));
+
+      const cleanupB = registerUiTerminalController(controllerB);
+      cleanupA();
+      expect(executeUiTerminalController(input())).toEqual(success("b"));
+      expect(controllerA).toHaveBeenCalledTimes(1);
+      expect(controllerB).toHaveBeenCalledTimes(1);
+
+      cleanupB();
+      cleanupB();
+      expect(executeUiTerminalController(input())).toBeNull();
+    });
+
+    it("uses registration tokens even when the same function registers twice", () => {
+      const controller = vi.fn(() => success("same"));
+      const cleanupA = registerUiTerminalController(controller);
+      const cleanupB = registerUiTerminalController(controller);
+      cleanupA();
+      expect(executeUiTerminalController(input())).toEqual(success("same"));
+      cleanupB();
+      expect(executeUiTerminalController(input())).toBeNull();
+    });
+
+    it("reset clears the controller and execution does not swallow errors", () => {
+      registerUiTerminalController(() => {
+        throw new Error("controller failed");
+      });
+      expect(() => executeUiTerminalController(input())).toThrow("controller failed");
+
+      resetUiTerminalControllerForTests();
+      expect(executeUiTerminalController(input())).toBeNull();
     });
   });
 });
