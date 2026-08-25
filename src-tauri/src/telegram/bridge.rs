@@ -687,6 +687,9 @@ const STABILIZATION_MS: u64 = 800;
 const TICK_MS: u64 = 200;
 const FLUSH_DELAY_MS: u64 = 500;
 
+// The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
+// chain threads `agent_kind` as a loose parameter by design (no struct grouping).
+#[allow(clippy::too_many_arguments)]
 async fn output_task<R: tauri::Runtime>(
     mut rx: mpsc::Receiver<Vec<u8>>,
     network: OutboundNetwork,

@@ -88,6 +88,9 @@ impl TelegramBridgeManager {
         }
     }
 
+    // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
+    // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
+    #[allow(clippy::too_many_arguments)]
     pub fn attach<R: tauri::Runtime>(
         &mut self,
         session_id: Uuid,
