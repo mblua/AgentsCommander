@@ -249,12 +249,88 @@ jobs:
             > "$RUNNER_TEMP/tag-workflow-runs-pages.json"
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?status=in_progress&per_page=100" \
+            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?per_page=100" \
             > "$RUNNER_TEMP/recovery-runs-pages.json"
+          mkdir "$RUNNER_TEMP/recovery-attempt-jobs"
+          RECOVERY_RUNS="$RUNNER_TEMP/recovery-runs-pages.json" \
+          REQUESTS="$RUNNER_TEMP/recovery-attempt-requests.txt" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = JSON.parse(fs.readFileSync(process.env.RECOVERY_RUNS, 'utf8'));
+          if (
+            !Array.isArray(pages)
+            || pages.length === 0
+            || pages.some(
+              (page) => !page
+                || typeof page !== 'object'
+                || !Number.isInteger(page.total_count)
+                || !Array.isArray(page.workflow_runs),
+            )
+          ) {
+            throw new Error('recovery-run pagination is malformed');
+          }
+          const runs = pages.flatMap((page) => page.workflow_runs);
+          if (pages.some((page) => page.total_count !== runs.length)) {
+            throw new Error('recovery-run pagination is incomplete');
+          }
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const seenIds = new Set();
+          const requests = [];
+          for (const run of runs) {
+            const runId = Number(run.id);
+            const runAttempt = Number(run.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || seenIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || run.event !== 'workflow_dispatch'
+              || run.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(run.head_sha)
+              || run.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || run.status !== 'in_progress'
+                || run.conclusion !== null
+                || run.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                run.status !== 'completed'
+                || typeof run.conclusion !== 'string'
+                || run.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('recovery-run identity or terminal state is not exact');
+            }
+            seenIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              requests.push({ attempt, runId });
+            }
+          }
+          if (!seenIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing');
+          }
+          requests.sort((left, right) => left.runId - right.runId || left.attempt - right.attempt);
+          const text = requests.map(({ attempt, runId }) => `${runId} ${attempt}`).join('\n');
+          fs.writeFileSync(process.env.REQUESTS, text === '' ? '' : text + '\n', { flag: 'wx' });
+          NODE
+          while IFS=' ' read -r recovery_run_id recovery_attempt; do
+            [[ "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$recovery_attempt" =~ ^[1-9][0-9]*$ ]]
+            gh api --paginate --slurp \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/mblua/AgentsCommander/actions/runs/$recovery_run_id/attempts/$recovery_attempt/jobs?per_page=100" \
+              > "$RUNNER_TEMP/recovery-attempt-jobs/$recovery_run_id-$recovery_attempt.json"
+          done < "$RUNNER_TEMP/recovery-attempt-requests.txt"
 
           PROOF_PATH="$RUNNER_TEMP/failed-run-proof.json" node <<'NODE'
           const crypto = require('node:crypto');
           const fs = require('node:fs');
+          const path = require('node:path');
 
           function pages(path, key) {
             const value = JSON.parse(fs.readFileSync(path, 'utf8'));
@@ -325,6 +401,104 @@ jobs:
             process.env.RUNNER_TEMP + '/recovery-runs-pages.json',
             'workflow_runs',
           );
+          function recoveryAttemptProof(runs, directory) {
+            const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+            const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+            const seenIds = new Set();
+            const proof = [];
+            for (const recoveryRun of runs) {
+              const runId = Number(recoveryRun.id);
+              const runAttempt = Number(recoveryRun.run_attempt);
+              const current = runId === expectedRunId;
+              if (
+                !Number.isInteger(runId)
+                || runId <= 0
+                || seenIds.has(runId)
+                || !Number.isInteger(runAttempt)
+                || runAttempt <= 0
+                || recoveryRun.event !== 'workflow_dispatch'
+                || recoveryRun.head_branch !== 'main'
+                || !/^[0-9a-f]{40}$/.test(recoveryRun.head_sha)
+                || recoveryRun.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+                || (current && (
+                  runAttempt !== expectedAttempt
+                  || recoveryRun.status !== 'in_progress'
+                  || recoveryRun.conclusion !== null
+                  || recoveryRun.head_sha !== process.env.EXPECTED_SHA
+                ))
+                || (!current && (
+                  recoveryRun.status !== 'completed'
+                  || typeof recoveryRun.conclusion !== 'string'
+                  || recoveryRun.conclusion.length === 0
+                ))
+              ) {
+                throw new Error('recovery-run identity or terminal state is not exact');
+              }
+              seenIds.add(runId);
+              const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+              for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+                const attemptJobs = pages(
+                  path.join(directory, `${runId}-${attempt}.json`),
+                  'jobs',
+                );
+                const prepareJobs = attemptJobs.filter((job) => job.name === 'prepare-recovery');
+                const prepareJob = prepareJobs[0];
+                const createSteps = Array.isArray(prepareJob?.steps)
+                  ? prepareJob.steps.filter(
+                    (step) => step.name === 'Create the sole fresh draft and reconcile its result',
+                  )
+                  : [];
+                const createStep = createSteps[0];
+                const prepareJobValid = prepareJobs.length === 1
+                  && Number.isInteger(Number(prepareJob.id))
+                  && Number(prepareJob.id) > 0
+                  && prepareJob.status === 'completed'
+                  && typeof prepareJob.conclusion === 'string'
+                  && prepareJob.conclusion.length > 0;
+                const createStepValid = createSteps.length === 1
+                  && Number.isInteger(Number(createStep.number))
+                  && Number(createStep.number) > 0
+                  && typeof createStep.status === 'string'
+                  && typeof createStep.conclusion === 'string';
+                const state = prepareJobValid
+                  && createStepValid
+                  && createStep.status === 'completed'
+                  && createStep.conclusion === 'skipped'
+                  ? 'skipped'
+                  : 'crossed-or-ambiguous';
+                proof.push({
+                  createStep: createStepValid ? {
+                    conclusion: createStep.conclusion,
+                    name: createStep.name,
+                    number: createStep.number,
+                    status: createStep.status,
+                  } : null,
+                  prepareJob: prepareJobValid ? {
+                    conclusion: prepareJob.conclusion,
+                    id: prepareJob.id,
+                    name: prepareJob.name,
+                    status: prepareJob.status,
+                  } : null,
+                  runAttempt: attempt,
+                  runId,
+                  state,
+                });
+              }
+            }
+            if (!seenIds.has(expectedRunId)) {
+              throw new Error('the current recovery run is missing');
+            }
+            return proof.sort(
+              (left, right) => left.runId - right.runId || left.runAttempt - right.runAttempt,
+            );
+          }
+          const recoveryAttempts = recoveryAttemptProof(
+            recoveryRuns,
+            path.join(process.env.RUNNER_TEMP, 'recovery-attempt-jobs'),
+          );
+          const recoveryFreshSafe = recoveryAttempts.every(
+            (attempt) => attempt.state === 'skipped',
+          );
           if (
             Number(run.id) !== 32791566112
             || Number(run.run_attempt) !== 1
@@ -343,6 +517,15 @@ jobs:
           }
           const failedJob = jobs.find((job) => Number(job.id) === 97633984311);
           const failedStep = failedJob?.steps?.find((step) => Number(step.number) === 4);
+          const expectedDownstreamNames = [
+            'build-release',
+            'assemble-release',
+            'publish-and-verify-release',
+          ];
+          const downstreamJobs = expectedDownstreamNames.map(
+            (name) => jobs.find((job) => job.name === name),
+          );
+          const jobIds = new Set(jobs.map((job) => Number(job.id)));
           if (
             !failedJob
             || failedJob.name !== 'prepare-release'
@@ -351,7 +534,16 @@ jobs:
             || failedStep?.name !== 'Validate authority and classify the release'
             || failedStep?.status !== 'completed'
             || failedStep?.conclusion !== 'failure'
-            || jobs.some((job) => Number(job.id) !== 97633984311 && job.conclusion !== 'skipped')
+            || jobs.length !== 4
+            || jobIds.size !== 4
+            || jobs.some((job) => !Number.isInteger(Number(job.id)) || Number(job.id) <= 0)
+            || downstreamJobs.some(
+              (job) => !job
+                || job.status !== 'completed'
+                || job.conclusion !== 'skipped'
+                || !Array.isArray(job.steps)
+                || job.steps.length !== 0,
+            )
             || !Number.isInteger(artifacts.total_count)
             || artifacts.total_count !== 0
             || !Array.isArray(artifacts.artifacts)
@@ -362,30 +554,24 @@ jobs:
           ) {
             throw new Error('the frozen failed job, step, artifacts, or rerun evidence changed');
           }
-          if (
-            recoveryRuns.length !== 1
-            || Number(recoveryRuns[0].id) !== Number(process.env.EXPECTED_RUN_ID)
-            || Number(recoveryRuns[0].run_attempt) !== Number(process.env.EXPECTED_RUN_ATTEMPT)
-            || recoveryRuns[0].status !== 'in_progress'
-            || recoveryRuns[0].event !== 'workflow_dispatch'
-            || recoveryRuns[0].head_branch !== 'main'
-            || recoveryRuns[0].head_sha !== process.env.EXPECTED_SHA
-            || recoveryRuns[0].path
-              !== '.github/workflows/recover-immutable-v0.30.1.yml'
-          ) {
-            throw new Error('the current recovery run is not the sole in-progress recovery');
-          }
-
           const proof = {
             artifacts: { names: [], totalCount: 0 },
+            downstreamJobs: downstreamJobs.map((job) => ({
+              conclusion: job.conclusion,
+              id: job.id,
+              name: job.name,
+              status: job.status,
+            })),
             failedJob: {
               conclusion: failedJob.conclusion,
               id: failedJob.id,
               name: failedJob.name,
+              status: failedJob.status,
               step: {
                 conclusion: failedStep.conclusion,
                 name: failedStep.name,
                 number: failedStep.number,
+                status: failedStep.status,
               },
             },
             failedRun: {
@@ -400,6 +586,8 @@ jobs:
               runAttempt: run.run_attempt,
               workflowId: run.workflow_id,
             },
+            recoveryFreshSafe,
+            recoveryAttempts,
           };
           const bytes = JSON.stringify(proof) + '\n';
           fs.writeFileSync(process.env.PROOF_PATH, bytes, { flag: 'wx' });
@@ -409,6 +597,8 @@ jobs:
             sha256sum -- "$RUNNER_TEMP/failed-run-proof.json" | awk '{print $1}'
           )"
           [[ "$failed_run_proof_hash" =~ ^[0-9a-f]{64}$ ]]
+          recovery_fresh_safe="$(jq -r '.recoveryFreshSafe' "$RUNNER_TEMP/failed-run-proof.json")"
+          [[ "$recovery_fresh_safe" == "true" || "$recovery_fresh_safe" == "false" ]]
 
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
@@ -591,6 +781,7 @@ jobs:
           QUERY_RC="$query_rc" \
           NOTES_PATH="$RUNNER_TEMP/release-notes.md" \
           QUERY_PATH="$RUNNER_TEMP/release-query.http" \
+          RECOVERY_FRESH_SAFE="$recovery_fresh_safe" \
           CLASSIFICATION_PATH="$RUNNER_TEMP/release-classification.json" \
           node <<'NODE'
           const fs = require('node:fs');
@@ -623,13 +814,29 @@ jobs:
               throw new Error('Release query status/body framing is ambiguous');
             }
             const bodyText = text.slice(boundary.index + boundary.width);
-            let parsed = null;
-            try {
-              parsed = JSON.parse(bodyText);
-            } catch {
-              parsed = null;
-            }
+            const parsed = JSON.parse(bodyText);
             return { bodyText, parsed, status: Number(statuses[0][1]) };
+          }
+          function validateAbsence(response, commandStatus) {
+            const allowedKeys = new Set(['documentation_url', 'message', 'status']);
+            const body = response.parsed;
+            if (
+              process.env.RECOVERY_FRESH_SAFE !== 'true'
+              || commandStatus !== 1
+              || response.status !== 404
+              || !body
+              || typeof body !== 'object'
+              || Array.isArray(body)
+              || body.message !== 'Not Found'
+              || Object.keys(body).some((key) => !allowedKeys.has(key))
+              || (
+                Object.hasOwn(body, 'documentation_url')
+                && (typeof body.documentation_url !== 'string' || body.documentation_url.length === 0)
+              )
+              || (Object.hasOwn(body, 'status') && String(body.status) !== '404')
+            ) {
+              throw new Error('Release query is not the exact absence response');
+            }
           }
           function validateImmutable(release, expectedBody) {
             if (
@@ -687,18 +894,8 @@ jobs:
           const response = parseIncluded(process.env.QUERY_PATH);
           const queryRc = Number(process.env.QUERY_RC);
           let result;
-          if (response.status === 404 && queryRc !== 0) {
-            const releaseLike = response.parsed
-              && typeof response.parsed === 'object'
-              && !Array.isArray(response.parsed)
-              && (
-                Object.hasOwn(response.parsed, 'id')
-                || Object.hasOwn(response.parsed, 'tag_name')
-                || Object.hasOwn(response.parsed, 'assets')
-              );
-            if (releaseLike) {
-              throw new Error('HTTP 404 contained a parseable Release object');
-            }
+          if (response.status === 404) {
+            validateAbsence(response, queryRc);
             result = { mode: 'fresh', releaseId: null };
           } else if (response.status === 200 && queryRc === 0) {
             validateImmutable(
@@ -721,7 +918,6 @@ jobs:
           release_mode="$(jq -r '.mode' "$RUNNER_TEMP/release-classification.json")"
           release_id="$(jq -r '.releaseId // empty' "$RUNNER_TEMP/release-classification.json")"
           if [[ "$release_mode" == "fresh" ]]; then
-            [[ "$EXPECTED_RUN_ATTEMPT" == "1" ]]
             [[ -z "$release_id" ]]
           else
             [[ "$release_mode" == "resume" ]]
@@ -830,7 +1026,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_RUN_ATTEMPT" == "1" ]]
           gh api \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             /repos/mblua/AgentsCommander \
@@ -861,11 +1056,87 @@ jobs:
             > "$RUNNER_TEMP/tag-runs-before-draft.json"
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?status=in_progress&per_page=100" \
+            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?per_page=100" \
             > "$RUNNER_TEMP/recovery-runs-before-draft.json"
+          mkdir "$RUNNER_TEMP/recovery-attempt-jobs-before-draft"
+          RECOVERY_RUNS="$RUNNER_TEMP/recovery-runs-before-draft.json" \
+          REQUESTS="$RUNNER_TEMP/recovery-attempt-requests-before-draft.txt" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = JSON.parse(fs.readFileSync(process.env.RECOVERY_RUNS, 'utf8'));
+          if (
+            !Array.isArray(pages)
+            || pages.length === 0
+            || pages.some(
+              (page) => !page
+                || typeof page !== 'object'
+                || !Number.isInteger(page.total_count)
+                || !Array.isArray(page.workflow_runs),
+            )
+          ) {
+            throw new Error('recovery-run pagination before draft is malformed');
+          }
+          const runs = pages.flatMap((page) => page.workflow_runs);
+          if (pages.some((page) => page.total_count !== runs.length)) {
+            throw new Error('recovery-run pagination before draft is incomplete');
+          }
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const seenIds = new Set();
+          const requests = [];
+          for (const run of runs) {
+            const runId = Number(run.id);
+            const runAttempt = Number(run.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || seenIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || run.event !== 'workflow_dispatch'
+              || run.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(run.head_sha)
+              || run.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || run.status !== 'in_progress'
+                || run.conclusion !== null
+                || run.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                run.status !== 'completed'
+                || typeof run.conclusion !== 'string'
+                || run.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('recovery-run identity or terminal state changed before draft');
+            }
+            seenIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              requests.push({ attempt, runId });
+            }
+          }
+          if (!seenIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing before draft');
+          }
+          requests.sort((left, right) => left.runId - right.runId || left.attempt - right.attempt);
+          const text = requests.map(({ attempt, runId }) => `${runId} ${attempt}`).join('\n');
+          fs.writeFileSync(process.env.REQUESTS, text === '' ? '' : text + '\n', { flag: 'wx' });
+          NODE
+          while IFS=' ' read -r recovery_run_id recovery_attempt; do
+            [[ "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$recovery_attempt" =~ ^[1-9][0-9]*$ ]]
+            gh api --paginate --slurp \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/mblua/AgentsCommander/actions/runs/$recovery_run_id/attempts/$recovery_attempt/jobs?per_page=100" \
+              > "$RUNNER_TEMP/recovery-attempt-jobs-before-draft/$recovery_run_id-$recovery_attempt.json"
+          done < "$RUNNER_TEMP/recovery-attempt-requests-before-draft.txt"
 
           node <<'NODE'
           const fs = require('node:fs');
+          const path = require('node:path');
           const read = (name) => JSON.parse(
             fs.readFileSync(process.env.RUNNER_TEMP + '/' + name, 'utf8'),
           );
@@ -901,8 +1172,101 @@ jobs:
             && item.head_sha === 'da116e0b2463d6ebec6ace5495e2954d6d8ccbee'
           ));
           const recoveryRuns = flatten('recovery-runs-before-draft.json', 'workflow_runs');
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const recoveryRunIds = new Set();
+          for (const recoveryRun of recoveryRuns) {
+            const runId = Number(recoveryRun.id);
+            const runAttempt = Number(recoveryRun.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || recoveryRunIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || recoveryRun.event !== 'workflow_dispatch'
+              || recoveryRun.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(recoveryRun.head_sha)
+              || recoveryRun.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || recoveryRun.status !== 'in_progress'
+                || recoveryRun.conclusion !== null
+                || recoveryRun.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                recoveryRun.status !== 'completed'
+                || typeof recoveryRun.conclusion !== 'string'
+                || recoveryRun.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('recovery-run identity or terminal state changed before draft');
+            }
+            recoveryRunIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              const attemptPages = JSON.parse(fs.readFileSync(
+                path.join(
+                  process.env.RUNNER_TEMP,
+                  'recovery-attempt-jobs-before-draft',
+                  `${runId}-${attempt}.json`,
+                ),
+                'utf8',
+              ));
+              if (
+                !Array.isArray(attemptPages)
+                || attemptPages.length === 0
+                || attemptPages.some(
+                  (page) => !page
+                    || typeof page !== 'object'
+                    || !Number.isInteger(page.total_count)
+                    || !Array.isArray(page.jobs),
+                )
+              ) {
+                throw new Error('prior recovery-attempt jobs are malformed before draft');
+              }
+              const attemptJobs = attemptPages.flatMap((page) => page.jobs);
+              if (attemptPages.some((page) => page.total_count !== attemptJobs.length)) {
+                throw new Error('prior recovery-attempt jobs are incomplete before draft');
+              }
+              const prepareJobs = attemptJobs.filter((job) => job.name === 'prepare-recovery');
+              const prepareJob = prepareJobs[0];
+              const createSteps = Array.isArray(prepareJob?.steps)
+                ? prepareJob.steps.filter(
+                  (step) => step.name === 'Create the sole fresh draft and reconcile its result',
+                )
+                : [];
+              const createStep = createSteps[0];
+              if (
+                prepareJobs.length !== 1
+                || !Number.isInteger(Number(prepareJob.id))
+                || Number(prepareJob.id) <= 0
+                || prepareJob.status !== 'completed'
+                || typeof prepareJob.conclusion !== 'string'
+                || prepareJob.conclusion.length === 0
+                || createSteps.length !== 1
+                || createStep.status !== 'completed'
+                || createStep.conclusion !== 'skipped'
+              ) {
+                throw new Error('a prior recovery attempt reached draft creation before this POST');
+              }
+            }
+          }
+          if (!recoveryRunIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing before draft');
+          }
           const failedJob = jobs.find((job) => Number(job.id) === 97633984311);
           const failedStep = failedJob?.steps?.find((step) => Number(step.number) === 4);
+          const expectedDownstreamNames = [
+            'build-release',
+            'assemble-release',
+            'publish-and-verify-release',
+          ];
+          const downstreamJobs = expectedDownstreamNames.map(
+            (name) => jobs.find((job) => job.name === name),
+          );
+          const jobIds = new Set(jobs.map((job) => Number(job.id)));
           if (
             repository.full_name !== 'mblua/AgentsCommander'
             || repository.default_branch !== 'main'
@@ -919,18 +1283,27 @@ jobs:
             || run.conclusion !== 'failure'
             || run.updated_at !== '2026-08-24T23:56:57Z'
             || failedJob?.name !== 'prepare-release'
+            || failedJob?.status !== 'completed'
             || failedJob?.conclusion !== 'failure'
             || failedStep?.name !== 'Validate authority and classify the release'
+            || failedStep?.status !== 'completed'
             || failedStep?.conclusion !== 'failure'
+            || jobs.length !== 4
+            || jobIds.size !== 4
+            || jobs.some((job) => !Number.isInteger(Number(job.id)) || Number(job.id) <= 0)
+            || downstreamJobs.some(
+              (job) => !job
+                || job.status !== 'completed'
+                || job.conclusion !== 'skipped'
+                || !Array.isArray(job.steps)
+                || job.steps.length !== 0,
+            )
             || artifacts.total_count !== 0
             || !Array.isArray(artifacts.artifacts)
             || artifacts.artifacts.length !== 0
             || tagRuns.length !== 1
             || Number(tagRuns[0].id) !== 32791566112
             || Number(tagRuns[0].run_attempt) !== 1
-            || recoveryRuns.length !== 1
-            || Number(recoveryRuns[0].id) !== Number(process.env.EXPECTED_RUN_ID)
-            || Number(recoveryRuns[0].run_attempt) !== Number(process.env.EXPECTED_RUN_ATTEMPT)
           ) {
             throw new Error('fresh draft mutation-boundary evidence changed');
           }
@@ -1077,26 +1450,30 @@ jobs:
           const statuses = [...text.matchAll(/^HTTP\/\S+ ([0-9]{3})(?:[^\r\n]*)$/gm)];
           const crlf = text.lastIndexOf('\r\n\r\n');
           const lf = text.lastIndexOf('\n\n');
-          const boundary = crlf >= 0 ? crlf + 4 : lf + 2;
+          const separator = crlf >= 0 ? { index: crlf, width: 4 } : { index: lf, width: 2 };
           if (
-            Number(process.env.RELEASE_RC) === 0
+            Number(process.env.RELEASE_RC) !== 1
             || statuses.length !== 1
             || Number(statuses[0][1]) !== 404
-            || boundary < 2
+            || separator.index < 0
           ) {
             throw new Error('v0.30.1 is no longer exact HTTP 404 before draft creation');
           }
-          const parsed = JSON.parse(text.slice(boundary));
+          const parsed = JSON.parse(text.slice(separator.index + separator.width));
+          const allowedKeys = new Set(['documentation_url', 'message', 'status']);
           if (
-            parsed
-            && typeof parsed === 'object'
-            && (
-              Object.hasOwn(parsed, 'id')
-              || Object.hasOwn(parsed, 'tag_name')
-              || Object.hasOwn(parsed, 'assets')
+            !parsed
+            || typeof parsed !== 'object'
+            || Array.isArray(parsed)
+            || parsed.message !== 'Not Found'
+            || Object.keys(parsed).some((key) => !allowedKeys.has(key))
+            || (
+              Object.hasOwn(parsed, 'documentation_url')
+              && (typeof parsed.documentation_url !== 'string' || parsed.documentation_url.length === 0)
             )
+            || (Object.hasOwn(parsed, 'status') && String(parsed.status) !== '404')
           ) {
-            throw new Error('the 404 response contains a Release object');
+            throw new Error('the 404 response is not the exact absence body');
           }
           NODE
 
@@ -1210,26 +1587,30 @@ jobs:
           const statuses = [...text.matchAll(/^HTTP\/\S+ ([0-9]{3})(?:[^\r\n]*)$/gm)];
           const crlf = text.lastIndexOf('\r\n\r\n');
           const lf = text.lastIndexOf('\n\n');
-          const boundary = crlf >= 0 ? crlf + 4 : lf + 2;
+          const separator = crlf >= 0 ? { index: crlf, width: 4 } : { index: lf, width: 2 };
           if (
-            Number(process.env.ABSENCE_RC) === 0
+            Number(process.env.ABSENCE_RC) !== 1
             || statuses.length !== 1
             || Number(statuses[0][1]) !== 404
-            || boundary < 2
+            || separator.index < 0
           ) {
             throw new Error('the final Release absence race check failed');
           }
-          const parsed = JSON.parse(text.slice(boundary));
+          const parsed = JSON.parse(text.slice(separator.index + separator.width));
+          const allowedKeys = new Set(['documentation_url', 'message', 'status']);
           if (
-            parsed
-            && typeof parsed === 'object'
-            && (
-              Object.hasOwn(parsed, 'id')
-              || Object.hasOwn(parsed, 'tag_name')
-              || Object.hasOwn(parsed, 'assets')
+            !parsed
+            || typeof parsed !== 'object'
+            || Array.isArray(parsed)
+            || parsed.message !== 'Not Found'
+            || Object.keys(parsed).some((key) => !allowedKeys.has(key))
+            || (
+              Object.hasOwn(parsed, 'documentation_url')
+              && (typeof parsed.documentation_url !== 'string' || parsed.documentation_url.length === 0)
             )
+            || (Object.hasOwn(parsed, 'status') && String(parsed.status) !== '404')
           ) {
-            throw new Error('the final 404 response contains a Release object');
+            throw new Error('the final 404 response is not the exact absence body');
           }
           NODE
 
@@ -2313,6 +2694,7 @@ jobs:
               ),
           ]
           executable_names = {
+              "Agents.Commander_0.30.1_amd64.AppImage",
               "agentscommander-linux-x86_64",
               "agentscommander-mac-aarch64",
               "agentscommander-mac-x86_64",
@@ -2358,8 +2740,12 @@ jobs:
                           raise RuntimeError(f"non-regular tar member: {name}")
                       if member.size <= 0:
                           raise RuntimeError(f"zero-byte tar member: {name}")
-                      if name in executable_names and member.mode & 0o111 == 0:
-                          raise RuntimeError(f"Unix raw binary is not executable: {name}")
+                      expected_mode = 0o755 if name in executable_names else 0o644
+                      actual_mode = stat.S_IMODE(member.mode)
+                      if actual_mode != expected_mode:
+                          raise RuntimeError(
+                              f"unexpected tar mode for {name}: {actual_mode:#06o}"
+                          )
                       names.append(name)
 
                   if names != expected_order or set(names) != expected:
@@ -2389,6 +2775,38 @@ jobs:
               or any(entry.is_symlink() or not entry.is_file() for entry in payload_dir.iterdir())
           ):
               raise RuntimeError("final extracted payload inventory mismatch")
+
+          def same_bytes(left, right):
+              if left.stat().st_size != right.stat().st_size:
+                  return False
+              with left.open("rb") as left_file, right.open("rb") as right_file:
+                  while True:
+                      left_chunk = left_file.read(1024 * 1024)
+                      right_chunk = right_file.read(1024 * 1024)
+                      if left_chunk != right_chunk:
+                          return False
+                      if not left_chunk:
+                          return True
+
+          alias_pairs = [
+              (
+                  "agentscommander-testeable-windows-x86_64.exe",
+                  "agentscommander-windows-x86_64.exe",
+              ),
+              (
+                  "Agents.Commander_aarch64.app.tar.gz",
+                  "agentscommander-mac-aarch64.app.tar.gz",
+              ),
+              (
+                  "Agents.Commander_x64.app.tar.gz",
+                  "agentscommander-mac-x86_64.app.tar.gz",
+              ),
+          ]
+          for left_name, right_name in alias_pairs:
+              if not same_bytes(payload_dir / left_name, payload_dir / right_name):
+                  raise RuntimeError(
+                      f"extracted public aliases are not byte-identical: {left_name}, {right_name}"
+                  )
           PY
 
       - name: Create and independently verify checksums
@@ -2549,8 +2967,83 @@ jobs:
             > "$RUNNER_TEMP/tag-runs-before-upload.json"
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?status=in_progress&per_page=100" \
+            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?per_page=100" \
             > "$RUNNER_TEMP/recovery-runs-before-upload.json"
+          mkdir "$RUNNER_TEMP/recovery-attempt-jobs-before-upload"
+          RECOVERY_RUNS="$RUNNER_TEMP/recovery-runs-before-upload.json" \
+          REQUESTS="$RUNNER_TEMP/recovery-attempt-requests-before-upload.txt" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = JSON.parse(fs.readFileSync(process.env.RECOVERY_RUNS, 'utf8'));
+          if (
+            !Array.isArray(pages)
+            || pages.length === 0
+            || pages.some(
+              (page) => !page
+                || typeof page !== 'object'
+                || !Number.isInteger(page.total_count)
+                || !Array.isArray(page.workflow_runs),
+            )
+          ) {
+            throw new Error('recovery-run pagination before upload is malformed');
+          }
+          const runs = pages.flatMap((page) => page.workflow_runs);
+          if (pages.some((page) => page.total_count !== runs.length)) {
+            throw new Error('recovery-run pagination before upload is incomplete');
+          }
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const seenIds = new Set();
+          const requests = [];
+          for (const run of runs) {
+            const runId = Number(run.id);
+            const runAttempt = Number(run.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || seenIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || run.event !== 'workflow_dispatch'
+              || run.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(run.head_sha)
+              || run.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || run.status !== 'in_progress'
+                || run.conclusion !== null
+                || run.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                run.status !== 'completed'
+                || typeof run.conclusion !== 'string'
+                || run.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('recovery-run identity or terminal state changed before upload');
+            }
+            seenIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              requests.push({ attempt, runId });
+            }
+          }
+          if (!seenIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing before upload');
+          }
+          requests.sort((left, right) => left.runId - right.runId || left.attempt - right.attempt);
+          const text = requests.map(({ attempt, runId }) => `${runId} ${attempt}`).join('\n');
+          fs.writeFileSync(process.env.REQUESTS, text === '' ? '' : text + '\n', { flag: 'wx' });
+          NODE
+          while IFS=' ' read -r recovery_run_id recovery_attempt; do
+            [[ "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$recovery_attempt" =~ ^[1-9][0-9]*$ ]]
+            gh api --paginate --slurp \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/mblua/AgentsCommander/actions/runs/$recovery_run_id/attempts/$recovery_attempt/jobs?per_page=100" \
+              > "$RUNNER_TEMP/recovery-attempt-jobs-before-upload/$recovery_run_id-$recovery_attempt.json"
+          done < "$RUNNER_TEMP/recovery-attempt-requests-before-upload.txt"
           gh api \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
@@ -2563,6 +3056,7 @@ jobs:
           PROOF_PATH="$RUNNER_TEMP/failed-proof-before-upload.json" node <<'NODE'
           const crypto = require('node:crypto');
           const fs = require('node:fs');
+          const path = require('node:path');
           const read = (name) => JSON.parse(
             fs.readFileSync(process.env.RUNNER_TEMP + '/' + name, 'utf8'),
           );
@@ -2601,8 +3095,134 @@ jobs:
             && item.head_sha === 'da116e0b2463d6ebec6ace5495e2954d6d8ccbee'
           ));
           const recoveryRuns = flatten('recovery-runs-before-upload.json', 'workflow_runs');
+          function recoveryAttemptProof(runs, directory) {
+            const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+            const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+            const seenIds = new Set();
+            const proof = [];
+            for (const recoveryRun of runs) {
+              const runId = Number(recoveryRun.id);
+              const runAttempt = Number(recoveryRun.run_attempt);
+              const current = runId === expectedRunId;
+              if (
+                !Number.isInteger(runId)
+                || runId <= 0
+                || seenIds.has(runId)
+                || !Number.isInteger(runAttempt)
+                || runAttempt <= 0
+                || recoveryRun.event !== 'workflow_dispatch'
+                || recoveryRun.head_branch !== 'main'
+                || !/^[0-9a-f]{40}$/.test(recoveryRun.head_sha)
+                || recoveryRun.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+                || (current && (
+                  runAttempt !== expectedAttempt
+                  || recoveryRun.status !== 'in_progress'
+                  || recoveryRun.conclusion !== null
+                  || recoveryRun.head_sha !== process.env.EXPECTED_SHA
+                ))
+                || (!current && (
+                  recoveryRun.status !== 'completed'
+                  || typeof recoveryRun.conclusion !== 'string'
+                  || recoveryRun.conclusion.length === 0
+                ))
+              ) {
+                throw new Error('recovery-run identity or terminal state changed before upload');
+              }
+              seenIds.add(runId);
+              const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+              for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+                const attemptPages = JSON.parse(fs.readFileSync(
+                  path.join(directory, `${runId}-${attempt}.json`),
+                  'utf8',
+                ));
+                if (
+                  !Array.isArray(attemptPages)
+                  || attemptPages.length === 0
+                  || attemptPages.some(
+                    (page) => !page
+                      || typeof page !== 'object'
+                      || !Number.isInteger(page.total_count)
+                      || !Array.isArray(page.jobs),
+                  )
+                ) {
+                  throw new Error('prior recovery-attempt jobs are malformed before upload');
+                }
+                const attemptJobs = attemptPages.flatMap((page) => page.jobs);
+                if (attemptPages.some((page) => page.total_count !== attemptJobs.length)) {
+                  throw new Error('prior recovery-attempt jobs are incomplete before upload');
+                }
+                const prepareJobs = attemptJobs.filter((job) => job.name === 'prepare-recovery');
+                const prepareJob = prepareJobs[0];
+                const createSteps = Array.isArray(prepareJob?.steps)
+                  ? prepareJob.steps.filter(
+                    (step) => step.name === 'Create the sole fresh draft and reconcile its result',
+                  )
+                  : [];
+                const createStep = createSteps[0];
+                const prepareJobValid = prepareJobs.length === 1
+                  && Number.isInteger(Number(prepareJob.id))
+                  && Number(prepareJob.id) > 0
+                  && prepareJob.status === 'completed'
+                  && typeof prepareJob.conclusion === 'string'
+                  && prepareJob.conclusion.length > 0;
+                const createStepValid = createSteps.length === 1
+                  && Number.isInteger(Number(createStep.number))
+                  && Number(createStep.number) > 0
+                  && typeof createStep.status === 'string'
+                  && typeof createStep.conclusion === 'string';
+                const state = prepareJobValid
+                  && createStepValid
+                  && createStep.status === 'completed'
+                  && createStep.conclusion === 'skipped'
+                  ? 'skipped'
+                  : 'crossed-or-ambiguous';
+                proof.push({
+                  createStep: createStepValid ? {
+                    conclusion: createStep.conclusion,
+                    name: createStep.name,
+                    number: createStep.number,
+                    status: createStep.status,
+                  } : null,
+                  prepareJob: prepareJobValid ? {
+                    conclusion: prepareJob.conclusion,
+                    id: prepareJob.id,
+                    name: prepareJob.name,
+                    status: prepareJob.status,
+                  } : null,
+                  runAttempt: attempt,
+                  runId,
+                  state,
+                });
+              }
+            }
+            if (!seenIds.has(expectedRunId)) {
+              throw new Error('the current recovery run is missing before upload');
+            }
+            return proof.sort(
+              (left, right) => left.runId - right.runId || left.runAttempt - right.runAttempt,
+            );
+          }
+          const recoveryAttempts = recoveryAttemptProof(
+            recoveryRuns,
+            path.join(process.env.RUNNER_TEMP, 'recovery-attempt-jobs-before-upload'),
+          );
+          const recoveryFreshSafe = recoveryAttempts.every(
+            (attempt) => attempt.state === 'skipped',
+          );
+          if (!recoveryFreshSafe) {
+            throw new Error('a prior recovery attempt crossed or ambiguously reached draft creation');
+          }
           const failedJob = jobs.find((job) => Number(job.id) === 97633984311);
           const failedStep = failedJob?.steps?.find((step) => Number(step.number) === 4);
+          const expectedDownstreamNames = [
+            'build-release',
+            'assemble-release',
+            'publish-and-verify-release',
+          ];
+          const downstreamJobs = expectedDownstreamNames.map(
+            (name) => jobs.find((job) => job.name === name),
+          );
+          const jobIds = new Set(jobs.map((job) => Number(job.id)));
           if (
             repository.full_name !== 'mblua/AgentsCommander'
             || repository.default_branch !== 'main'
@@ -2630,32 +3250,48 @@ jobs:
             || run.created_at !== '2026-08-24T23:56:42Z'
             || run.updated_at !== '2026-08-24T23:56:57Z'
             || failedJob?.name !== 'prepare-release'
+            || failedJob?.status !== 'completed'
             || failedJob?.conclusion !== 'failure'
             || failedStep?.name !== 'Validate authority and classify the release'
+            || failedStep?.status !== 'completed'
             || failedStep?.conclusion !== 'failure'
-            || jobs.some((job) => Number(job.id) !== 97633984311 && job.conclusion !== 'skipped')
+            || jobs.length !== 4
+            || jobIds.size !== 4
+            || jobs.some((job) => !Number.isInteger(Number(job.id)) || Number(job.id) <= 0)
+            || downstreamJobs.some(
+              (job) => !job
+                || job.status !== 'completed'
+                || job.conclusion !== 'skipped'
+                || !Array.isArray(job.steps)
+                || job.steps.length !== 0,
+            )
             || artifacts.total_count !== 0
             || !Array.isArray(artifacts.artifacts)
             || artifacts.artifacts.length !== 0
             || tagRuns.length !== 1
             || Number(tagRuns[0].id) !== 32791566112
             || Number(tagRuns[0].run_attempt) !== 1
-            || recoveryRuns.length !== 1
-            || Number(recoveryRuns[0].id) !== Number(process.env.EXPECTED_RUN_ID)
-            || Number(recoveryRuns[0].run_attempt) !== Number(process.env.EXPECTED_RUN_ATTEMPT)
           ) {
             throw new Error('the upload mutation-boundary evidence changed');
           }
           const proof = {
             artifacts: { names: [], totalCount: 0 },
+            downstreamJobs: downstreamJobs.map((job) => ({
+              conclusion: job.conclusion,
+              id: job.id,
+              name: job.name,
+              status: job.status,
+            })),
             failedJob: {
               conclusion: failedJob.conclusion,
               id: failedJob.id,
               name: failedJob.name,
+              status: failedJob.status,
               step: {
                 conclusion: failedStep.conclusion,
                 name: failedStep.name,
                 number: failedStep.number,
+                status: failedStep.status,
               },
             },
             failedRun: {
@@ -2670,6 +3306,8 @@ jobs:
               runAttempt: run.run_attempt,
               workflowId: run.workflow_id,
             },
+            recoveryFreshSafe,
+            recoveryAttempts,
           };
           const bytes = JSON.stringify(proof) + '\n';
           fs.writeFileSync(process.env.PROOF_PATH, bytes, { flag: 'wx' });
@@ -2933,6 +3571,15 @@ jobs:
             "agentscommander-windows-x86_64.exe"
             "SHASUMS256.txt"
           )
+          cmp --silent -- \
+            "$PAYLOAD_DIR/agentscommander-testeable-windows-x86_64.exe" \
+            "$PAYLOAD_DIR/agentscommander-windows-x86_64.exe"
+          cmp --silent -- \
+            "$PAYLOAD_DIR/Agents.Commander_aarch64.app.tar.gz" \
+            "$PAYLOAD_DIR/agentscommander-mac-aarch64.app.tar.gz"
+          cmp --silent -- \
+            "$PAYLOAD_DIR/Agents.Commander_x64.app.tar.gz" \
+            "$PAYLOAD_DIR/agentscommander-mac-x86_64.app.tar.gz"
           echo "mutation_invoked=true" >> "$GITHUB_OUTPUT"
           for index in "${!assets[@]}"; do
             asset="${assets[$index]}"
@@ -4359,8 +5006,83 @@ jobs:
             > "$RUNNER_TEMP/tag-runs-before-patch.json"
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?status=in_progress&per_page=100" \
+            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?per_page=100" \
             > "$RUNNER_TEMP/recovery-runs-before-patch.json"
+          mkdir "$RUNNER_TEMP/recovery-attempt-jobs-before-patch"
+          RECOVERY_RUNS="$RUNNER_TEMP/recovery-runs-before-patch.json" \
+          REQUESTS="$RUNNER_TEMP/recovery-attempt-requests-before-patch.txt" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = JSON.parse(fs.readFileSync(process.env.RECOVERY_RUNS, 'utf8'));
+          if (
+            !Array.isArray(pages)
+            || pages.length === 0
+            || pages.some(
+              (page) => !page
+                || typeof page !== 'object'
+                || !Number.isInteger(page.total_count)
+                || !Array.isArray(page.workflow_runs),
+            )
+          ) {
+            throw new Error('recovery-run pagination before publication is malformed');
+          }
+          const runs = pages.flatMap((page) => page.workflow_runs);
+          if (pages.some((page) => page.total_count !== runs.length)) {
+            throw new Error('recovery-run pagination before publication is incomplete');
+          }
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const seenIds = new Set();
+          const requests = [];
+          for (const run of runs) {
+            const runId = Number(run.id);
+            const runAttempt = Number(run.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || seenIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || run.event !== 'workflow_dispatch'
+              || run.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(run.head_sha)
+              || run.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || run.status !== 'in_progress'
+                || run.conclusion !== null
+                || run.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                run.status !== 'completed'
+                || typeof run.conclusion !== 'string'
+                || run.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('recovery-run identity or terminal state changed before publication');
+            }
+            seenIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              requests.push({ attempt, runId });
+            }
+          }
+          if (!seenIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing before publication');
+          }
+          requests.sort((left, right) => left.runId - right.runId || left.attempt - right.attempt);
+          const text = requests.map(({ attempt, runId }) => `${runId} ${attempt}`).join('\n');
+          fs.writeFileSync(process.env.REQUESTS, text === '' ? '' : text + '\n', { flag: 'wx' });
+          NODE
+          while IFS=' ' read -r recovery_run_id recovery_attempt; do
+            [[ "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$recovery_attempt" =~ ^[1-9][0-9]*$ ]]
+            gh api --paginate --slurp \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/mblua/AgentsCommander/actions/runs/$recovery_run_id/attempts/$recovery_attempt/jobs?per_page=100" \
+              > "$RUNNER_TEMP/recovery-attempt-jobs-before-patch/$recovery_run_id-$recovery_attempt.json"
+          done < "$RUNNER_TEMP/recovery-attempt-requests-before-patch.txt"
           gh api \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
@@ -4412,8 +5134,134 @@ jobs:
             && item.head_sha === process.env.RELEASE_SHA
           ));
           const recoveryRuns = flatten('recovery-runs-before-patch.json', 'workflow_runs');
+          function recoveryAttemptProof(runs, directory) {
+            const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+            const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+            const seenIds = new Set();
+            const proof = [];
+            for (const recoveryRun of runs) {
+              const runId = Number(recoveryRun.id);
+              const runAttempt = Number(recoveryRun.run_attempt);
+              const current = runId === expectedRunId;
+              if (
+                !Number.isInteger(runId)
+                || runId <= 0
+                || seenIds.has(runId)
+                || !Number.isInteger(runAttempt)
+                || runAttempt <= 0
+                || recoveryRun.event !== 'workflow_dispatch'
+                || recoveryRun.head_branch !== 'main'
+                || !/^[0-9a-f]{40}$/.test(recoveryRun.head_sha)
+                || recoveryRun.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+                || (current && (
+                  runAttempt !== expectedAttempt
+                  || recoveryRun.status !== 'in_progress'
+                  || recoveryRun.conclusion !== null
+                  || recoveryRun.head_sha !== process.env.EXPECTED_SHA
+                ))
+                || (!current && (
+                  recoveryRun.status !== 'completed'
+                  || typeof recoveryRun.conclusion !== 'string'
+                  || recoveryRun.conclusion.length === 0
+                ))
+              ) {
+                throw new Error('recovery-run identity or terminal state changed before publication');
+              }
+              seenIds.add(runId);
+              const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+              for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+                const attemptPages = JSON.parse(fs.readFileSync(
+                  path.join(directory, `${runId}-${attempt}.json`),
+                  'utf8',
+                ));
+                if (
+                  !Array.isArray(attemptPages)
+                  || attemptPages.length === 0
+                  || attemptPages.some(
+                    (page) => !page
+                      || typeof page !== 'object'
+                      || !Number.isInteger(page.total_count)
+                      || !Array.isArray(page.jobs),
+                  )
+                ) {
+                  throw new Error('prior recovery-attempt jobs are malformed before publication');
+                }
+                const attemptJobs = attemptPages.flatMap((page) => page.jobs);
+                if (attemptPages.some((page) => page.total_count !== attemptJobs.length)) {
+                  throw new Error('prior recovery-attempt jobs are incomplete before publication');
+                }
+                const prepareJobs = attemptJobs.filter((job) => job.name === 'prepare-recovery');
+                const prepareJob = prepareJobs[0];
+                const createSteps = Array.isArray(prepareJob?.steps)
+                  ? prepareJob.steps.filter(
+                    (step) => step.name === 'Create the sole fresh draft and reconcile its result',
+                  )
+                  : [];
+                const createStep = createSteps[0];
+                const prepareJobValid = prepareJobs.length === 1
+                  && Number.isInteger(Number(prepareJob.id))
+                  && Number(prepareJob.id) > 0
+                  && prepareJob.status === 'completed'
+                  && typeof prepareJob.conclusion === 'string'
+                  && prepareJob.conclusion.length > 0;
+                const createStepValid = createSteps.length === 1
+                  && Number.isInteger(Number(createStep.number))
+                  && Number(createStep.number) > 0
+                  && typeof createStep.status === 'string'
+                  && typeof createStep.conclusion === 'string';
+                const state = prepareJobValid
+                  && createStepValid
+                  && createStep.status === 'completed'
+                  && createStep.conclusion === 'skipped'
+                  ? 'skipped'
+                  : 'crossed-or-ambiguous';
+                proof.push({
+                  createStep: createStepValid ? {
+                    conclusion: createStep.conclusion,
+                    name: createStep.name,
+                    number: createStep.number,
+                    status: createStep.status,
+                  } : null,
+                  prepareJob: prepareJobValid ? {
+                    conclusion: prepareJob.conclusion,
+                    id: prepareJob.id,
+                    name: prepareJob.name,
+                    status: prepareJob.status,
+                  } : null,
+                  runAttempt: attempt,
+                  runId,
+                  state,
+                });
+              }
+            }
+            if (!seenIds.has(expectedRunId)) {
+              throw new Error('the current recovery run is missing before publication');
+            }
+            return proof.sort(
+              (left, right) => left.runId - right.runId || left.runAttempt - right.runAttempt,
+            );
+          }
+          const recoveryAttempts = recoveryAttemptProof(
+            recoveryRuns,
+            path.join(process.env.RUNNER_TEMP, 'recovery-attempt-jobs-before-patch'),
+          );
+          const recoveryFreshSafe = recoveryAttempts.every(
+            (attempt) => attempt.state === 'skipped',
+          );
+          if (!recoveryFreshSafe) {
+            throw new Error('a prior recovery attempt crossed or ambiguously reached draft creation');
+          }
           const failedJob = jobs.find((job) => Number(job.id) === 97633984311);
           const failedStep = failedJob?.steps?.find((step) => Number(step.number) === 4);
+          const expectedDownstreamNames = [
+            'build-release',
+            'assemble-release',
+            'publish-and-verify-release',
+          ];
+          const downstreamJobs = expectedDownstreamNames.map(
+            (name) => jobs.find((job) => job.name === name),
+          );
+          const jobIds = new Set(jobs.map((job) => Number(job.id)));
           if (
             repository.full_name !== 'mblua/AgentsCommander'
             || repository.default_branch !== 'main'
@@ -4441,32 +5289,48 @@ jobs:
             || run.created_at !== '2026-08-24T23:56:42Z'
             || run.updated_at !== '2026-08-24T23:56:57Z'
             || failedJob?.name !== 'prepare-release'
+            || failedJob?.status !== 'completed'
             || failedJob?.conclusion !== 'failure'
             || failedStep?.name !== 'Validate authority and classify the release'
+            || failedStep?.status !== 'completed'
             || failedStep?.conclusion !== 'failure'
-            || jobs.some((job) => Number(job.id) !== 97633984311 && job.conclusion !== 'skipped')
+            || jobs.length !== 4
+            || jobIds.size !== 4
+            || jobs.some((job) => !Number.isInteger(Number(job.id)) || Number(job.id) <= 0)
+            || downstreamJobs.some(
+              (job) => !job
+                || job.status !== 'completed'
+                || job.conclusion !== 'skipped'
+                || !Array.isArray(job.steps)
+                || job.steps.length !== 0,
+            )
             || artifacts.total_count !== 0
             || !Array.isArray(artifacts.artifacts)
             || artifacts.artifacts.length !== 0
             || tagRuns.length !== 1
             || Number(tagRuns[0].id) !== 32791566112
             || Number(tagRuns[0].run_attempt) !== 1
-            || recoveryRuns.length !== 1
-            || Number(recoveryRuns[0].id) !== Number(process.env.EXPECTED_RUN_ID)
-            || Number(recoveryRuns[0].run_attempt) !== Number(process.env.EXPECTED_RUN_ATTEMPT)
           ) {
             throw new Error('the final publication mutation-boundary evidence changed');
           }
           const proof = {
             artifacts: { names: [], totalCount: 0 },
+            downstreamJobs: downstreamJobs.map((job) => ({
+              conclusion: job.conclusion,
+              id: job.id,
+              name: job.name,
+              status: job.status,
+            })),
             failedJob: {
               conclusion: failedJob.conclusion,
               id: failedJob.id,
               name: failedJob.name,
+              status: failedJob.status,
               step: {
                 conclusion: failedStep.conclusion,
                 name: failedStep.name,
                 number: failedStep.number,
+                status: failedStep.status,
               },
             },
             failedRun: {
@@ -4481,6 +5345,8 @@ jobs:
               runAttempt: run.run_attempt,
               workflowId: run.workflow_id,
             },
+            recoveryFreshSafe,
+            recoveryAttempts,
           };
           const proofBytes = JSON.stringify(proof) + '\n';
           fs.writeFileSync(process.env.PROOF_PATH, proofBytes, { flag: 'wx' });
@@ -4767,16 +5633,44 @@ jobs:
             2> "$RUNNER_TEMP/publish-response.err"
           publish_rc=$?
           set -e
-          publish_status="$(
-            awk '/^HTTP\// { gsub("\r", "", $2); status=$2 } END { print status }' \
-              "$RUNNER_TEMP/publish-response.http"
+          publish_stdout_sha256="$(
+            sha256sum -- "$RUNNER_TEMP/publish-response.http" | awk '{print $1}'
           )"
-          [[ "$publish_rc" =~ ^[0-9]+$ ]]
-          [[ "$publish_status" =~ ^[0-9]{3}$ ]]
+          publish_stderr_sha256="$(
+            sha256sum -- "$RUNNER_TEMP/publish-response.err" | awk '{print $1}'
+          )"
+          publish_stdout_bytes="$(stat -c '%s' "$RUNNER_TEMP/publish-response.http")"
+          publish_stderr_bytes="$(stat -c '%s' "$RUNNER_TEMP/publish-response.err")"
+          mapfile -t publish_statuses < <(
+            awk '/^HTTP\// { gsub("\r", "", $2); print $2 }' \
+              "$RUNNER_TEMP/publish-response.http"
+          )
+          publish_status=""
+          if [[ "${#publish_statuses[@]}" -eq 0 ]]; then
+            publish_status_state="absent"
+          elif [[ "${#publish_statuses[@]}" -ne 1 ]]; then
+            publish_status_state="ambiguous"
+          elif [[ "${publish_statuses[0]}" =~ ^[0-9]{3}$ ]]; then
+            publish_status="${publish_statuses[0]}"
+            publish_status_state="captured"
+          else
+            publish_status_state="invalid"
+          fi
           {
             echo "command_status=$publish_rc"
             echo "http_status=$publish_status"
+            echo "http_status_state=$publish_status_state"
+            echo "response_stdout_sha256=$publish_stdout_sha256"
+            echo "response_stderr_sha256=$publish_stderr_sha256"
+            echo "response_stdout_bytes=$publish_stdout_bytes"
+            echo "response_stderr_bytes=$publish_stderr_bytes"
           } >> "$GITHUB_OUTPUT"
+          [[ "$publish_rc" =~ ^[0-9]+$ ]]
+          [[ "$publish_stdout_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$publish_stderr_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$publish_stdout_bytes" =~ ^[0-9]+$ ]]
+          [[ "$publish_stderr_bytes" =~ ^[0-9]+$ ]]
+          [[ "$publish_status_state" == "captured" ]]
           [[ "$publish_rc" -eq 0 && "$publish_status" == "200" ]]
 
       - name: Reconcile publication by numeric ID and tag
@@ -4789,8 +5683,13 @@ jobs:
           NOTES_PATH: ${{ runner.temp }}/release-notes.md
           PUBLISH_COMMAND_STATUS: ${{ steps.publish.outputs.command_status }}
           PUBLISH_HTTP_STATUS: ${{ steps.publish.outputs.http_status }}
+          PUBLISH_HTTP_STATUS_STATE: ${{ steps.publish.outputs.http_status_state }}
           PUBLISH_INVOKED: ${{ steps.publish.outputs.mutation_invoked }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          PUBLISH_STDERR_BYTES: ${{ steps.publish.outputs.response_stderr_bytes }}
+          PUBLISH_STDERR_SHA256: ${{ steps.publish.outputs.response_stderr_sha256 }}
+          PUBLISH_STDOUT_BYTES: ${{ steps.publish.outputs.response_stdout_bytes }}
+          PUBLISH_STDOUT_SHA256: ${{ steps.publish.outputs.response_stdout_sha256 }}
           RECONSTRUCTION_STATUS: ${{ steps.reconstruct.outputs.reconstruction_status }}
           RELEASE_ID: ${{ needs.prepare-recovery.outputs.release_id }}
           RELEASE_MODE: ${{ needs.prepare-recovery.outputs.release_mode }}
@@ -4801,10 +5700,29 @@ jobs:
           if [[ "$RELEASE_MODE" == "resume" ]]; then
             [[ "$PUBLISH_OUTCOME" == "skipped" ]]
             [[ -z "$PUBLISH_INVOKED" ]]
+            [[ -z "$PUBLISH_COMMAND_STATUS" ]]
+            [[ -z "$PUBLISH_HTTP_STATUS" ]]
+            [[ -z "$PUBLISH_HTTP_STATUS_STATE" ]]
+            [[ -z "$PUBLISH_STDOUT_SHA256" && -z "$PUBLISH_STDERR_SHA256" ]]
+            [[ -z "$PUBLISH_STDOUT_BYTES" && -z "$PUBLISH_STDERR_BYTES" ]]
             [[ "$RECONSTRUCTION_STATUS" == "verified" ]]
           else
             [[ "$PUBLISH_INVOKED" == "true" ]]
             [[ "$PUBLISH_OUTCOME" == "success" || "$PUBLISH_OUTCOME" == "failure" ]]
+            [[ "$PUBLISH_COMMAND_STATUS" =~ ^[0-9]+$ ]]
+            [[ "$PUBLISH_HTTP_STATUS_STATE" == "captured" \
+              || "$PUBLISH_HTTP_STATUS_STATE" == "absent" \
+              || "$PUBLISH_HTTP_STATUS_STATE" == "ambiguous" \
+              || "$PUBLISH_HTTP_STATUS_STATE" == "invalid" ]]
+            if [[ "$PUBLISH_HTTP_STATUS_STATE" == "captured" ]]; then
+              [[ "$PUBLISH_HTTP_STATUS" =~ ^[0-9]{3}$ ]]
+            else
+              [[ -z "$PUBLISH_HTTP_STATUS" ]]
+            fi
+            [[ "$PUBLISH_STDOUT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$PUBLISH_STDERR_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$PUBLISH_STDOUT_BYTES" =~ ^[0-9]+$ ]]
+            [[ "$PUBLISH_STDERR_BYTES" =~ ^[0-9]+$ ]]
             [[ -z "$RECONSTRUCTION_STATUS" ]]
           fi
 
@@ -4922,6 +5840,11 @@ jobs:
             echo "publish_outcome=$PUBLISH_OUTCOME"
             echo "publish_command_status=$PUBLISH_COMMAND_STATUS"
             echo "publish_http_status=$PUBLISH_HTTP_STATUS"
+            echo "publish_http_status_state=${PUBLISH_HTTP_STATUS_STATE:-not-invoked}"
+            echo "publish_response_stdout_sha256=$PUBLISH_STDOUT_SHA256"
+            echo "publish_response_stderr_sha256=$PUBLISH_STDERR_SHA256"
+            echo "publish_response_stdout_bytes=$PUBLISH_STDOUT_BYTES"
+            echo "publish_response_stderr_bytes=$PUBLISH_STDERR_BYTES"
           } >> "$GITHUB_OUTPUT"
 
       - name: Read the immutable setting for final verification
@@ -5011,8 +5934,13 @@ jobs:
           NOTES_PATH: ${{ runner.temp }}/release-notes.md
           PUBLISH_COMMAND_STATUS: ${{ steps.reconcile.outputs.publish_command_status }}
           PUBLISH_HTTP_STATUS: ${{ steps.reconcile.outputs.publish_http_status }}
+          PUBLISH_HTTP_STATUS_STATE: ${{ steps.reconcile.outputs.publish_http_status_state }}
           PUBLISH_INVOKED: ${{ steps.reconcile.outputs.publish_invoked }}
           PUBLISH_OUTCOME: ${{ steps.reconcile.outputs.publish_outcome }}
+          PUBLISH_STDERR_BYTES: ${{ steps.reconcile.outputs.publish_response_stderr_bytes }}
+          PUBLISH_STDERR_SHA256: ${{ steps.reconcile.outputs.publish_response_stderr_sha256 }}
+          PUBLISH_STDOUT_BYTES: ${{ steps.reconcile.outputs.publish_response_stdout_bytes }}
+          PUBLISH_STDOUT_SHA256: ${{ steps.reconcile.outputs.publish_response_stdout_sha256 }}
           RECONCILIATION_STATUS: ${{ steps.reconcile.outputs.reconciliation_status }}
           RECONSTRUCTION_STATUS: ${{ steps.reconstruct.outputs.reconstruction_status }}
           RELEASE_ID: ${{ needs.prepare-recovery.outputs.release_id }}
@@ -5081,8 +6009,83 @@ jobs:
             > "$RUNNER_TEMP/tag-runs-final.json"
           gh api --paginate --slurp \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?status=in_progress&per_page=100" \
+            "/repos/mblua/AgentsCommander/actions/workflows/recover-immutable-v0.30.1.yml/runs?per_page=100" \
             > "$RUNNER_TEMP/recovery-runs-final.json"
+          mkdir "$RUNNER_TEMP/recovery-attempt-jobs-final"
+          RECOVERY_RUNS="$RUNNER_TEMP/recovery-runs-final.json" \
+          REQUESTS="$RUNNER_TEMP/recovery-attempt-requests-final.txt" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pages = JSON.parse(fs.readFileSync(process.env.RECOVERY_RUNS, 'utf8'));
+          if (
+            !Array.isArray(pages)
+            || pages.length === 0
+            || pages.some(
+              (page) => !page
+                || typeof page !== 'object'
+                || !Number.isInteger(page.total_count)
+                || !Array.isArray(page.workflow_runs),
+            )
+          ) {
+            throw new Error('final recovery-run pagination is malformed');
+          }
+          const runs = pages.flatMap((page) => page.workflow_runs);
+          if (pages.some((page) => page.total_count !== runs.length)) {
+            throw new Error('final recovery-run pagination is incomplete');
+          }
+          const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+          const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+          const seenIds = new Set();
+          const requests = [];
+          for (const run of runs) {
+            const runId = Number(run.id);
+            const runAttempt = Number(run.run_attempt);
+            const current = runId === expectedRunId;
+            if (
+              !Number.isInteger(runId)
+              || runId <= 0
+              || seenIds.has(runId)
+              || !Number.isInteger(runAttempt)
+              || runAttempt <= 0
+              || run.event !== 'workflow_dispatch'
+              || run.head_branch !== 'main'
+              || !/^[0-9a-f]{40}$/.test(run.head_sha)
+              || run.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+              || (current && (
+                runAttempt !== expectedAttempt
+                || run.status !== 'in_progress'
+                || run.conclusion !== null
+                || run.head_sha !== process.env.EXPECTED_SHA
+              ))
+              || (!current && (
+                run.status !== 'completed'
+                || typeof run.conclusion !== 'string'
+                || run.conclusion.length === 0
+              ))
+            ) {
+              throw new Error('final recovery-run identity or terminal state is not exact');
+            }
+            seenIds.add(runId);
+            const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+            for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+              requests.push({ attempt, runId });
+            }
+          }
+          if (!seenIds.has(expectedRunId)) {
+            throw new Error('the current recovery run is missing from final evidence');
+          }
+          requests.sort((left, right) => left.runId - right.runId || left.attempt - right.attempt);
+          const text = requests.map(({ attempt, runId }) => `${runId} ${attempt}`).join('\n');
+          fs.writeFileSync(process.env.REQUESTS, text === '' ? '' : text + '\n', { flag: 'wx' });
+          NODE
+          while IFS=' ' read -r recovery_run_id recovery_attempt; do
+            [[ "$recovery_run_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$recovery_attempt" =~ ^[1-9][0-9]*$ ]]
+            gh api --paginate --slurp \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/mblua/AgentsCommander/actions/runs/$recovery_run_id/attempts/$recovery_attempt/jobs?per_page=100" \
+              > "$RUNNER_TEMP/recovery-attempt-jobs-final/$recovery_run_id-$recovery_attempt.json"
+          done < "$RUNNER_TEMP/recovery-attempt-requests-final.txt"
           gh api \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
@@ -5138,8 +6141,131 @@ jobs:
             && item.head_sha === process.env.RELEASE_SHA
           ));
           const recoveryRuns = flatten('recovery-runs-final.json', 'workflow_runs');
+          function recoveryAttemptProof(runs, directory) {
+            const expectedRunId = Number(process.env.EXPECTED_RUN_ID);
+            const expectedAttempt = Number(process.env.EXPECTED_RUN_ATTEMPT);
+            const seenIds = new Set();
+            const proof = [];
+            for (const recoveryRun of runs) {
+              const runId = Number(recoveryRun.id);
+              const runAttempt = Number(recoveryRun.run_attempt);
+              const current = runId === expectedRunId;
+              if (
+                !Number.isInteger(runId)
+                || runId <= 0
+                || seenIds.has(runId)
+                || !Number.isInteger(runAttempt)
+                || runAttempt <= 0
+                || recoveryRun.event !== 'workflow_dispatch'
+                || recoveryRun.head_branch !== 'main'
+                || !/^[0-9a-f]{40}$/.test(recoveryRun.head_sha)
+                || recoveryRun.path !== '.github/workflows/recover-immutable-v0.30.1.yml'
+                || (current && (
+                  runAttempt !== expectedAttempt
+                  || recoveryRun.status !== 'in_progress'
+                  || recoveryRun.conclusion !== null
+                  || recoveryRun.head_sha !== process.env.EXPECTED_SHA
+                ))
+                || (!current && (
+                  recoveryRun.status !== 'completed'
+                  || typeof recoveryRun.conclusion !== 'string'
+                  || recoveryRun.conclusion.length === 0
+                ))
+              ) {
+                throw new Error('final recovery-run identity or terminal state is not exact');
+              }
+              seenIds.add(runId);
+              const lastPriorAttempt = current ? runAttempt - 1 : runAttempt;
+              for (let attempt = 1; attempt <= lastPriorAttempt; attempt += 1) {
+                const attemptPages = JSON.parse(fs.readFileSync(
+                  path.join(directory, `${runId}-${attempt}.json`),
+                  'utf8',
+                ));
+                if (
+                  !Array.isArray(attemptPages)
+                  || attemptPages.length === 0
+                  || attemptPages.some(
+                    (page) => !page
+                      || typeof page !== 'object'
+                      || !Number.isInteger(page.total_count)
+                      || !Array.isArray(page.jobs),
+                  )
+                ) {
+                  throw new Error('final prior recovery-attempt jobs are malformed');
+                }
+                const attemptJobs = attemptPages.flatMap((page) => page.jobs);
+                if (attemptPages.some((page) => page.total_count !== attemptJobs.length)) {
+                  throw new Error('final prior recovery-attempt jobs are incomplete');
+                }
+                const prepareJobs = attemptJobs.filter((job) => job.name === 'prepare-recovery');
+                const prepareJob = prepareJobs[0];
+                const createSteps = Array.isArray(prepareJob?.steps)
+                  ? prepareJob.steps.filter(
+                    (step) => step.name === 'Create the sole fresh draft and reconcile its result',
+                  )
+                  : [];
+                const createStep = createSteps[0];
+                const prepareJobValid = prepareJobs.length === 1
+                  && Number.isInteger(Number(prepareJob.id))
+                  && Number(prepareJob.id) > 0
+                  && prepareJob.status === 'completed'
+                  && typeof prepareJob.conclusion === 'string'
+                  && prepareJob.conclusion.length > 0;
+                const createStepValid = createSteps.length === 1
+                  && Number.isInteger(Number(createStep.number))
+                  && Number(createStep.number) > 0
+                  && typeof createStep.status === 'string'
+                  && typeof createStep.conclusion === 'string';
+                const state = prepareJobValid
+                  && createStepValid
+                  && createStep.status === 'completed'
+                  && createStep.conclusion === 'skipped'
+                  ? 'skipped'
+                  : 'crossed-or-ambiguous';
+                proof.push({
+                  createStep: createStepValid ? {
+                    conclusion: createStep.conclusion,
+                    name: createStep.name,
+                    number: createStep.number,
+                    status: createStep.status,
+                  } : null,
+                  prepareJob: prepareJobValid ? {
+                    conclusion: prepareJob.conclusion,
+                    id: prepareJob.id,
+                    name: prepareJob.name,
+                    status: prepareJob.status,
+                  } : null,
+                  runAttempt: attempt,
+                  runId,
+                  state,
+                });
+              }
+            }
+            if (!seenIds.has(expectedRunId)) {
+              throw new Error('the current recovery run is missing from final evidence');
+            }
+            return proof.sort(
+              (left, right) => left.runId - right.runId || left.runAttempt - right.runAttempt,
+            );
+          }
+          const recoveryAttempts = recoveryAttemptProof(
+            recoveryRuns,
+            path.join(process.env.RUNNER_TEMP, 'recovery-attempt-jobs-final'),
+          );
+          const recoveryFreshSafe = recoveryAttempts.every(
+            (attempt) => attempt.state === 'skipped',
+          );
           const failedJob = jobs.find((job) => Number(job.id) === 97633984311);
           const failedStep = failedJob?.steps?.find((step) => Number(step.number) === 4);
+          const expectedDownstreamNames = [
+            'build-release',
+            'assemble-release',
+            'publish-and-verify-release',
+          ];
+          const downstreamJobs = expectedDownstreamNames.map(
+            (name) => jobs.find((job) => job.name === name),
+          );
+          const jobIds = new Set(jobs.map((job) => Number(job.id)));
           if (
             repository.full_name !== 'mblua/AgentsCommander'
             || repository.default_branch !== 'main'
@@ -5174,32 +6300,48 @@ jobs:
             || run.created_at !== '2026-08-24T23:56:42Z'
             || run.updated_at !== '2026-08-24T23:56:57Z'
             || failedJob?.name !== 'prepare-release'
+            || failedJob?.status !== 'completed'
             || failedJob?.conclusion !== 'failure'
             || failedStep?.name !== 'Validate authority and classify the release'
+            || failedStep?.status !== 'completed'
             || failedStep?.conclusion !== 'failure'
-            || jobs.some((job) => Number(job.id) !== 97633984311 && job.conclusion !== 'skipped')
+            || jobs.length !== 4
+            || jobIds.size !== 4
+            || jobs.some((job) => !Number.isInteger(Number(job.id)) || Number(job.id) <= 0)
+            || downstreamJobs.some(
+              (job) => !job
+                || job.status !== 'completed'
+                || job.conclusion !== 'skipped'
+                || !Array.isArray(job.steps)
+                || job.steps.length !== 0,
+            )
             || artifacts.total_count !== 0
             || !Array.isArray(artifacts.artifacts)
             || artifacts.artifacts.length !== 0
             || tagRuns.length !== 1
             || Number(tagRuns[0].id) !== 32791566112
             || Number(tagRuns[0].run_attempt) !== 1
-            || recoveryRuns.length !== 1
-            || Number(recoveryRuns[0].id) !== Number(process.env.EXPECTED_RUN_ID)
-            || Number(recoveryRuns[0].run_attempt) !== Number(process.env.EXPECTED_RUN_ATTEMPT)
           ) {
             throw new Error('final repository, tag, failed-run, or recovery-run proof changed');
           }
           const proof = {
             artifacts: { names: [], totalCount: 0 },
+            downstreamJobs: downstreamJobs.map((job) => ({
+              conclusion: job.conclusion,
+              id: job.id,
+              name: job.name,
+              status: job.status,
+            })),
             failedJob: {
               conclusion: failedJob.conclusion,
               id: failedJob.id,
               name: failedJob.name,
+              status: failedJob.status,
               step: {
                 conclusion: failedStep.conclusion,
                 name: failedStep.name,
                 number: failedStep.number,
+                status: failedStep.status,
               },
             },
             failedRun: {
@@ -5214,6 +6356,8 @@ jobs:
               runAttempt: run.run_attempt,
               workflowId: run.workflow_id,
             },
+            recoveryFreshSafe,
+            recoveryAttempts,
           };
           const proofBytes = JSON.stringify(proof) + '\n';
           fs.writeFileSync(process.env.PROOF_PATH, proofBytes, { flag: 'wx' });
@@ -5924,11 +7068,24 @@ jobs:
             immutableManifestSha256: immutableHash,
             npmVersion0301Absent: true,
             publication: {
-              commandStatus: process.env.PUBLISH_COMMAND_STATUS || null,
-              httpStatus: process.env.PUBLISH_HTTP_STATUS || null,
+              commandStatus: process.env.PUBLISH_COMMAND_STATUS === ''
+                ? null
+                : Number(process.env.PUBLISH_COMMAND_STATUS),
+              httpStatus: process.env.PUBLISH_HTTP_STATUS === ''
+                ? null
+                : Number(process.env.PUBLISH_HTTP_STATUS),
+              httpStatusState: process.env.PUBLISH_HTTP_STATUS_STATE,
               invoked: process.env.PUBLISH_INVOKED === 'true',
               outcome: process.env.PUBLISH_OUTCOME,
               reconciliation: process.env.RECONCILIATION_STATUS,
+              responseStderrBytes: process.env.PUBLISH_STDERR_BYTES === ''
+                ? null
+                : Number(process.env.PUBLISH_STDERR_BYTES),
+              responseStderrSha256: process.env.PUBLISH_STDERR_SHA256 || null,
+              responseStdoutBytes: process.env.PUBLISH_STDOUT_BYTES === ''
+                ? null
+                : Number(process.env.PUBLISH_STDOUT_BYTES),
+              responseStdoutSha256: process.env.PUBLISH_STDOUT_SHA256 || null,
             },
             recovery: {
               headSha: process.env.EXPECTED_SHA,
@@ -5960,8 +7117,21 @@ jobs:
             finalSnapshotValidation: 0,
             finalTagObjectRead: 0,
             npmAbsenceRead: 0,
-            publishCommandStatus: process.env.PUBLISH_COMMAND_STATUS || null,
-            publishHttpStatus: process.env.PUBLISH_HTTP_STATUS || null,
+            publishCommandStatus: process.env.PUBLISH_COMMAND_STATUS === ''
+              ? null
+              : Number(process.env.PUBLISH_COMMAND_STATUS),
+            publishHttpStatus: process.env.PUBLISH_HTTP_STATUS === ''
+              ? null
+              : Number(process.env.PUBLISH_HTTP_STATUS),
+            publishHttpStatusState: process.env.PUBLISH_HTTP_STATUS_STATE,
+            publishResponseStderrBytes: process.env.PUBLISH_STDERR_BYTES === ''
+              ? null
+              : Number(process.env.PUBLISH_STDERR_BYTES),
+            publishResponseStderrSha256: process.env.PUBLISH_STDERR_SHA256 || null,
+            publishResponseStdoutBytes: process.env.PUBLISH_STDOUT_BYTES === ''
+              ? null
+              : Number(process.env.PUBLISH_STDOUT_BYTES),
+            publishResponseStdoutSha256: process.env.PUBLISH_STDOUT_SHA256 || null,
             publishStepOutcome: process.env.PUBLISH_OUTCOME,
             reconciliation: 0,
             releaseVerify: 0,
