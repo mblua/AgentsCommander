@@ -125,7 +125,10 @@ fn shell_file_stem(shell: &str) -> String {
 
 fn pty_injection_profile(shell: &str) -> PtyInjectionProfile {
     let stem = shell_file_stem(shell);
-    if stem.starts_with("claude") || stem.starts_with("codex") || stem.starts_with("gemini") {
+    if stem.starts_with("claude")
+        || stem.starts_with("codex")
+        || matches!(stem.as_str(), "agy" | "antigravity")
+    {
         PtyInjectionProfile::Established
     } else if stem == "agent" {
         PtyInjectionProfile::Cursor
@@ -234,7 +237,7 @@ pub async fn submit_exact_agent_input_with_permit(
 
 /// Inject a text block into a session's PTY stdin.
 ///
-/// Direct Claude, Codex, Gemini, Cursor agent, and exact-stem Pi shells receive
+/// Direct Claude, Codex, Antigravity, Cursor agent, and exact-stem Pi shells receive
 /// `\r` twice, at 1500 ms and 2000 ms after the text write, as a reliability
 /// measure against Enter not registering on the first attempt. Plain shells do
 /// not receive an added Enter.
@@ -476,7 +479,10 @@ mod tests {
             "codex.exe",
             "C:\\Users\\maria\\.codex\\codex.exe",
             "/usr/local/bin/claude",
-            "gemini.cmd",
+            "agy",
+            "agy.exe",
+            "C:\\tools\\agy.cmd",
+            "antigravity",
             "agent.exe",
         ] {
             assert!(needs_explicit_enter(shell), "shell={shell:?}");
@@ -776,6 +782,8 @@ mod tests {
             "pi2",
             "pi-claude",
             r"C:\pi\runner.exe",
+            "agy-proxy",
+            "agyctl",
             "cmd.exe",
             "pwsh",
             "",
@@ -800,7 +808,9 @@ mod tests {
             "claude",
             "claude-pi",
             "codex-wrapper.cmd",
-            "gemini-proxy.exe",
+            "codex-proxy.exe",
+            "agy",
+            "antigravity.exe",
         ] {
             assert!(needs_explicit_enter(shell));
             assert_eq!(

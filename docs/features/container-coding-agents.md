@@ -78,7 +78,7 @@ With `--dangerously-skip-permissions`, a brand-new replica still shows Claude Co
 
 ### 3. Credential reuse is Claude Code only
 
-Codex, Gemini, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
+Codex, Antigravity, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
 
 For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CODING_AGENT_SESSION_DIR`, or provision a `--session-dir` path. Pi 0.80.10 accepts only the separated spelling `--session-dir <dir>`; it rejects `--session-dir=<dir>`. AC preserves the user-authored spelling and path during any eligible `--continue` insertion but does not make the path container-aware. Any custom session directory and its durable state must already be meaningful inside the container.
 

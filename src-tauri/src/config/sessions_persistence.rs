@@ -1703,7 +1703,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
 
 /// Strip AC-managed provider args from saved shell arguments.
 /// Current launch-time injections are Claude's `--continue`, Codex's
-/// `resume --last`, Gemini's `--resume latest`, and Pi's `--continue`.
+/// `resume --last`, Antigravity's `--continue`, and Pi's `--continue`.
 /// The first three are stripped so they cannot self-perpetuate across restarts.
 /// Pi is preserved because this boundary receives the configured recipe, where
 /// a `--continue` token is user-authored and has no injection provenance.
@@ -1768,40 +1768,30 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         }
     }
 
-    fn strip_gemini_tokens(tokens: &mut Vec<String>, start: usize) {
-        // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
-        // destructure, never index. The joined `--resume=latest` variant is
-        // derived from the same two tokens.
-        let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
-            debug_assert!(false, "Gemini resume_tokens must have exactly 2 elements");
-            return;
-        };
-        let joined = format!("{}={}", resume_flag, resume_value);
-        if tokens
-            .get(start)
-            .is_some_and(|token| token.eq_ignore_ascii_case(resume_flag))
-            && tokens
-                .get(start + 1)
-                .is_some_and(|token| token.eq_ignore_ascii_case(resume_value))
-        {
-            tokens.remove(start);
-            tokens.remove(start);
-        } else if tokens
-            .get(start)
-            .is_some_and(|token| token.to_lowercase() == joined)
-        {
-            tokens.remove(start);
+    fn strip_antigravity_tokens(tokens: &mut Vec<String>, start: usize) {
+        // #260/#1482 — resume token from the CodingAgentProfile. Only the
+        // AC-injected `--continue` is stripped; `-c` and `--conversation <ID>`
+        // are user-authored resume forms and are preserved. resume_tokens is a
+        // 1-element const for Antigravity, so [0] is provably in bounds.
+        let continue_flag = CodingAgentKind::Antigravity.profile().resume_tokens[0];
+        let mut idx = start;
+        while idx < tokens.len() {
+            if tokens[idx].eq_ignore_ascii_case(continue_flag) {
+                tokens.remove(idx);
+                continue;
+            }
+            idx += 1;
         }
     }
 
     // #260 — consult the single detector (session/profile.rs) instead of
     // re-deriving agent identity here. Guarantees this stripper agrees with
     // the `agent_kind` that `create_session_inner` stamped on the session.
-    let (is_claude, is_codex, is_gemini) = match CodingAgentKind::detect(shell, args) {
+    let (is_claude, is_codex, is_antigravity) = match CodingAgentKind::detect(shell, args) {
         Some(CodingAgentKind::Pi) => return args.to_vec(),
         Some(CodingAgentKind::Claude) => (true, false, false),
         Some(CodingAgentKind::Codex) => (false, true, false),
-        Some(CodingAgentKind::Gemini) => (false, false, true),
+        Some(CodingAgentKind::Antigravity) => (false, false, true),
         None => return args.to_vec(),
     };
 
@@ -1825,12 +1815,14 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 strip_codex_tokens(&mut result, idx + 1);
             }
         }
-        if is_gemini {
-            if let Some(idx) = result
-                .iter()
-                .position(|arg| crate::commands::session::executable_basename(arg) == "gemini")
-            {
-                strip_gemini_tokens(&mut result, idx + 1);
+        if is_antigravity {
+            if let Some(idx) = result.iter().position(|arg| {
+                matches!(
+                    crate::commands::session::executable_basename(arg).as_str(),
+                    "agy" | "antigravity"
+                )
+            }) {
+                strip_antigravity_tokens(&mut result, idx + 1);
             }
         }
 
@@ -1861,26 +1853,21 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 }
             }
 
-            if is_gemini {
+            if is_antigravity {
                 if let Some(idx) = tokens.iter().position(|token| {
-                    crate::commands::session::executable_basename(token) == "gemini"
+                    matches!(
+                        crate::commands::session::executable_basename(token).as_str(),
+                        "agy" | "antigravity"
+                    )
                 }) {
                     let before = tokens.len();
-                    strip_gemini_tokens(&mut tokens, idx + 1);
+                    strip_antigravity_tokens(&mut tokens, idx + 1);
                     changed |= tokens.len() != before;
                 }
             }
 
             if changed {
                 *arg = tokens.join(" ");
-            }
-        }
-        if is_gemini {
-            if let Some(idx) = result
-                .iter()
-                .position(|arg| crate::commands::session::executable_basename(arg) == "gemini")
-            {
-                strip_gemini_tokens(&mut result, idx + 1);
             }
         }
 
@@ -1912,28 +1899,9 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
                 continue;
             }
 
-            if is_gemini && idx == 0 {
-                if a.eq_ignore_ascii_case("--resume") {
-                    if args
-                        .get(1)
-                        .is_some_and(|next| next.eq_ignore_ascii_case("latest"))
-                    {
-                        continue;
-                    }
-                } else if a.to_lowercase() == "--resume=latest" {
-                    continue;
-                }
-            }
-            if is_gemini
-                && idx == 1
-                && args
-                    .first()
-                    .is_some_and(|first| first.eq_ignore_ascii_case("--resume"))
-                && a.eq_ignore_ascii_case("latest")
-            {
+            if is_antigravity && a.eq_ignore_ascii_case("--continue") {
                 continue;
             }
-
             if is_claude && a.eq_ignore_ascii_case("--continue") {
                 continue;
             }
@@ -4013,12 +3981,11 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_direct_gemini_resume_latest() {
+    fn strip_auto_injected_args_removes_direct_antigravity_continue() {
         let stripped = strip_auto_injected_args(
-            "gemini",
+            "agy",
             &[
-                "--resume".to_string(),
-                "latest".to_string(),
+                "--continue".to_string(),
                 "-m".to_string(),
                 "gpt-5".to_string(),
             ],
@@ -4027,14 +3994,13 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_cmd_gemini_resume_latest() {
+    fn strip_auto_injected_args_removes_cmd_antigravity_continue() {
         let stripped = strip_auto_injected_args(
             "cmd.exe",
             &[
                 "/C".to_string(),
-                "gemini".to_string(),
-                "--resume".to_string(),
-                "latest".to_string(),
+                "agy".to_string(),
+                "--continue".to_string(),
                 "-m".to_string(),
                 "gpt-5".to_string(),
             ],
@@ -4043,7 +4009,7 @@ mod tests {
             stripped,
             vec![
                 "/C".to_string(),
-                "gemini".to_string(),
+                "agy".to_string(),
                 "-m".to_string(),
                 "gpt-5".to_string()
             ]
@@ -4051,18 +4017,81 @@ mod tests {
     }
 
     #[test]
-    fn strip_auto_injected_args_removes_embedded_cmd_gemini_resume_latest() {
+    fn strip_auto_injected_args_removes_embedded_cmd_antigravity_continue() {
         let stripped = strip_auto_injected_args(
             "cmd.exe",
             &[
                 "/K".to_string(),
-                "git pull && gemini --resume latest -m gpt-5".to_string(),
+                "git pull && agy --continue -m gpt-5".to_string(),
             ],
         );
         assert_eq!(
             stripped,
-            vec!["/K".to_string(), "git pull && gemini -m gpt-5".to_string()]
+            vec!["/K".to_string(), "git pull && agy -m gpt-5".to_string()]
         );
+    }
+
+    #[test]
+    fn strip_auto_injected_args_preserves_user_authored_antigravity_resume_forms() {
+        // `-c` and `--conversation <ID>` / `--conversation=<ID>` are
+        // user-authored resume forms: they must survive stripping verbatim.
+        for (shell, args) in [
+            ("agy", vec!["-c".to_string(), "-m".to_string(), "gpt-5".to_string()]),
+            (
+                "agy",
+                vec![
+                    "--conversation".to_string(),
+                    "abc123".to_string(),
+                    "-m".to_string(),
+                    "gpt-5".to_string(),
+                ],
+            ),
+            ("agy", vec!["--conversation=abc123".to_string()]),
+            (
+                "cmd.exe",
+                vec![
+                    "/C".to_string(),
+                    "agy".to_string(),
+                    "--conversation".to_string(),
+                    "abc123".to_string(),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                strip_auto_injected_args(shell, &args),
+                args,
+                "shell={shell:?} args={args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_auto_injected_args_antigravity_round_trip_continue() {
+        // round-trip: strip(apply(cmd)) == cmd for the injected `--continue`.
+        for (shell, injected) in [
+            ("agy", vec!["-m".to_string(), "gpt-5".to_string()]),
+            (
+                "cmd.exe",
+                vec![
+                    "/C".to_string(),
+                    "agy".to_string(),
+                    "-m".to_string(),
+                    "gpt-5".to_string(),
+                ],
+            ),
+        ] {
+            let mut applied = injected.clone();
+            if shell == "agy" {
+                applied.insert(0, "--continue".to_string());
+            } else {
+                applied.insert(2, "--continue".to_string());
+            }
+            assert_eq!(
+                strip_auto_injected_args(shell, &applied),
+                injected,
+                "shell={shell:?}"
+            );
+        }
     }
 
     #[test]

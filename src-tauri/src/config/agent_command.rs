@@ -180,8 +180,9 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
     match normalize_legacy_agent_command(command) {
         Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
             Some(CodingAgentKind::Claude) => "CLAUDE.md",
-            Some(CodingAgentKind::Gemini) => "GEMINI.md",
-            Some(CodingAgentKind::Codex) | Some(CodingAgentKind::Pi) => "AGENTS.md",
+            Some(CodingAgentKind::Codex)
+            | Some(CodingAgentKind::Pi)
+            | Some(CodingAgentKind::Antigravity) => "AGENTS.md",
             // OpenCode, custom, and unknown commands also use AGENTS.md.
             None => "AGENTS.md",
         },
@@ -277,7 +278,7 @@ pub fn is_safe_instructions_filename(filename: &str) -> bool {
         return false;
     }
     // G9: reject the exact AC-internal sentinel (case-insensitive). The
-    // user-facing built-ins CLAUDE.md / GEMINI.md / AGENTS.md stay allowed.
+    // user-facing built-ins CLAUDE.md / AGENTS.md stay allowed.
     if filename.eq_ignore_ascii_case("last_ac_context.md") {
         return false;
     }
@@ -574,7 +575,7 @@ const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd
 
 /// True when the launch command runs opencode, matched by executable name.
 /// There is no `CodingAgentKind::OpenCode` (the closed enum covers Claude,
-/// Codex, Gemini, and Pi, but `detect` does not know opencode), so this mirrors the
+/// Codex, Antigravity, and Pi, but `detect` does not know opencode), so this mirrors the
 /// `executable_basename(shell) == "codex"` fallback in [`compute_codex_home`].
 ///
 /// The `shell` (the program being launched) is matched on `file_stem`, like the
@@ -1635,8 +1636,8 @@ mod tests {
             "CLAUDE.md"
         );
         assert_eq!(
-            default_instructions_filename_for_command("gemini -m gpt-5"),
-            "GEMINI.md"
+            default_instructions_filename_for_command("agy -m gpt-5"),
+            "AGENTS.md"
         );
         assert_eq!(
             default_instructions_filename_for_command("codex"),
@@ -1703,7 +1704,7 @@ mod tests {
             agents: vec![
                 agent("claude", "claude"),     // CLAUDE.md
                 agent("codex", "codex"),       // AGENTS.md
-                agent("gemini", "gemini"),     // GEMINI.md
+                agent("agy", "agy"),           // AGENTS.md
                 agent("opencode", "opencode"), // AGENTS.md (dup of codex)
             ],
             ..AppSettings::default()
@@ -1712,11 +1713,7 @@ mod tests {
         got.sort();
         assert_eq!(
             got,
-            vec![
-                "AGENTS.md".to_string(),
-                "CLAUDE.md".to_string(),
-                "GEMINI.md".to_string()
-            ]
+            vec!["AGENTS.md".to_string(), "CLAUDE.md".to_string()]
         );
     }
 
@@ -1743,9 +1740,13 @@ mod tests {
         );
         // 3. unknown id -> detection fallback.
         assert_eq!(
-            resolve_target_filename(Some("ghost"), &settings, Some(ManagedContextTarget::Gemini))
-                .as_deref(),
-            Some("GEMINI.md")
+            resolve_target_filename(
+                Some("ghost"),
+                &settings,
+                Some(ManagedContextTarget::Antigravity)
+            )
+            .as_deref(),
+            Some("AGENTS.md")
         );
         // 3b. no id -> detection fallback.
         assert_eq!(

@@ -9,7 +9,7 @@ For privacy and data-flow questions (what leaves the machine and when), see [`PR
 AgentsCommander is a **local desktop application** that spawns coding-agent CLIs and routes messages between them. The trust boundaries are:
 
 1. **The user.** Operates the GUI, picks coding agents, accepts the actions agents propose. Fully trusted.
-2. **The coding agents.** Claude Code, Codex, Gemini, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
+2. **The coding agents.** Claude Code, Codex, Antigravity, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
 3. **The optional network endpoints.** Telegram Bot API and the Google Gemini API for voice-to-text. Only contacted when the user explicitly enables those features.
 4. **The disk.** AC keeps its state in files, on this machine by default. Under the per-instance config directory next to the binary (`.agentscommander*`, with a legacy `$HOME` fallback; see [Portable instances](features/portable-instances.md)) you will find configuration, persisted sessions, the Root Agent directory `ac-root-agent/` including its `messaging/` Markdown message files, and the running instance's delivery queue at `instances/<instance-id>/outbox/`. In your Project AC Root you will find team configuration under `_team_<name>/`, each workgroup's `messaging/` Markdown message files, and each agent replica's delivery queue at `<replica>/<instance-dir>/outbox/`, where `<instance-dir>` is that replica's dot-prefixed per-instance directory. **Message data is written under both roots**, optional features and per-call overrides can put it outside either root and need not keep it on this machine, and neither list is exhaustive, so treat this as where to start looking rather than as an inventory of everything AC writes.
 
@@ -120,7 +120,7 @@ Snapshot audit is metadata-only and fail-soft. It is operational diagnostics, no
 
 **Status: in progress. On by default** (`containerCredentialsFromHost`). The full feature and its limitations are in [Container coding agents](features/container-coding-agents.md).
 
-When Claude Code runs under the Container runtime, AC copies the executing host user's `~/.claude/.credentials.json` into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops. Claude Code is the only provider with a credential descriptor today. AC copies no Codex, Gemini, or Pi credential or state.
+When Claude Code runs under the Container runtime, AC copies the executing host user's `~/.claude/.credentials.json` into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops. Claude Code is the only provider with a credential descriptor today. AC copies no Codex, Antigravity, or Pi credential or state.
 
 What you accept when you leave this on:
 

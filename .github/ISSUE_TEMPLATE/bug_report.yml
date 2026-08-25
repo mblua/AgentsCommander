@@ -83,7 +83,7 @@ body:
         - "N/A — not coding-agent-specific"
         - Claude Code
         - Codex
-        - Gemini
+        - Antigravity
         - Other / multiple
     validations:
       required: false

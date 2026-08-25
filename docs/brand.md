@@ -167,7 +167,7 @@ keep the word.
 
 - We say `cat` and `git diff`, not "audit your agent state." We name the
   command.
-- We say "Claude Code, Codex, Gemini, and Pi," not "leading AI coding assistants."
+- We say "Claude Code, Codex, Pi, and Antigravity," not "leading AI coding assistants."
   We name the product.
 - Numbers beat adjectives. "60-second install to first running agent"
   beats "quick setup."

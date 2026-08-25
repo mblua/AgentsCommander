@@ -60,7 +60,7 @@ pub struct AgentConfig {
     pub isolated_home: bool,
     /// #529 - filename AC writes into the agent root at launch (content = AC
     /// context + Role.md). `None`/empty falls back to the command-derived default
-    /// (Claude -> CLAUDE.md, Gemini -> GEMINI.md, Codex/Pi/else -> AGENTS.md). Serialized as
+    /// (Claude -> CLAUDE.md, Codex/Pi/Antigravity/else -> AGENTS.md). Serialized as
     /// `instructionsFilename`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
@@ -967,20 +967,11 @@ fn find_provider_token(tokens: &[&str], provider: &str) -> Option<usize> {
         .position(|token| command_token_basename(token) == provider)
 }
 
-fn gemini_has_manual_resume(tokens: &[&str], gemini_idx: usize) -> bool {
-    let mut idx = gemini_idx + 1;
-    while idx < tokens.len() {
-        let token = tokens[idx];
-        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
-            idx = advance_past_config_value(tokens, idx + 1);
-            continue;
-        }
-        if token.eq_ignore_ascii_case("--resume") || token.to_lowercase().starts_with("--resume=") {
-            return true;
-        }
-        idx += 1;
-    }
-    false
+fn antigravity_has_manual_resume(tokens: &[&str], antigravity_idx: usize) -> bool {
+    tokens[antigravity_idx + 1..].iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower == "--continue" || lower == "-c"
+    })
 }
 
 fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool {
@@ -1676,11 +1667,12 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
             if cell.enabled && !cell.command.trim().is_empty() {
                 // #597 - the cell holds params appended to the agent base command,
                 // so validate the COMPOSED effective command. Otherwise a banned
-                // provider flag (Claude --continue/-c or Codex/Gemini manual resume)
-                // placed in the cell params escapes the check. Pi session selectors
-                // are intentionally allowed and remain user-authoritative. The provider token
-                // lives in the base, not the cell. Falls back to the cell text when
-                // the cell references an agent id that has no configured agent.
+                // provider flag (Claude --continue/-c or Codex manual resume /
+                // Antigravity --continue/-c) placed in the cell params escapes the
+                // check. Pi session selectors are intentionally allowed and remain
+                // user-authoritative. The provider token lives in the base, not the
+                // cell. Falls back to the cell text when the cell references an
+                // agent id that has no configured agent.
                 let base = settings
                     .agents
                     .iter()
@@ -1745,10 +1737,12 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
         }
     }
 
-    if let Some(gemini_idx) = find_provider_token(&tokens, "gemini") {
-        if gemini_has_manual_resume(&tokens, gemini_idx) {
+    if let Some(antigravity_idx) = find_provider_token(&tokens, "agy")
+        .or_else(|| find_provider_token(&tokens, "antigravity"))
+    {
+        if antigravity_has_manual_resume(&tokens, antigravity_idx) {
             return Err(format!(
-                "{context}: Gemini commands must not include --resume; AgentsCommander injects gemini --resume latest automatically"
+                "{context}: Antigravity commands must not include --continue or -c; AgentsCommander injects agy --continue automatically"
             ));
         }
     }
@@ -5770,16 +5764,29 @@ mod tests {
     }
 
     #[test]
-    fn validate_agent_commands_allows_plain_gemini() {
-        let settings = settings_with_agents(&[("Gemini", "gemini")]);
+    fn validate_agent_commands_allows_plain_antigravity() {
+        let settings = settings_with_agents(&[("Antigravity", "agy")]);
         assert!(super::validate_agent_commands(&settings).is_ok());
     }
 
     #[test]
-    fn validate_agent_commands_rejects_gemini_resume_latest() {
-        let settings = settings_with_agents(&[("Gemini", "gemini --resume latest")]);
-        let err = super::validate_agent_commands(&settings).unwrap_err();
-        assert!(err.contains("Gemini commands must not include --resume"));
+    fn validate_agent_commands_rejects_antigravity_continue() {
+        for command in ["agy --continue", "agy -c"] {
+            let settings = settings_with_agents(&[("Antigravity", command)]);
+            let err = super::validate_agent_commands(&settings).unwrap_err();
+            assert!(
+                err.contains("must not include --continue or -c"),
+                "command={command:?} err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_antigravity_conversation() {
+        // `--conversation <ID>` is a user-authored resume-by-ID form and stays
+        // allowed (analog of Claude `--resume <id>`; the injector skip honors it).
+        let settings = settings_with_agents(&[("Antigravity", "agy --conversation abc123")]);
+        assert!(super::validate_agent_commands(&settings).is_ok());
     }
 
     #[test]

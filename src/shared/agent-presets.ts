@@ -11,8 +11,9 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    // #1318/#1325 - mirror of the embedded default: claude, pi, and codex
-    // ship the update command; every entry defaults autoUpdate to false.
+    // #1318/#1325/#1546 - mirror of the embedded default: claude, pi, codex,
+    // hermes, opencode, and antigravity ship the update command; cursor ships
+    // none; every entry defaults autoUpdate to false.
     updateCommands: ["claude --update"],
     autoUpdate: false,
   },
@@ -39,7 +40,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    updateCommands: [],
+    updateCommands: ["hermes update --yes"],
     autoUpdate: false,
   },
   {
@@ -78,7 +79,21 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = [
     envs: [],
     isolatedHome: false,
     removable: true,
-    updateCommands: [],
+    updateCommands: ["opencode upgrade"],
+    autoUpdate: false,
+  },
+  {
+    key: "antigravity",
+    label: "Antigravity",
+    description: "Coding Agent by Google",
+    color: "#4285F4",
+    command: "agy",
+    instructionsFilename: "AGENTS.md",
+    envs: [],
+    isolatedHome: false,
+    removable: true,
+    // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
+    updateCommands: ["agy update"],
     autoUpdate: false,
   },
 ];

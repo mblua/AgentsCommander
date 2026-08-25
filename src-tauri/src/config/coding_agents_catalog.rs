@@ -227,12 +227,44 @@ fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
     )
 }
 
+/// #1546 - in-memory backfill: for every entry whose `update_commands` is
+/// EMPTY, copy the sequence from the FIRST embedded-default entry with the
+/// same `command` and a non-empty sequence. Matching by `command` (not key),
+/// mirroring `build_update_plan`'s command-keyed binding rule. User-authored
+/// non-empty sequences ALWAYS win (never overwritten). Entries with no
+/// embedded match (custom commands, cursor's `agent`) stay empty. Never
+/// writes to disk: the catalog is user-owned after the first seed (G3).
+fn backfill_update_commands_from_embedded_default(
+    agents: Vec<CodingAgentDefinition>,
+) -> Vec<CodingAgentDefinition> {
+    let defaults = validated_embedded_default();
+    agents
+        .into_iter()
+        .map(|mut def| {
+            if !def.update_commands.is_empty() {
+                return def;
+            }
+            if let Some(src) = defaults
+                .iter()
+                .find(|d| d.command == def.command && !d.update_commands.is_empty())
+            {
+                def.update_commands = src.update_commands.clone();
+            }
+            def
+        })
+        .collect()
+}
+
 /// Load the catalog for the `get_coding_agent_catalog` command.
 ///
 /// Contract (§14.2): NEVER errors. Returns the validated on-disk agents when the
 /// manifest parses; a valid empty list is honored verbatim (the user removed all
-/// built-ins). A **missing** or **unparseable** manifest self-heals to the
-/// embedded default IN MEMORY only, never writing to disk (G3 corrupt-preserve).
+/// built-ins). On the parsed path, entries with empty `updateCommands` are
+/// backfilled IN MEMORY from the embedded default (first entry with the same
+/// `command` and a non-empty sequence); user-authored sequences always win;
+/// nothing is written to disk. A **missing** or **unparseable** manifest
+/// self-heals to the embedded default IN MEMORY only, never writing to disk
+/// (G3 corrupt-preserve).
 /// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
 /// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
 /// through the same relative layout).
@@ -256,7 +288,10 @@ pub fn load_catalog(ac_dir: &Path) -> Vec<CodingAgentDefinition> {
         }
     };
     match serde_json::from_slice::<CodingAgentCatalog>(&bytes) {
-        Ok(catalog) => validate_and_filter(catalog.agents, &path.display().to_string()),
+        Ok(catalog) => backfill_update_commands_from_embedded_default(validate_and_filter(
+            catalog.agents,
+            &path.display().to_string(),
+        )),
         Err(e) => {
             // G3: never overwrite a present-but-corrupt file. Preserve it as-is
             // and serve the built-in defaults for this session only.
@@ -978,12 +1013,12 @@ fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// (key, label, description, color, command, instructionsFilename) for the 6
+    /// (key, label, description, color, command, instructionsFilename) for the 7
     /// current presets. Drift guard: the embedded default must equal these exact
     /// values so the externalized catalog is byte-for-byte the pre-#769 list. The
     /// frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
     #[allow(clippy::type_complexity)]
-    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 6] = [
+    const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, &str, Option<&str>); 7] = [
         (
             "claude",
             "Claude Code",
@@ -1038,6 +1073,15 @@ mod tests {
             "AGENTS.md",
             Some(".opencode"),
         ),
+        (
+            "antigravity",
+            "Antigravity",
+            "Coding Agent by Google",
+            "#4285F4",
+            "agy",
+            "AGENTS.md",
+            None,
+        ),
     ];
 
     fn manifest_json(agents_json: &str) -> String {
@@ -1049,21 +1093,20 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_parses_with_six_agents_in_order() {
+    fn embedded_default_parses_with_seven_agents_in_order() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.schema_version, CATALOG_SCHEMA_VERSION);
         let keys: Vec<&str> = catalog.agents.iter().map(|a| a.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["claude", "codex", "hermes", "cursor", "pi", "opencode"]
+            [
+                "claude", "codex", "hermes", "cursor", "pi", "opencode", "antigravity"
+            ]
         );
-        // OpenCode is last and carries the #768 "by Anomaly" subtitle.
+        // Antigravity is last, after OpenCode.
         let last = catalog.agents.last().unwrap();
-        assert_eq!(last.key, "opencode");
-        assert_eq!(
-            last.description,
-            "Open-source terminal coding agent by Anomaly"
-        );
+        assert_eq!(last.key, "antigravity");
+        assert_eq!(last.command, "agy");
     }
 
     #[test]
@@ -1139,7 +1182,7 @@ mod tests {
     fn load_missing_manifest_returns_embedded_default() {
         let dir = seed_dir();
         let agents = load_catalog(dir.path());
-        assert_eq!(agents.len(), 6);
+        assert_eq!(agents.len(), 7);
         assert_eq!(agents[0].key, "claude");
     }
 
@@ -1154,7 +1197,7 @@ mod tests {
         let agents = load_catalog(dir.path());
         assert_eq!(
             agents.len(),
-            6,
+            7,
             "corrupt file self-heals to embedded default"
         );
         // G3: the corrupt file is preserved byte-for-byte, never overwritten.
@@ -1216,7 +1259,7 @@ mod tests {
 
         ensure_seeded(dir.path(), None);
         assert!(path.exists(), "seed writes the manifest when absent");
-        assert_eq!(load_catalog(dir.path()).len(), 6);
+        assert_eq!(load_catalog(dir.path()).len(), 7);
 
         // Idempotent + never clobbers a user edit: hand-edit to a single custom
         // agent, re-seed, and confirm the edit is preserved.
@@ -1445,18 +1488,18 @@ mod tests {
         let project = seed_dir();
         let legacy = legacy_dir();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
 
         // Legacy agents.json is a DIRECTORY -> not a regular file -> embedded.
         let project = seed_dir();
         std::fs::create_dir_all(legacy.path().join("agents.json")).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
 
         // No legacy at all -> embedded default.
         let project = seed_dir();
         ensure_seeded(project.path(), None);
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
     }
 
     #[test]
@@ -1589,7 +1632,7 @@ mod tests {
         };
 
         // Primary file absent -> embedded default (self-heal).
-        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
 
         // Hand-edited primary file is observable (primary wins over everything).
         let custom = manifest_json(
@@ -1603,7 +1646,7 @@ mod tests {
 
         // Primary file DELETED -> embedded default, never a legacy copy.
         std::fs::remove_file(manifest_path(&ac_dir)).unwrap();
-        assert_eq!(load_catalog_for_settings(&settings).len(), 6);
+        assert_eq!(load_catalog_for_settings(&settings).len(), 7);
     }
 
     #[test]
@@ -1663,11 +1706,11 @@ mod tests {
             "corrupt legacy content is user data and is copied verbatim"
         );
         // The read path self-heals to the embedded default in memory.
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
         // Recovery: deleting the project file re-seeds the embedded default.
         std::fs::remove_file(&project_file).unwrap();
         ensure_seeded(project.path(), Some(legacy.path()));
-        assert_eq!(load_catalog(project.path()).len(), 6);
+        assert_eq!(load_catalog(project.path()).len(), 7);
     }
 
     #[test]
@@ -1768,30 +1811,169 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_ships_claude_pi_and_codex_update_commands() {
-        // #1318/#1325 drift guard: claude, pi, and codex ship the update
-        // command; the other three ship none; every entry defaults autoUpdate
-        // to false.
+    fn load_catalog_backfills_empty_update_commands_from_embedded_default() {
+        // A catalog seeded before the update-command era (#1325) carries no
+        // updateCommands; load_catalog backfills them IN MEMORY from the
+        // embedded default, matching by command, and never writes the file.
+        let json = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"codex","label":"Codex","description":"d","color":"#10b981","command":"codex","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"hermes","label":"Hermes","description":"d","color":"#8b5cf6","command":"hermes","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"opencode","label":"OpenCode","description":"d","color":"#64748b","command":"opencode","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"antigravity","label":"Antigravity","description":"d","color":"#4285F4","command":"agy","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 6);
+        let by_key = |key: &str| loaded.iter().find(|d| d.key == key).unwrap();
+        assert_eq!(
+            by_key("claude").update_commands,
+            vec!["claude --update".to_string()]
+        );
+        assert_eq!(by_key("pi").update_commands, vec!["pi update".to_string()]);
+        assert_eq!(
+            by_key("codex").update_commands,
+            vec!["codex update".to_string()]
+        );
+        assert_eq!(
+            by_key("hermes").update_commands,
+            vec!["hermes update --yes".to_string()]
+        );
+        assert_eq!(
+            by_key("opencode").update_commands,
+            vec!["opencode upgrade".to_string()]
+        );
+        assert_eq!(
+            by_key("antigravity").update_commands,
+            vec!["agy update".to_string()]
+        );
+
+        // No-write proof: the manifest bytes are identical before/after the load.
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            json.as_bytes()
+        );
+    }
+
+    #[test]
+    fn load_catalog_never_overwrites_user_update_commands() {
+        // User-authored non-empty sequences ALWAYS win, even a one-element one.
+        let json = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["claude --custom"]}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["claude --custom".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_catalog_backfill_no_embedded_match_leaves_entry_intact() {
+        // Custom command `bob` has no embedded match -> stays empty (never
+        // prompted nor updated), unchanged behavior.
+        let json = manifest_json(
+            r##"[{"key":"bob","label":"Bob","description":"d","color":"#333","command":"bob","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].update_commands.is_empty());
+    }
+
+    #[test]
+    fn load_catalog_backfill_matches_by_command_for_duplicate_commands() {
+        // Two profiles share the `pi` command under different keys; both are
+        // backfilled per-entry, consistent with build_update_plan's
+        // command-keyed binding rule.
+        let json = manifest_json(
+            r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["pi update".to_string()]
+        );
+        assert_eq!(
+            loaded[1].update_commands,
+            vec!["pi update".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_catalog_backfill_mixed_duplicates_first_empty_second_custom() {
+        // Mixed duplicate commands: the FIRST `pi` entry is empty -> backfilled;
+        // the SECOND keeps its custom sequence UNTOUCHED (data-level never
+        // overwritten). build_update_plan's first-non-empty `find` then selects
+        // the FIRST entry's sequence for command `pi` - the backfilled
+        // ["pi update"] wins over the custom one (pre-existing command-keyed
+        // first-wins rule; before the backfill the find skipped the empty first
+        // entry and used the custom sequence).
+        let json = manifest_json(
+            r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi --custom"]}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["pi update".to_string()]
+        );
+        assert_eq!(
+            loaded[1].update_commands,
+            vec!["pi --custom".to_string()]
+        );
+    }
+
+    #[test]
+    fn embedded_default_ships_update_commands_for_all_but_cursor() {
+        // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
+        // and antigravity ship the update command; cursor ships none; every
+        // entry defaults autoUpdate to false.
         let catalog = embedded_default_catalog();
-        assert_eq!(catalog.agents.len(), 6);
+        assert_eq!(catalog.agents.len(), 7);
         for def in &catalog.agents {
             assert!(
                 !def.auto_update,
                 "{} autoUpdate must default false",
                 def.key
             );
-            if def.key == "claude" {
-                assert_eq!(def.update_commands, vec!["claude --update".to_string()]);
-            } else if def.key == "pi" {
-                assert_eq!(def.update_commands, vec!["pi update".to_string()]);
-            } else if def.key == "codex" {
-                assert_eq!(def.update_commands, vec!["codex update".to_string()]);
-            } else {
-                assert!(
+            match def.key.as_str() {
+                "claude" => assert_eq!(def.update_commands, vec!["claude --update".to_string()]),
+                "pi" => assert_eq!(def.update_commands, vec!["pi update".to_string()]),
+                "codex" => assert_eq!(def.update_commands, vec!["codex update".to_string()]),
+                "hermes" => assert_eq!(
+                    def.update_commands,
+                    vec!["hermes update --yes".to_string()]
+                ),
+                "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
+                "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
+                "cursor" => assert!(
                     def.update_commands.is_empty(),
-                    "{} must ship no update command",
-                    def.key
-                );
+                    "cursor must ship no update command"
+                ),
+                other => panic!("unexpected key {other:?}"),
             }
         }
     }

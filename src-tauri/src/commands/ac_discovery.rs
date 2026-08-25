@@ -1530,10 +1530,6 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
         (
-            "**/__agent_*/GEMINI.md",
-            "# AgentsCommander: exclude managed session context files inside replica agent folders.",
-        ),
-        (
             "**/__agent_*/AGENTS.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),

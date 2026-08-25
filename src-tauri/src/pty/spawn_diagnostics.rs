@@ -1795,13 +1795,13 @@ mod tests {
     #[test]
     fn spawn_window_counts_the_preceding_spawns_by_cli() {
         let thresholds = test_thresholds();
-        let first = note_spawn_attempt(Some(CodingAgentKind::Gemini), thresholds);
-        let second = note_spawn_attempt(Some(CodingAgentKind::Gemini), thresholds);
+        let first = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds);
+        let second = note_spawn_attempt(Some(CodingAgentKind::Antigravity), thresholds);
         let third = note_spawn_attempt(Some(CodingAgentKind::Claude), thresholds);
 
         assert_eq!(first.same_cli, 0);
-        assert_eq!(second.same_cli, 1, "two Geminis in the window");
-        assert_eq!(third.same_cli, 0, "a Claude is not a Gemini");
+        assert_eq!(second.same_cli, 1, "two Antigravitys in the window");
+        assert_eq!(third.same_cli, 0, "a Claude is not an Antigravity");
         assert!(second.total >= 1);
         assert!(third.total >= 2);
         assert_eq!(
