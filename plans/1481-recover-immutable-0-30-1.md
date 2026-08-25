@@ -250,14 +250,15 @@ Do not fetch or parse logs with the admin secret. Do not rerun or cancel the his
 
 Check out only release commit `da116e0...` with checkout pin `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`, `fetch-depth:0`, and `persist-credentials:false`. Never check out a user-selected ref for build inputs.
 
-Derive the Release metadata deterministically from the checked-out, UTF-8-decoded `CHANGELOG.md`:
+Read the checked-out `CHANGELOG.md` as UTF-8 and derive the Release metadata deterministically:
 
 1. Set the Release name to the exact literal `Agents Commander v0.30.1`. The annotated-tag message `Release v0.30.1` is not the Release name.
 2. Require exactly one line matching `/^## 0\.30\.1[ \t]*$/gm`.
 3. Begin the body slice immediately after that heading and end immediately before the next line matching `/^## [^\r\n]+$/m`, or at EOF when there is no later heading.
 4. Apply JavaScript `.trim()` to the slice and reject an empty result.
 5. Create the notes file once with exclusive-create mode `wx` and write exactly the trimmed body followed by one LF. Never append, overwrite, reuse a pre-existing file, normalize the body again, or include the heading.
-6. Use those exact notes bytes as the raw Release `body`. On every classifier and postcondition read, compare both `release.name` and `release.body` byte-for-byte to the expected values.
+6. Do not separately normalize CRLF to LF or validate, strip, or reject a BOM. The UTF-8 decode, exact regexes, slice, single ECMAScript `.trim()`, and one appended LF above are the complete transformation.
+7. Construct the Release JSON with jq's `--rawfile body` argument pointed at that exact exclusive-created notes file, so the API `body` does not come from a second derivation or a shell variable. On every classifier and postcondition read, materialize the parsed `release.body` as UTF-8 without transformation and compare it byte-for-byte to that same notes file; compare `release.name` separately to the exact literal.
 
 No expected Release-body hash exists in the frozen workflow, prior plan history, issue #1481, or PR #1543. Do not use the normalized-section SHA-256 `4c04c234e2286479c78f701ae7029d998351047da394481a7a597039f40ce7dd`: it includes the heading, whereas the Release body excludes it. The earlier changelog-order conflict was corrected by commit `eec945cdb8a4d601d22e280ccb9cb74306348f3a` before the tagged merge and is not an open recovery condition.
 
@@ -520,6 +521,7 @@ Require all of the following:
 - Release mutation sources are exactly one draft POST, one serial upload command source over the exact 16 names, and one `draft:false` PATCH.
 - No `--clobber`, `gh release create/edit/delete`, Release/asset delete, tag mutation, settings mutation, npm publish, retry wrapper around a mutation, or user-controlled release identity exists.
 - Every checkout uses fixed release commit `da116e0...`, fetch depth and credential behavior from section 6.6; assembler has no checkout.
+- Static inspection confirms one UTF-8 changelog read, the exact two heading regexes, one ECMAScript `.trim()`, one exclusive `wx` notes-file creation with exactly one appended LF, no separate CRLF/BOM handling, `jq --rawfile` from that notes file, and byte-for-byte comparison of every parsed Release body to the same file.
 - Builders receive no Release ID or admin/Release credential.
 - Artifact names include recovery run ID, run attempt, and matrix/final role; overwrite is false; downloads are by recorded ID.
 - Every Bash block passes `bash -n`, every inline Node block passes `node --check`, and any retained inline Python block compiles.
@@ -535,6 +537,7 @@ Extract the workflow's own classifiers/verifiers into a temporary harness withou
 - compatible empty draft, partial draft, complete draft, mutable published Release, wrong identity, duplicate/extra/missing asset, wrong digest, 403, 5xx, timeout, malformed JSON, and ambiguous command/status combinations select `conflict` and execute zero further mutations;
 - fresh mock executes one draft POST, one 16-item upload loop, and one PATCH only;
 - wrong tag object/peel, wrong failed run/job/step/artifact count, changed workflow/changelog blob, wrong main ref, expired/empty admin token, or changed historical snapshot fails before the next mutation;
+- Release-metadata fixtures cover the next-level-two-heading and EOF boundaries, reject missing or duplicate `0.30.1` headings and an empty trimmed body, prove heading exclusion plus one ECMAScript `.trim()` plus exactly one appended LF, and prove there is no separate CRLF or BOM normalization path;
 - exact four transport archives extract safely and reconstruct the 15 payloads; traversal, link, device, duplicate, wrong mode, stale attempt, or wrong action-artifact digest is rejected;
 - SHASUMS generation is byte-deterministic, sorted, exactly 15 rows, and validates every asset;
 - direct 200 and one safe credential-free HTTPS 302 asset download succeed; other redirect/status cases fail;
