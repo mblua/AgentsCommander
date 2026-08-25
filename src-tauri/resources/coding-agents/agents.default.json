@@ -36,7 +36,8 @@
       "instructionsFilename": "AGENTS.md",
       "envs": [],
       "isolatedHome": false,
-      "removable": true
+      "removable": true,
+      "updateCommands": ["hermes update --yes"]
     },
     {
       "key": "cursor",
@@ -71,7 +72,8 @@
       "envs": [],
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".opencode" },
-      "removable": true
+      "removable": true,
+      "updateCommands": ["opencode upgrade"]
     },
     {
       "key": "antigravity",
@@ -83,7 +85,7 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
-      "updateCommands": []
+      "updateCommands": ["agy update"]
     }
   ]
 }

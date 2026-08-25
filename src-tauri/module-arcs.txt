@@ -948,6 +948,7 @@ agentscommander_lib::telegram::bridge -> agentscommander_lib::network
 agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::inject
 agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::manager
 agentscommander_lib::telegram::bridge -> agentscommander_lib::session::manager
+agentscommander_lib::telegram::bridge -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::claude_watcher
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::codex_watcher
@@ -964,6 +965,7 @@ agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::o
 agentscommander_lib::telegram::manager -> agentscommander_lib::errors
 agentscommander_lib::telegram::manager -> agentscommander_lib::network
 agentscommander_lib::telegram::manager -> agentscommander_lib::pty::manager
+agentscommander_lib::telegram::manager -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::bridge
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::types
 agentscommander_lib::telegram::output -> agentscommander_lib::config
