@@ -1811,6 +1811,142 @@ mod tests {
     }
 
     #[test]
+    fn load_catalog_backfills_empty_update_commands_from_embedded_default() {
+        // A catalog seeded before the update-command era (#1325) carries no
+        // updateCommands; load_catalog backfills them IN MEMORY from the
+        // embedded default, matching by command, and never writes the file.
+        let json = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"codex","label":"Codex","description":"d","color":"#10b981","command":"codex","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"hermes","label":"Hermes","description":"d","color":"#8b5cf6","command":"hermes","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"opencode","label":"OpenCode","description":"d","color":"#64748b","command":"opencode","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"antigravity","label":"Antigravity","description":"d","color":"#4285F4","command":"agy","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 6);
+        let by_key = |key: &str| loaded.iter().find(|d| d.key == key).unwrap();
+        assert_eq!(
+            by_key("claude").update_commands,
+            vec!["claude --update".to_string()]
+        );
+        assert_eq!(by_key("pi").update_commands, vec!["pi update".to_string()]);
+        assert_eq!(
+            by_key("codex").update_commands,
+            vec!["codex update".to_string()]
+        );
+        assert_eq!(
+            by_key("hermes").update_commands,
+            vec!["hermes update --yes".to_string()]
+        );
+        assert_eq!(
+            by_key("opencode").update_commands,
+            vec!["opencode upgrade".to_string()]
+        );
+        assert_eq!(
+            by_key("antigravity").update_commands,
+            vec!["agy update".to_string()]
+        );
+
+        // No-write proof: the manifest bytes are identical before/after the load.
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            json.as_bytes()
+        );
+    }
+
+    #[test]
+    fn load_catalog_never_overwrites_user_update_commands() {
+        // User-authored non-empty sequences ALWAYS win, even a one-element one.
+        let json = manifest_json(
+            r##"[{"key":"claude","label":"Claude Code","description":"d","color":"#d97706","command":"claude","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["claude --custom"]}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["claude --custom".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_catalog_backfill_no_embedded_match_leaves_entry_intact() {
+        // Custom command `bob` has no embedded match -> stays empty (never
+        // prompted nor updated), unchanged behavior.
+        let json = manifest_json(
+            r##"[{"key":"bob","label":"Bob","description":"d","color":"#333","command":"bob","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].update_commands.is_empty());
+    }
+
+    #[test]
+    fn load_catalog_backfill_matches_by_command_for_duplicate_commands() {
+        // Two profiles share the `pi` command under different keys; both are
+        // backfilled per-entry, consistent with build_update_plan's
+        // command-keyed binding rule.
+        let json = manifest_json(
+            r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["pi update".to_string()]
+        );
+        assert_eq!(
+            loaded[1].update_commands,
+            vec!["pi update".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_catalog_backfill_mixed_duplicates_first_empty_second_custom() {
+        // Mixed duplicate commands: the FIRST `pi` entry is empty -> backfilled;
+        // the SECOND keeps its custom sequence UNTOUCHED (data-level never
+        // overwritten). build_update_plan's first-non-empty `find` then selects
+        // the FIRST entry's sequence for command `pi` - the backfilled
+        // ["pi update"] wins over the custom one (pre-existing command-keyed
+        // first-wins rule; before the backfill the find skipped the empty first
+        // entry and used the custom sequence).
+        let json = manifest_json(
+            r##"[{"key":"pi","label":"Pi","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true},
+             {"key":"pi-max","label":"Pi Max","description":"d","color":"#ec4899","command":"pi","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi --custom"]}]"##,
+        );
+        let dir = seed_dir();
+        std::fs::create_dir_all(manifest_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(manifest_path(dir.path()), &json).unwrap();
+
+        let loaded = load_catalog(dir.path());
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[0].update_commands,
+            vec!["pi update".to_string()]
+        );
+        assert_eq!(
+            loaded[1].update_commands,
+            vec!["pi --custom".to_string()]
+        );
+    }
+
+    #[test]
     fn embedded_default_ships_update_commands_for_all_but_cursor() {
         // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
         // and antigravity ship the update command; cursor ships none; every
