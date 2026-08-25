@@ -508,11 +508,6 @@ impl AgentFilter for AgyFilter {
             return false;
         }
 
-        // Defense in depth: thinking/spinner lines that somehow stabilized
-        if is_thinking_line(trimmed) {
-            return false;
-        }
-
         true
     }
 
