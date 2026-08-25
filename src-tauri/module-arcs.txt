@@ -712,6 +712,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::consumption
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::messaging
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::terminal_snapshot
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::types
+agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::wake_lanes
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::inject

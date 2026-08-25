@@ -530,9 +530,9 @@ Behaviour:
 1. Resolves `--project` to a registered project path (paths are rejected).
 2. Creates `<project>/.ac/_agent_<id>/` with the matrix layout (`memory/`, `plans/`, `skills/`, `inbox/`, `outbox/`) and writes `Role.md`. A picked role template's body becomes a `## Role Profile` section, and its `skills/` are copied in.
 3. Requests a sidebar refresh in the running AC app.
-4. If `--launch` is set, writes a session request the running AC app picks up within ~3s.
+4. If `--launch` is set, writes a session request the running AC app picks up within ~3s, then waits up to 30s for the app's per-request result (a `<id>.result.json` sidecar) so the reported launch outcome is truthful: `launched` is `true` only after the app confirms the session. A rejected launch (e.g. `sessionRace`) is reported via `launchStatus: "rejected"` and `launchError`; if no result arrives within the timeout, `launchStatus: "pending"` is reported. Matrix creation stays independent of the launch result (exit code 0 and the matrix fields are always produced).
 
-Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent }`.
+Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchStatus, launchError, launchAgent }` (`launchStatus` is `skipped` | `launched` | `rejected` | `pending`).
 
 See [Creating agents](../agents/creating-agents.md) for richer agent layouts.
 
@@ -557,9 +557,9 @@ agentscommander create-agent-matrix --project MyProject --name "dev-rust" --desc
 | `--root` | No | Accepted for parity with `create-agent`; ignored by the handler. |
 | `--token` | No | Accepted for parity with `create-agent`; ignored by the handler. |
 
-Behaviour is identical to [`create-agent`](#create-agent) above, minus the `--description` trim and empty-check.
+Behaviour is identical to [`create-agent`](#create-agent) above, minus the `--description` trim and empty-check, including the truthful `--launch` contract: the verb writes a session request the running AC app picks up within ~3s and waits up to 30s for the app's result sidecar, reporting `launchStatus` (`skipped` | `launched` | `rejected` | `pending`) and `launchError`; `launched` is `true` only when the app confirmed the session.
 
-Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchAgent }`.
+Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchStatus, launchError, launchAgent }`.
 
 > The CLI verb `create-agent-matrix` is distinct from the in-app New Agent command of the same name. The GUI command shares the same on-disk core but never launches a session and returns only `{ path }`.
 

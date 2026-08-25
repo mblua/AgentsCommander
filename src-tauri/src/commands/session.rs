@@ -6667,6 +6667,176 @@ mod tests {
         close_test_coordinator(&app).await;
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // #1535 nested-project sessionRace confinement (S1-S2)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// #1535 S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
+    /// its own full workgroup inside `__agent_dev-one`:
+    /// `nested-proj/.ac/{_team_team, _agent_lead2, _agent_inner2,
+    /// wg-2-team/{__agent_lead2, __agent_inner2}}` and the #1535 bug-shaped
+    /// origin dir `nested-proj/.ac/_agent_phase0`. The nested replica
+    /// `config.json` identity is `../../_agent_inner2`; the nested team config
+    /// names the nested origin matrices.
+    fn nested_strict_target_fixture() -> (tempfile::TempDir, String, String, String) {
+        let (temp, first_cwd, _second) = strict_target_fixture();
+        let outer_replica = std::path::PathBuf::from(&first_cwd);
+
+        let nested_ac_root = outer_replica.join("nested-proj").join(".ac");
+        let nested_team = nested_ac_root.join("_team_team");
+        let nested_wg = nested_ac_root.join("wg-2-team");
+        let nested_inner2 = nested_wg.join("__agent_inner2");
+        let nested_origin = nested_ac_root.join("_agent_phase0");
+        for directory in [
+            &nested_team,
+            &nested_ac_root.join("_agent_lead2"),
+            &nested_ac_root.join("_agent_inner2"),
+            &nested_wg.join("__agent_lead2"),
+            &nested_inner2,
+            &nested_origin,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            nested_team.join("config.json"),
+            r#"{"agents":["../_agent_lead2","../_agent_inner2"],"coordinator":"../_agent_lead2"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            nested_inner2.join("config.json"),
+            r#"{"identity":"../../_agent_inner2"}"#,
+        )
+        .unwrap();
+
+        (
+            temp,
+            first_cwd,
+            nested_inner2.to_string_lossy().into_owned(),
+            nested_origin.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// #1535 S1: a create in a nested project (origin dir under an ancestor
+    /// workgroup replica, the exact bug shape) must NOT sessionRace against
+    /// the ANCESTOR replica's live session (pre-fix: `Err("sessionRace")`).
+    #[tokio::test]
+    async fn nested_project_create_does_not_sessionrace_against_ancestor_live_session() {
+        let (temp, first_cwd, _nested_replica, nested_origin) = nested_strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        // Seed a LIVE session at the OUTER replica; the ancestor's live session
+        // must not gate a nested-project create.
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &first_cwd,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("seed live ancestor WG replica session");
+
+        let created = create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &nested_origin,
+            CreateSelectionIntent::Background,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "nested-project create must not sessionRace against the ancestor session; got Err({e})"
+            )
+        });
+        assert_eq!(created.working_directory, nested_origin);
+        let rows = session_mgr.read().await.list_sessions().await;
+        assert_eq!(rows.len(), 2, "ancestor + nested sessions both exist");
+        assert!(
+            rows.iter().any(|row| row.working_directory == nested_origin),
+            "the nested-project session row must exist"
+        );
+        let _ = temp;
+        close_test_coordinator(&app).await;
+    }
+
+    /// #1535 S2: a nested project with its OWN replica (a) does not race
+    /// against the ancestor's live session, and (b) still gates against its
+    /// own replica's duplicate.
+    #[tokio::test]
+    async fn nested_project_create_gates_against_its_own_replica_only() {
+        let (temp, first_cwd, nested_replica, nested_origin) = nested_strict_target_fixture();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+
+        // (a) Live ancestor session + nested replica create -> Ok (the nested
+        // replica's gate scopes to the nested project, never the ancestor).
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &first_cwd,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("seed live ancestor WG replica session");
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &nested_replica,
+            CreateSelectionIntent::Background,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "nested replica create must not race the ancestor session; got Err({e})"
+            )
+        });
+
+        // (b) A live session on the nested replica itself + another Background
+        // create at the same nested replica -> the nested project's OWN
+        // duplicate still sessionRaces.
+        create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &nested_replica,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("seed live nested replica session");
+        let err = create_target_for_test(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            &nested_replica,
+            CreateSelectionIntent::Background,
+        )
+        .await
+        .expect_err("the nested replica's own duplicate must still gate");
+        assert_eq!(err, "sessionRace");
+        let _ = (temp, nested_origin);
+        close_test_coordinator(&app).await;
+    }
+
     #[tokio::test]
     async fn restart_after_route_loss_cleans_old_external_state_once_before_replacement() {
         use tauri::Manager;
