@@ -227,12 +227,44 @@ fn validated_embedded_default() -> Vec<CodingAgentDefinition> {
     )
 }
 
+/// #1546 - in-memory backfill: for every entry whose `update_commands` is
+/// EMPTY, copy the sequence from the FIRST embedded-default entry with the
+/// same `command` and a non-empty sequence. Matching by `command` (not key),
+/// mirroring `build_update_plan`'s command-keyed binding rule. User-authored
+/// non-empty sequences ALWAYS win (never overwritten). Entries with no
+/// embedded match (custom commands, cursor's `agent`) stay empty. Never
+/// writes to disk: the catalog is user-owned after the first seed (G3).
+fn backfill_update_commands_from_embedded_default(
+    agents: Vec<CodingAgentDefinition>,
+) -> Vec<CodingAgentDefinition> {
+    let defaults = validated_embedded_default();
+    agents
+        .into_iter()
+        .map(|mut def| {
+            if !def.update_commands.is_empty() {
+                return def;
+            }
+            if let Some(src) = defaults
+                .iter()
+                .find(|d| d.command == def.command && !d.update_commands.is_empty())
+            {
+                def.update_commands = src.update_commands.clone();
+            }
+            def
+        })
+        .collect()
+}
+
 /// Load the catalog for the `get_coding_agent_catalog` command.
 ///
 /// Contract (§14.2): NEVER errors. Returns the validated on-disk agents when the
 /// manifest parses; a valid empty list is honored verbatim (the user removed all
-/// built-ins). A **missing** or **unparseable** manifest self-heals to the
-/// embedded default IN MEMORY only, never writing to disk (G3 corrupt-preserve).
+/// built-ins). On the parsed path, entries with empty `updateCommands` are
+/// backfilled IN MEMORY from the embedded default (first entry with the same
+/// `command` and a non-empty sequence); user-authored sequences always win;
+/// nothing is written to disk. A **missing** or **unparseable** manifest
+/// self-heals to the embedded default IN MEMORY only, never writing to disk
+/// (G3 corrupt-preserve).
 /// `ac_dir` is the project's `.ac` directory (or, for the legacy read fallback,
 /// the legacy config dir, which yields `<config_dir>/coding-agents/agents.json`
 /// through the same relative layout).
@@ -256,7 +288,10 @@ pub fn load_catalog(ac_dir: &Path) -> Vec<CodingAgentDefinition> {
         }
     };
     match serde_json::from_slice::<CodingAgentCatalog>(&bytes) {
-        Ok(catalog) => validate_and_filter(catalog.agents, &path.display().to_string()),
+        Ok(catalog) => backfill_update_commands_from_embedded_default(validate_and_filter(
+            catalog.agents,
+            &path.display().to_string(),
+        )),
         Err(e) => {
             // G3: never overwrite a present-but-corrupt file. Preserve it as-is
             // and serve the built-in defaults for this session only.
