@@ -1,10 +1,10 @@
 # Issue #1481: recover the immutable GitHub Release v0.30.1
 
-Status: DRAFT_FOR_FULL_PATH_ENRICHMENT
+Status: READY_FOR_IMPLEMENTATION
 
 Impact-HTML: plans/1481-recover-immutable-0-30-1-impact.html
 
-Delivery path: Full, Step 7 preparation. This document is the sole implementation specification. It is not authorization to implement, merge, dispatch, publish, clean up, or modify external state.
+Delivery path: Full, Step 7 consensus complete. This document is the sole implementation specification. Its READY verdict is not authorization to implement, merge, dispatch, publish, clean up, or modify external state; mandatory Step 7.5 human review, freeze, and purge remains next.
 
 ## 1. Issue and objective
 
@@ -158,7 +158,7 @@ If implementation changes any related-only path, adds another file, or changes a
 
 ### 5.3 No application or module surface
 
-No Rust module, TypeScript module, IPC command/event/type, Tauri window, configuration schema, persistence format, PTY/ConPTY flow, frontend behavior, package dependency, or module dependency arc changes. The dependency-cycle draft gate enumerates `0 added / 0 removed` module arcs, therefore there is no arc to classify as internal to a pre-existing SCC or cross-boundary, no SCC can be created or grown by this file set, and no lower layer gains a UI-transport, `AppHandle`, or `tauri` dependency. No `rust-levelization-run` result is claimed for this draft because the sole implementation path is workflow YAML and the plan changes no application module or arc record. Before eventual READY certification, reconfirm the exact zero-arc diff and layering result. If scope expands into module/import structure, run the repository dependency detector on clean base and final trees and require unchanged `cyclicSccs`, identical SCC member sets, zero cross-boundary arcs, a byte-identical arc record, and green structural layering guards.
+No Rust module, TypeScript module, IPC command/event/type, Tauri window, configuration schema, persistence format, PTY/ConPTY flow, frontend behavior, package dependency, or module dependency arc changes. The final Step 7 dependency-cycle gate enumerates `0 added / 0 removed` module arcs: the sole implementation path is a new GitHub Actions YAML file outside `src-tauri` and every application module root, so there is no new or removed `file:line -> module` reference to classify, zero cross-boundary arcs, no SCC that can be created, grown, or joined, and no lower layer that can gain a UI-transport, `AppHandle`, or `tauri` dependency. At reviewed head `fbb3e4103eb08502b25f8469b9968c98a6587f36`, the tracked and worktree `src-tauri/module-arcs.txt` bytes are identical at Git object `871fc46e1985728e872bbf1f26743f8bf3518573`. The workgroup `rust-levelization-run` detector is unavailable, so this certification uses the documented explicit per-arc manual fallback and does not claim remeasurement of pre-existing `cyclicSccs` or SCC member sets. That limitation cannot conceal a planned module delta under the exact one-workflow-path contract. The implementation reviewer must require a diff containing only `.github/workflows/recover-immutable-v0.30.1.yml` and a byte-identical arc record. If scope expands into module/import structure, stop, return to planning, run the repository dependency detector on clean base and final trees, and require unchanged `cyclicSccs`, identical SCC member sets, zero cross-boundary arcs, a byte-identical arc record, and green structural layering guards.
 
 ## 6. Decided solution
 
@@ -566,10 +566,10 @@ The recovery is successful only when every item is recorded:
 
 The separate cleanup is complete only when its diff deletes exactly `.github/workflows/recover-immutable-v0.30.1.yml`, no recovery run remains queued/running, immutable v0.30.1 and all evidence still verify, historical Releases remain unchanged, and the removed workflow is no longer dispatchable from main.
 
-## 10. Full-path handoff status
+## 10. Full-path consensus and readiness
 
-This is a Step 7 preparation draft, not a consensus verdict. Step 5 developer enrichment completed at commit `e73e302d64ac6456f27aac0bfeaa49c4443eb112`; its UTF-8, no-separate-CRLF/BOM-preprocessing, jq `--rawfile`, same-notes-file comparison, and static/fixture criteria are synchronized between this Markdown and the impact HTML. A supplemental same-workgroup shipper review reported PASS for release-risk completeness with no required plan addition, but formal Step 6 reviewer authority is not yet established and that report is not claimed as formal Step 6 completion.
+Step 5 developer enrichment completed at commit `e73e302d64ac6456f27aac0bfeaa49c4443eb112`; its UTF-8, no-separate-CRLF/BOM-preprocessing, jq `--rawfile`, same-notes-file comparison, and static/fixture criteria are synchronized between this Markdown and the impact HTML. The user-authorized independent shipper then reviewed head `fbb3e4103eb08502b25f8469b9968c98a6587f36` and issued `FORMAL_STEP_6_PASS`: no blocking release-risk defect, no required plan addition, and no repository change.
 
-The preparatory architect analysis found no design blocker. The exact implementation surface remains one workflow YAML file; module arcs remain `0 added / 0 removed`, there is no SCC or cross-boundary-arc exposure, and no lower layer gains a UI-transport dependency. This is not the final dependency-cycle certification: after explicit reviewer authority arrives, architect consensus must revalidate the frozen file set and gate evidence before any `READY_FOR_IMPLEMENTATION` verdict.
+The final architect consensus revalidated the clean branch, all frozen related-only blobs, the one-workflow implementation surface, Markdown/HTML contract parity, and the dependency/layering gate in section 5.3. No open decision, unresolved placeholder, competing alternative, or implementer choice remains. The verdict is `READY_FOR_IMPLEMENTATION`.
 
-Until that consensus records `Status: READY_FOR_IMPLEMENTATION` and the mandatory human approval/freeze/purge gate succeeds, no implementation or dispatch is authorized.
+Step 7.5 must independently freeze the exact plan and impact-HTML bytes, recompute the externally reported digests, obtain explicit human approval, and purge raw planning context. Until that gate succeeds, no implementation, merge, dispatch, publication, cleanup, or external-state mutation is authorized.
