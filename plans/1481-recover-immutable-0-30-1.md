@@ -4,7 +4,7 @@ Status: DRAFT_FOR_FULL_PATH_ENRICHMENT
 
 Impact-HTML: plans/1481-recover-immutable-0-30-1-impact.html
 
-Delivery path: Full, Step 4. This document is the sole implementation specification. It is not authorization to implement, merge, dispatch, publish, clean up, or modify external state.
+Delivery path: Full, Step 7 preparation. This document is the sole implementation specification. It is not authorization to implement, merge, dispatch, publish, clean up, or modify external state.
 
 ## 1. Issue and objective
 
@@ -568,6 +568,8 @@ The separate cleanup is complete only when its diff deletes exactly `.github/wor
 
 ## 10. Full-path handoff status
 
-This is the architect's Step 4 draft. Developer enrichment must verify the copied workflow substitutions, executable fixture coverage, job outputs/conditions, exact title/body extraction, and static credential/mutation counts. Release-risk enrichment must verify partial-state classification, PAT isolation, race checks, immutable postconditions, historical preservation, and cleanup boundary. Architect consensus then synchronizes this Markdown and its impact HTML and applies the dependency/layering gate before any `READY_FOR_IMPLEMENTATION` verdict.
+This is a Step 7 preparation draft, not a consensus verdict. Step 5 developer enrichment completed at commit `e73e302d64ac6456f27aac0bfeaa49c4443eb112`; its UTF-8, no-separate-CRLF/BOM-preprocessing, jq `--rawfile`, same-notes-file comparison, and static/fixture criteria are synchronized between this Markdown and the impact HTML. A supplemental same-workgroup shipper review reported PASS for release-risk completeness with no required plan addition, but formal Step 6 reviewer authority is not yet established and that report is not claimed as formal Step 6 completion.
+
+The preparatory architect analysis found no design blocker. The exact implementation surface remains one workflow YAML file; module arcs remain `0 added / 0 removed`, there is no SCC or cross-boundary-arc exposure, and no lower layer gains a UI-transport dependency. This is not the final dependency-cycle certification: after explicit reviewer authority arrives, architect consensus must revalidate the frozen file set and gate evidence before any `READY_FOR_IMPLEMENTATION` verdict.
 
 Until that consensus records `Status: READY_FOR_IMPLEMENTATION` and the mandatory human approval/freeze/purge gate succeeds, no implementation or dispatch is authorized.
