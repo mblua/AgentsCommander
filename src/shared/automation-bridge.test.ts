@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAutomationRequest, resetAutomationBridgeForTests } from "./automation-bridge";
-import type { UiAutomationAction, UiAutomationRequest, UiAutomationResponse } from "./types";
+import type {
+  MainTerminalLayoutPulseTrace,
+  UiAutomationAction,
+  UiAutomationRequest,
+  UiAutomationResponse,
+} from "./types";
 
 const terminalAutomation = vi.hoisted(() => ({
   execute: vi.fn(),
@@ -664,6 +669,48 @@ describe("automation bridge", () => {
   });
 
   describe("terminal automation", () => {
+    const layoutPulse = {
+      version: 1,
+      requestId: 7,
+      sessionId: "session-a",
+      attachGeneration: 3,
+      status: "completed",
+      reason: "completed",
+      original: {
+        sidebarWidth: 440,
+        hostWidth: 900,
+        cols: 120,
+        rows: 39,
+        baselineObservedEpoch: null,
+        completedObserverAck: null,
+      },
+      expanded: {
+        sidebarWidth: 424,
+        hostWidth: 916,
+        cols: 122,
+        rows: 39,
+        baselineObservedEpoch: 10,
+        completedObserverAck: {
+          epoch: 11,
+          first: { hostWidth: 916, cols: 122, rows: 39 },
+          second: { hostWidth: 916, cols: 122, rows: 39 },
+        },
+      },
+      restored: {
+        sidebarWidth: 440,
+        hostWidth: 900,
+        cols: 120,
+        rows: 39,
+        baselineObservedEpoch: 12,
+        completedObserverAck: {
+          epoch: 13,
+          first: { hostWidth: 900, cols: 120, rows: 39 },
+          second: { hostWidth: 900, cols: 120, rows: 39 },
+        },
+      },
+      dwellMs: 208,
+      settingsWritesDelta: 0,
+    } satisfies MainTerminalLayoutPulseTrace;
     const metrics = {
       sessionId: "session-a",
       baseY: 40,
@@ -673,6 +720,7 @@ describe("automation bridge", () => {
       rows: 39,
       type: "normal" as const,
       atBottom: false,
+      layoutPulse,
     };
 
     it.each([
@@ -705,6 +753,8 @@ describe("automation bridge", () => {
         selector: "terminal.session.session-a",
         target: metrics,
       });
+      if (!response.ok) throw new Error(response.message);
+      expect(response.target).toEqual(metrics);
       target.remove();
       terminalAutomation.execute.mockReset();
     });

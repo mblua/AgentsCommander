@@ -24,6 +24,7 @@ import TerminalView from "./TerminalView";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   installBrowserDomStubs,
+  installDeterministicAnimationFrames,
   renderWithFakeTransport,
   resetUiStoresForTests,
   waitFor,
@@ -35,14 +36,14 @@ import {
 } from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
 import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
-import type { PtyScreenSnapshot } from "../../shared/types";
-
-type FakeResizeBehavior = {
-  cols: number;
-  rows: number;
-  action: "noop" | "throw-before" | "throw-after";
-  error?: unknown;
-};
+import {
+  MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT,
+  type MainTerminalLayoutPulseReason,
+  type MainTerminalLayoutPulseRequest,
+  type MainTerminalLayoutPulseResult,
+  type MainTerminalLayoutPulseStatus,
+  type PtyScreenSnapshot,
+} from "../../shared/types";
 
 interface FakeTerminalInstance {
   cols: number;
@@ -53,7 +54,6 @@ interface FakeTerminalInstance {
   resizes: { cols: number; rows: number }[];
   resizeAttempts: { cols: number; rows: number }[];
   resizeListenerEvents: { cols: number; rows: number }[];
-  resizeBehaviors: FakeResizeBehavior[];
   ordinaryFitCalls: number;
   resets: number;
   disposed: boolean;
@@ -95,11 +95,63 @@ const xterm = vi.hoisted(() => ({
 }));
 
 const fitViewport = vi.hoisted(() => ({ cols: 80, rows: 24 }));
-const fitProposal = vi.hoisted(() => ({
-  overridden: false,
-  value: undefined as { cols: number; rows: number } | undefined,
-}));
 
+class ControllableResizeObserver implements ResizeObserver {
+  readonly observed = new Set<Element>();
+  disconnected = false;
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    resizeObserverControl.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.disconnected = true;
+    this.observed.clear();
+  }
+
+  deliver(): void {
+    if (!this.disconnected && this.observed.size > 0) {
+      this.callback([], this);
+    }
+  }
+}
+
+const resizeObserverControl = {
+  instances: [] as ControllableResizeObserver[],
+  latest(): ControllableResizeObserver {
+    const observer = this.instances[this.instances.length - 1];
+    if (!observer) {
+      throw new Error("No ResizeObserver was constructed");
+    }
+    return observer;
+  },
+};
+
+function installControllableResizeObserver(): () => void {
+  const previous = globalThis.ResizeObserver;
+  resizeObserverControl.instances.length = 0;
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: ControllableResizeObserver,
+  });
+  return () => {
+    resizeObserverControl.instances.length = 0;
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: previous,
+    });
+  };
+}
 vi.mock("@xterm/xterm", () => ({
   Terminal: class implements FakeTerminalInstance {
     cols = 80;
@@ -110,7 +162,6 @@ vi.mock("@xterm/xterm", () => ({
     resizes: { cols: number; rows: number }[] = [];
     resizeAttempts: { cols: number; rows: number }[] = [];
     resizeListenerEvents: { cols: number; rows: number }[] = [];
-    resizeBehaviors: FakeResizeBehavior[] = [];
     ordinaryFitCalls = 0;
     resets = 0;
     disposed = false;
@@ -265,21 +316,7 @@ vi.mock("@xterm/xterm", () => ({
     resize(cols: number, rows: number): void {
       this.assertLive();
       this.resizeAttempts.push({ cols, rows });
-      const behaviorIndex = this.resizeBehaviors.findIndex(
-        (candidate) => candidate.cols === cols && candidate.rows === rows,
-      );
-      const behavior =
-        behaviorIndex >= 0 ? this.resizeBehaviors.splice(behaviorIndex, 1)[0] : undefined;
-      if (behavior?.action === "throw-before") {
-        throw behavior.error ?? new Error("fake resize failed before mutation");
-      }
-      if (behavior?.action === "noop") {
-        return;
-      }
       if (this.cols === cols && this.rows === rows) {
-        if (behavior?.action === "throw-after") {
-          throw behavior.error ?? new Error("fake resize failed after mutation");
-        }
         return;
       }
       this.cols = cols;
@@ -288,9 +325,6 @@ vi.mock("@xterm/xterm", () => ({
       this.resizes.push(size);
       this.resizeListenerEvents.push(size);
       this.resizeListener?.(size);
-      if (behavior?.action === "throw-after") {
-        throw behavior.error ?? new Error("fake resize failed after mutation");
-      }
     }
 
     private assertLive(): void {
@@ -319,9 +353,6 @@ vi.mock("@xterm/addon-fit", () => ({
       terminal.resize(fitViewport.cols, fitViewport.rows);
     });
     proposeDimensions(): { cols: number; rows: number } | undefined {
-      if (fitProposal.overridden) {
-        return fitProposal.value;
-      }
       return { cols: fitViewport.cols, rows: fitViewport.rows };
     }
   },
@@ -348,18 +379,99 @@ const LIVE = [76, 73, 86, 69]; // "LIVE"
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+function setTerminalContainerWidth(element: HTMLElement, width: number): void {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: 600,
+        width,
+        height: 600,
+        toJSON: () => ({}),
+      }) as DOMRect,
+  });
+}
+
+function pulseResult(
+  request: MainTerminalLayoutPulseRequest,
+  status: MainTerminalLayoutPulseStatus,
+  reason: MainTerminalLayoutPulseReason,
+): MainTerminalLayoutPulseResult {
+  const emptyPhase = {
+    sidebarWidth: null,
+    hostWidth: null,
+    cols: null,
+    rows: null,
+    baselineObservedEpoch: null,
+    completedObserverAck: null,
+  };
+  return {
+    status,
+    reason,
+    trace: {
+      version: 1,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      attachGeneration: request.attachGeneration,
+      status,
+      reason,
+      original: { ...emptyPhase },
+      expanded: { ...emptyPhase },
+      restored: { ...emptyPhase },
+      dwellMs: status === "completed" ? 200 : 0,
+      settingsWritesDelta: 0,
+    },
+  };
+}
+
+function queryTerminalTarget(element: HTMLElement, sessionId = SESSION_A) {
+  const result = executeUiTerminalController({
+    element,
+    sessionId,
+    operation: { kind: "query" },
+  });
+  if (!result || !result.ok) {
+    throw new Error(
+      `Expected live terminal target, got ${result?.error ?? "controller unavailable"}`,
+    );
+  }
+  return result.target;
 }
 
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function flushFramesUntil(
+  frames: ReturnType<typeof installDeterministicAnimationFrames>,
+  predicate: () => boolean,
+): Promise<void> {
+  for (let pass = 0; pass < 30; pass += 1) {
+    await flushPromises();
+    await frames.flush();
+    if (predicate()) {
+      return;
+    }
+  }
+  throw new Error("Timed out while driving deterministic animation frames");
 }
 
 // Fixture: five viewports of 24 rows of 80-column line bytes (5 * 24 * 80 =
@@ -397,35 +509,6 @@ function simulateParsedHistory(instance: FakeTerminalInstance, lines: number): v
 // scrollbar drag): the viewport leaves the bottom.
 function simulateUserScrollUp(instance: FakeTerminalInstance): void {
   instance.buffer.active.viewportY = 0;
-}
-
-function makePulseEligible(instance: FakeTerminalInstance, length = 3): void {
-  instance.buffer.active.type = "normal";
-  instance.buffer.active.length = length;
-  instance.buffer.active.baseY = Math.max(0, length - instance.rows);
-  instance.buffer.active.viewportY = instance.buffer.active.baseY;
-  instance.buffer.active.cursorX = Math.min(1, instance.cols - 1);
-  instance.selection = false;
-  instance.missingLines.clear();
-  instance.wrappedLines.clear();
-}
-
-function fakeBufferGridState(instance: FakeTerminalInstance): unknown {
-  return {
-    cols: instance.cols,
-    rows: instance.rows,
-    buffer: {
-      type: instance.buffer.active.type,
-      length: instance.buffer.active.length,
-      baseY: instance.buffer.active.baseY,
-      viewportY: instance.buffer.active.viewportY,
-      cursorX: instance.buffer.active.cursorX,
-      missingLines: [...instance.missingLines],
-      wrappedLines: [...instance.wrappedLines],
-    },
-    selection: instance.selection,
-    screen: instance.screen.map((bytes) => [...bytes]),
-  };
 }
 
 function ptyResizeTuples(
@@ -478,11 +561,13 @@ function detachedSessionIds(fake: FakeTransport): string[] {
 
 describe("TerminalView attachment (#1363)", () => {
   let cleanupDom: (() => void) | null = null;
+  let cleanupResizeObserver: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;
   let debug: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
+    cleanupResizeObserver = installControllableResizeObserver();
     resetUiStoresForTests();
     resetUiTerminalControllerForTests();
     xterm.autoCompleteWrites = true;
@@ -493,13 +578,13 @@ describe("TerminalView attachment (#1363)", () => {
     xterm.instances.length = 0;
     fitViewport.cols = 80;
     fitViewport.rows = 24;
-    fitProposal.overridden = false;
-    fitProposal.value = undefined;
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     debug = vi.spyOn(console, "debug").mockImplementation(() => {});
   });
 
   afterEach(() => {
+    cleanupResizeObserver?.();
+    cleanupResizeObserver = null;
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -1375,867 +1460,606 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  it("pulses an eligible retained A exactly 80x24 -> 70x24 -> 80x24 under PTY suppression", async () => {
+  // #1532 replaces the falsified direct xterm round-trip with one real,
+  // App-owned split-layout pulse. The observer/settlement cases below use a
+  // controllable ResizeObserver and the shared deterministic frame queue.
+
+  it("dispatches one non-empty request and publishes the bounded unhandled trace after settlement", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: SNAP,
-      rows: 24,
-      cols: 80,
-      sequence: 0,
-    }));
-
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const capture = (event: Event) => {
+      requests.push(
+        (event as CustomEvent<MainTerminalLayoutPulseRequest>).detail,
+      );
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
     terminalStore.setActiveSessionForTests(SESSION_A);
     const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
     try {
       await waitFor(() => expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1));
+      expect(requests).toHaveLength(1);
+      expect(requests[0].accepted).toBe(false);
+      expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!)).toMatchObject({
+        layoutPulse: {
+          version: 1,
+          requestId: requests[0].requestId,
+          sessionId: SESSION_A,
+          attachGeneration: requests[0].attachGeneration,
+          status: "skipped",
+          reason: "unhandled",
+        },
+      });
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
+    }
+  });
+
+  it.each([
+    ["completed", "completed"],
+    ["skipped", "busy"],
+    ["cancelled", "stale"],
+    ["failed", "request_timeout"],
+  ] as const)(
+    "resumes ordinary final fit/send after a %s/%s pulse result",
+    async (status, reason) => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const respond = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+        request.complete(pulseResult(request, status, reason));
+        request.complete(pulseResult(request, "failed", "exception"));
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      try {
+        await waitFor(() =>
+          expect(instancesFor(SESSION_A)[0]?.scrollToBottomCalls).toBe(1),
+        );
+        expect(requests).toHaveLength(1);
+        expect(ptyResizeTuples(fake, SESSION_A).length).toBeGreaterThan(0);
+        expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+          status,
+          reason,
+          attachGeneration: requests[0].attachGeneration,
+        });
+      } finally {
+        rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      }
+    },
+  );
+
+  it("preserves user scroll intent while the accepted layout pulse is pending", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(requests).toHaveLength(1));
+      const terminal = instancesFor(SESSION_A)[0];
+      simulateParsedHistory(terminal, 120);
+      expect(
+        executeUiTerminalController({
+          element: terminal.element!,
+          sessionId: SESSION_A,
+          operation: { kind: "top" },
+        }),
+      ).toMatchObject({ ok: true, target: { viewportY: 0, atBottom: false } });
+
+      requests[0].complete(pulseResult(requests[0], "completed", "completed"));
+      await waitFor(() =>
+        expect(
+          debug.mock.calls.some((call: unknown[]) =>
+            String(call[0]).startsWith(`[terminal] attach ${SESSION_A} settled:`),
+          ),
+        ).toBe(true),
+      );
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(terminal.buffer.active.viewportY).toBe(0);
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    }
+  });
+
+  it("records delivered epochs immediately and only publishes two-fit same-entry acknowledgements", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+
+      expect(request.sample()).toMatchObject({
+        hostWidth: 800,
+        cols: 80,
+        rows: 24,
+        observedObserverEpoch: 0,
+        completedObserverAck: null,
+      });
+
+      resizeObserverControl.latest().deliver();
+      expect(request.sample()).toMatchObject({
+        observedObserverEpoch: 1,
+        completedObserverAck: null,
+      });
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toBeNull();
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 1,
+        first: { hostWidth: 800, cols: 80, rows: 24 },
+        second: { hostWidth: 816, cols: 82, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 2,
+        first: { hostWidth: 816, cols: 82, rows: 24 },
+        second: { hostWidth: 816, cols: 82, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      expect(await frames.flushFrame()).toBe(true);
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      expect(await frames.flushFrame()).toBe(true);
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 3,
+        first: { hostWidth: 816, cols: 82, rows: 24 },
+        second: { hostWidth: 800, cols: 80, rows: 24 },
+      });
+
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(request.sample()?.completedObserverAck).toEqual({
+        epoch: 4,
+        first: { hostWidth: 800, cols: 80, rows: 24 },
+        second: { hostWidth: 800, cols: 80, rows: 24 },
+      });
+      expect(ptyResizeTuples(fake, SESSION_A)).toEqual(
+        expect.arrayContaining([
+          { cols: 82, rows: 24 },
+          { cols: 80, rows: 24 },
+        ]),
+      );
+
+      const beforeDirectControl = request.sample();
+      terminal.resize(80, 24);
+      expect(request.sample()).toEqual(beforeDirectControl);
+
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it.each(["hidden", "disconnected", "visibility", "destroyed", "teardown"] as const)(
+    "abandons an observer record after %s invalidates the captured entry",
+    async (scenario) => {
+      const frames = installDeterministicAnimationFrames();
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const requests: MainTerminalLayoutPulseRequest[] = [];
+      const hold = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        requests.push(request);
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      let cleaned = false;
+      try {
+        await flushFramesUntil(frames, () => requests.length === 1);
+        const request = requests[0];
+        const terminal = instancesFor(SESSION_A)[0];
+        setTerminalContainerWidth(terminal.element!, 800);
+        resizeObserverControl.latest().deliver();
+        expect(await frames.flushFrame()).toBe(true);
+        expect(request.sample()?.completedObserverAck).toBeNull();
+
+        if (scenario === "hidden") {
+          terminal.element!.hidden = true;
+        } else if (scenario === "disconnected") {
+          terminal.element!.remove();
+        } else if (scenario === "visibility") {
+          terminalStore.setActiveSessionForTests(SESSION_B);
+        } else if (scenario === "destroyed") {
+          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+        } else {
+          rendered.cleanup();
+          cleaned = true;
+        }
+
+        await frames.flushFrame();
+        expect(request.sample()).toBeNull();
+      } finally {
+        if (!cleaned) rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+        frames.restore();
+      }
+    },
+  );
+
+  it("joins the restored observer resize and publishes its trace only after transport success", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const restoredResize = deferred<void>();
+    let holdRestoredResize = false;
+    let heldRestoredResize = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        holdRestoredResize &&
+        !heldRestoredResize &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        heldRestoredResize = true;
+        return restoredResize.promise;
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+      holdRestoredResize = true;
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      expect(heldRestoredResize).toBe(true);
+
+      const restoredCallsBeforeSettle = ptyResizeTuples(fake, SESSION_A).filter(
+        ({ cols, rows }) => cols === 80 && rows === 24,
+      ).length;
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+
+      expect(terminal.scrollToBottomCalls).toBe(0);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+      expect(
+        ptyResizeTuples(fake, SESSION_A).filter(
+          ({ cols, rows }) => cols === 80 && rows === 24,
+        ),
+      ).toHaveLength(restoredCallsBeforeSettle);
+
+      restoredResize.resolve();
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(queryTerminalTarget(terminal.element!).layoutPulse).toEqual(
+        pulseResult(request, "completed", "completed").trace,
+      );
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it("keeps a joined failure trace-free before, during, and after its ordinary retry", async () => {
+    const frames = installDeterministicAnimationFrames();
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const restoredResize = deferred<void>();
+    let holdRestoredResize = false;
+    let heldRestoredResize = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        holdRestoredResize &&
+        !heldRestoredResize &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        heldRestoredResize = true;
+        return restoredResize.promise;
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await flushFramesUntil(frames, () => requests.length === 1);
+      const request = requests[0];
+      const terminal = instancesFor(SESSION_A)[0];
+      setTerminalContainerWidth(terminal.element!, 800);
+      holdRestoredResize = true;
+
+      setTerminalContainerWidth(terminal.element!, 816);
+      fitViewport.cols = 82;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+      setTerminalContainerWidth(terminal.element!, 800);
+      fitViewport.cols = 80;
+      resizeObserverControl.latest().deliver();
+      await frames.flush();
+
+      request.complete(pulseResult(request, "completed", "completed"));
+      await flushPromises();
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      const callsBeforeFailure = ptyResizeTuples(fake, SESSION_A).length;
+      restoredResize.reject(new Error("restored resize failed"));
+      await flushPromises();
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      await waitFor(() =>
+        expect(ptyResizeTuples(fake, SESSION_A).length).toBeGreaterThan(callsBeforeFailure),
+      );
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+      frames.restore();
+    }
+  });
+
+  it("bypasses a cached tuple for direct final confirmation and never publishes after failure/retry", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    let failFinalConfirmation = false;
+    fake.onInvoke("pty_resize", (args) => {
+      if (
+        failFinalConfirmation &&
+        Number(args.cols) === 80 &&
+        Number(args.rows) === 24
+      ) {
+        failFinalConfirmation = false;
+        throw new Error("direct final resize failed");
+      }
+      return undefined;
+    });
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const hold = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      requests.push(request);
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() => expect(requests).toHaveLength(1));
+      await flushPromises();
+      const terminal = instancesFor(SESSION_A)[0];
+      const callsBeforeFinal = ptyResizeTuples(fake, SESSION_A).length;
+      failFinalConfirmation = true;
+      requests[0].complete(pulseResult(requests[0], "completed", "completed"));
+
+      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
+      expect(ptyResizeTuples(fake, SESSION_A)).toHaveLength(callsBeforeFinal + 1);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(ptyResizeTuples(fake, SESSION_A)).toHaveLength(callsBeforeFinal + 1);
+      expect(queryTerminalTarget(terminal.element!)).not.toHaveProperty("layoutPulse");
+    } finally {
+      rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, hold);
+    }
+  });
+
+  it.each(["null", "empty", "rejected", "replay failure"] as const)(
+    "invalidates the prior generation before a pending seed and keeps %s re-attach trace-free",
+    async (outcome) => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const reattach = deferred<PtyScreenSnapshot | null>();
+      let aAttachments = 0;
+      fake.onInvoke("activate_terminal_output", (args) => {
+        const sessionId = String(args.sessionId);
+        if (sessionId !== SESSION_A) {
+          return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+        }
+        aAttachments += 1;
+        if (aAttachments === 1) {
+          return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+        }
+        return reattach.promise;
+      });
+      const respond = (event: Event) => {
+        const request = (
+          event as CustomEvent<MainTerminalLayoutPulseRequest>
+        ).detail;
+        request.accepted = true;
+        request.complete(pulseResult(request, "completed", "completed"));
+      };
+      window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      terminalStore.setActiveSessionForTests(SESSION_A);
+      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+      try {
+        await waitFor(() =>
+          expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+            attachGeneration: 1,
+          }),
+        );
+        const terminalA = instancesFor(SESSION_A)[0];
+
+        terminalStore.setActiveSessionForTests(SESSION_B);
+        await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
+        terminalStore.setActiveSessionForTests(SESSION_A);
+        await waitFor(() => expect(aAttachments).toBe(2));
+
+        // `beginSeed` deleted generation 1 before attachOutput could settle.
+        expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+
+        if (outcome === "null") {
+          reattach.resolve(null);
+        } else if (outcome === "empty") {
+          reattach.resolve({
+            sessionId: SESSION_A,
+            data: [],
+            rows: 24,
+            cols: 80,
+            sequence: 1,
+          });
+        } else if (outcome === "rejected") {
+          reattach.reject(new Error("snapshot fetch failed"));
+        } else {
+          terminalA.writeThrows = true;
+          reattach.resolve({
+            sessionId: SESSION_A,
+            data: SNAP,
+            rows: 24,
+            cols: 80,
+            sequence: 1,
+          });
+        }
+        await flushPromises();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+        terminalA.writeThrows = false;
+      } finally {
+        rendered.cleanup();
+        window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+      }
+    },
+  );
+
+  it("omits the new generation trace while snapshot parsing is pending and publishes only after settlement", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const reattach = deferred<PtyScreenSnapshot | null>();
+    let aAttachments = 0;
+    fake.onInvoke("activate_terminal_output", (args) => {
+      const sessionId = String(args.sessionId);
+      if (sessionId !== SESSION_A) {
+        return { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 };
+      }
+      aAttachments += 1;
+      return aAttachments === 1
+        ? { sessionId, data: SNAP, rows: null, cols: null, sequence: 0 }
+        : reattach.promise;
+    });
+    const respond = (event: Event) => {
+      const request = (
+        event as CustomEvent<MainTerminalLayoutPulseRequest>
+      ).detail;
+      request.accepted = true;
+      request.complete(pulseResult(request, "completed", "completed"));
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
+    terminalStore.setActiveSessionForTests(SESSION_A);
+    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
+    try {
+      await waitFor(() =>
+        expect(queryTerminalTarget(instancesFor(SESSION_A)[0].element!).layoutPulse).toMatchObject({
+          attachGeneration: 1,
+        }),
+      );
+      const terminalA = instancesFor(SESSION_A)[0];
       terminalStore.setActiveSessionForTests(SESSION_B);
       await waitFor(() => expect(instancesFor(SESSION_B)[0]?.scrollToBottomCalls).toBe(1));
 
       xterm.autoCompleteWrites = false;
       terminalStore.setActiveSessionForTests(SESSION_A);
+      await waitFor(() => expect(aAttachments).toBe(2));
+      reattach.resolve({
+        sessionId: SESSION_A,
+        data: SNAP,
+        rows: 24,
+        cols: 80,
+        sequence: 1,
+      });
+      await waitFor(() => expect(terminalA.pendingWriteCallbacks.length).toBeGreaterThan(0));
+      expect(queryTerminalTarget(terminalA.element!)).not.toHaveProperty("layoutPulse");
+
+      completeWriteCallbacks(terminalA);
+      xterm.autoCompleteWrites = true;
+      await flushPromises();
       await waitFor(() =>
-        expect(attachedSessionIds(fake)).toEqual([SESSION_A, SESSION_B, SESSION_A]),
+        expect(queryTerminalTarget(terminalA.element!).layoutPulse).toMatchObject({
+          attachGeneration: 2,
+        }),
       );
-      const terminal = instancesFor(SESSION_A)[0];
-      await waitFor(() => expect(terminal.writes).toEqual([SNAP, SNAP]));
-      const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-      await passTwoAnimationFrames();
-      makePulseEligible(terminal);
-
-      const effectiveBefore = terminal.resizes.length;
-      const attemptsBefore = terminal.resizeAttempts.length;
-      const listenerBefore = terminal.resizeListenerEvents.length;
-      const fitsBefore = terminal.ordinaryFitCalls;
-      const bottomsBefore = terminal.scrollToBottomCalls;
-
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.resizes.length).toBe(effectiveBefore + 2));
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1));
-
-      const pair = [
-        { cols: 70, rows: 24 },
-        { cols: 80, rows: 24 },
-      ];
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual(pair);
-      expect(terminal.resizes.slice(effectiveBefore)).toEqual(pair);
-      expect(terminal.resizeListenerEvents.slice(listenerBefore)).toEqual(pair);
-      expect(terminal.ordinaryFitCalls).toBe(fitsBefore);
-      expect(terminal.resizeAttempts.every(({ cols }) => cols <= 80)).toBe(true);
-      expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
-        { cols: 80, rows: 24 },
-      ]);
-      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 70, rows: 24 });
-      expect({ cols: terminal.cols, rows: terminal.rows }).toEqual({ cols: 80, rows: 24 });
-      expect(
-        document.querySelector(`[data-testid="terminal-grid-size-${SESSION_A}"]`)?.textContent,
-      ).toBe("COLS: 80 ROWS: 24");
     } finally {
       rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, respond);
     }
   });
-
-  it("uses the exact adjacent column when an eligible terminal has one column", async () => {
-    fitViewport.cols = 1;
-    fitViewport.rows = 3;
-    xterm.autoCompleteWrites = false;
-    const fake = new FakeTransport();
-    setupTransport(fake);
-    fake.onInvoke("activate_terminal_output", (args) => ({
-      sessionId: String(args.sessionId),
-      data: SNAP,
-      rows: 3,
-      cols: 1,
-      sequence: 0,
-    }));
-
-    terminalStore.setActiveSessionForTests(SESSION_A);
-    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-    try {
-      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-      const terminal = instancesFor(SESSION_A)[0];
-      const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-      await passTwoAnimationFrames();
-      makePulseEligible(terminal, 1);
-      terminal.buffer.active.cursorX = 0;
-      const attemptsBefore = terminal.resizeAttempts.length;
-
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
-
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
-      expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
-        { cols: 1, rows: 3 },
-      ]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("restores a pre-existing true resize-suppression value after a successful pulse", async () => {
-    type CapturedEntry = {
-      terminal: FakeTerminalInstance;
-      snapshotResizeSuppressed: boolean;
-    };
-    const originalMapGet = Map.prototype.get;
-    let capturedEntry: CapturedEntry | null = null;
-    Map.prototype.get = function (this: Map<unknown, unknown>, key: unknown): unknown {
-      const value = Reflect.apply(originalMapGet, this, [key]) as unknown;
-      if (
-        key === SESSION_A &&
-        value !== null &&
-        typeof value === "object" &&
-        "terminal" in value &&
-        "snapshotResizeSuppressed" in value
-      ) {
-        capturedEntry = value as CapturedEntry;
-      }
-      return value;
-    } as typeof Map.prototype.get;
-
-    xterm.autoCompleteWrites = false;
-    const fake = new FakeTransport();
-    setupTransport(fake);
-    terminalStore.setActiveSessionForTests(SESSION_A);
-    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-    try {
-      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-      const terminal = instancesFor(SESSION_A)[0];
-      await passTwoAnimationFrames();
-      const entry = capturedEntry as CapturedEntry | null;
-      if (!entry) throw new Error("expected to capture the live terminal entry");
-      expect(entry.terminal).toBe(terminal);
-      Map.prototype.get = originalMapGet;
-
-      makePulseEligible(terminal);
-      entry.snapshotResizeSuppressed = true;
-      const attemptsBefore = terminal.resizeAttempts.length;
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
-
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([
-        { cols: 70, rows: 24 },
-        { cols: 80, rows: 24 },
-      ]);
-      expect(entry.snapshotResizeSuppressed).toBe(true);
-      expect(ptyResizeTuples(fake, SESSION_A)).not.toContainEqual({ cols: 70, rows: 24 });
-    } finally {
-      Map.prototype.get = originalMapGet;
-      rendered.cleanup();
-    }
-  });
-
-  it.each([
-    { name: "undefined", proposal: undefined },
-    { name: "non-finite columns", proposal: { cols: Number.POSITIVE_INFINITY, rows: 24 } },
-    { name: "fractional columns", proposal: { cols: 80.5, rows: 24 } },
-    { name: "unsafe columns", proposal: { cols: Number.MAX_SAFE_INTEGER + 1, rows: 24 } },
-    { name: "zero columns", proposal: { cols: 0, rows: 24 } },
-    { name: "negative columns", proposal: { cols: -1, rows: 24 } },
-    { name: "pulse-underflow columns", proposal: { cols: 10, rows: 24 } },
-    { name: "non-finite rows", proposal: { cols: 80, rows: Number.NaN } },
-    { name: "fractional rows", proposal: { cols: 80, rows: 23.5 } },
-    { name: "unsafe rows", proposal: { cols: 80, rows: Number.MAX_SAFE_INTEGER + 1 } },
-    { name: "zero rows", proposal: { cols: 80, rows: 0 } },
-    { name: "negative rows", proposal: { cols: 80, rows: -1 } },
-  ])("falls back to one ordinary fit for an invalid $name proposal", async ({ proposal }) => {
-    xterm.autoCompleteWrites = false;
-    const fake = new FakeTransport();
-    setupTransport(fake);
-    terminalStore.setActiveSessionForTests(SESSION_A);
-    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-    try {
-      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-      const terminal = instancesFor(SESSION_A)[0];
-      const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-      await passTwoAnimationFrames();
-      makePulseEligible(terminal);
-      fitProposal.overridden = true;
-      fitProposal.value = proposal;
-      const attemptsBefore = terminal.resizeAttempts.length;
-      const fitsBefore = terminal.ordinaryFitCalls;
-
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
-
-      expect(terminal.ordinaryFitCalls).toBe(fitsBefore + 1);
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
-      expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
-        { cols: 80, rows: 24 },
-      ]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("uses one ordinary direct fit when the valid proposal differs from the current grid", async () => {
-    xterm.autoCompleteWrites = false;
-    const fake = new FakeTransport();
-    setupTransport(fake);
-    terminalStore.setActiveSessionForTests(SESSION_A);
-    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-    try {
-      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-      const terminal = instancesFor(SESSION_A)[0];
-      await passTwoAnimationFrames();
-      makePulseEligible(terminal);
-      fitViewport.cols = 90;
-      fitProposal.overridden = true;
-      fitProposal.value = { cols: 90, rows: 24 };
-      const attemptsBefore = terminal.resizeAttempts.length;
-      const fitsBefore = terminal.ordinaryFitCalls;
-      const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
-
-      expect(terminal.ordinaryFitCalls).toBe(fitsBefore + 1);
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([
-        { cols: 90, rows: 24 },
-      ]);
-      expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
-        { cols: 90, rows: 24 },
-      ]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it.each([
-    {
-      name: "pending wrap",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.cursorX = terminal.cols;
-      },
-    },
-    {
-      name: "negative cursor",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.cursorX = -1;
-      },
-    },
-    {
-      name: "fractional cursor",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.cursorX = 1.5;
-      },
-    },
-    {
-      name: "missing line",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.missingLines.add(1);
-      },
-    },
-    {
-      name: "soft-wrapped line",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.wrappedLines.add(1);
-      },
-    },
-    {
-      name: "alternate buffer",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.type = "alternate";
-      },
-    },
-    {
-      name: "viewport above bottom",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.length = 30;
-        terminal.buffer.active.baseY = 6;
-        terminal.buffer.active.viewportY = 0;
-      },
-    },
-    {
-      name: "selection",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.selection = true;
-      },
-    },
-    {
-      name: "empty buffer",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.length = 0;
-      },
-    },
-    {
-      name: "fractional length",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.length = 2.5;
-      },
-    },
-    {
-      name: "unsafe length",
-      configure: (terminal: FakeTerminalInstance) => {
-        terminal.buffer.active.length = Number.MAX_SAFE_INTEGER + 1;
-      },
-    },
-  ])("keeps the ordinary path for an ineligible $name", async ({ configure }) => {
-    xterm.autoCompleteWrites = false;
-    const fake = new FakeTransport();
-    setupTransport(fake);
-    terminalStore.setActiveSessionForTests(SESSION_A);
-    const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-    try {
-      await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-      const terminal = instancesFor(SESSION_A)[0];
-      const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-      await passTwoAnimationFrames();
-      makePulseEligible(terminal);
-      configure(terminal);
-      const attemptsBefore = terminal.resizeAttempts.length;
-      const fitsBefore = terminal.ordinaryFitCalls;
-
-      completeWriteCallbacks(terminal);
-      await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
-
-      expect(terminal.ordinaryFitCalls).toBe(fitsBefore + 1);
-      expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
-      expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore)).toEqual([
-        { cols: 80, rows: 24 },
-      ]);
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("handles pulse failures once, restores dimensions, and restores suppression", async () => {
-    const firstBefore = new Error("first leg before mutation");
-    const firstAfter = new Error("first leg after mutation");
-    const secondBefore = new Error("second leg before mutation");
-    const secondAfter = new Error("second leg after mutation");
-    const aggregatePrimary = new Error("aggregate primary");
-    const aggregateRestoration = new Error("aggregate restoration");
-    const scenarios: Array<{
-      name: string;
-      behaviors: FakeResizeBehavior[];
-      attempts: Array<{ cols: number; rows: number }>;
-      effective: Array<{ cols: number; rows: number }>;
-      expectedError?: unknown;
-      expectedMessage?: string;
-      aggregateErrors?: unknown[];
-      dimensionsRestored: boolean;
-    }> = [
-      {
-        name: "first leg before mutation",
-        behaviors: [{ cols: 70, rows: 24, action: "throw-before", error: firstBefore }],
-        attempts: [{ cols: 70, rows: 24 }],
-        effective: [],
-        expectedError: firstBefore,
-        dimensionsRestored: true,
-      },
-      {
-        name: "first leg after mutation",
-        behaviors: [{ cols: 70, rows: 24, action: "throw-after", error: firstAfter }],
-        attempts: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        effective: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        expectedError: firstAfter,
-        dimensionsRestored: true,
-      },
-      {
-        name: "second leg before mutation",
-        behaviors: [{ cols: 80, rows: 24, action: "throw-before", error: secondBefore }],
-        attempts: [
-          { cols: 70, rows: 24 },
-          { cols: 80, rows: 24 },
-          { cols: 80, rows: 24 },
-        ],
-        effective: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        expectedError: secondBefore,
-        dimensionsRestored: true,
-      },
-      {
-        name: "second leg after mutation",
-        behaviors: [{ cols: 80, rows: 24, action: "throw-after", error: secondAfter }],
-        attempts: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        effective: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        expectedError: secondAfter,
-        dimensionsRestored: true,
-      },
-      {
-        name: "no-op first leg",
-        behaviors: [{ cols: 70, rows: 24, action: "noop" }],
-        attempts: [{ cols: 70, rows: 24 }],
-        effective: [],
-        expectedMessage: "Terminal resize pulse did not reach expanded grid",
-        dimensionsRestored: true,
-      },
-      {
-        name: "no-op second leg",
-        behaviors: [{ cols: 80, rows: 24, action: "noop" }],
-        attempts: [
-          { cols: 70, rows: 24 },
-          { cols: 80, rows: 24 },
-          { cols: 80, rows: 24 },
-        ],
-        effective: [{ cols: 70, rows: 24 }, { cols: 80, rows: 24 }],
-        expectedMessage: "Terminal resize pulse did not restore original grid",
-        dimensionsRestored: true,
-      },
-      {
-        name: "second leg and dimension restoration",
-        behaviors: [
-          { cols: 80, rows: 24, action: "throw-before", error: aggregatePrimary },
-          { cols: 80, rows: 24, action: "throw-before", error: aggregateRestoration },
-        ],
-        attempts: [
-          { cols: 70, rows: 24 },
-          { cols: 80, rows: 24 },
-          { cols: 80, rows: 24 },
-        ],
-        effective: [{ cols: 70, rows: 24 }],
-        expectedMessage: "Terminal resize pulse and dimension restoration failed",
-        aggregateErrors: [aggregatePrimary, aggregateRestoration],
-        dimensionsRestored: false,
-      },
-    ];
-
-    for (const scenario of scenarios) {
-      resetUiStoresForTests();
-      resetUiTerminalControllerForTests();
-      xterm.autoCompleteWrites = false;
-      fitViewport.cols = 80;
-      fitViewport.rows = 24;
-      fitProposal.overridden = false;
-      fitProposal.value = undefined;
-      const fake = new FakeTransport();
-      setupTransport(fake);
-      terminalStore.setActiveSessionForTests(SESSION_A);
-      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-      try {
-        await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-        const terminal = instancesFor(SESSION_A)[0];
-        await passTwoAnimationFrames();
-        makePulseEligible(terminal);
-        terminal.resizeBehaviors.push(...scenario.behaviors);
-
-        const attemptsBefore = terminal.resizeAttempts.length;
-        const effectiveBefore = terminal.resizes.length;
-        const ptyBefore = ptyResizeTuples(fake, SESSION_A).length;
-        const bottomsBefore = terminal.scrollToBottomCalls;
-        const debugBefore = debug.mock.calls.length;
-        const warningBefore = warn.mock.calls.length;
-
-        completeWriteCallbacks(terminal);
-        const stateBeforePulse = fakeBufferGridState(terminal);
-        await waitFor(() => expect(warn.mock.calls.length).toBe(warningBefore + 1));
-
-        expect(terminal.resizeAttempts.slice(attemptsBefore), scenario.name).toEqual(
-          scenario.attempts,
-        );
-        expect(terminal.resizes.slice(effectiveBefore), scenario.name).toEqual(
-          scenario.effective,
-        );
-        expect(ptyResizeTuples(fake, SESSION_A).slice(ptyBefore), scenario.name).toEqual([]);
-        expect(terminal.scrollToBottomCalls, scenario.name).toBe(bottomsBefore);
-        expect(debug.mock.calls.length, scenario.name).toBe(debugBefore);
-        expect(String(warn.mock.calls[warningBefore][0]), scenario.name).toContain(
-          `[terminal] attach settle ${SESSION_A} failed:`,
-        );
-
-        const warnedError = warn.mock.calls[warningBefore][1];
-        if (scenario.expectedError) {
-          expect(warnedError, scenario.name).toBe(scenario.expectedError);
-        }
-        if (scenario.expectedMessage) {
-          expect(warnedError, scenario.name).toBeInstanceOf(Error);
-          expect((warnedError as Error).message, scenario.name).toBe(scenario.expectedMessage);
-        }
-        if (scenario.aggregateErrors) {
-          expect(warnedError, scenario.name).toBeInstanceOf(AggregateError);
-          expect((warnedError as AggregateError).errors, scenario.name).toEqual(
-            scenario.aggregateErrors,
-          );
-        }
-        if (scenario.dimensionsRestored) {
-          expect(fakeBufferGridState(terminal), scenario.name).toEqual(stateBeforePulse);
-        } else {
-          expect({ cols: terminal.cols, rows: terminal.rows }, scenario.name).toEqual({
-            cols: 70,
-            rows: 24,
-          });
-        }
-
-        const attemptsAfterFailure = terminal.resizeAttempts.length;
-        await passTwoAnimationFrames();
-        expect(terminal.resizeAttempts.length, `${scenario.name}: no retry`).toBe(
-          attemptsAfterFailure,
-        );
-
-        terminal.resize(82, 24);
-        await waitFor(() =>
-          expect(ptyResizeTuples(fake, SESSION_A)).toContainEqual({ cols: 82, rows: 24 }),
-        );
-      } finally {
-        rendered.cleanup();
-      }
-    }
-  });
-
-  it("preserves complete public xterm state and subsequent bytes across every normative pulse oracle", async () => {
-    interface OracleCell {
-      getChars(): string;
-      getCode(): number;
-      getWidth(): number;
-      isBold(): boolean;
-      isDim(): boolean;
-      isItalic(): boolean;
-      isUnderline(): boolean;
-      isBlink(): boolean;
-      isInverse(): boolean;
-      isInvisible(): boolean;
-      isStrikethrough(): boolean;
-    }
-    interface OracleLine {
-      isWrapped: boolean;
-      getCell(index: number): OracleCell | undefined;
-      translateToString(trimRight?: boolean): string;
-    }
-    interface RealTerminalInstance {
-      cols: number;
-      rows: number;
-      buffer: {
-        active: {
-          type: "normal" | "alternate";
-          length: number;
-          baseY: number;
-          viewportY: number;
-          cursorX: number;
-          cursorY: number;
-          getLine(index: number): OracleLine | undefined;
-        };
-      };
-      hasSelection(): boolean;
-      write(data: string, callback: () => void): void;
-      resize(cols: number, rows: number): void;
-      onResize(listener: (size: { cols: number; rows: number }) => void): {
-        dispose(): void;
-      };
-      dispose(): void;
-    }
-    const actualXterm = await vi.importActual("@xterm/xterm");
-    const RealTerminal = (
-      actualXterm as {
-        Terminal: new (options: {
-          cols: number;
-          rows: number;
-          scrollback: number;
-        }) => RealTerminalInstance;
-      }
-    ).Terminal;
-
-    const write = (terminal: RealTerminalInstance, data: string): Promise<void> =>
-      new Promise<void>((resolve) => terminal.write(data, resolve));
-    const callCellGetter = (cell: object, name: string): unknown => {
-      const getter = (cell as Record<string, unknown>)[name];
-      return typeof getter === "function" ? getter.call(cell) : null;
-    };
-    const publicState = (terminal: RealTerminalInstance): unknown => {
-      const active = terminal.buffer.active;
-      const lines = [];
-      for (let row = 0; row < active.length; row += 1) {
-        const line = active.getLine(row);
-        if (!line) {
-          lines.push(null);
-          continue;
-        }
-        const cells = [];
-        for (let column = 0; column < terminal.cols; column += 1) {
-          const cell = line.getCell(column);
-          cells.push(
-            cell
-              ? {
-                  chars: cell.getChars(),
-                  code: cell.getCode(),
-                  width: cell.getWidth(),
-                  fgMode: callCellGetter(cell, "getFgColorMode"),
-                  fg: callCellGetter(cell, "getFgColor"),
-                  bgMode: callCellGetter(cell, "getBgColorMode"),
-                  bg: callCellGetter(cell, "getBgColor"),
-                  underlineMode: callCellGetter(cell, "getUnderlineColorMode"),
-                  underlineColor: callCellGetter(cell, "getUnderlineColor"),
-                  underlineStyle: callCellGetter(cell, "getUnderlineStyle"),
-                  bold: cell.isBold(),
-                  dim: cell.isDim(),
-                  italic: cell.isItalic(),
-                  underline: cell.isUnderline(),
-                  blink: cell.isBlink(),
-                  inverse: cell.isInverse(),
-                  invisible: cell.isInvisible(),
-                  strikethrough: cell.isStrikethrough(),
-                  overline: callCellGetter(cell, "isOverline"),
-                }
-              : null,
-          );
-        }
-        lines.push({
-          isWrapped: line.isWrapped,
-          text: line.translateToString(false),
-          cells,
-        });
-      }
-      return {
-        cols: terminal.cols,
-        rows: terminal.rows,
-        type: active.type,
-        length: active.length,
-        baseY: active.baseY,
-        viewportY: active.viewportY,
-        cursorX: active.cursorX,
-        cursorY: active.cursorY,
-        lines,
-      };
-    };
-    const eligible = (terminal: RealTerminalInstance): boolean => {
-      const active = terminal.buffer.active;
-      if (
-        active.type !== "normal" ||
-        active.viewportY !== active.baseY ||
-        terminal.hasSelection() ||
-        !Number.isSafeInteger(active.length) ||
-        active.length <= 0 ||
-        !Number.isSafeInteger(active.cursorX) ||
-        active.cursorX < 0 ||
-        active.cursorX >= terminal.cols
-      ) {
-        return false;
-      }
-      for (let index = 0; index < active.length; index += 1) {
-        const line = active.getLine(index);
-        if (!line || line.isWrapped) return false;
-      }
-      return true;
-    };
-    const pulse = (terminal: RealTerminalInstance): Array<{ cols: number; rows: number }> => {
-      const events: Array<{ cols: number; rows: number }> = [];
-      const disposable = terminal.onResize((size) =>
-        events.push({ cols: size.cols, rows: size.rows }),
-      );
-      const original = { cols: terminal.cols, rows: terminal.rows };
-      if (original.cols <= 10) {
-        disposable.dispose();
-        return events;
-      }
-      terminal.resize(original.cols - 10, original.rows);
-      terminal.resize(original.cols, original.rows);
-      disposable.dispose();
-      return events;
-    };
-    const makePair = (cols = 5, rows = 3) => ({
-      candidate: new RealTerminal({ cols, rows, scrollback: 1000 }),
-      control: new RealTerminal({ cols, rows, scrollback: 1000 }),
-    });
-
-    const ordinaryEligibleCases = [
-      {
-        name: "full-width right edge",
-        prefix: "ABCDE\r",
-        suffix: "Z",
-      },
-      {
-        name: "Unicode hard-line history",
-        prefix: "ONE\r\nTWO\r\n界e\u0301\r",
-        suffix: "Ω界\r\n",
-      },
-    ];
-    for (const oracle of ordinaryEligibleCases) {
-      const { candidate, control } = makePair();
-      try {
-        await Promise.all([write(candidate, oracle.prefix), write(control, oracle.prefix)]);
-        expect(eligible(candidate), oracle.name).toBe(true);
-        expect(publicState(candidate), `${oracle.name}: initial control`).toEqual(
-          publicState(control),
-        );
-        const before = publicState(candidate);
-        expect(pulse(candidate), oracle.name).toEqual([]);
-        expect(publicState(candidate), `${oracle.name}: reversible state`).toEqual(before);
-        expect(publicState(candidate), `${oracle.name}: post-pulse control`).toEqual(
-          publicState(control),
-        );
-        await Promise.all([write(candidate, oracle.suffix), write(control, oracle.suffix)]);
-        expect(publicState(candidate), `${oracle.name}: subsequent bytes`).toEqual(
-          publicState(control),
-        );
-      } finally {
-        candidate.dispose();
-        control.dispose();
-      }
-    }
-
-    {
-      const { candidate, control } = makePair(15);
-      const primary = new Error("injected post-expansion sentinel");
-      try {
-        await Promise.all([write(candidate, "ABCDE\r"), write(control, "ABCDE\r")]);
-        expect(eligible(candidate)).toBe(true);
-        const before = publicState(candidate);
-        const events: Array<{ cols: number; rows: number }> = [];
-        const disposable = candidate.onResize((size) =>
-          events.push({ cols: size.cols, rows: size.rows }),
-        );
-        let caught: unknown;
-        try {
-          try {
-            candidate.resize(5, 3);
-            throw primary;
-          } catch (error) {
-            if (candidate.cols !== 15 || candidate.rows !== 3) {
-              candidate.resize(15, 3);
-            }
-            throw error;
-          }
-        } catch (error) {
-          caught = error;
-        } finally {
-          disposable.dispose();
-        }
-        expect(caught).toBe(primary);
-        expect(events).toEqual([
-          { cols: 5, rows: 3 },
-          { cols: 15, rows: 3 },
-        ]);
-        expect(publicState(candidate)).toEqual(before);
-        expect(publicState(candidate)).toEqual(publicState(control));
-        await Promise.all([write(candidate, "Z"), write(control, "Z")]);
-        expect(publicState(candidate)).toEqual(publicState(control));
-      } finally {
-        candidate.dispose();
-        control.dispose();
-      }
-    }
-
-    const ineligibleCases = [
-      {
-        name: "pending wrap",
-        prefix: "ABCDE",
-        suffix: "Z",
-        assertShape: (terminal: RealTerminalInstance) =>
-          expect(terminal.buffer.active.cursorX).toBe(terminal.cols),
-      },
-      {
-        name: "soft wrap",
-        prefix: "ABCDEF",
-        suffix: "Z",
-        assertShape: (terminal: RealTerminalInstance) =>
-          expect(
-            Array.from({ length: terminal.buffer.active.length }, (_, index) =>
-              terminal.buffer.active.getLine(index)?.isWrapped,
-            ),
-          ).toContain(true),
-      },
-      {
-        name: "alternate buffer",
-        prefix: "\u001b[?1049hALT",
-        suffix: "\u001b[?1049lZ",
-        assertShape: (terminal: RealTerminalInstance) =>
-          expect(terminal.buffer.active.type).toBe("alternate"),
-      },
-    ];
-    for (const oracle of ineligibleCases) {
-      const { candidate, control } = makePair();
-      try {
-        await Promise.all([write(candidate, oracle.prefix), write(control, oracle.prefix)]);
-        oracle.assertShape(candidate);
-        expect(eligible(candidate), oracle.name).toBe(false);
-        const events: Array<{ cols: number; rows: number }> = [];
-        const disposable = candidate.onResize((size) =>
-          events.push({ cols: size.cols, rows: size.rows }),
-        );
-        candidate.resize(5, 3);
-        disposable.dispose();
-        expect(events, oracle.name).toEqual([]);
-        expect({ cols: candidate.cols, rows: candidate.rows }, oracle.name).toEqual({
-          cols: 5,
-          rows: 3,
-        });
-        expect(publicState(candidate), `${oracle.name}: ordinary state`).toEqual(
-          publicState(control),
-        );
-        await Promise.all([write(candidate, oracle.suffix), write(control, oracle.suffix)]);
-        expect(publicState(candidate), `${oracle.name}: subsequent bytes`).toEqual(
-          publicState(control),
-        );
-      } finally {
-        candidate.dispose();
-        control.dispose();
-      }
-    }
-
-    {
-      const candidate = new RealTerminal({ cols: 122, rows: 39, scrollback: 1000 });
-      const control = new RealTerminal({ cols: 122, rows: 39, scrollback: 1000 });
-      const terminalB = new RealTerminal({ cols: 122, rows: 39, scrollback: 1000 });
-      const numbered = (session: "A" | "B", from: number, to: number): string =>
-        Array.from(
-          { length: to - from + 1 },
-          (_, offset) => `${session}-LINE-${String(from + offset).padStart(4, "0")}\r\n`,
-        ).join("");
-      const aInitial = `A-BEGIN-2000\r\n${numbered("A", 1, 3)}`;
-      const bInitial = `B-BEGIN-2000\r\n${numbered("B", 1, 3)}`;
-      const aRetained = numbered("A", 4, 50);
-      const running = ":: Running... (escape/ctrl+c to cancel)\r\n";
-      try {
-        await Promise.all([write(candidate, aInitial), write(control, aInitial)]);
-        await write(terminalB, bInitial);
-        await Promise.all([write(candidate, aRetained), write(control, aRetained)]);
-        await Promise.all([write(candidate, running), write(control, running)]);
-
-        expect(eligible(candidate), "122x39 workload eligibility").toBe(true);
-        expect(publicState(candidate)).toEqual(publicState(control));
-        const before = publicState(candidate);
-        expect(pulse(candidate)).toEqual([
-          { cols: 112, rows: 39 },
-          { cols: 122, rows: 39 },
-        ]);
-        expect(publicState(candidate)).toEqual(before);
-        expect(publicState(candidate)).toEqual(publicState(control));
-
-        const next = "A-LINE-0051\r\n";
-        await Promise.all([write(candidate, next), write(control, next)]);
-        expect(publicState(candidate)).toEqual(publicState(control));
-      } finally {
-        candidate.dispose();
-        control.dispose();
-        terminalB.dispose();
-      }
-    }
-  });
-
-  it.each(["stale generation", "disposed entry"] as const)(
-    "does not schedule a pulse for a %s",
-    async (scenario) => {
-      xterm.autoCompleteWrites = false;
-      const fake = new FakeTransport();
-      setupTransport(fake);
-      terminalStore.setActiveSessionForTests(SESSION_A);
-      const rendered = renderWithFakeTransport(() => <TerminalView />, fake);
-      try {
-        await waitFor(() => expect(instancesFor(SESSION_A)[0]?.writes).toEqual([SNAP]));
-        const terminal = instancesFor(SESSION_A)[0];
-        makePulseEligible(terminal);
-        const attemptsBefore = terminal.resizeAttempts.length;
-
-        if (scenario === "stale generation") {
-          terminalStore.setActiveSessionForTests(SESSION_B);
-          await waitFor(() => expect(attachedSessionIds(fake)).toContain(SESSION_B));
-        } else {
-          fake.emitFromBackend("session_destroyed", { id: SESSION_A });
-          expect(terminal.disposed).toBe(true);
-        }
-
-        completeWriteCallbacks(terminal);
-        await passTwoAnimationFrames();
-        expect(terminal.resizeAttempts.slice(attemptsBefore)).toEqual([]);
-      } finally {
-        rendered.cleanup();
-      }
-    },
-  );
 
   it("keeps an empty snapshot on the ordinary viewport-sync path without an adjacent-column pulse", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
+    const requests: MainTerminalLayoutPulseRequest[] = [];
+    const capture = (event: Event) => {
+      requests.push(
+        (event as CustomEvent<MainTerminalLayoutPulseRequest>).detail,
+      );
+    };
+    window.addEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
     fake.onInvoke("activate_terminal_output", (args) => ({
       sessionId: String(args.sessionId),
       data: [],
@@ -2253,8 +2077,10 @@ describe("TerminalView attachment (#1363)", () => {
       expect(terminal.resets).toBe(0);
       expect(terminal.ordinaryFitCalls).toBeGreaterThan(0);
       expect(terminal.resizeAttempts).not.toContainEqual({ cols: 70, rows: 24 });
+      expect(requests).toEqual([]);
     } finally {
       rendered.cleanup();
+      window.removeEventListener(MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT, capture);
     }
   });
 
@@ -2554,18 +2380,21 @@ describe("TerminalView attachment (#1363)", () => {
       // Complete generation 1's held callback: the drain releases, generation
       // 2's snapshot write queues and settles once, and generation 1's later
       // continuation (its flush) is inert - no additional writes, no
-      // additional bottoming, no additional pty_resize, and no settled record
-      // for generation 1.
+      // additional bottoming and no settled record for generation 1. The one
+      // added pty_resize is generation 2's required real final confirmation.
       completeWriteCallbacks(terminal);
       await waitFor(() => expect(terminal.writes).toEqual([SNAP, SNAP]));
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
 
       expect(terminal.writes).toHaveLength(writesBefore + 1);
       expect(terminal.scrollToBottomCalls).toBe(bottomsBefore + 1);
-      expect(resizesOfA()).toBe(resizesBefore);
+      expect(resizesOfA()).toBe(resizesBefore + 1);
       expect(settledRecordsOf(SESSION_A) + settledRecordsOf(SESSION_B)).toBe(
         recordsBefore + 1
       );
+      expect(queryTerminalTarget(terminal.element!).layoutPulse).toMatchObject({
+        attachGeneration: 2,
+      });
     } finally {
       rendered.cleanup();
     }

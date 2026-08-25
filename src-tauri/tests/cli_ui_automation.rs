@@ -318,7 +318,60 @@ fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
     let tmp = Tmp::new("ui-terminal-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
-    let responder = spawn_fake_responder(&bin, |request| {
+    let expected_target = json!({
+        "sessionId": "session-a",
+        "baseY": 83,
+        "viewportY": 0,
+        "length": 122,
+        "cols": 122,
+        "rows": 39,
+        "type": "normal",
+        "atBottom": false,
+        "layoutPulse": {
+            "version": 1,
+            "requestId": 7,
+            "sessionId": "session-a",
+            "attachGeneration": 3,
+            "status": "completed",
+            "reason": "completed",
+            "original": {
+                "sidebarWidth": 440,
+                "hostWidth": 900,
+                "cols": 120,
+                "rows": 39,
+                "baselineObservedEpoch": null,
+                "completedObserverAck": null
+            },
+            "expanded": {
+                "sidebarWidth": 424,
+                "hostWidth": 916,
+                "cols": 122,
+                "rows": 39,
+                "baselineObservedEpoch": 10,
+                "completedObserverAck": {
+                    "epoch": 11,
+                    "first": { "hostWidth": 916, "cols": 122, "rows": 39 },
+                    "second": { "hostWidth": 916, "cols": 122, "rows": 39 }
+                }
+            },
+            "restored": {
+                "sidebarWidth": 440,
+                "hostWidth": 900,
+                "cols": 120,
+                "rows": 39,
+                "baselineObservedEpoch": 12,
+                "completedObserverAck": {
+                    "epoch": 13,
+                    "first": { "hostWidth": 900, "cols": 120, "rows": 39 },
+                    "second": { "hostWidth": 900, "cols": 120, "rows": 39 }
+                }
+            },
+            "dwellMs": 208,
+            "settingsWritesDelta": 0
+        }
+    });
+    let responder_target = expected_target.clone();
+    let responder = spawn_fake_responder(&bin, move |request| {
         assert_eq!(request["window"], "main");
         assert_eq!(request["action"], "terminal");
         assert_eq!(request["selector"], "terminal.session.session-a");
@@ -330,16 +383,7 @@ fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
             "window": "main",
             "action": "terminal",
             "selector": "terminal.session.session-a",
-            "target": {
-                "sessionId": "session-a",
-                "baseY": 83,
-                "viewportY": 0,
-                "length": 122,
-                "cols": 122,
-                "rows": 39,
-                "type": "normal",
-                "atBottom": false
-            }
+            "target": responder_target.clone()
         })
     });
 
@@ -360,19 +404,7 @@ fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let parsed = assert_bounded_terminal_output(&stdout, &stderr);
     assert_eq!(parsed["ok"], true);
-    assert_eq!(
-        parsed["target"],
-        json!({
-            "sessionId": "session-a",
-            "baseY": 83,
-            "viewportY": 0,
-            "length": 122,
-            "cols": 122,
-            "rows": 39,
-            "type": "normal",
-            "atBottom": false
-        })
-    );
+    assert_eq!(parsed["target"], expected_target);
 }
 
 #[test]

@@ -964,6 +964,87 @@ export interface UiAutomationTarget {
   rect: UiAutomationTargetRect | null;
 }
 
+export const MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT =
+  "main-terminal-layout-pulse-request";
+
+export type MainTerminalLayoutGeometry = {
+  hostWidth: number;
+  cols: number;
+  rows: number;
+};
+
+export type MainTerminalLayoutObserverAck = {
+  epoch: number;
+  first: MainTerminalLayoutGeometry;
+  second: MainTerminalLayoutGeometry;
+};
+
+export type MainTerminalLayoutPulseSample = MainTerminalLayoutGeometry & {
+  observedObserverEpoch: number;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseStatus =
+  | "completed"
+  | "skipped"
+  | "cancelled"
+  | "failed";
+
+export type MainTerminalLayoutPulseReason =
+  | "completed"
+  | "unhandled"
+  | "busy"
+  | "dragging"
+  | "persistence_owned"
+  | "invalid_sample"
+  | "clamped"
+  | "stale"
+  | "width_changed"
+  | "teardown"
+  | "initialization_timeout"
+  | "request_timeout"
+  | "expanded_timeout"
+  | "restore_timeout"
+  | "exception";
+
+export type MainTerminalLayoutPulsePhaseTrace = {
+  sidebarWidth: number | null;
+  hostWidth: number | null;
+  cols: number | null;
+  rows: number | null;
+  baselineObservedEpoch: number | null;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseTrace = {
+  version: 1;
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  original: MainTerminalLayoutPulsePhaseTrace;
+  expanded: MainTerminalLayoutPulsePhaseTrace;
+  restored: MainTerminalLayoutPulsePhaseTrace;
+  dwellMs: number;
+  settingsWritesDelta: number;
+};
+
+export type MainTerminalLayoutPulseResult = {
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  trace: MainTerminalLayoutPulseTrace;
+};
+
+export type MainTerminalLayoutPulseRequest = {
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  accepted: boolean;
+  sample: () => MainTerminalLayoutPulseSample | null;
+  complete: (result: MainTerminalLayoutPulseResult) => void;
+};
+
 export interface UiTerminalAutomationTarget {
   sessionId: string;
   baseY: number;
@@ -973,6 +1054,7 @@ export interface UiTerminalAutomationTarget {
   rows: number;
   type: "normal" | "alternate";
   atBottom: boolean;
+  layoutPulse?: MainTerminalLayoutPulseTrace | null;
 }
 
 export interface UiAutomationDiagnostics {
