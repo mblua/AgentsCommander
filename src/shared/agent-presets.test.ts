@@ -57,7 +57,7 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
     }
   });
 
-  it("#1318/#1325: claude, pi, and codex ship update commands; every entry defaults autoUpdate off", () => {
+  it("#1318/#1325/#1546: claude, pi, codex, hermes, opencode, and antigravity ship update commands; cursor ships none; every entry defaults autoUpdate off", () => {
     for (const def of FALLBACK_CODING_AGENTS) {
       expect(def.autoUpdate).toBe(false);
       if (def.key === "claude") {
@@ -66,6 +66,12 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
         expect(def.updateCommands).toEqual(["pi update"]);
       } else if (def.key === "codex") {
         expect(def.updateCommands).toEqual(["codex update"]);
+      } else if (def.key === "hermes") {
+        expect(def.updateCommands).toEqual(["hermes update --yes"]);
+      } else if (def.key === "opencode") {
+        expect(def.updateCommands).toEqual(["opencode upgrade"]);
+      } else if (def.key === "antigravity") {
+        expect(def.updateCommands).toEqual(["agy update"]);
       } else {
         expect(def.updateCommands).toEqual([]);
       }

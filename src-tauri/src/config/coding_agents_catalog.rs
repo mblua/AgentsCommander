@@ -1776,10 +1776,10 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_ships_claude_pi_and_codex_update_commands() {
-        // #1318/#1325 drift guard: claude, pi, and codex ship the update
-        // command; the other three ship none; every entry defaults autoUpdate
-        // to false.
+    fn embedded_default_ships_update_commands_for_all_but_cursor() {
+        // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
+        // and antigravity ship the update command; cursor ships none; every
+        // entry defaults autoUpdate to false.
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.agents.len(), 7);
         for def in &catalog.agents {
@@ -1788,18 +1788,21 @@ mod tests {
                 "{} autoUpdate must default false",
                 def.key
             );
-            if def.key == "claude" {
-                assert_eq!(def.update_commands, vec!["claude --update".to_string()]);
-            } else if def.key == "pi" {
-                assert_eq!(def.update_commands, vec!["pi update".to_string()]);
-            } else if def.key == "codex" {
-                assert_eq!(def.update_commands, vec!["codex update".to_string()]);
-            } else {
-                assert!(
+            match def.key.as_str() {
+                "claude" => assert_eq!(def.update_commands, vec!["claude --update".to_string()]),
+                "pi" => assert_eq!(def.update_commands, vec!["pi update".to_string()]),
+                "codex" => assert_eq!(def.update_commands, vec!["codex update".to_string()]),
+                "hermes" => assert_eq!(
+                    def.update_commands,
+                    vec!["hermes update --yes".to_string()]
+                ),
+                "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
+                "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
+                "cursor" => assert!(
                     def.update_commands.is_empty(),
-                    "{} must ship no update command",
-                    def.key
-                );
+                    "cursor must ship no update command"
+                ),
+                other => panic!("unexpected key {other:?}"),
             }
         }
     }
