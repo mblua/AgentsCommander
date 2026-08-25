@@ -1,10 +1,10 @@
 # Issue #1481: make the immutable v0.30.1 recovery deterministic
 
-Status: NOT_READY_FOR_IMPLEMENTATION
+Status: READY_FOR_IMPLEMENTATION
 
 Impact-HTML: plans/1481-recover-immutable-0-30-1-impact.html
 
-Delivery path: Full revision reopened after recovery run `32883517350`. This document is the sole implementation specification, but it is not ready for implementation. Developer enrichment, independent release/shipper review, final architect consensus with a fresh dependency-cycle certificate, Step 7.5 human impact approval, and new artifact hashes are still required. Nothing here authorizes implementation, merge, rerun, dispatch, Release mutation, npm publication, tag or secret changes, cleanup, deployment, or other external-state mutation.
+Delivery path: Full revision reopened after recovery run `32883517350`. Developer round-2 enrichment passed, the formal Step 6 rereview passed, independent release/shipper validation passed, and final architect consensus at reviewed head `a8910732da43f715efafaabf7acbd5f71b5cc1fa` produced the fresh dependency-cycle and layering certificate in section 5.3. This document is the sole implementation specification and is technically `READY_FOR_IMPLEMENTATION`. Step 7.5 human impact approval and workgroup purge remain mandatory blockers before implementation handoff. Nothing here authorizes implementation, merge, rerun, dispatch, Release mutation, npm publication, tag or secret changes, cleanup, deployment, or other external-state mutation.
 
 ## 1. Issue and objective
 
@@ -183,9 +183,15 @@ If implementation changes any related-only path, adds another file, or changes a
 
 ### 5.3 No application or module surface
 
-No Rust module, TypeScript module, IPC command/event/type, Tauri window, configuration schema, persistence format, PTY/ConPTY flow, frontend behavior, package dependency, or application module dependency arc changes. The current correction design enumerates `0 added / 0 removed` application module arcs: its sole later implementation path is an existing GitHub Actions YAML file outside `src-tauri` and every application module root. New arcs: none. Removed arcs: none. Cross-boundary arcs: none. No SCC can be created, grown, or joined, and no lower layer can gain a UI-transport, `AppHandle`, or `tauri` dependency. No module-structure Step-N detector criterion is applicable to the correction itself.
+No Rust module, TypeScript module, IPC command/event/type, Tauri window, configuration schema, persistence format, PTY/ConPTY flow, frontend behavior, package dependency, or application module dependency arc changes. The current correction design enumerates `0 added / 0 removed` application module arcs: its sole later implementation path is an existing GitHub Actions YAML file outside `src-tauri` and every application module root. New arcs: none. Removed arcs: none. Cross-boundary arcs: none. No SCC can be created, grown, or joined, and no lower layer can gain a UI-transport, `AppHandle`, or `tauri` dependency.
 
-This Full revision is non-READY and does not inherit the historical dependency certificate. Final architect consensus must freshly certify `0 added / 0 removed` application module arcs, zero cross-boundary arcs, unchanged `cyclicSccs`, identical SCC member sets, byte-identical `src-tauri/module-arcs.txt`, and green role/layering guards using the repository detector or the documented manual fallback. The implementation reviewer must require a diff containing only `.github/workflows/recover-immutable-v0.30.1.yml` and a byte-identical arc record. If scope expands into module/import structure, stop and return to Full planning.
+The fresh Step 7 certificate compared clean base `5e94bef8f92b5ec50dfbdafaaa95cd857155d149` with clean reviewed head `a8910732da43f715efafaabf7acbd5f71b5cc1fa`. Both commits have the exact `src-tauri` tree object `2dbcd4115333dad5adaca30a4725385b7c442a95`. The byte-identical detector copies used for the run have SHA-256 `3B7D838DBC36C459414691D1C29019CB129099E9D913DA95E604474D071016F7`; the levelizer has SHA-256 `518505A6D0A9B3A7417DEC789B6A5A11BF824AC45D8970230C0A4F29A0263312`. Detector exit `1` was the documented normal result because the repository retains one existing cycle, and both graphs were written. Base and head each contain 190 modules, 1,030 unique arcs, 3,696 reference sites, 4,278 functions, 6,756 function edges, 106 SCCs, and `cyclicSccs: 1`. The sole cyclic SCC contains the identical 85-module member set in both graphs; its canonical sorted member-set SHA-256 is `F11E08FD541290172E7058C7DAEA511B4B6DF48A41D4A6F9BB2D4927ECB1A86B`. The measured delta is `0 added / 0 removed` arcs and zero cross-boundary arcs.
+
+Base, head, and committed `src-tauri/module-arcs.txt` are byte-identical at 1,030 arcs and 81,643 LF bytes, SHA-256 `E9160F4E537CD19A400394F58339F373346997621B9DB25EAFC5A8EA36E182FA`, committed Git blob `10b04d9f4d14f3c128a97b5896e5e3aed568de63`. The arc-record self-test passed all 42 cases. `loops_layering`, `instance_gitignore_layering`, and `project_settings_layering` passed all 8 tests across the three suites. The workflow-only design adds no UI transport, `AppHandle`, or `tauri` dependency and changes no lower-layer role.
+
+The detector's unchanged base/head coverage lower bounds are 64 duplicate function nodes, 26,655 unresolved method calls, 14,435 unresolved bare calls, 4,126 skipped macro invocations, 1 skipped macro definition, 129 calls outside function bodies, 7 glob imports, 1,385 external references, 30 bare-path resolutions, zero ambiguous bare paths, and zero unresolved internal paths; `build.rs` is the sole reported unreachable file. It also cannot see unanchored paths. These limitations do not weaken this delta certificate because the exact `src-tauri` Git tree is identical, the only planned implementation path is workflow YAML outside module roots, the arc record is byte-identical, and all three independent layering guards pass.
+
+The implementation reviewer must rerun this clean-tree detector, SCC-member, arc-record, arc-delta, and structural-guard gate from implementation base to final head. It must again prove unchanged `cyclicSccs`, identical SCC member sets, zero cross-boundary arcs, a byte-identical `src-tauri/module-arcs.txt`, and green layering guards. Any module delta or changed application path is a scope breach: stop and return to Full planning.
 
 ## 6. Decided solution
 
@@ -628,6 +634,7 @@ Require all of the following:
 - Every Bash block passes `bash -n`, every inline Node block passes `node --check`, and any retained inline Python block compiles.
 - `npm run version:check`, `node --check npm/install.js`, and `node --check npm/run.js` pass at the fixed release tree.
 - `git diff --check` passes; `.github/workflows/release.yml` remains byte-identical; the implementation diff contains exactly `.github/workflows/recover-immutable-v0.30.1.yml`; and no committed helper/test file exists.
+- From clean implementation-base and final-head trees, rerun the same dependency detector, SCC-member comparison, `scripts/02-module-arc-record.mjs` record check, and the `loops_layering`, `instance_gitignore_layering`, and `project_settings_layering` guards. Green requires unchanged `cyclicSccs`, identical cyclic-SCC member sets, `0 added / 0 removed` application arcs, zero cross-boundary arcs, byte-identical `src-tauri/module-arcs.txt`, and all structural guards passing. Detector exit `1` is normal when it writes the graph for the existing cycle; exit `3`, any module delta, or any changed application path is a scope breach and returns the work to Full planning.
 
 ### 9.2 Executable state-machine fixtures
 
@@ -677,14 +684,16 @@ The recovery is successful only when every item is recorded:
 
 The separate cleanup is complete only when its diff deletes exactly `.github/workflows/recover-immutable-v0.30.1.yml`, no recovery run remains queued/running, immutable v0.30.1 and all evidence still verify, historical Releases remain unchanged, and the removed workflow is no longer dispatchable from main.
 
-## 10. Full-revision status and pending gates
+## 10. Step 7 certification and remaining gates
 
 The former Step 5 enrichment, shipper `FORMAL_STEP_6_PASS`, architect consensus, and Step 7.5 approval apply only to the historical plan blob `62895f04770b62a5838704b11bb61cabba291f7e` and impact blob `14236921d56b90a9c5796461ff8e0740d433c34a`. Their committed-byte SHA-256 values are `95A54C0FB9E9F242980F20F4FCAF0D57015A3A2FF21AA31DEC7E0B933936B094` and `38B621FDB471891CCD48C3DEFDE58933E799F6BF04C6066E6904F3935483CD07`. Those approvals remain historical audit evidence, but recovery run `32883517350` proved the moving-runner CLI assumption incomplete. They are not current authorization for this correction.
 
 The owner approved planning and review of the exact GitHub CLI `2.86.0` correction in section 6.2.1. That approval does not authorize workflow implementation, rerun, dispatch, Release or npm mutation, tag or secret changes, cleanup, or deployment.
 
-This revision records the current architect design result: one existing workflow path, exactly three credential-free pinned CLI bootstraps, no change to the normal release workflow, no change to the Release state machine or mutation boundaries, and `0 added / 0 removed` application module arcs with zero cross-boundary arcs. It is not a final dependency-cycle certificate and is not a readiness consensus.
+Developer round-2 enrichment reviewed all 690 pre-certification plan lines at exact head `a8910732da43f715efafaabf7acbd5f71b5cc1fa` and returned PASS with no implementation-critical gap. The formal Step 6 rereview returned `FORMAL_STEP_6_PASS` at the same head with blocker count `0` and optional finding count `0`. Independent release/shipper validation passed the complete positive Ubuntu 22.04 and GNU tar 1.34 fixture, the real corrected collision case, the unchanged-scalar collision fixture, retained negative fixtures, exact `gh 2.86.0` execution, and every zero-mutation boundary. The Markdown and impact HTML are synchronized across all locked identities, the CLI archive contract, failed-run evidence, create-step name, secret, and SHASUMS contract. The Plan Contract is complete and the unresolved-choice scan found no open implementation choice.
 
-Required next gates are developer enrichment, independent release/shipper review, final architect consensus with fresh dependency-cycle and layering evidence, synchronized Markdown/HTML verification, new committed-byte Git blob and SHA-256 identities, and Step 7.5 human impact review/approval. After a later implementation merge, the complete live preflight and a separate explicit owner authorization are still required before exactly one new no-input dispatch.
+Final architect consensus freshly certifies the exact dependency-cycle and layering evidence in section 5.3: `cyclicSccs` remains `1 -> 1`, the sole 85-member SCC set is identical, the arc delta is `0 added / 0 removed`, zero arcs cross a previously clean SCC boundary, `src-tauri/module-arcs.txt` is byte-identical, all 42 arc-record self-tests pass, all 8 tests across the three layering suites pass, and no lower layer gains a UI transport, `AppHandle`, or `tauri` dependency. The sole later implementation path remains the existing recovery workflow YAML.
 
-Verdict: `NOT_READY_FOR_IMPLEMENTATION`.
+The remaining delivery gate is Step 7.5 human impact review/approval followed by the required workgroup purge. Only after those gates may the coordinator authorize an implementation handoff. After a later reviewed implementation merge, the complete live preflight and a separate explicit owner authorization are still required before exactly one new no-input dispatch. Never rerun `32883517350`.
+
+Verdict: `READY_FOR_IMPLEMENTATION` as a technical plan consensus only. It authorizes no implementation or external mutation.
