@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::network::OutboundNetwork;
 use crate::pty::manager::PtyManager;
+use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::{self, BridgeHandle, SessionReaderKind};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
 
@@ -95,6 +96,7 @@ impl TelegramBridgeManager {
         network: OutboundNetwork,
         app_handle: tauri::AppHandle<R>,
         reader: Option<SessionReaderKind>,
+        agent_kind: Option<CodingAgentKind>,
     ) -> Result<BridgeInfo, AppError> {
         // Exclusivity: one bot can only be attached to one session
         if let Some(existing) = self.bot_assignments.get(&bot.id) {
@@ -131,6 +133,7 @@ impl TelegramBridgeManager {
             network,
             app_handle,
             reader,
+            agent_kind,
         );
 
         // Only register output sender for PTY mode.

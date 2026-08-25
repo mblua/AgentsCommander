@@ -171,6 +171,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
                 network.clone(),
                 app.clone(),
                 reader,
+                agent_kind,
             )
             .map_err(|e| e.to_string())?;
 
