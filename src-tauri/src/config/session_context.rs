@@ -2470,7 +2470,7 @@ fn simple_hash(s: &str) -> u64 {
 pub fn get_default_agent_template() -> &'static str {
     r#"# AgentsCommander Context
 
-You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents.
+You are in AgentsCommander, a terminal session manager coordinating multiple AI agents.
 
 ## Core Concepts
 
@@ -3282,7 +3282,7 @@ fn render_root_runtime_prologue_inner(
 
 const DEFAULT_CLI_CONTEXT: &str = r#"## CLI executable
 
-Your AgentsCommander credentials are in these environment variables:
+Credentials use these environment variables:
 
 - `AGENTSCOMMANDER_TOKEN`: session auth token
 - `AGENTSCOMMANDER_ROOT`: agent root
@@ -3290,19 +3290,27 @@ Your AgentsCommander credentials are in these environment variables:
 - `AGENTSCOMMANDER_BINARY_PATH`: full CLI path to invoke
 - `AGENTSCOMMANDER_LOCAL_DIR`: config directory name for this instance
 
-Always invoke the CLI through `AGENTSCOMMANDER_BINARY_PATH`; never hardcode or guess another binary.
+Invoke only `AGENTSCOMMANDER_BINARY_PATH`; never hardcode or guess another executable.
 
 ## Self-discovery via --help
 
-For anything not documented here, run `<AGENTSCOMMANDER_BINARY_PATH> --help` or `<AGENTSCOMMANDER_BINARY_PATH> <subcommand> --help`; for peer discovery and inter-agent messaging, the Inter-Agent Messaging section below is authoritative."#;
+Use `--help` only for commands or flags not documented here:
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" --help
+"<AGENTSCOMMANDER_BINARY_PATH>" send --help
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help
+```
+
+The Inter-Agent Messaging section is authoritative for sending and peer discovery."#;
 
 const DEFAULT_SESSION_CREDENTIALS: &str = r#"## Session credentials
 
-Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above. Your agent root is the current working directory. Live token refresh is not supported; if credentials are unavailable or validation fails, restart or respawn the session."#;
+Only the `AGENTSCOMMANDER_*` environment variables above deliver session credentials; the agent root is the current working directory. Tokens cannot refresh live. If credentials are missing or invalid, restart or respawn the session."#;
 
 const DEFAULT_DELEGATED_TASK_REPORTING: &str = r#"## Delegated Task Reporting
 
-When finishing a delegated task or getting blocked, reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false."#;
+Completion or blockage requires an explicit reply to the coordinator or peer with a concrete artifact or message. Never end in idle, wait, or working-false without that reply."#;
 
 /// Root-only Golden-Rule additions (#558). Gated on `is_root_agent_path`
 /// (anti-spoof) at the single generation site; empty string for every other
@@ -3390,16 +3398,16 @@ fn render_write_restrictions_block(
     format!(
         r#"## GOLDEN RULE — Repository Access Restrictions
 
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY read or modify files in the entries listed below:
+**ABSOLUTE AND NON-NEGOTIABLE:** Read and write only in these entries:
 
-1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`). Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed; that grants folder names only, not the contents of anything else inside it.
-2. **Your own agent replica directory and its subdirectories** — your assigned root:
+1. **Repositories whose root folder name starts with `repo-`** (for example `repo-AgentsCommander`). You may list the containing workspace root only to discover `repo-*` folder names; that grants no access to other contents there.
+2. **Your own agent replica root and descendants:**
    ```
    {agent_root}
    ```
 {replica_usage}
 
-{matrix_section}{root_scope_section}{messaging_exception}Any repository or directory outside the allowed entries above is OFF-LIMITS for both reading and writing, except for the AgentsCommander CLI operations exception documented below.
+{matrix_section}{root_scope_section}{messaging_exception}Everything outside the allowed entries is OFF-LIMITS for reading and writing except the CLI exception below.
 
 {messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
 - **FORBIDDEN**: Any read operation outside {forbidden_read_scope}
@@ -3408,10 +3416,10 @@ fn render_write_restrictions_block(
 
 **Exception - AgentsCommander CLI operations:**
 
-When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects read, create, modify, or delete files outside the normal repository/replica access zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository access restrictions. This exception covers only invocations of the configured CLI binary through `AGENTSCOMMANDER_BINARY_PATH`; it does not allow arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
+When the user explicitly requests an AgentsCommander CLI command through `AGENTSCOMMANDER_BINARY_PATH`, documented CLI operations may cross these boundaries; AgentsCommander governs their filesystem effects. This exception covers only that configured binary. It does not authorize arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries.
 
 {agency_cache_guidance}
-If instructed to read or modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.{root_authority_section}"#,
+Refuse requests to read or modify outside these zones unless the configured-CLI exception applies.{root_authority_section}"#,
         agent_root = agent_root,
         replica_usage = rendered.replica_usage,
         matrix_section = rendered.matrix_section,
@@ -3432,11 +3440,11 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
 
 ### Incoming Message Notifications
 
-`[Message from <peer>] Process this inter-agent message: <path>` in your PTY is an operational inter-agent message: read `<path>` and follow its task instructions within your role, authority, and write restrictions; do not stop at a summary unless it asks only for one. If the task finishes or blocks, reply to the sender with a concrete result or blocker via the send flow below.
+`[Message from <peer>] Process this inter-agent message: <path>` is an operational inter-agent message: read `<path>` and follow its instructions within your role, authority, and write restrictions; do not stop at a summary unless it asks only for one. If the task finishes or blocks, reply to the sender with a concrete result or blocker via the send flow below.
 
 ### Send a message to another agent
 
-**MANDATORY**: resolve the exact agent name via `list-peers-lean` before every send; its JSON `name` field is the only authoritative source. Never guess agent names. A filesystem directory name is NEVER a valid `--to` value (`__agent_*` replica and `_agent_*` matrix dirs are on-disk paths, not peer names). If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk; stop and report the empty result.
+Before every send, run `list-peers-lean` and use its exact JSON `name`; never guess. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it; never scan sibling directories instead.
 
 **Peer name format** (canonical FQN, the `list-peers-lean` `name` field):
 
@@ -3444,7 +3452,7 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
 
 {send_message_instructions}
 
-The recipient gets a notification with the file path and reads the file from disk. Do NOT use `--get-output`; it blocks and is only for non-interactive sessions. After sending, wait for the reply.
+The recipient gets a file-path notification and reads the file. Do NOT use `--get-output`; it blocks and is only for non-interactive sessions. After sending, wait for the reply.
 
 ### List available peers
 
@@ -3603,33 +3611,33 @@ fn default_context_dynamic_values(
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
-            "Use only the JSON `name` values returned by `list-peers-lean`; in Root Agent sessions it returns verified WG coordinator replicas only.\n\n\
-             Root messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
-             1. Write your message to a new file in the Root Agent messaging directory:\n\n\
+            "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list verified WG coordinator replicas only.\n\n\
+             Root messaging is **file-based** to avoid PTY truncation:\n\n\
+             1. Write a new file in the Root Agent messaging directory:\n\n\
              ```\n\
              {path}\n\
              ```\n\n\
-             Filename pattern: `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (UTC timestamp, sanitized kebab-case slug \u{2264}50 chars).\n\
-             2. Fire the send:\n\n\
+             Name it `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
+             2. Send:\n\n\
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<coordinator_name>\" --send <filename> --mode wake\n\
              ```\n\n\
-             **IMPORTANT: `--send` takes the filename ONLY, never a path.**\n",
+             `--send` takes the filename ONLY, never a path.\n",
             path = path,
         ),
-        MessagingContextMode::Workgroup(_) => "Messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
-             1. Write your message to a new file in the workgroup messaging directory at `<workgroup-root>/messaging/` (walk up from your root to the parent `wg-<N>-*` folder). Filename pattern: `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (UTC timestamp, sanitized kebab-case slug \u{2264}50 chars).\n\
-             2. Fire the send:\n\n\
+        MessagingContextMode::Workgroup(_) => "Messages are **file-based** to avoid PTY truncation:\n\n\
+             1. Write a new file in `<workgroup-root>/messaging/` (walk up from your root to the parent `wg-<N>-*` folder). Name it `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
+             2. Send:\n\n\
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
              ```\n\n\
-             **IMPORTANT: `--send` takes the filename ONLY, never a path** (a path fails with `filename '...' contains path separators or traversal`), e.g. GOOD: `--send \"20260419-143052-wg3-you-to-wg3-peer-hello.md\"`.\n"
+             `--send` takes the filename ONLY, never a path.\n"
             .to_string(),
         // #923 D3: no `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
         // refuses this root (cli/send.rs:406-414). Telling it to walk up to a workgroup
         // root it does not have would order an operation the Golden Rule forbids and the
         // CLI rejects. State the truth instead.
-        MessagingContextMode::None => "This session has no messaging directory: `--send` requires your `--root` to sit under a `wg-<N>-*` ancestor or be the canonical Root Agent directory, and this root is neither. Do NOT walk up the filesystem looking for one. You can still RECEIVE messages: when AgentsCommander hands you an absolute path in an incoming `[Message from <peer>]` notification, read that file, act on it, and report your result in this session rather than through `send --send`.\n"
+        MessagingContextMode::None => "This session has no messaging directory: `--send` requires a `--root` under `wg-<N>-*` or the canonical Root Agent directory. Do NOT search the filesystem for one. You can still receive messages: when an incoming `[Message from <peer>]` notification gives an absolute path, read that file, act, and report here instead of using `send --send`.\n"
             .to_string(),
     };
 
@@ -4310,6 +4318,134 @@ mod tests {
         );
     }
 
+    fn assert_no_broad_read_grant(out: &str) {
+        fn normalize(text: &str) -> String {
+            let mut normalized = String::with_capacity(text.len());
+            let mut pending_space = false;
+            for ch in text.to_lowercase().chars() {
+                if ch.is_alphanumeric() {
+                    if pending_space && !normalized.is_empty() {
+                        normalized.push(' ');
+                    }
+                    normalized.push(ch);
+                    pending_space = false;
+                } else {
+                    // This deliberately treats backticks, ASCII/Unicode hyphens,
+                    // punctuation, and repeated whitespace as the same separator.
+                    pending_space = true;
+                }
+            }
+            normalized
+        }
+
+        const EXPLICIT_BROAD_GRANTS: [&str; 13] = [
+            "Read any path",
+            "Read-only operations on ANY path",
+            "Read operations on any path",
+            "Read any file",
+            "Read all paths",
+            "Read anywhere",
+            "Any path is readable",
+            "All paths are readable",
+            "Unrestricted read access",
+            "Read access is unrestricted",
+            "No restrictions on reading",
+            "May read without restriction",
+            "Read the entire filesystem",
+        ];
+
+        let normalized = normalize(out);
+        for fragment in EXPLICIT_BROAD_GRANTS {
+            let fragment = normalize(fragment);
+            assert!(
+                !normalized.contains(&fragment),
+                "broad read grant `{fragment}` found in:\n{out}"
+            );
+        }
+
+        for raw_clause in out.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
+            let clause = normalize(raw_clause);
+            if clause.is_empty() {
+                continue;
+            }
+            let tokens: Vec<&str> = clause
+                .split_whitespace()
+                .map(|token| match token {
+                    "reads" | "reading" => "read",
+                    "accesses" | "accessing" => "access",
+                    "inspects" | "inspecting" => "inspect",
+                    "searches" | "searching" => "search",
+                    "paths" => "path",
+                    "files" => "file",
+                    "directories" => "directory",
+                    "locations" => "location",
+                    other => other,
+                })
+                .collect();
+            let is_read_like =
+                |token: &str| matches!(token, "read" | "access" | "inspect" | "search");
+            let is_quantifier = |token: &str| matches!(token, "any" | "all");
+            let is_universe =
+                |token: &str| matches!(token, "path" | "file" | "directory" | "location");
+
+            for (read_index, token) in tokens.iter().enumerate() {
+                if !is_read_like(token) {
+                    continue;
+                }
+                let quantifier_end = (read_index + 7).min(tokens.len());
+                for quantifier_index in (read_index + 1)..quantifier_end {
+                    if !is_quantifier(tokens[quantifier_index]) {
+                        continue;
+                    }
+                    let universe_end = (quantifier_index + 4).min(tokens.len());
+                    if tokens[(quantifier_index + 1)..universe_end]
+                        .iter()
+                        .any(|token| is_universe(token))
+                    {
+                        panic!("semantic broad read grant found in clause `{clause}`");
+                    }
+                }
+            }
+
+            for (quantifier_index, token) in tokens.iter().enumerate() {
+                if !is_quantifier(token) {
+                    continue;
+                }
+                let universe_end = (quantifier_index + 4).min(tokens.len());
+                for universe_index in (quantifier_index + 1)..universe_end {
+                    if !is_universe(tokens[universe_index]) {
+                        continue;
+                    }
+                    let readable_end = (universe_index + 7).min(tokens.len());
+                    for readable_index in (universe_index + 1)..readable_end {
+                        let directly_readable = tokens[readable_index] == "readable";
+                        let may_or_can_be_read = readable_index + 2 < tokens.len()
+                            && matches!(tokens[readable_index], "may" | "can")
+                            && tokens[readable_index + 1] == "be"
+                            && tokens[readable_index + 2] == "read";
+                        if directly_readable || may_or_can_be_read {
+                            panic!("semantic broad read grant found in clause `{clause}`");
+                        }
+                    }
+                }
+            }
+
+            let has_read_like = tokens.iter().any(|token| is_read_like(token));
+            let has_unbounded_modifier = tokens
+                .iter()
+                .any(|token| matches!(*token, "unrestricted" | "unlimited" | "everywhere"))
+                || tokens.windows(2).any(|pair| {
+                    pair == ["without", "restriction"]
+                        || pair == ["without", "limits"]
+                        || pair == ["entire", "filesystem"]
+                });
+            assert!(
+                !(has_read_like && has_unbounded_modifier),
+                "semantic broad read grant found in clause `{clause}`"
+            );
+        }
+    }
+
     // ---- #658 presence-aware append-fallback tests ----------------------------
 
     /// Compact mirror of the real stale-hybrid `Context.AgentsCommander.md`: the
@@ -4374,6 +4510,35 @@ Resolve the exact agent name via `list-peers-lean`.
 ### List available peers
 
 Run list-peers-lean.
+"#;
+
+    const SUMMARIZED_FINE_PLACEHOLDER_FIXTURE: &str = r#"# AgentsCommander Context
+
+## GOLDEN RULE — Repository Access Restrictions
+
+2. Own root: {{AGENT_ROOT}}
+{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}Replica root: {{AGENT_ROOT}}
+{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}Forbidden: {{FORBIDDEN_SCOPE}}
+Git: {{GIT_SCOPE}}
+
+## Delegated Task Reporting
+
+Reply with a concrete result.
+
+{{SKILLS_SECTION}}
+
+## CLI executable
+
+Use the configured binary.
+
+## Session credentials
+
+Use the session environment.
+
+## Inter-Agent Messaging
+
+{{PEER_NAME_FORMAT}}
+{{SEND_MESSAGE_INSTRUCTIONS}}
 "#;
 
     /// Render a raw global-context template through the function under change,
@@ -4500,6 +4665,282 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         let out = default_context("C:/fake/__agent_dev-rust", None, &no_skill_section());
         assert_mandatory_sections_once(&out);
         assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn default_agent_template_keeps_coarse_placeholder_order_after_summarization() {
+        let template = get_default_agent_template();
+        let placeholders: Vec<&str> = template
+            .match_indices("{{")
+            .map(|(start, _)| {
+                let suffix = &template[start..];
+                let end = suffix.find("}}").expect("placeholder closes") + 2;
+                &suffix[..end]
+            })
+            .collect();
+
+        assert_eq!(
+            placeholders,
+            [
+                "{{WRITE_RESTRICTIONS}}",
+                "{{DELEGATED_TASK_REPORTING}}",
+                "{{SKILLS_SECTION}}",
+                "{{AGENT_REPOS}}",
+                "{{CLI_CONTEXT}}",
+                "{{SESSION_CREDENTIALS}}",
+                "{{INTER_AGENT_MESSAGING}}",
+            ]
+        );
+        for placeholder in MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS {
+            assert_eq!(template.matches(placeholder).count(), 1, "{placeholder}");
+        }
+        assert!(template.contains(
+            "You are in AgentsCommander, a terminal session manager coordinating multiple AI agents."
+        ));
+        assert!(template.contains(CORE_CONCEPTS_SECTION));
+        for fine_only in [
+            "{{AGENT_ROOT}}",
+            "{{MATRIX_SECTION}}",
+            "{{MESSAGING_EXCEPTION}}",
+            "{{MATRIX_ALLOWED}}",
+            "{{MESSAGING_ALLOWED}}",
+            "{{FORBIDDEN_SCOPE}}",
+            "{{GIT_SCOPE}}",
+            "{{PEER_NAME_FORMAT}}",
+            "{{SEND_MESSAGE_INSTRUCTIONS}}",
+        ] {
+            assert!(
+                !template.contains(fine_only),
+                "factory contains {fine_only}"
+            );
+        }
+        assert!(template.ends_with('\n'));
+    }
+
+    #[test]
+    fn summarized_fine_placeholder_fixture_preserves_order_and_boundaries() {
+        let fixture = SUMMARIZED_FINE_PLACEHOLDER_FIXTURE;
+        let placeholders: Vec<&str> = fixture
+            .match_indices("{{")
+            .map(|(start, _)| {
+                let suffix = &fixture[start..];
+                let end = suffix.find("}}").expect("placeholder closes") + 2;
+                &suffix[..end]
+            })
+            .collect();
+        assert_eq!(
+            placeholders,
+            [
+                "{{AGENT_ROOT}}",
+                "{{MATRIX_SECTION}}",
+                "{{MESSAGING_EXCEPTION}}",
+                "{{AGENT_ROOT}}",
+                "{{MATRIX_ALLOWED}}",
+                "{{MESSAGING_ALLOWED}}",
+                "{{FORBIDDEN_SCOPE}}",
+                "{{GIT_SCOPE}}",
+                "{{SKILLS_SECTION}}",
+                "{{PEER_NAME_FORMAT}}",
+                "{{SEND_MESSAGE_INSTRUCTIONS}}",
+            ]
+        );
+        assert!(fixture.contains("{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}"));
+        assert!(fixture.contains("{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}"));
+    }
+
+    #[test]
+    fn summarized_fine_placeholder_fixture_renders_supported_shapes() {
+        const SKILLS: &str = "## Skills\n\nUNIQUE_SKILLS_SENTINEL\n";
+        let wg = render_agent_context_template_inner(
+            SUMMARIZED_FINE_PLACEHOLDER_FIXTURE,
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            SKILLS,
+            Path::new("C:/fake/wg-7-dev-team/__agent_architect"),
+            None,
+            None,
+            false,
+        );
+        let plain = render_agent_context_template_inner(
+            SUMMARIZED_FINE_PLACEHOLDER_FIXTURE,
+            "C:/fake/plain/agent",
+            None,
+            SKILLS,
+            Path::new("C:/fake/plain/agent"),
+            None,
+            None,
+            false,
+        );
+
+        for out in [&wg, &plain] {
+            assert_eq!(out.matches("UNIQUE_SKILLS_SENTINEL").count(), 1, "{out}");
+            assert_eq!(count_section_headings(out, "## GOLDEN RULE"), 1, "{out}");
+            assert_eq!(count_section_headings(out, "# Agent Repos"), 1, "{out}");
+            assert_mandatory_sections_once(out);
+            assert_no_raw_template_placeholders(out);
+        }
+        assert!(wg.contains("C:/fake/_agent_architect"));
+        assert!(wg.contains("Narrow exception — workgroup messaging directory"));
+        assert!(!plain.contains("Your origin Agent Matrix"));
+        assert!(!plain.contains("Narrow exception — workgroup messaging directory"));
+        assert!(plain.contains("This session has no messaging directory"));
+    }
+
+    #[test]
+    fn summarized_default_context_preserves_matrix_write_boundary() {
+        let wg = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        let entry_start = wg
+            .find("3. **Your origin Agent Matrix")
+            .expect("origin Matrix entry");
+        let entry_end = entry_start
+            + wg[entry_start..]
+                .find("**Narrow exception")
+                .expect("messaging boundary after Matrix entry");
+        let entry = &wg[entry_start..entry_end];
+        let allowed = entry
+            .find("Allowed for reading and writing there:")
+            .expect("Matrix read/write grant");
+        let entries: Vec<&str> = entry[allowed..]
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("- `"))
+            .collect();
+        assert_eq!(
+            entries,
+            ["- `memory/`", "- `plans/`", "- `skills/`", "- `Role.md`"]
+        );
+        assert!(entry.contains("every rotated `memory_YYYYMMDD_hhmmss/` archive"));
+        assert!(entry.contains("Read-only there"));
+        assert!(wg.contains("any other files inside the Agent Matrix"));
+        assert!(wg.contains("other agents' replica directories"));
+        assert!(wg.contains("another agent's memory is private"));
+
+        let plain = default_context("C:/fake/plain/agent", None, &no_skill_section());
+        assert!(!plain.contains("Your origin Agent Matrix"));
+        assert!(!plain.contains("Allowed for reading and writing there"));
+        assert!(!plain.contains("Read-only there"));
+        assert!(plain.contains("other agents' replica directories"));
+        assert!(plain.contains("another agent's memory is private"));
+    }
+
+    #[test]
+    fn current_producer_renders_reject_broad_global_read_grants() {
+        let wg = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+        );
+        let plain = default_context("C:/fake/plain/agent", None, &no_skill_section());
+        let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+
+        assert!(wg.contains("Allowed for reading and writing there"));
+        assert!(wg.contains("- **FORBIDDEN**: Any read operation outside"));
+        assert!(wg.contains("another agent's memory is private"));
+        assert!(plain.contains("inbound message file grant above"));
+        assert!(plain.contains("another agent's memory is private"));
+        assert!(root.contains("Every registered AgentsCommander project folder"));
+        assert!(root.contains("settings.projectPaths"));
+        assert!(root.contains("## Root Agent Authority and Chain of Command"));
+        for out in [&wg, &plain, &root] {
+            assert_no_broad_read_grant(out);
+        }
+
+        for prohibited in [
+            "Read any path",
+            "Read-only operations on ANY path",
+            "Read operations on any path",
+            "Read any file",
+            "Read all paths",
+            "Read anywhere",
+            "Any path is readable",
+            "All paths are readable",
+            "Unrestricted read access",
+            "Read access is unrestricted",
+            "No restrictions on reading",
+            "May read without restriction",
+            "Read the entire filesystem",
+            "Search up to six notes, then all directories can be read",
+            "Inspect this location without limits",
+            "All project files are readable",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_no_broad_read_grant(prohibited)).is_err(),
+                "helper accepted prohibited grant: {prohibited}"
+            );
+        }
+    }
+
+    #[test]
+    fn summarized_context_render_is_deterministic() {
+        let skills = no_skill_section();
+        let render_twice = |agent_root: &str, matrix_root: Option<&str>, root: bool| {
+            let first = if root {
+                default_context_as_root(agent_root, matrix_root, &skills)
+            } else {
+                default_context(agent_root, matrix_root, &skills)
+            };
+            let second = if root {
+                default_context_as_root(agent_root, matrix_root, &skills)
+            } else {
+                default_context(agent_root, matrix_root, &skills)
+            };
+            assert_eq!(first.as_bytes(), second.as_bytes());
+            assert!(first.ends_with('\n'));
+            assert_mandatory_sections_once(&first);
+            assert_no_raw_template_placeholders(&first);
+        };
+
+        render_twice(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            false,
+        );
+        render_twice("C:/fake/plain/agent", None, false);
+        render_twice("C:/fake/ac-root-agent", None, true);
+    }
+
+    #[test]
+    fn exact_current_legacy_rendered_default_remains_verbatim_compatibility() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        let matrix_root = ac_root.join("_agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
+        std::fs::create_dir_all(&replica_root).expect("create replica root");
+        let agent_root = path_string(&replica_root);
+        let matrix_root = path_string(&matrix_root);
+        let skills = render_skills_section(&discover_skill_index(Some(&matrix_root)));
+        let legacy =
+            current_legacy_rendered_default_context(&agent_root, Some(&matrix_root), &skills);
+        assert!(legacy.contains("Read-only operations on ANY path"));
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            legacy.as_bytes(),
+        )
+        .expect("persist exact-current legacy context");
+
+        let resolved = resolve_agent_context_with_activation(
+            &agent_root,
+            Some(&matrix_root),
+            &skills,
+            &replica_root,
+            None,
+            None,
+            None,
+        )
+        .expect("resolve exact-current legacy context");
+        let current = default_context(&agent_root, Some(&matrix_root), &skills);
+
+        // This exact classified compatibility value intentionally retains the
+        // historical broad-read prose. It is excluded from the current-producer
+        // broad-read assertion and size budget; arbitrary custom templates are not.
+        assert_eq!(resolved.as_bytes(), legacy.as_bytes());
+        assert_ne!(resolved.as_bytes(), current.as_bytes());
+        assert!(resolved.len() > current.len());
     }
 
     #[test]
@@ -4827,7 +5268,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(out.contains("filename ONLY"));
         assert!(out.contains("never a path"));
-        assert!(out.contains("GOOD:"));
+        assert!(out.contains("--send <filename> --mode wake"));
+        assert!(out.contains("YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md"));
     }
 
     #[test]
@@ -4890,18 +5332,21 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         assert!(out.contains("**Exception - AgentsCommander CLI operations:**"));
         assert!(out.contains(
-            "explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`"
+            "explicitly requests an AgentsCommander CLI command through `AGENTSCOMMANDER_BINARY_PATH`"
+        ));
+        assert!(out.contains("documented CLI operations may cross these boundaries"));
+        assert!(out.contains("AgentsCommander governs their filesystem effects"));
+        assert!(out.contains("This exception covers only that configured binary"));
+        assert!(out.contains(
+            "does not authorize arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries"
         ));
         assert!(out.contains(
-            "filesystem effects read, create, modify, or delete files outside the normal repository/replica access zones"
+            "Refuse requests to read or modify outside these zones unless the configured-CLI exception applies"
         ));
-        assert!(out.contains("Those filesystem effects are governed by AgentsCommander itself"));
-        assert!(out.contains(
-            "does not allow arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries"
-        ));
-        assert!(out.contains(
-            "REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations"
-        ));
+        assert!(out.contains("\"<AGENTSCOMMANDER_BINARY_PATH>\" --help"));
+        assert!(out.contains("\"<AGENTSCOMMANDER_BINARY_PATH>\" send --help"));
+        assert!(out.contains("\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --help"));
+        assert!(out.contains("list-peers-lean --token <AGENTSCOMMANDER_TOKEN>"));
         assert!(!out.contains("There are NO exceptions beyond those listed above"));
     }
 
@@ -5253,11 +5698,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
         );
         assert!(out.contains(
-            "Listing the workspace root that contains them, to discover which `repo-*` folders exist, is allowed"
+            "list the containing workspace root only to discover `repo-*` folder names"
         ));
-        assert!(out.contains(
-            "that grants folder names only, not the contents of anything else inside it"
-        ));
+        assert!(out.contains("that grants no access to other contents there"));
     }
 
     #[test]
@@ -5476,10 +5919,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // Every placeholder is resolved by construction: the prologue is assembled
         // from rendered blocks, never from a template with tokens.
-        assert!(
-            !out.contains("{{"),
-            "the Root prologue must contain no unresolved placeholder"
-        );
+        assert_no_raw_template_placeholders(&out);
+        assert_no_broad_read_grant(&out);
 
         // Dynamic skills and the passed config's repos are present.
         assert!(out.contains("AgentsCommander indexes skills from"));
@@ -5912,7 +6353,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .find("Narrow exception")
             .expect("messaging exception must be present");
         let summary_pos = out
-            .find("Any repository or directory outside the allowed entries above is OFF-LIMITS for both reading and writing, except")
+            .find("Everything outside the allowed entries is OFF-LIMITS for reading and writing except")
             .expect("summary line must be present");
         let forbidden_pos = out
             .find("- **FORBIDDEN**")
@@ -5954,7 +6395,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let legacy_visible_refresh = ["visible", "refresh"].join(" ");
 
         assert!(out.contains("AGENTSCOMMANDER_TOKEN"));
-        assert!(out.contains("delivered only through"));
+        assert!(out.contains("Only the `AGENTSCOMMANDER_*` environment variables above deliver"));
+        assert!(out.contains("Tokens cannot refresh live"));
+        assert!(out.contains("credentials are missing or invalid"));
         assert!(out.contains("restart or respawn"));
         assert!(!out.contains(&legacy_header));
         let lower = out.to_ascii_lowercase();
@@ -5966,8 +6409,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn default_context_documents_delegated_task_reporting() {
         let out = default_context("C:/tmp/fake-agent", None, &no_skill_section());
-        assert!(out.contains("When finishing a delegated task or getting blocked"));
-        assert!(out.contains("Do not just remain idle, waiting, or set working to false"));
+        assert!(out.contains("Completion or blockage requires an explicit reply"));
+        assert!(out.contains("concrete artifact or message"));
+        assert!(out.contains("Never end in idle, wait, or working-false without that reply"));
     }
 
     #[test]
@@ -8034,7 +8478,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(content.contains("## Core Concepts"));
         assert!(content.contains("**Team**: the logical capability and organization"));
         assert!(content.contains("**Workgroup**: a runtime replica of a team for a specific task"));
-        assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("Completion or blockage requires an explicit reply"));
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
@@ -8114,7 +8558,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("# AgentsCommander Context"));
-        assert!(content.contains("When finishing a delegated task or getting blocked"));
+        assert!(content.contains("Completion or blockage requires an explicit reply"));
         assert!(content.contains("# Coordinator Context"));
         assert!(content.contains("You are the coordinator for your team"));
         assert_eq!(
@@ -8186,7 +8630,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let materialized_content =
             std::fs::read_to_string(materialized).expect("read materialized context");
         assert!(materialized_content.contains("# AgentsCommander Context"));
-        assert!(materialized_content.contains("When finishing a delegated task or getting blocked"));
+        assert!(materialized_content.contains("Completion or blockage requires an explicit reply"));
         assert_eq!(
             std::fs::read_to_string(&path).expect("read created agent template"),
             get_default_agent_template()
@@ -8905,13 +9349,20 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         .expect("materialize context")
         .expect("context path");
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
-        assert!(content.contains("## Skills"));
+        assert_eq!(content.matches("## GOLDEN RULE").count(), 1);
+        assert_eq!(content.matches("## Skills").count(), 1);
+        assert_eq!(content.matches("# Agent Repos").count(), 1);
         assert!(content.contains("runtime"));
         assert!(content.contains("Runtime skill metadata."));
+        assert_contains_canonical_path(&content, &matrix_root.join("skills"));
         assert_contains_canonical_path(
             &content,
             &matrix_root.join("skills").join("runtime").join("SKILL.md"),
         );
+        assert!(content.contains("Role.md"));
+        assert!(content.contains("filename ONLY"));
+        assert_no_raw_template_placeholders(&content);
+        assert_no_broad_read_grant(&content);
         assert!(!content.contains("BODY_SHOULD_NOT_RENDER"));
     }
 
@@ -9832,6 +10283,71 @@ mod token_accounting {
         let index = super::discover_skill_index(root.to_str());
         let rendered = super::render_skills_section(&index);
         rendered.replace(&super::display_path(&root), FAKE_ROOT_AGENT)
+    }
+
+    #[test]
+    fn summarized_default_context_meets_size_budget() {
+        const V3_TOUCHED_OWNERS_BYTES: usize = 7_567;
+        const V3_FULL_WG_PROFILE_BYTES: usize = 9_070;
+        const REQUIRED_REDUCTION_BYTES: usize = 757;
+        const MAX_TOUCHED_OWNERS_BYTES: usize = 6_810;
+        const MAX_FULL_WG_PROFILE_BYTES: usize = 8_313;
+
+        let skills = synthetic_replica_skills_section();
+        let values = super::default_context_dynamic_values(
+            FAKE_REPLICA_ROOT,
+            Some(FAKE_MATRIX_ROOT),
+            &skills,
+            false,
+        );
+        let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
+        let messaging = super::render_inter_agent_messaging_block(&values);
+        let touched_owners = write_restrictions.len()
+            + messaging.len()
+            + super::DEFAULT_CLI_CONTEXT.len()
+            + super::DEFAULT_SESSION_CREDENTIALS.len()
+            + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
+        let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+
+        // Security, ownership, and protocol assertions precede the byte budget.
+        for required in [
+            "Allowed for reading and writing there",
+            "every rotated `memory_YYYYMMDD_hhmmss/`",
+            "any other files inside the Agent Matrix",
+            "another agent's memory is private",
+            "AGENTSCOMMANDER_BINARY_PATH",
+            "list-peers-lean --token",
+            "--send <filename> --mode wake",
+            "filename ONLY",
+            "--get-output",
+        ] {
+            assert!(full_wg.contains(required), "missing `{required}`");
+        }
+        assert_eq!(full_wg.matches("## GOLDEN RULE").count(), 1);
+        assert_eq!(full_wg.matches("## Skills").count(), 1);
+        assert_eq!(full_wg.matches("# Agent Repos").count(), 1);
+        assert!(!full_wg.contains("{{"));
+        assert!(!full_wg.contains("}}"));
+
+        assert!(
+            touched_owners <= MAX_TOUCHED_OWNERS_BYTES,
+            "five touched owners are {touched_owners} bytes; v3 baseline {V3_TOUCHED_OWNERS_BYTES}, ceiling {MAX_TOUCHED_OWNERS_BYTES}"
+        );
+        assert!(
+            V3_TOUCHED_OWNERS_BYTES - touched_owners >= REQUIRED_REDUCTION_BYTES,
+            "five-owner reduction is only {} bytes",
+            V3_TOUCHED_OWNERS_BYTES - touched_owners
+        );
+        assert!(
+            full_wg.len() <= MAX_FULL_WG_PROFILE_BYTES,
+            "WG profile is {} bytes; v3 baseline {V3_FULL_WG_PROFILE_BYTES}, ceiling {MAX_FULL_WG_PROFILE_BYTES}",
+            full_wg.len()
+        );
+        assert!(
+            V3_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
+            "WG reduction is only {} bytes",
+            V3_FULL_WG_PROFILE_BYTES - full_wg.len()
+        );
     }
 
     #[test]
