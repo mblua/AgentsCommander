@@ -188,3 +188,12 @@ Recommended phase order:
 10. `10-windowing-and-multimonitor.md`
 
 Within a functional file, run cases in ascending ID order unless the case says it is independent.
+
+## Coding-Agent Compatibility Matrices
+
+Per-coding-agent compatibility evidence — what was actually tested against each coding agent, when (UTC), on which OS, and with what result — lives in one matrix file per agent, following the shared checklist:
+
+- [coding-agent-tests-template.md](coding-agent-tests-template.md) — the checklist every per-agent matrix follows.
+- [coding-agent-compatibility-antigravity.md](coding-agent-compatibility-antigravity.md) — the first filled matrix (Antigravity / `agy`).
+
+Matrices are added per issue [#1545](https://github.com/mblua/AgentsCommander/issues/1545). A row without an actual run stays `PENDING`; a `PASS` must name its evidence kind (live, unit, manual, or CI).
