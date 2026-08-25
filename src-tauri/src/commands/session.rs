@@ -304,51 +304,44 @@ fn codex_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
     false
 }
 
-fn gemini_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
-    let mut idx = start;
-    while idx < tokens.len() {
-        let token = tokens[idx];
-        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
-            idx = advance_past_config_value(tokens, idx + 1);
-            continue;
-        }
-        if token.eq_ignore_ascii_case("--resume") || token.to_lowercase().starts_with("--resume=") {
-            return true;
-        }
-        idx += 1;
-    }
-    false
+fn antigravity_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
+    tokens[start..].iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower == "--continue" || lower == "-c" || lower == "--conversation"
+            || lower.starts_with("--conversation=")
+    })
 }
 
-fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
-    // #260 — resume tokens sourced from the CodingAgentProfile (single source
-    // of truth). G6: slice-pattern destructure, never index — a future
-    // <2-element slice degrades gracefully instead of panicking in release.
-    let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
-        debug_assert!(false, "Gemini resume_tokens must have exactly 2 elements");
+fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    // #260/#1482 — resume token sourced from the CodingAgentProfile (single
+    // source of truth). G6: slice-pattern destructure, never index — a future
+    // <1-element slice degrades gracefully instead of panicking in release.
+    let &[resume_token] = CodingAgentKind::Antigravity.profile().resume_tokens else {
+        debug_assert!(false, "Antigravity resume_tokens must have exactly 1 element");
         return false;
     };
     match executable_basename(shell).as_str() {
-        "gemini" => {
-            let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
-            if gemini_tokens_have_resume(&tokens, 0) {
+        "agy" | "antigravity" => {
+            let tokens: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+            if antigravity_tokens_have_resume(&tokens, 0) {
                 return false;
             }
-            shell_args.insert(0, resume_flag.to_string());
-            shell_args.insert(1, resume_value.to_string());
+            shell_args.insert(0, resume_token.to_string());
             true
         }
         "cmd" => {
-            if let Some(idx) = shell_args
-                .iter()
-                .position(|arg| executable_basename(arg) == "gemini")
-            {
+            // Tokenized and embedded forms, structurally mirroring the deleted
+            // inject_gemini_resume cmd arm, but searching for a token whose
+            // executable basename is exactly "agy" | "antigravity".
+            let is_antigravity_executable = |arg: &str| {
+                matches!(executable_basename(arg).as_str(), "agy" | "antigravity")
+            };
+            if let Some(idx) = shell_args.iter().position(|arg| is_antigravity_executable(arg)) {
                 let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
-                if gemini_tokens_have_resume(&tokens, idx + 1) {
+                if antigravity_tokens_have_resume(&tokens, idx + 1) {
                     return false;
                 }
-                shell_args.insert(idx + 1, resume_flag.to_string());
-                shell_args.insert(idx + 2, resume_value.to_string());
+                shell_args.insert(idx + 1, resume_token.to_string());
                 return true;
             }
 
@@ -357,16 +350,13 @@ fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
                     .split_whitespace()
                     .map(|token| token.to_string())
                     .collect();
-                if let Some(idx) = tokens
-                    .iter()
-                    .position(|token| executable_basename(token) == "gemini")
+                if let Some(idx) = tokens.iter().position(|token| is_antigravity_executable(token))
                 {
                     let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
-                    if gemini_tokens_have_resume(&token_refs, idx + 1) {
+                    if antigravity_tokens_have_resume(&token_refs, idx + 1) {
                         return false;
                     }
-                    tokens.insert(idx + 1, resume_flag.to_string());
-                    tokens.insert(idx + 2, resume_value.to_string());
+                    tokens.insert(idx + 1, resume_token.to_string());
                     *arg = tokens.join(" ");
                     return true;
                 }
@@ -1197,7 +1187,7 @@ pub(crate) mod seed_race_barriers {
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
-/// resume flags (Claude/Pi `--continue`, Codex `resume --last`, Gemini `--resume latest`)
+/// resume flags (Claude/Pi/Antigravity `--continue`, Codex `resume --last`)
 /// when appropriate.
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
 ///
@@ -1543,8 +1533,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // this cwd's coordinator carries a pending fresh boundary (restart or
         // successful logical clear (/clear or Pi /new) whose record died with
         // an auto/manual close). Force a fresh spawn BEFORE any provider resume
-        // injection below (Claude/Pi --continue, Codex resume --last, Gemini
-        // --resume latest);
+        // injection below (Claude/Pi/Antigravity --continue, Codex resume --last);
         // provider-agnostic by construction. The mirror is deliberately NOT cleared
         // here: only post-boundary content (typed input or AC-injected content)
         // drops it, so repeated close/reopen cycles with no content stay fresh.
@@ -1816,8 +1805,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             Some(CodingAgentKind::Codex) => {
                 Some(crate::config::session_context::ManagedContextTarget::Codex)
             }
-            Some(CodingAgentKind::Gemini) => {
-                Some(crate::config::session_context::ManagedContextTarget::Gemini)
+            Some(CodingAgentKind::Antigravity) => {
+                Some(crate::config::session_context::ManagedContextTarget::Antigravity)
             }
             Some(CodingAgentKind::Pi) => {
                 Some(crate::config::session_context::ManagedContextTarget::Pi)
@@ -2032,10 +2021,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         }
 
-        if agent_kind == Some(CodingAgentKind::Gemini) && !skip_auto_resume {
+        if agent_kind == Some(CodingAgentKind::Antigravity) && !skip_auto_resume {
             if let Some(ref aid) = agent_id {
-                if inject_gemini_resume(&shell, &mut shell_args) {
-                    log::info!("Auto-injected `gemini --resume latest` for agent '{}'", aid);
+                if inject_antigravity_resume(&shell, &mut shell_args) {
+                    log::info!("Auto-injected `agy --continue` for agent '{}'", aid);
                 }
             }
         }
@@ -3694,7 +3683,7 @@ pub(crate) struct RestartJobRequest {
 ///
 /// In all four cases, `skip_auto_resume = Some(false)` allows the next PTY
 /// spawn to inject `claude --continue`, `codex resume --last`, or
-/// `gemini --resume latest` so the prior conversation continues.
+/// `antigravity --continue` so the prior conversation continues.
 ///
 /// The restarted session is automatically activated, Telegram bridges are
 /// re-attached, and state is persisted.
@@ -5021,7 +5010,7 @@ mod tests {
         assert!(!resolve_launch_auto_self_clear(&settings, "pi", &cwd, true));
 
         settings.auto_self_clear_by_agent.clear();
-        for shell in ["claude", "codex-wrapper", "gemini.exe"] {
+        for shell in ["claude", "codex-wrapper", "agy"] {
             assert!(resolve_launch_auto_self_clear(&settings, shell, &cwd, true));
         }
         for shell in ["agent", "cmd.exe", "pwsh", "pip", "pi-agent"] {
@@ -9053,14 +9042,24 @@ mod tests {
     }
 
     #[test]
-    fn inject_gemini_resume_prefixes_direct_gemini_args() {
+    fn inject_antigravity_resume_prefixes_direct_agy_args() {
         let mut args = vec!["-m".to_string(), "gpt-5".to_string()];
-        assert!(super::inject_gemini_resume("gemini", &mut args));
+        assert!(super::inject_antigravity_resume("agy", &mut args));
         assert_eq!(
             args,
             vec![
-                "--resume".to_string(),
-                "latest".to_string(),
+                "--continue".to_string(),
+                "-m".to_string(),
+                "gpt-5".to_string()
+            ]
+        );
+
+        let mut args = vec!["-m".to_string(), "gpt-5".to_string()];
+        assert!(super::inject_antigravity_resume("antigravity", &mut args));
+        assert_eq!(
+            args,
+            vec![
+                "--continue".to_string(),
                 "-m".to_string(),
                 "gpt-5".to_string()
             ]
@@ -9068,21 +9067,20 @@ mod tests {
     }
 
     #[test]
-    fn inject_gemini_resume_inserts_into_cmd_tokenized_wrapper() {
+    fn inject_antigravity_resume_inserts_into_cmd_tokenized_wrapper() {
         let mut args = vec![
             "/C".to_string(),
-            "gemini".to_string(),
+            "agy".to_string(),
             "-m".to_string(),
             "gpt-5".to_string(),
         ];
-        assert!(super::inject_gemini_resume("cmd.exe", &mut args));
+        assert!(super::inject_antigravity_resume("cmd.exe", &mut args));
         assert_eq!(
             args,
             vec![
                 "/C".to_string(),
-                "gemini".to_string(),
-                "--resume".to_string(),
-                "latest".to_string(),
+                "agy".to_string(),
+                "--continue".to_string(),
                 "-m".to_string(),
                 "gpt-5".to_string()
             ]
@@ -9090,32 +9088,51 @@ mod tests {
     }
 
     #[test]
-    fn inject_gemini_resume_inserts_into_embedded_cmd_wrapper() {
-        let mut args = vec!["/K".to_string(), "git pull && gemini -m gpt-5".to_string()];
-        assert!(super::inject_gemini_resume("cmd.exe", &mut args));
+    fn inject_antigravity_resume_inserts_into_embedded_cmd_string() {
+        let mut args = vec!["/K".to_string(), "git pull && agy -m gpt-5".to_string()];
+        assert!(super::inject_antigravity_resume("cmd.exe", &mut args));
         assert_eq!(
             args,
             vec![
                 "/K".to_string(),
-                "git pull && gemini --resume latest -m gpt-5".to_string()
+                "git pull && agy --continue -m gpt-5".to_string()
             ]
         );
     }
 
     #[test]
-    fn inject_gemini_resume_skips_existing_resume_tokens() {
+    fn inject_antigravity_resume_skips_when_continue_or_conversation_present() {
+        for skip_args in [
+            vec!["--continue".to_string(), "gpt-5".to_string()],
+            vec!["-c".to_string(), "gpt-5".to_string()],
+            vec!["--conversation".to_string(), "abc123".to_string()],
+            vec!["--conversation=abc123".to_string()],
+            vec!["--CONTINUE".to_string(), "gpt-5".to_string()],
+            vec!["--Conversation".to_string(), "abc123".to_string()],
+        ] {
+            let mut args = skip_args.clone();
+            assert!(
+                !super::inject_antigravity_resume("agy", &mut args),
+                "args={skip_args:?}"
+            );
+            assert_eq!(args, skip_args);
+        }
+
+        // Tokenized cmd form also skips on a resume marker after the executable.
         let mut args = vec![
-            "--resume".to_string(),
-            "latest".to_string(),
-            "gpt-5".to_string(),
+            "/C".to_string(),
+            "agy".to_string(),
+            "--conversation".to_string(),
+            "abc123".to_string(),
         ];
-        assert!(!super::inject_gemini_resume("gemini", &mut args));
+        assert!(!super::inject_antigravity_resume("cmd.exe", &mut args));
         assert_eq!(
             args,
             vec![
-                "--resume".to_string(),
-                "latest".to_string(),
-                "gpt-5".to_string()
+                "/C".to_string(),
+                "agy".to_string(),
+                "--conversation".to_string(),
+                "abc123".to_string()
             ]
         );
     }
@@ -9390,7 +9407,7 @@ mod tests {
     #[test]
     fn effective_restart_skip_auto_resume_respects_explicit_false() {
         // Deferred-wake path (ProjectPanel.handleReplicaClick) MUST be able
-        // to opt in to provider auto-resume; otherwise gemini/codex/claude
+        // to opt in to provider auto-resume; otherwise antigravity/codex/claude
         // sessions re-open with a blank slate instead of continuing.
         assert!(!super::effective_restart_skip_auto_resume(Some(false)));
     }

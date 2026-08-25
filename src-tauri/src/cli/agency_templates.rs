@@ -745,7 +745,7 @@ fn normalize_agency_role_tree(
         let entry = entry.map_err(|e| format!("Failed to read Agency role entry: {}", e))?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md" | "GEMINI.md") {
+        if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md") {
             return Err(format!(
                 "Agency role tree {} contains managed prompt file {}",
                 division_root.display(),

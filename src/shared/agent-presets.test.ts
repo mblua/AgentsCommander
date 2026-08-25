@@ -4,7 +4,7 @@ import type { CodingAgentDefinition } from "./types";
 
 // #769 — FALLBACK_CODING_AGENTS is a second copy of the backend's embedded
 // default (`src-tauri/resources/coding-agents/agents.default.json`). This is the
-// FE half of the drift guard: it pins the fallback to the exact same 6 built-ins
+// FE half of the drift guard: it pins the fallback to the exact same 7 built-ins
 // the backend ships, so the two copies cannot silently diverge (the backend's
 // `embedded_default_matches_current_presets_exactly` pins the other half).
 const EXPECTED_BUILTINS: Array<
@@ -19,10 +19,11 @@ const EXPECTED_BUILTINS: Array<
   { key: "cursor", label: "Cursor CLI", description: "Coding Agent by Cursor", color: "#22d3ee", command: "agent", instructionsFilename: "AGENTS.md" },
   { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
   { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
+  { key: "antigravity", label: "Antigravity", description: "Coding Agent by Google", color: "#4285F4", command: "agy", instructionsFilename: "AGENTS.md" },
 ];
 
 describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
-  it("matches the backend embedded default: 6 built-ins, exact order and fields", () => {
+  it("matches the backend embedded default: 7 built-ins, exact order and fields", () => {
     expect(FALLBACK_CODING_AGENTS.map((a) => a.key)).toEqual([
       "claude",
       "codex",
@@ -30,6 +31,7 @@ describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
       "cursor",
       "pi",
       "opencode",
+      "antigravity",
     ]);
     for (const expected of EXPECTED_BUILTINS) {
       const actual = FALLBACK_CODING_AGENTS.find((a) => a.key === expected.key);
@@ -109,5 +111,14 @@ describe("definitionToSeed (#769)", () => {
     // persisted agent.
     expect("updateCommands" in seed).toBe(false);
     expect("autoUpdate" in seed).toBe(false);
+  });
+
+  it("#1482: the antigravity row seeds the agy command with AGENTS.md", () => {
+    const antigravity = FALLBACK_CODING_AGENTS.find((a) => a.key === "antigravity")!;
+    expect(antigravity).toBeTruthy();
+    expect(definitionToSeed(antigravity)).toMatchObject({
+      command: "agy",
+      instructionsFilename: "AGENTS.md",
+    });
   });
 });

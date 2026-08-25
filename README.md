@@ -56,7 +56,7 @@ Prefer a desktop installer or a manual download? Get the Windows installer, Linu
 
 > **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: bring any coding agent at full power, put a Fusion team of cheaper models on a **Loop**, and let scheduled runs compound toward the best answer. We only add, never subtract.
 
-- **Pick the coding agent per role (Claude Code, Codex, Gemini, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
+- **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
 - **Direct multiple workgroups from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup coordinators, send work to different teams, and keep initiatives aligned across parallel workgroups.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
@@ -91,13 +91,13 @@ You bring the coding agents. AgentsCommander coordinates them.
    Prefer a desktop installer or portable binary? Use [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
 2. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates a Project AC Root (`.ac/`) there.
 3. **Create a Team**: add a coordinator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
-4. **Launch the coordinator**: pick Claude Code, Codex, Gemini, Pi, or OpenCode from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
+4. **Launch the coordinator**: pick Claude Code, Codex, Antigravity, Pi, or OpenCode from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 
 Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Why this exists
 
-Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Gemini, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step in a real terminal, and the coordination state stays visible on disk.
+Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step in a real terminal, and the coordination state stays visible on disk.
 
 ## What you can build
 
@@ -114,7 +114,7 @@ Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
 
 | | AgentsCommander | LangGraph | AutoGen / AG2 | CrewAI | Aider | Claude Code alone |
 |---|---|---|---|---|---|---|
-| **Operates real CLI coding agents** | ✅ Claude Code, Codex, Gemini, Pi, OpenCode | ❌ Python LLM calls | ❌ Python conversation | ❌ Python library | Partial (one agent) | ✅ (one agent) |
+| **Operates real CLI coding agents** | ✅ Claude Code, Codex, Antigravity, Pi, OpenCode | ❌ Python LLM calls | ❌ Python conversation | ❌ Python library | Partial (one agent) | ✅ (one agent) |
 | **Real PTY per agent** | ✅ ConPTY / Unix PTY | ❌ | ❌ | ❌ | ✅ | ✅ |
 | **Filesystem-first messaging** | ✅ Markdown in `messaging/` | ❌ DB / Python state | ❌ Python objects | ❌ Python tasks | n/a | n/a |
 | **Standalone runtime** | ✅ Rust / Tauri | ❌ Python library | ❌ Python library | ❌ Python library | ❌ Python app | ✅ standalone CLI |

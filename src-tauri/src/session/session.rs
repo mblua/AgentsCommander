@@ -89,8 +89,8 @@ pub struct Session {
     #[serde(default)]
     pub backend_kind: SessionBackendKind,
     /// Effective arg vector actually handed to portable-pty at spawn time,
-    /// including dynamic provider resume injections (Claude/Pi `--continue`,
-    /// `codex resume --last`, `gemini --resume latest`). `None` until the PTY
+    /// including dynamic provider resume injections (Claude/Pi/Antigravity
+    /// `--continue`, `codex resume --last`). `None` until the PTY
     /// is spawned for this session; set once by `create_session_inner` right
     /// before `pty_mgr.spawn`. Runtime-only. NOT persisted to `sessions.toml`
     /// (configured args in `shell_args` are the persistence recipe; the

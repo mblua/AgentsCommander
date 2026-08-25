@@ -137,7 +137,7 @@ agentscommander send --to <peer> --command compact --mode wake
 
 | Direct recipient shell | `clear` text | `compact` text |
 |---|---|---|
-| Claude, Codex, or Gemini filename stem/prefix | `/clear` | `/compact` |
+| Claude, Codex, or Antigravity filename stem | `/clear` | `/compact` |
 | Cursor exact stem `agent` | `/clear` | `/compact` |
 | Pi exact stem `pi` | `/new` | Unsupported |
 | Other shells, including outer `cmd` or `pwsh` wrappers | Unsupported | Unsupported |

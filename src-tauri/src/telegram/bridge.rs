@@ -443,14 +443,6 @@ pub enum SessionReaderKind {
         cwd: String,
         attach_time: chrono::DateTime<chrono::Utc>,
     },
-    /// Watch Gemini CLI's append-only `session-*.jsonl` under
-    /// `~/.gemini/tmp/<slug>/chats/`. The slug is resolved lazily by the
-    /// watcher on each poll via `lookup_chats_dir_for_cwd` until it succeeds.
-    Gemini {
-        gemini_home: PathBuf,
-        cwd: String,
-        attach_time: chrono::DateTime<chrono::Utc>,
-    },
 }
 
 pub struct BridgeHandle {
@@ -498,24 +490,6 @@ pub fn spawn_bridge<R: tauri::Runtime>(
             drop(rx);
             tasks.push(super::codex_watcher::spawn_watch_task(
                 search_root,
-                cwd,
-                attach_time,
-                network.clone(),
-                bot_token.clone(),
-                chat_id,
-                session_id_str.clone(),
-                cancel.clone(),
-                app_handle.clone(),
-            ));
-        }
-        Some(SessionReaderKind::Gemini {
-            gemini_home,
-            cwd,
-            attach_time,
-        }) => {
-            drop(rx);
-            tasks.push(super::gemini_watcher::spawn_watch_task(
-                gemini_home,
                 cwd,
                 attach_time,
                 network.clone(),

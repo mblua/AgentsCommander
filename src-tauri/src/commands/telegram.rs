@@ -21,7 +21,8 @@ use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
 /// - `Ok(Some(kind))` — agent detected and resolver succeeded → caller spawns
 ///   the reader.
 /// - `Ok(None)` - `agent_kind` is `None` (plain shell), or the recognized
-///   provider has no JSONL reader (Pi), so the caller falls back to PTY mode.
+///   provider has no JSONL reader (Pi, Antigravity), so the caller falls back
+///   to PTY mode.
 /// - `Err(message)` — agent detected but resolver returned None → caller logs +
 ///   emits `telegram_bridge_error` + early-returns with its contractual success
 ///   value (or `Err` for `telegram_attach`).
@@ -81,23 +82,7 @@ pub(crate) fn derive_reader(
                 None => Err("Cannot resolve Codex sessions root (~/.codex/sessions/ missing)".to_string()),
             }
         }
-        Some(CodingAgentKind::Gemini) => {
-            // H1 softened contract: spawn the watcher whenever `~/.gemini/`
-            // exists; the cwd-to-slug lookup is deferred to the watcher's
-            // per-poll `lookup_chats_dir_for_cwd`. Loud abort only if Gemini
-            // was never installed on this machine.
-            match crate::commands::gemini_resolver::resolve_gemini_home(shell, shell_args, cwd) {
-                Some(home) => Ok(Some(SessionReaderKind::Gemini {
-                    gemini_home: home,
-                    cwd: cwd.to_string(),
-                    attach_time,
-                })),
-                None => Err(
-                    "Cannot resolve Gemini home (~/.gemini/ missing — Gemini never installed)"
-                        .to_string(),
-                ),
-            }
-        }
+        Some(CodingAgentKind::Antigravity) => Ok(None),
         Some(CodingAgentKind::Pi) => Ok(None),
         None => Ok(None), // No agent detected - caller falls back to PTY mode.
     }
@@ -664,6 +649,25 @@ mod tests {
                 r"C:\Users\Test\repo",
                 backend,
                 Some(CodingAgentKind::Pi),
+                None,
+                None,
+            );
+            assert!(result.unwrap().is_none(), "backend={backend:?}");
+        }
+    }
+
+    #[test]
+    fn derive_reader_antigravity_uses_pty_fallback_for_all_backends() {
+        for backend in [
+            SessionBackendKind::LocalProcess,
+            SessionBackendKind::ContainerTransport,
+        ] {
+            let result = derive_reader(
+                "agy",
+                &["-m".to_string(), "gpt-5".to_string()],
+                r"C:\Users\Test\repo",
+                backend,
+                Some(CodingAgentKind::Antigravity),
                 None,
                 None,
             );

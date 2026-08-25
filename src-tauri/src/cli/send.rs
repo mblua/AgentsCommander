@@ -64,7 +64,7 @@ pub struct SendArgs {
 
     /// Logical PTY action [possible values: clear, compact]. `clear` starts a
     /// fresh conversation: /new for an exact-stem direct Pi shell and /clear
-    /// for direct Claude/Codex/Gemini-family or Cursor agent shells. Pi compact
+    /// for direct Claude/Codex/Antigravity-family or Cursor agent shells. Pi compact
     /// is unsupported. The mapped session must be idle; unsupported mappings
     /// are terminally rejected before spawn. Not available from the Root Agent.
     /// Cannot be combined with --send

@@ -70,7 +70,7 @@ Reproducible setup:
    - architect       (Claude Code profile)
    - dev-rust        (Codex profile)
    - reviewer        (Claude Code profile)
-3. In a second project, add one more session running Gemini.
+3. In a second project, add one more session running Antigravity.
 4. Open settings → Telegram → wire one bot to one session (the "monitored" one)
    if you want telegram-bridge.png to be authentic.
 ```
@@ -275,7 +275,7 @@ story.
   - 1 amber (pending)
   - 1 red (exited)
 - Agent names span coding-agent products: at least one Claude Code,
-  one Codex, one Gemini. This is the "no vendor lock-in" beat.
+  one Codex, one Antigravity. This is the "no vendor lock-in" beat.
 - Bridge indicator (telegram icon, voice icon) visible on at least one
   row if implemented in the current build.
 

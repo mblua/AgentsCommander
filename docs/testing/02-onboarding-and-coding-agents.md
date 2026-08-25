@@ -27,7 +27,7 @@ Result summary:
 
 Known automation support:
 
-- First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.gemini`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.cancel`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
+- First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.antigravity`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.cancel`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
 - Settings has semantic selectors for `actionBar.settings`, `settings.modal`, `settings.tab.agents`, `settings.agentPreset.<presetKey>`, `settings.agent.addCustom`, `settings.agentRow.<index>.*`, `settings.save`, and `settings.cancel`.
 
 Known automation gaps:
@@ -39,7 +39,7 @@ Known automation gaps:
 
 First-run onboarding controls:
 
-- Preset buttons: `Claude Code`, `Codex`, `Gemini CLI`, `Custom Agent`.
+- Preset buttons: `Claude Code`, `Codex`, `Antigravity`, `Custom Agent`.
 - Custom fields: agent name and command.
 - Footer actions: `Cancel` (optional, supplied by the consumer), `Set up Coding Agent`, and done-state `Get started`.
 
@@ -48,11 +48,11 @@ Required clean-state slices:
 - OCA-001 covers Codex as the default acceptance preset.
 - OCA-002 covers Cancel and verifies the app remains usable with no coding agent configured.
 - OCA-003 covers Claude Code.
-- OCA-004 covers Gemini CLI.
+- OCA-004 covers Antigravity.
 - OCA-005 covers Custom Agent with valid fields.
 - OCA-006 and OCA-007 cover the Coding Agents settings surface after onboarding.
 
-Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Cancel, Claude, Gemini, or Custom Agent works.
+Each slice must start from a reset testable config unless the case explicitly says it is using an existing settings state. Do not use a passing Codex run as proof that Cancel, Claude, Antigravity, or Custom Agent works.
 
 Dismissal semantics note: until issue #505 is resolved, setup-path cases expect `onboardingDismissed = true` after `Get started` as a conservative acceptance contract. If product intent says the flag is cancel-only, replace that assertion with the intended persistence signal.
 
@@ -173,11 +173,11 @@ Pass/Fail Criteria:
 
 Pass if the Claude Code preset persists and onboarding is dismissed. Fail if the wrong agent is created, dismissal remains false, or onboarding reappears.
 
-### OCA-004: First-run onboarding selects Gemini CLI
+### OCA-004: First-run onboarding selects Antigravity
 
 Purpose:
 
-Verify that a clean first-run user can choose the Gemini CLI preset and persist the expected configured agent.
+Verify that a clean first-run user can choose the Antigravity preset and persist the expected configured agent.
 
 Preconditions:
 
@@ -188,7 +188,7 @@ Preconditions:
 Steps:
 
 1. Wait for `onboarding.modal`.
-2. Select `Gemini CLI`.
+2. Select `Antigravity`.
 3. Confirm the selection.
 4. Wait for the done state.
 5. Close the done dialog.
@@ -198,19 +198,19 @@ Steps:
 
 Expected Result:
 
-Gemini CLI is configured with command `gemini`, onboarding is dismissed persistently, and the app reaches normal UI after both completion and relaunch.
+Antigravity is configured with command `agy`, onboarding is dismissed persistently, and the app reaches normal UI after both completion and relaunch.
 
 Evidence Required:
 
-- Semantic query/click result for `onboarding.agentPreset.gemini`.
+- Semantic query/click result for `onboarding.agentPreset.antigravity`.
 - Screenshot of the selected preset and done state.
-- Settings snapshot showing a Gemini CLI row with command `gemini`.
+- Settings snapshot showing an Antigravity row with command `agy`.
 - Settings or state snapshot proving `onboardingDismissed = true`.
 - Post-relaunch screenshot or semantic query proving onboarding did not reappear.
 
 Pass/Fail Criteria:
 
-Pass if the Gemini CLI preset persists and onboarding is dismissed. Fail if the wrong agent is created, dismissal remains false, or onboarding reappears.
+Pass if the Antigravity preset persists and onboarding is dismissed. Fail if the wrong agent is created, dismissal remains false, or onboarding reappears.
 
 ### OCA-005: First-run onboarding creates a custom coding agent
 

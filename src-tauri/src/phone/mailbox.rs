@@ -820,7 +820,7 @@ fn resolve_remote_pty_command(
     let logical = parse_remote_pty_command(wire_value)?;
     let text = crate::pty::inject::resolve_logical_command_text(shell, logical).ok_or_else(|| {
         format!(
-            "{} '{}': session shell '{}' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported.",
+            "{} '{}': session shell '{}' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported.",
             ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND,
             logical_command_wire_value(logical),
             shell
@@ -8922,7 +8922,7 @@ impl MailboxPoller {
     /// - `had_any_match`: true if at least one CWD-matched record existed BEFORE
     ///   the predicate filter — the caller uses this to distinguish "no record
     ///   at all" (cold spawn) from "phantoms only" (warm spawn with auto-resume,
-    ///   preserves on-disk Claude/Codex/Gemini transcript). (grinch G.H2.)
+    ///   preserves on-disk Claude/Codex/Antigravity transcript). (grinch G.H2.)
     async fn find_live_candidates<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -9935,7 +9935,7 @@ impl MailboxPoller {
                         path,
                         msg,
                         &format!(
-                            "self-handoff-and-clear: session shell '{}' has no verified logical-clear mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear; exact Pi uses /new. cmd / pwsh outer wrappers remain unsupported.",
+                            "self-handoff-and-clear: session shell '{}' has no verified logical-clear mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear; exact Pi uses /new. cmd / pwsh outer wrappers remain unsupported.",
                             session.shell
                         ),
                     )
@@ -10224,7 +10224,7 @@ impl MailboxPoller {
                     path,
                     msg,
                     &format!(
-                        "self-handoff-and-switch: session shell '{}' is not a supported source shell (Claude / Codex / Gemini direct family, Cursor agent, or Pi); switch is not supported here",
+                        "self-handoff-and-switch: session shell '{}' is not a supported source shell (Claude / Codex / Antigravity direct family, Cursor agent, or Pi); switch is not supported here",
                         session.shell
                     ),
                 )
@@ -12280,7 +12280,7 @@ mod tests {
             assert_eq!(
                 error,
                 format!(
-                    "Cannot execute logical remote command '{command}': session shell '{shell}' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+                    "Cannot execute logical remote command '{command}': session shell '{shell}' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
                 )
             );
         }
@@ -12288,7 +12288,7 @@ mod tests {
 
     #[test]
     fn resolve_remote_pty_command_preserves_established_and_cursor_controls() {
-        for shell in ["claude-wrapper", "codex.exe", "gemini.cmd", "agent.exe"] {
+        for shell in ["claude-wrapper", "codex.exe", "agy.cmd", "agent.exe"] {
             assert_eq!(
                 resolve_remote_pty_command(shell, "clear").unwrap().text,
                 "/clear"
@@ -16086,7 +16086,7 @@ mod tests {
     #[test]
     fn wake_spawn_skip_auto_resume_allows_when_known_state() {
         // Known-state wake (RespawnExited match) — allow `--continue` /
-        // codex `resume --last` / gemini `--resume latest`.
+        // codex `resume --last` / antigravity `--continue`.
         assert!(!wake_spawn_skip_auto_resume(true));
     }
 
@@ -21332,7 +21332,7 @@ mod tests {
         tokio::join!(
             assert_wired_clear_and_compact_submission("claude.exe", "claude-wrapper.cmd"),
             assert_wired_clear_and_compact_submission("codex.exe", "codex-wrapper.cmd"),
-            assert_wired_clear_and_compact_submission("gemini.exe", "gemini-wrapper.cmd")
+            assert_wired_clear_and_compact_submission("agy.exe", "antigravity.exe")
         );
     }
 
@@ -21403,7 +21403,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
         );
         assert!(mock_pty_writes_for(&app, session_id).is_empty());
         assert!(events.lock().unwrap().is_empty());
@@ -21692,7 +21692,7 @@ mod tests {
         let reason = std::fs::read_to_string(reason_path).unwrap();
         assert_eq!(
             reason,
-            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Gemini / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
+            "Cannot execute logical remote command 'compact': session shell 'pi' has no verified mapping. Claude / Codex / Antigravity / Cursor agent direct shells use /clear and /compact; exact Pi uses /new for clear only. cmd / pwsh outer wrappers and Pi compact are unsupported."
         );
         assert!(!reason.contains("Undeliverable after"));
         assert!(!poller.retry_tracker.contains_key(&source));

@@ -4421,7 +4421,7 @@ mod tests {
             None,
             Some(CodingAgentKind::Claude),
             Some(CodingAgentKind::Codex),
-            Some(CodingAgentKind::Gemini),
+            Some(CodingAgentKind::Antigravity),
             Some(CodingAgentKind::Pi),
         ] {
             let mut session = subject.clone();

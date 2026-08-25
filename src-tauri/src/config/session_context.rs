@@ -173,13 +173,12 @@ fn ensure_session_context_with_config(
     Ok(file_path.to_string_lossy().to_string())
 }
 
-const MANAGED_CONTEXT_FILENAMES: &[&str] =
-    &["last_ac_context.md", "CLAUDE.md", "GEMINI.md", "AGENTS.md"];
+const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "AGENTS.md"];
 
 #[derive(Debug, Clone, Copy)]
 pub enum ManagedContextTarget {
     Claude,
-    Gemini,
+    Antigravity,
     Codex,
     Pi,
 }
@@ -191,7 +190,7 @@ impl ManagedContextTarget {
     pub fn filename(self) -> &'static str {
         match self {
             Self::Claude => "CLAUDE.md",
-            Self::Gemini => "GEMINI.md",
+            Self::Antigravity => "AGENTS.md",
             Self::Codex => "AGENTS.md",
             Self::Pi => "AGENTS.md",
         }
@@ -5647,7 +5646,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let mut expected_content: Option<String> = None;
         for target in [
             ManagedContextTarget::Claude,
-            ManagedContextTarget::Gemini,
+            ManagedContextTarget::Antigravity,
             ManagedContextTarget::Codex,
             ManagedContextTarget::Pi,
         ] {
@@ -7538,7 +7537,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             (ManagedContextTarget::Codex, "AGENTS.md"),
             (ManagedContextTarget::Pi, "AGENTS.md"),
             (ManagedContextTarget::Claude, "CLAUDE.md"),
-            (ManagedContextTarget::Gemini, "GEMINI.md"),
+            (ManagedContextTarget::Antigravity, "AGENTS.md"),
         ] {
             seed_stale_managed_context_files(&matrix_root);
             let materialized =

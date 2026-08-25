@@ -55,7 +55,7 @@ We use these terms consistently across all docs:
 
 | Use | Not |
 |---|---|
-| Coding agent (Claude Code, Codex, Gemini, Pi) | "the AI" |
+| Coding agent (Claude Code, Codex, Pi, Antigravity) | "the AI" |
 | Team | "Dark Factory", "crew" |
 | Workgroup | "the session" (it is a directory) |
 | Coordinator | "leader", "boss" |

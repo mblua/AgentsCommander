@@ -58,8 +58,7 @@ pub struct ClockEntry {
     /// fresh-boundary action (restart or successful logical clear: /clear or Pi
     /// /new) and no post-boundary content exists yet, so the create path must
     /// suppress provider resume
-    /// injection (Claude/Pi --continue / Codex resume --last / Gemini --resume
-    /// latest). Survives record destruction (idle auto-close, manual close).
+    /// injection (Claude/Pi/Antigravity --continue / Codex resume --last). Survives record destruction (idle auto-close, manual close).
     /// Cleared by typed user input and by AC-injected message content; NOT
     /// cleared when honored at create (repeat reopens must stay fresh).
     #[serde(default, skip_serializing_if = "Option::is_none")]

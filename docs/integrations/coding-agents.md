@@ -1,6 +1,6 @@
 # Coding agents
 
-For developers configuring which coding-agent CLIs AgentsCommander launches and how. Covers Claude Code, Codex, Gemini, Pi Coding Agent, the Agents Agency role-template picker, and adding your own custom agent.
+For developers configuring which coding-agent CLIs AgentsCommander launches and how. Covers Claude Code, Codex, Antigravity, Pi Coding Agent, the Agents Agency role-template picker, and adding your own custom agent.
 
 AgentsCommander is **not** a coding agent. It spawns coding-agent processes and routes between them. You bring the CLIs; AC commands them.
 
@@ -10,7 +10,7 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 |---|---|---|---|
 | **Claude Code** | `claude` (or wrappers like `claude-mb`) | `--continue` | Anthropic's official CLI. |
 | **Codex** | `codex` | `resume --last` | OpenAI's coding agent CLI. |
-| **Gemini** | `gemini` | `--resume latest` | Google's CLI. |
+| **Antigravity** | `agy` | `--continue` | Google's agent-first coding CLI. |
 | **Pi Coding Agent** | `pi`, `pi.exe`, or `pi.cmd` in a supported command position | `--continue` | Earendil Works' coding agent CLI. |
 | **Cursor** | `agent` (catalog entry) | — | Shipped in the default catalog (id `cursor`, instructions `AGENTS.md`). No tuned `CodingAgentKind`: it uses the generic path and the exact-stem logical-clear rule below. |
 
@@ -21,7 +21,7 @@ AgentsCommander is **not** a coding agent. It spawns coding-agent processes and 
 AC applies an exact Pi command-position pass before its legacy provider detector. That pass has three outcomes:
 
 1. **Supported Pi command:** The direct executable leaf is exactly `pi`, `pi.exe`, or `pi.cmd`, compared case-insensitively, or Pi is the first command under `cmd`/`cmd.exe` with `/C` or `/K` as the first argument. Full, UNC, and Windows verbatim paths work. AC supports tokenized cmd arguments and one embedded command string. Pi may be the first segment of a supported compound command; AC inspects and mutates only that segment.
-2. **Genuinely non-Pi command:** AC runs the legacy detector. It scans the shell and whitespace-separated argument tokens by executable basename prefix, with precedence Claude > Codex > Gemini. This preserves wrappers such as `claude-foo`, `codex-bar`, and `gemini-bar`.
+2. **Genuinely non-Pi command:** AC runs the legacy detector. It scans the shell and whitespace-separated argument tokens by executable basename prefix, with precedence Claude > Codex > Antigravity. This preserves wrappers such as `claude-foo` and `codex-bar`. Antigravity matches the exact executable stems `agy` / `agy.exe` / `agy.cmd` / `antigravity` (prefix wrappers are not inferred); Gemini no longer has tuned identity.
 3. **Malformed or unsupported Pi-shaped command:** AC fails closed with no coding-agent kind and does not run the legacy detector. Examples include `pi.md`, `pi.bat`, `npx pi`, `call pi`, `start pi`, `/S /C pi`, grouped Pi, Pi after a compound separator, `pi>out`, an unclosed cmd quote, a dangling outside-quote caret, or NUL/CR/LF in parsed cmd text. A later `--model claude-*` or similar value cannot reclassify that command.
 
 AC treats the runtime shell as an already-decoded executable value. It does not trim it or remove literal quotes; configuration parsing removes syntactic outer quotes once before detection. For a supported embedded cmd string, AC splices after the raw executable range and preserves the remaining quotes, carets, whitespace, metacharacters, redirection, and later command bytes. Tokenized cmd arguments support standalone separator elements, but an attached unescaped `&` or `|` in a tokenized Pi segment is unsupported.
@@ -32,7 +32,7 @@ The full enum is in `session/profile.rs::CodingAgentKind`.
 
 ### Logical clear capability is separate from tuned integration
 
-Remote logical clear and canonical text submission use an operation-specific direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Gemini-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. An exact-stem direct Pi shell is also a supported `self-handoff-and-switch` source. Pi compact remains unsupported.
+Remote logical clear and canonical text submission use an operation-specific direct-shell capability table, independent of `CodingAgentKind`. Direct Claude/Codex/Antigravity-family shells and Cursor exact stem `agent` map logical clear to `/clear`. An exact-stem direct Pi shell maps it to `/new` and uses the same delayed double-Enter submission timing. An exact-stem direct Pi shell is also a supported `self-handoff-and-switch` source. Pi compact remains unsupported.
 
 Pi is a tuned `CodingAgentKind` for the auto-resume, profile, and wire behavior described below, but that identity does not authorize logical PTY actions. The logical-clear rule is lexical trusted configuration: a direct shell whose final file stem is exactly `pi` matches, including `pi`, `pi.exe`, and the stock `pi.cmd` shim; file-stem extraction discards any final extension. An outer `cmd`/`pwsh` wrapper does not match this operation-specific rule, even when tuned Pi detection supports its command shape. This is not binary attestation. AgentsCommander does not version-probe or semantically acknowledge production clears; stock Pi 0.80.10 is the validated control, and a successful action records PTY write receipt.
 
@@ -42,7 +42,9 @@ AC does not install the coding-agent binaries. Use the upstream installers:
 
 - **Claude Code:** [docs.claude.com/en/docs/claude-code](https://docs.claude.com/en/docs/claude-code)
 - **Codex:** [github.com/openai/codex](https://github.com/openai/codex)
-- **Gemini:** [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
+- **Antigravity:** [antigravity.google](https://antigravity.google) (Antigravity CLI docs)
+
+Antigravity's recommended flags (`--dangerously-skip-permissions`, `--model <model>`, `--effort <effort>`) are **not** baked into the seeded catalog command: `--dangerously-skip-permissions` disables agy's own permission prompts, and `<model>`/`<effort>` are user placeholders. Add them per agent via the coding-agent profile cells.
 - **Pi Coding Agent:** [github.com/earendil-works/pi](https://github.com/earendil-works/pi)
 
 Install Pi with npm:
@@ -155,7 +157,7 @@ When you create a new agent through the UI you can pick a role template. The pic
 1. **Agency templates** — read from the validated offline cache at `<config-dir>/agency-agents_templates`, refreshed only by `agency-templates update`.
 2. **Local templates** — read from `<config-dir>/agent-templates/<folder>/` (override the path via `settings.agentTemplatesPath`).
 
-Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md`; the coding-agent role file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) is materialized from `Role.md` plus AC context at launch.
+Each template provides metadata (name, description, category, accent color) and a markdown role body. AC writes the body into the new agent's `Role.md`; the coding-agent role file (`CLAUDE.md` or `AGENTS.md`) is materialized from `Role.md` plus AC context at launch.
 
 > AC's role-template picker can use a downloaded cache of [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents). If you author a new role and want it discoverable in AC by default, submit it upstream to the agency-agents catalog, then refresh the cache with `agency-templates update`.
 
@@ -167,7 +169,7 @@ To make AC recognise a new CLI (e.g. a custom wrapper) under the **Coding Agents
 2. Fill in `id`, `label`, `command`, and accent `color`.
 3. Save.
 
-The new entry appears in the launcher dropdown immediately. AC spawns the configured command as-is unless the launch matches a tuned integration. Claude, Codex, and Gemini retain their legacy prefix-wrapper behavior. Pi tuning requires the exact supported command position described above; naming a wrapper or custom row `my-pi` does not enable Pi resume behavior.
+The new entry appears in the launcher dropdown immediately. AC spawns the configured command as-is unless the launch matches a tuned integration. Claude and Codex retain their legacy prefix-wrapper behavior; Antigravity matches exact stems. Pi tuning requires the exact supported command position described above; naming a wrapper or custom row `my-pi` does not enable Pi resume behavior.
 
 For deeper integration (a new `CodingAgentKind` with its own resume tokens and idle tuning), you need to add a variant to `src-tauri/src/session/profile.rs` and rebuild. OpenCode already runs through the custom-agent steps above; its first-class tuned integration is tracked on the [roadmap](../../ROADMAP.md) ([#315](https://github.com/mblua/AgentsCommander/issues/315)) as the canonical example of how a new `CodingAgentKind` is added.
 
@@ -181,7 +183,6 @@ AC does not store coding-agent credentials of its own. Each CLI manages its cred
 |---|---|
 | Claude Code | `~/.claude/` |
 | Codex | `~/.codex/` |
-| Gemini | `~/.gemini/` |
 | Pi Coding Agent | `~/.pi/agent/` |
 
 Under the **local-process** runtime, Pi auto-resume never reads, copies, or writes those host credentials or live state. The separate generic config-seed feature can copy a user-configured template into a replica, but Pi has no Pi-specific seed convention or factory seed.

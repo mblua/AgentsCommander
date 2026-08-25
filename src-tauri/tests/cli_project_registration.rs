@@ -644,8 +644,8 @@ fn new_project_seeds_catalog_into_ac() {
     let parsed: serde_json::Value = serde_json::from_str(&catalog).expect("catalog parses");
     assert_eq!(
         parsed["agents"].as_array().map(Vec::len),
-        Some(6),
-        "the seeded catalog carries the 6 built-ins: {catalog}"
+        Some(7),
+        "the seeded catalog carries the 7 built-ins: {catalog}"
     );
     let claude = parsed["agents"]
         .as_array()
@@ -725,12 +725,12 @@ fn cli_catalog_serves_legacy_fallback_then_embedded_without_projects() {
     );
     assert_eq!(out[0]["key"], "mine");
 
-    // No legacy -> 6 embedded built-ins.
+    // No legacy -> 7 embedded built-ins.
     std::fs::remove_dir_all(&legacy_dir).unwrap();
     let out = run_json(&bin, &["coding-agent", "catalog"]);
     assert_eq!(
         out.as_array().map(Vec::len),
-        Some(6),
+        Some(7),
         "without a legacy catalog the embedded default is served: {out}"
     );
 }

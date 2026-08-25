@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn ensure_first_run_state_writes_nothing_without_a_descriptor() {
-        // #930 - agents with no first-run descriptor (Codex, Gemini) are
+        // #930 - agents with no first-run descriptor (Codex, Antigravity) are
         // untouched: no file, not even the config dir, is created.
         let root = tempfile::tempdir().expect("root");
 
