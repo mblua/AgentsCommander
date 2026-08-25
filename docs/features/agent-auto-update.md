@@ -52,6 +52,8 @@ See [Settings reference](../reference/settings.md#coding-agents) for the field's
 
 **"AC updated an agent I never approved."** Check `agentAutoUpdateByCommand` for the agent's **command**, not its label or id. Two profiles sharing one command share one answer, so approving the update for one profile approves it for the binary they both use.
 
+**"My agents never update although I answered Yes."** The catalog entry has no `updateCommands`: the catalog was seeded before update commands shipped (or the agent is `cursor`, which ships none by design). AC now backfills the built-in defaults at read time, so this is usually already resolved; to force a command, edit `agents.json` directly (the CLI only exposes the catalog read-only). The preference control remains `agentAutoUpdateByCommand`. With the new shipping commands, users who registered `hermes`, `opencode`, or `agy` and were never asked may see ONE first prompt at the next startup (default No) — answering it is how the per-command preference is set.
+
 **"I want to be asked again."** Remove that command's key from `agentAutoUpdateByCommand`. An absent key is what makes AC ask.
 
 ## See also
