@@ -21,6 +21,26 @@ const dependencies = vi.hoisted(() => ({
   setInitialView: vi.fn(),
 }));
 
+const signalControl = vi.hoisted(() => ({
+  setSidebarWidth: null as ((width: number) => void) | null,
+}));
+
+vi.mock("solid-js", async () => {
+  const actual = await vi.importActual<typeof import("solid-js")>("solid-js");
+  return {
+    ...actual,
+    createSignal: <T,>(value: T) => {
+      const signal = actual.createSignal(value);
+      if (typeof value === "number" && value === 440) {
+        signalControl.setSidebarWidth = (width: number) => {
+          signal[1](() => width as T);
+        };
+      }
+      return signal;
+    },
+  };
+});
+
 vi.mock("../shared/ipc", () => ({
   SettingsAPI: {
     get: dependencies.settingsGet,
@@ -226,6 +246,7 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
     cleanupDom = installBrowserDomStubs();
     frames = installManualFrames();
     nextRequestId = 1;
+    signalControl.setSidebarWidth = null;
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
@@ -329,30 +350,52 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
     }
   });
 
-  it("fails closed with null phase fields for non-finite samples and skips an exact clamped width", async () => {
+  it.each([
+    ["non-finite host width", sample(Number.NaN, 80, 1, ack(1, 800, 80))],
+    ["negative host width", sample(-1, 80, 1, ack(1, 800, 80))],
+    [
+      "unsafe column count",
+      sample(800, Number.MAX_SAFE_INTEGER + 1, 1, ack(1, 800, 80)),
+    ],
+    ["negative column count", sample(800, -1, 1, ack(1, 800, 80))],
+    [
+      "unsafe row count",
+      sample(800, 80, 1, ack(1, 800, 80), Number.MAX_SAFE_INTEGER + 1),
+    ],
+    ["negative row count", sample(800, 80, 1, ack(1, 800, 80), -1)],
+  ] as const)(
+    "fails closed with bounded null phases for current %s geometry",
+    async (_label, invalidSample) => {
+      const rendered = renderMain();
+      try {
+        await flushPromises();
+        const invalid = dispatchPulse(() => invalidSample);
+        expect(invalid.complete.mock.calls[0][0]).toMatchObject({
+          status: "failed",
+          reason: "exception",
+          trace: {
+            original: {
+              sidebarWidth: null,
+              hostWidth: null,
+              cols: null,
+              rows: null,
+              baselineObservedEpoch: null,
+              completedObserverAck: null,
+            },
+            expanded: { sidebarWidth: null, hostWidth: null },
+            restored: { sidebarWidth: null, hostWidth: null },
+          },
+        });
+      } finally {
+        rendered.cleanup();
+      }
+    },
+  );
+
+  it("skips an exact clamped width without mutation", async () => {
     const rendered = renderMain();
     try {
       await flushPromises();
-      const invalid = dispatchPulse(() =>
-        sample(Number.NaN, 80, 1, ack(1, 800, 80)),
-      );
-      expect(invalid.complete.mock.calls[0][0]).toMatchObject({
-        status: "failed",
-        reason: "exception",
-        trace: {
-          original: {
-            sidebarWidth: null,
-            hostWidth: null,
-            cols: null,
-            rows: null,
-            baselineObservedEpoch: null,
-            completedObserverAck: null,
-          },
-          expanded: { sidebarWidth: null, hostWidth: null },
-          restored: { sidebarWidth: null, hostWidth: null },
-        },
-      });
-
       window.dispatchEvent(
         new CustomEvent("main-sidebar-width-change", { detail: { width: 400 } }),
       );
@@ -362,6 +405,24 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
         reason: "clamped",
       });
       expect(sidebarWidth(rendered.root)).toBe("400px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("does not acknowledge an expanded leg from a same-width event-only observer delivery", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      let current = sample(800, 80, 1, ack(1, 800, 80));
+      const pulse = dispatchPulse(() => current);
+      expect(sidebarWidth(rendered.root)).toBe("424px");
+
+      current = sample(800, 80, 2, ack(2, 800, 80));
+      await frames.flushFrame();
+
+      expect(pulse.complete).not.toHaveBeenCalled();
+      expect(sidebarWidth(rendered.root)).toBe("424px");
     } finally {
       rendered.cleanup();
     }
@@ -609,6 +670,45 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
     }
   });
 
+  it("releases persistence ownership after a successful Settings update", async () => {
+    frames.restore();
+    vi.useFakeTimers();
+    frames = installManualFrames();
+    const updateGate = deferred<void>();
+    dependencies.settingsUpdate.mockReturnValueOnce(updateGate.promise);
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const splitter = rendered.root.querySelector(".main-divider") as HTMLElement;
+      splitter.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+      );
+      expect(sidebarWidth(rendered.root)).toBe("450px");
+
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      expect(dependencies.settingsUpdate).toHaveBeenCalledTimes(1);
+      const updating = dispatchPulse(() => sample(800, 80, 1, ack(1, 800, 80)));
+      expect(updating.complete.mock.calls[0][0]).toMatchObject({
+        status: "skipped",
+        reason: "persistence_owned",
+      });
+
+      updateGate.resolve();
+      await flushPromises();
+      const eligible = dispatchPulse(
+        () => sample(800, 80, 2, ack(2, 800, 80)),
+        "after-success",
+        2,
+      );
+      expect(eligible.request.accepted).toBe(true);
+      expect(eligible.complete).not.toHaveBeenCalled();
+      expect(sidebarWidth(rendered.root)).toBe("434px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("skips overlap, replaces only a proven-stale owner, and completes every request once", async () => {
     const rendered = renderMain();
     try {
@@ -648,6 +748,65 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
       expect(replacement.complete).toHaveBeenCalledTimes(1);
     } finally {
       if (rendered.root.isConnected) rendered.cleanup();
+    }
+  });
+
+  it("does not treat corrupt live geometry as stale overlap evidence", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      let current = sample(800, 80, 1, ack(1, 800, 80));
+      const first = dispatchPulse(() => current);
+      current = sample(Number.NaN, 80, 2, ack(2, 800, 80));
+
+      const overlap = dispatchPulse(
+        () => sample(800, 80, 3, ack(3, 800, 80)),
+        "overlap",
+        3,
+      );
+      expect(overlap.complete.mock.calls[0][0]).toMatchObject({
+        status: "skipped",
+        reason: "busy",
+      });
+      expect(first.complete).not.toHaveBeenCalled();
+
+      await frames.flushFrame();
+      expect(first.complete).toHaveBeenCalledTimes(1);
+      expect(first.complete.mock.calls[0][0]).toMatchObject({
+        status: "failed",
+        reason: "exception",
+        trace: {
+          original: { sidebarWidth: null, hostWidth: null },
+          expanded: { sidebarWidth: null, hostWidth: null },
+          restored: { sidebarWidth: null, hostWidth: null },
+        },
+      });
+      expect(sidebarWidth(rendered.root)).toBe("440px");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("cancels on direct width theft without overwriting the stolen width", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      const pulse = dispatchPulse(() => sample(800, 80, 1, ack(1, 800, 80)));
+      expect(sidebarWidth(rendered.root)).toBe("424px");
+      expect(signalControl.setSidebarWidth).not.toBeNull();
+
+      signalControl.setSidebarWidth!(410);
+      expect(sidebarWidth(rendered.root)).toBe("410px");
+      await frames.flushFrame();
+
+      expect(pulse.complete).toHaveBeenCalledTimes(1);
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "cancelled",
+        reason: "width_changed",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("410px");
+    } finally {
+      rendered.cleanup();
     }
   });
 

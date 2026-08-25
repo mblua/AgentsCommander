@@ -549,22 +549,21 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const captureLayoutGeometry = (
     entry: SessionTerminalEntry,
-  ): MainTerminalLayoutGeometry | null => {
-    const hostWidth = entry.container.getBoundingClientRect().width;
-    const cols = entry.terminal.cols;
-    const rows = entry.terminal.rows;
-    if (
-      !Number.isFinite(hostWidth) ||
-      hostWidth < 0 ||
-      !Number.isSafeInteger(cols) ||
-      cols < 0 ||
-      !Number.isSafeInteger(rows) ||
-      rows < 0
-    ) {
-      return null;
-    }
-    return { hostWidth, cols, rows };
-  };
+  ): MainTerminalLayoutGeometry => ({
+    hostWidth: entry.container.getBoundingClientRect().width,
+    cols: entry.terminal.cols,
+    rows: entry.terminal.rows,
+  });
+
+  const isValidLayoutGeometry = (
+    geometry: MainTerminalLayoutGeometry,
+  ): boolean =>
+    Number.isFinite(geometry.hostWidth) &&
+    geometry.hostWidth >= 0 &&
+    Number.isSafeInteger(geometry.cols) &&
+    geometry.cols >= 0 &&
+    Number.isSafeInteger(geometry.rows) &&
+    geometry.rows >= 0;
 
   const measureFittedViewport = (): PtyViewport | null => {
     if (!visibleSessionId) {
@@ -617,7 +616,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         return;
       }
       const first = captureLayoutGeometry(entry);
-      if (!first) {
+      if (!isValidLayoutGeometry(first)) {
         return;
       }
 
@@ -634,7 +633,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           return;
         }
         const second = captureLayoutGeometry(entry);
-        if (!second || !isLiveVisibleEntry(sessionId, entry)) {
+        if (!isValidLayoutGeometry(second) || !isLiveVisibleEntry(sessionId, entry)) {
           return;
         }
 
@@ -930,9 +929,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       return null;
     }
     const geometry = captureLayoutGeometry(entry);
-    if (!geometry) {
-      return null;
-    }
     const observerState = layoutObserverStates.get(entry);
     return {
       ...geometry,
