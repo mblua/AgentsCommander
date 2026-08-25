@@ -3,7 +3,6 @@ pub mod agent_creator;
 pub mod codex_resolver;
 pub mod config;
 pub mod entity_creation;
-pub mod gemini_resolver;
 pub mod loops;
 pub mod non_stop;
 pub mod project_settings;

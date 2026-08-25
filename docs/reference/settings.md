@@ -44,9 +44,9 @@ A minimal `settings.json`:
       "color": "#10A37F"
     },
     {
-      "id": "gemini",
-      "label": "Gemini",
-      "command": "gemini",
+      "id": "antigravity",
+      "label": "Antigravity",
+      "command": "agy",
       "color": "#4285F4"
     }
   ],

@@ -31,7 +31,7 @@ Project `.ac` creation seeds the editable global and coordinator context templat
 └── Context.coordinator.md
 ```
 
-`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
+`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md` and `AGENTS.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
 
 ### The Root Agent does not use the global template (#979)
 

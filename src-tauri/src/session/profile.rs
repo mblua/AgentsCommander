@@ -1,5 +1,5 @@
 //! Per-coding-agent profile — the single source of truth for behavior that
-//! varies by coding agent (Claude Code, Codex CLI, Gemini CLI, Pi Coding Agent).
+//! varies by coding agent (Claude Code, Codex CLI, Antigravity CLI, Pi Coding Agent).
 //!
 //! Before #260 this knowledge was scattered: three `is_claude`/`is_codex`/
 //! `is_gemini` bools on `Session`/`SessionInfo` (#258), a duplicated
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 pub enum CodingAgentKind {
     Claude,
     Codex,
-    Gemini,
+    Antigravity,
     Pi,
 }
 
@@ -619,7 +619,7 @@ pub(crate) fn locate_pi_command(
 pub enum PtySubmissionAgent {
     Claude,
     Codex,
-    Gemini,
+    Antigravity,
     CursorAgent,
 }
 
@@ -640,8 +640,10 @@ impl PtySubmissionAgent {
             Some(Self::Claude)
         } else if stem == "codex" || (configured_wrapper && stem.starts_with("codex")) {
             Some(Self::Codex)
-        } else if stem == "gemini" || (configured_wrapper && stem.starts_with("gemini")) {
-            Some(Self::Gemini)
+        } else if stem == "agy" || stem == "antigravity" {
+            // Exact stems only — no `configured_wrapper` prefix allowance for
+            // Antigravity (plan #1482 §5.1).
+            Some(Self::Antigravity)
         } else if stem == "agent" {
             Some(Self::CursorAgent)
         } else {
@@ -654,7 +656,7 @@ impl PtySubmissionAgent {
             (self, hint),
             (Self::Claude, Some(CodingAgentKind::Claude))
                 | (Self::Codex, Some(CodingAgentKind::Codex))
-                | (Self::Gemini, Some(CodingAgentKind::Gemini))
+                | (Self::Antigravity, Some(CodingAgentKind::Antigravity))
                 | (Self::CursorAgent, None)
                 | (_, None)
         )
@@ -755,8 +757,12 @@ impl CodingAgentKind {
     /// wins over provider-looking option values, while malformed or reserved
     /// unsupported Pi shapes fail closed. Only a genuine non-Pi result reaches
     /// the legacy whitespace/basename prefix scan with precedence
-    /// **Claude > Codex > Gemini**. That legacy prefix match remains deliberate
-    /// for wrappers such as `claude-mb`, `codex-foo`, and `gemini-bar`.
+    /// **Claude > Codex > Antigravity**. Claude and Codex keep their legacy
+    /// prefix match for wrappers such as `claude-mb` and `codex-foo`;
+    /// Antigravity matches the exact stems `agy` | `antigravity` on the
+    /// already-stemmed lowercase basename (`agy.exe`/`agy.cmd`/`agy.bat`/
+    /// `antigravity.exe` collapse via `file_stem`); prefix wrappers are not
+    /// inferred. A user-defined `gemini*` command now gets generic behavior.
     ///
     /// THIS IS THE detector. `create_session_inner` (which stamps
     /// `Session::agent_kind`) and `strip_auto_injected_args` both call it, so
@@ -788,13 +794,13 @@ impl CodingAgentKind {
             )
             .map(|t| basename(&t))
             .collect();
-        // Precedence claude > codex > gemini, scanning every token.
+        // Precedence claude > codex > antigravity, scanning every token.
         if basenames.iter().any(|b| b.starts_with("claude")) {
             Some(CodingAgentKind::Claude)
         } else if basenames.iter().any(|b| b.starts_with("codex")) {
             Some(CodingAgentKind::Codex)
-        } else if basenames.iter().any(|b| b.starts_with("gemini")) {
-            Some(CodingAgentKind::Gemini)
+        } else if basenames.iter().any(|b| matches!(b.as_str(), "agy" | "antigravity")) {
+            Some(CodingAgentKind::Antigravity)
         } else {
             None
         }
@@ -806,7 +812,7 @@ impl CodingAgentKind {
         match self {
             CodingAgentKind::Claude => "claude",
             CodingAgentKind::Codex => "codex",
-            CodingAgentKind::Gemini => "gemini",
+            CodingAgentKind::Antigravity => "agy",
             CodingAgentKind::Pi => "pi",
         }
     }
@@ -816,7 +822,7 @@ impl CodingAgentKind {
         match self {
             CodingAgentKind::Claude => CLAUDE_PROFILE,
             CodingAgentKind::Codex => CODEX_PROFILE,
-            CodingAgentKind::Gemini => GEMINI_PROFILE,
+            CodingAgentKind::Antigravity => ANTIGRAVITY_PROFILE,
             CodingAgentKind::Pi => PI_PROFILE,
         }
     }
@@ -912,8 +918,7 @@ pub struct CodingAgentProfile {
     /// `--continue` tokens have no persisted provenance.
     /// - Claude: `["--continue"]` (appended to argv)
     /// - Codex: `["resume", "--last"]` (prepended as a subcommand)
-    /// - Gemini: `["--resume", "latest"]` (prepended; the joined
-    ///   `--resume=latest` form is handled by the Gemini stripper)
+    /// - Antigravity: `["--continue"]` (prepended)
     /// - Pi: `["--continue"]` (inserted immediately after the executable)
     pub resume_tokens: &'static [&'static str],
     /// #930 - host credential file this agent reuses in a container (None = no
@@ -962,11 +967,11 @@ const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     container_credential: None,
     auto_self_clear_supported: true,
 };
-const GEMINI_PROFILE: CodingAgentProfile = CodingAgentProfile {
-    kind: CodingAgentKind::Gemini,
+const ANTIGRAVITY_PROFILE: CodingAgentProfile = CodingAgentProfile {
+    kind: CodingAgentKind::Antigravity,
     idle: IdleTuning::DEFAULT,
-    resume_tokens: &["--resume", "latest"],
-    // #930 - no established container credential-file flow for Gemini.
+    resume_tokens: &["--continue"],
+    // #930 - no established container credential-file flow for Antigravity.
     container_credential: None,
     auto_self_clear_supported: true,
 };
@@ -1008,15 +1013,70 @@ mod tests {
     }
 
     #[test]
-    fn detect_codex_and_gemini_direct() {
+    fn detect_codex_and_antigravity_direct() {
         assert_eq!(
             CodingAgentKind::detect("codex", &[]),
             Some(CodingAgentKind::Codex)
         );
         assert_eq!(
-            CodingAgentKind::detect("gemini", &["-m".into(), "gpt-5".into()]),
-            Some(CodingAgentKind::Gemini)
+            CodingAgentKind::detect("agy", &[]),
+            Some(CodingAgentKind::Antigravity)
         );
+        assert_eq!(
+            CodingAgentKind::detect("antigravity", &[]),
+            Some(CodingAgentKind::Antigravity)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("agy.exe", &[]),
+            Some(CodingAgentKind::Antigravity)
+        );
+        assert_eq!(
+            CodingAgentKind::detect("agy.cmd", &["-m".into(), "gpt-5".into()]),
+            Some(CodingAgentKind::Antigravity)
+        );
+    }
+
+    #[test]
+    fn detect_antigravity_stems_and_wrapper_exclusions() {
+        for shell in ["agy", "agy.exe", "agy.cmd", "antigravity", r"C:\tools\agy.exe"] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &[]),
+                Some(CodingAgentKind::Antigravity),
+                "shell={shell:?}"
+            );
+        }
+        // Tokenized cmd form.
+        assert_eq!(
+            CodingAgentKind::detect(
+                "cmd.exe",
+                &strings(&["/C", "agy", "--effort", "high"])
+            ),
+            Some(CodingAgentKind::Antigravity)
+        );
+        // Exact-stem only: prefix wrappers are NOT inferred.
+        for shell in ["agy-proxy", "my-agy", "antigravity-pro", "agyctl", "antigravityctl"] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &[]),
+                None,
+                "shell={shell:?}"
+            );
+        }
+        // `--model antigravity` as a VALUE for claude still detects Claude
+        // (prefix precedence wins); a gemini* executable is no longer a kind.
+        assert_eq!(
+            CodingAgentKind::detect("claude", &strings(&["--model", "antigravity"])),
+            Some(CodingAgentKind::Claude)
+        );
+        for shell in ["pip", "pixel"] {
+            assert_eq!(CodingAgentKind::detect(shell, &[]), None, "shell={shell:?}");
+        }
+        for shell in ["gemini", "gemini-bar"] {
+            assert_eq!(
+                CodingAgentKind::detect(shell, &["-m".into(), "gpt-5".into()]),
+                None,
+                "shell={shell:?} now behaves as a plain unknown command"
+            );
+        }
     }
 
     #[test]
@@ -1396,42 +1456,46 @@ mod tests {
         let cases = [
             (
                 strings(&["/C", "echo", "pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo", "pi&&later", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "echo", "value^&^&pi", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
             (
                 strings(&["/C", "echo&&other", "pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo", "\"value&&pi\"", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
         ];
 
         for (args, expected_kind) in cases {
             assert_eq!(locate_pi_command("cmd.exe", &args), Ok(None));
-            assert_eq!(
-                CodingAgentKind::detect("cmd.exe", &args),
-                Some(expected_kind)
-            );
+            assert_eq!(CodingAgentKind::detect("cmd.exe", &args), expected_kind);
         }
     }
 
     #[test]
     fn tokenized_redirection_targets_stay_out_of_pi_command_positions() {
         let legacy_cases = [
-            (vec!["claude"], CodingAgentKind::Claude),
-            (vec!["--model", "claude-sonnet"], CodingAgentKind::Claude),
-            (vec!["--provider", "codex-model"], CodingAgentKind::Codex),
-            (vec!["--model", "gemini-pro"], CodingAgentKind::Gemini),
+            (vec!["claude"], Some(CodingAgentKind::Claude)),
+            (
+                vec!["--model", "claude-sonnet"],
+                Some(CodingAgentKind::Claude),
+            ),
+            (
+                vec!["--provider", "codex-model"],
+                Some(CodingAgentKind::Codex),
+            ),
+            // `--model gemini-pro` is an inert value now: no kind is detected.
+            (vec!["--model", "gemini-pro"], None),
         ];
 
         for redirect in ["<", ">"] {
@@ -1474,7 +1538,7 @@ mod tests {
                         );
                         assert_eq!(
                             CodingAgentKind::detect("cmd.exe", &args),
-                            Some(*expected_kind),
+                            *expected_kind,
                             "redirect={redirect:?} target={target:?} args={args:?}"
                         );
                     }
@@ -1488,75 +1552,75 @@ mod tests {
         let non_candidates = [
             (
                 strings(&["/C", ")", "pi", "claude"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "><", "pi.md", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "echo&&)", "pi.bat", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
             (
                 strings(&["/C", "npx", "()", "pi", "claude"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", ">", "npx", "pi", "claude"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo&&>npx", "pi", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "npx", ">", "start", "pi", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
             (
                 strings(&["/C", "echo(", "pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo(npx", "pi", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "echo^&^&(", "pi", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
             (
                 strings(&["/C", "echo&&^(", "pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo&&\"(\"", "pi", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "echo&&(()", "pi", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
             (
                 strings(&["/C", "echo&&(<", "pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo", "(((", "pi", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "npx>pi", "--model", "claude-sonnet"]),
-                CodingAgentKind::Claude,
+                Some(CodingAgentKind::Claude),
             ),
             (
                 strings(&["/C", "echo&&>npx(pi", "--provider", "codex-model"]),
-                CodingAgentKind::Codex,
+                Some(CodingAgentKind::Codex),
             ),
             (
                 strings(&["/C", "echo&&)start(pi", "--model", "gemini-pro"]),
-                CodingAgentKind::Gemini,
+                None,
             ),
         ];
         for (args, expected_kind) in non_candidates {
@@ -1567,7 +1631,7 @@ mod tests {
             );
             assert_eq!(
                 CodingAgentKind::detect("cmd.exe", &args),
-                Some(expected_kind),
+                expected_kind,
                 "args={args:?}"
             );
         }
@@ -1674,12 +1738,13 @@ mod tests {
             CodingAgentKind::detect("cmd.exe", &strings(&["/C", "codex"])),
             Some(CodingAgentKind::Codex)
         );
+        // A user-defined `gemini` command now gets generic behavior (no kind).
         assert_eq!(
             CodingAgentKind::detect(
                 "cmd.exe",
                 &strings(&["/K", "git pull && gemini --resume latest"])
             ),
-            Some(CodingAgentKind::Gemini)
+            None
         );
         assert_eq!(
             CodingAgentKind::detect("cmd.exe", &strings(&["/K", "codex && claude"])),
@@ -1741,6 +1806,21 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_serde_profile_contract() {
+        assert_eq!(
+            serde_json::to_string(&CodingAgentKind::Antigravity).unwrap(),
+            "\"antigravity\""
+        );
+        assert_eq!(CodingAgentKind::Antigravity.as_str(), "agy");
+        let profile = CodingAgentKind::Antigravity.profile();
+        assert_eq!(profile.kind, CodingAgentKind::Antigravity);
+        assert_eq!(profile.idle, IdleTuning::DEFAULT);
+        assert_eq!(profile.resume_tokens, ["--continue"]);
+        assert!(profile.container_credential.is_none());
+        assert!(profile.auto_self_clear_supported);
+    }
+
+    #[test]
     fn pi_serde_and_profile_contract_are_stable() {
         assert_eq!(
             serde_json::to_string(&CodingAgentKind::Pi).unwrap(),
@@ -1756,7 +1836,7 @@ mod tests {
         for kind in [
             CodingAgentKind::Claude,
             CodingAgentKind::Codex,
-            CodingAgentKind::Gemini,
+            CodingAgentKind::Antigravity,
         ] {
             assert!(kind.profile().auto_self_clear_supported);
         }
@@ -1795,6 +1875,43 @@ mod tests {
                 "bash",
                 &["-c".into(), "echo claude".into()],
                 Some(CodingAgentKind::Claude)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn privileged_detector_antigravity_exact_stems() {
+        assert_eq!(
+            detect_pty_submission_agent("agy", &[], Some(CodingAgentKind::Antigravity)),
+            Some(PtySubmissionAgent::Antigravity)
+        );
+        assert_eq!(
+            detect_pty_submission_agent(
+                "antigravity.exe",
+                &[],
+                Some(CodingAgentKind::Antigravity)
+            ),
+            Some(PtySubmissionAgent::Antigravity)
+        );
+        assert_eq!(
+            detect_pty_submission_agent(
+                "cmd.exe",
+                &["/C".into(), "agy".into(), "--effort".into(), "high".into()],
+                Some(CodingAgentKind::Antigravity)
+            ),
+            Some(PtySubmissionAgent::Antigravity)
+        );
+        // Exact stems only — no prefix wrappers, and /K is rejected.
+        assert_eq!(
+            detect_pty_submission_agent("agyctl", &[], Some(CodingAgentKind::Antigravity)),
+            None
+        );
+        assert_eq!(
+            detect_pty_submission_agent(
+                "cmd.exe",
+                &["/K".into(), "agy".into()],
+                Some(CodingAgentKind::Antigravity)
             ),
             None
         );
@@ -1874,7 +1991,7 @@ mod tests {
         for kind in [
             CodingAgentKind::Claude,
             CodingAgentKind::Codex,
-            CodingAgentKind::Gemini,
+            CodingAgentKind::Antigravity,
             CodingAgentKind::Pi,
         ] {
             assert!(kind.profile().idle.seed_initial_activity);

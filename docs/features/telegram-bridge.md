@@ -35,7 +35,6 @@ The bridge has agent-aware readers for specific coding agents that emit JSONL tr
 |---|---|
 | Claude Code | JSONL transcript reader (cleaner output than raw PTY) |
 | Codex | JSONL reader |
-| Gemini | JSONL reader |
 | Anything else | Generic vt100 PTY reader |
 
 The reader is picked automatically based on the session's coding agent. Generic shells fall through to the PTY reader.

@@ -117,7 +117,7 @@ type SessionSelectionData =
  */
 export type SessionSelection = SessionSelectionBase & SessionSelectionData;
 
-export type CodingAgentKind = "claude" | "codex" | "gemini" | "pi";
+export type CodingAgentKind = "claude" | "codex" | "pi" | "antigravity";
 
 export interface SessionContextPayload {
   sessionId: string;
@@ -926,13 +926,16 @@ export type UiAutomationAction =
   | "hover"
   | "setValue"
   | "typeText"
-  | "backend";
+  | "backend"
+  | "terminal";
 
-export interface UiAutomationRequest {
+export interface UiAutomationRequest<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> {
   requestId: string;
   token: string;
   window: string;
-  action: UiAutomationAction;
+  action: A;
   selector: string;
   value?: string | null;
   expiresAtUnixMs?: number | null;
@@ -961,6 +964,99 @@ export interface UiAutomationTarget {
   rect: UiAutomationTargetRect | null;
 }
 
+export const MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT =
+  "main-terminal-layout-pulse-request";
+
+export type MainTerminalLayoutGeometry = {
+  hostWidth: number;
+  cols: number;
+  rows: number;
+};
+
+export type MainTerminalLayoutObserverAck = {
+  epoch: number;
+  first: MainTerminalLayoutGeometry;
+  second: MainTerminalLayoutGeometry;
+};
+
+export type MainTerminalLayoutPulseSample = MainTerminalLayoutGeometry & {
+  observedObserverEpoch: number;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseStatus =
+  | "completed"
+  | "skipped"
+  | "cancelled"
+  | "failed";
+
+export type MainTerminalLayoutPulseReason =
+  | "completed"
+  | "unhandled"
+  | "busy"
+  | "dragging"
+  | "persistence_owned"
+  | "invalid_sample"
+  | "clamped"
+  | "stale"
+  | "width_changed"
+  | "teardown"
+  | "initialization_timeout"
+  | "request_timeout"
+  | "expanded_timeout"
+  | "restore_timeout"
+  | "exception";
+
+export type MainTerminalLayoutPulsePhaseTrace = {
+  sidebarWidth: number | null;
+  hostWidth: number | null;
+  cols: number | null;
+  rows: number | null;
+  baselineObservedEpoch: number | null;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseTrace = {
+  version: 1;
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  original: MainTerminalLayoutPulsePhaseTrace;
+  expanded: MainTerminalLayoutPulsePhaseTrace;
+  restored: MainTerminalLayoutPulsePhaseTrace;
+  dwellMs: number;
+  settingsWritesDelta: number;
+};
+
+export type MainTerminalLayoutPulseResult = {
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  trace: MainTerminalLayoutPulseTrace;
+};
+
+export type MainTerminalLayoutPulseRequest = {
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  accepted: boolean;
+  sample: () => MainTerminalLayoutPulseSample | null;
+  complete: (result: MainTerminalLayoutPulseResult) => void;
+};
+
+export interface UiTerminalAutomationTarget {
+  sessionId: string;
+  baseY: number;
+  viewportY: number;
+  length: number;
+  cols: number;
+  rows: number;
+  type: "normal" | "alternate";
+  atBottom: boolean;
+  layoutPulse?: MainTerminalLayoutPulseTrace | null;
+}
+
 export interface UiAutomationDiagnostics {
   devicePixelRatio: number;
   viewport: { width: number; height: number };
@@ -977,21 +1073,36 @@ export interface UiAutomationDiagnostics {
   };
 }
 
-export type UiAutomationResponse =
-  | {
-      ok: true;
-      requestId: string;
-      window: string;
-      action: UiAutomationAction;
-      selector: string;
-      target: UiAutomationTarget;
-      diagnostics?: UiAutomationDiagnostics;
-    }
+type UiAutomationSuccessResponse<A extends UiAutomationAction> =
+  A extends "terminal"
+    ? {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: "terminal";
+        selector: string;
+        target: UiTerminalAutomationTarget;
+        diagnostics?: UiAutomationDiagnostics;
+      }
+    : {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: Exclude<A, "terminal">;
+        selector: string;
+        target: UiAutomationTarget;
+        diagnostics?: UiAutomationDiagnostics;
+      };
+
+export type UiAutomationResponse<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> =
+  | UiAutomationSuccessResponse<A>
   | {
       ok: false;
       requestId: string;
       window: string;
-      action: UiAutomationAction;
+      action: A;
       selector: string;
       error:
         | "missing_selector"
@@ -1002,6 +1113,10 @@ export type UiAutomationResponse =
         | "timeout"
         | "unsupported_action"
         | "value_not_supported"
+        | "terminal_controller_unavailable"
+        | "terminal_target_mismatch"
+        | "terminal_entry_stale"
+        | "terminal_session_not_visible"
         | "automation_bridge_exception";
       message: string;
       available?: UiAutomationTarget[];

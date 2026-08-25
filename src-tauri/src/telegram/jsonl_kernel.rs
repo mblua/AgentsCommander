@@ -1,6 +1,6 @@
 // Shared scaffold for append-only JSONL session-file readers.
-// Hosts the primitives reused by claude_watcher, codex_watcher, and
-// gemini_watcher: directory scan, offset-based incremental read,
+// Hosts the primitives reused by claude_watcher and codex_watcher:
+// directory scan, offset-based incremental read,
 // truncation detection, rotation-flicker constants, and the §J first-attach
 // preamble scan.
 
@@ -15,9 +15,8 @@ pub(crate) const POLL_INTERVAL_MS: u64 = 500;
 pub(crate) const ROTATION_STALE_SECS: u64 = 3;
 
 /// Window size for the §J first-attach preamble scan. 64 KiB comfortably holds
-/// a recent assistant turn for all three backends: Claude assistant lines are
-/// 1-4 KiB, Codex `event_msg` lines are 200-800 B (worst-observed turn ≈47 KiB),
-/// Gemini turns are usually one large line.
+/// a recent assistant turn for both Claude and Codex: Claude assistant lines are
+/// 1-4 KiB, Codex `event_msg` lines are 200-800 B (worst-observed turn ≈47 KiB).
 pub(crate) const PREAMBLE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Grace window for the §J timestamp filter. Lines with embedded timestamp
@@ -26,7 +25,7 @@ pub(crate) const PREAMBLE_MAX_BYTES: u64 = 64 * 1024;
 pub(crate) const RACE_GRACE_SECS: i64 = 5;
 
 /// Find the most recently modified .jsonl file in a directory (non-recursive).
-/// Used by the Claude watcher; Codex and Gemini have their own per-poll discovery.
+/// Used by the Claude watcher; Codex has its own per-poll discovery.
 pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(project_dir).ok()?;
     let mut best: Option<(PathBuf, SystemTime)> = None;
@@ -138,7 +137,7 @@ pub(crate) fn read_new_lines(
 ///
 /// `extractor` is the per-backend "given a line, return its
 /// `(timestamp, optional_id, body)` if it's an emission candidate, else None".
-/// The `id` slot lets backends that dedupe by id (Gemini) seed their dedup set
+/// The `id` slot lets backends that dedupe by id seed their dedup set
 /// directly from this single read — eliminating the M1 TOCTOU where a parallel
 /// `seed_emitted_ids_from_preamble` pass re-read the file and could mark an
 /// id as emitted whose body was appended between the two reads. Backends that
@@ -283,8 +282,7 @@ mod tests {
     // ── §J preamble scan tests ────────────────────────────────────────────
 
     /// Extractor for tests: reads `timestamp` field as RFC3339, `content` as the body.
-    /// `id` slot is unused (None) — backends that dedupe by id are covered in
-    /// gemini_watcher tests.
+    /// `id` slot is unused (None).
     fn test_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         let ts_str = v.get("timestamp")?.as_str()?;

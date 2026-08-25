@@ -10,7 +10,7 @@ An agent is a directory with a role-prompt file at its root. The directory IS th
 |---|---|
 | Claude Code | `CLAUDE.md` |
 | Codex | `AGENTS.md` |
-| Gemini | `GEMINI.md` |
+| Antigravity | `AGENTS.md` |
 | Pi | `AGENTS.md` |
 
 When the agent dir lives inside an AC project at `.ac/_agent_<name>/`, AC promotes it to an **agent matrix** with optional `memory/`, `plans/`, `skills/`, and a canonical `Role.md`.
@@ -29,7 +29,7 @@ If you need two agents in the same project, give each one its own sibling direct
 4. Optionally enable skills if the template ships them.
 5. Click **Create**.
 
-AC creates `<project>/.ac/_agent_<name>/` with the matrix layout, writes the chosen role into `Role.md`, copies skills if requested, and registers the agent. The coding-agent role file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`) is materialized from `Role.md` plus AC context at launch.
+AC creates `<project>/.ac/_agent_<name>/` with the matrix layout, writes the chosen role into `Role.md`, copies skills if requested, and registers the agent. The coding-agent role file (`CLAUDE.md` or `AGENTS.md`) is materialized from `Role.md` plus AC context at launch.
 
 ## Path 2 — through the CLI
 
