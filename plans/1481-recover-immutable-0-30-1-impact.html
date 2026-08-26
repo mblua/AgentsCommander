@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Issue #1481 | Immutable v0.30.1 recovery impact</title>
+  <title>Issue #1481 | Deterministic GitHub CLI recovery correction</title>
   <style>
     :root {
       color-scheme: dark;
@@ -91,6 +91,7 @@
     .status-card dt { color: var(--faint); }
     .status-card dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
     .status-ready { color: var(--green); font-weight: 800; }
+    .status-pending { color: var(--amber); font-weight: 800; }
 
     .nav-wrap { position: sticky; top: 0; z-index: 20; border-block: 1px solid rgba(38, 58, 86, .85); background: rgba(7, 16, 29, .88); backdrop-filter: blur(16px); }
     .nav { display: flex; gap: .4rem; max-width: 100%; overflow-x: auto; padding: .7rem 0; scrollbar-width: thin; }
@@ -243,16 +244,16 @@
   <header class="hero">
     <div class="shell hero-grid">
       <div>
-        <span class="eyebrow">Full delivery path | Step 7 consensus complete</span>
-        <h1>Recover immutable v0.30.1</h1>
-        <p class="lede">A one-shot, no-input GitHub Actions recovery creates the missing Release for the existing annotated tag. It reuses the frozen release state machine, isolates the Administration-read credential, admits only exact absence or exact immutable success, and never moves or recreates the tag.</p>
+        <span class="eyebrow">Full revision | Step 7 technical consensus complete</span>
+        <h1>Pin recovery CLI 2.86.0</h1>
+        <p class="lede">The landed no-input recovery failed safely before mutation when the moving hosted image supplied GitHub CLI 2.97.0. The narrow correction installs and verifies exact 2.86.0 independently in all three <code>gh</code>-using jobs while preserving the reviewed Release state machine.</p>
       </div>
       <aside class="status-card" aria-label="Plan status">
         <dl>
           <dt>Status</dt><dd class="status-ready">READY_FOR_IMPLEMENTATION</dd>
           <dt>Issue</dt><dd>mblua/AgentsCommander#1481</dd>
-          <dt>Branch</dt><dd class="mono">fix/1481-recover-immutable-0301</dd>
-          <dt>Base</dt><dd class="mono">ce60240a2bfacabe60d27371c0a90e2d114a56d3</dd>
+          <dt>Branch</dt><dd class="mono">fix/1481-pin-gh-2-86-recovery</dd>
+          <dt>Base</dt><dd class="mono">5c7c1ce3d1c35352a93c185e94498dd113641107</dd>
           <dt>Specification</dt><dd class="mono">plans/1481-recover-immutable-0-30-1.md</dd>
         </dl>
       </aside>
@@ -265,6 +266,7 @@
       <a href="#evidence">Evidence</a>
       <a href="#impact">File impact</a>
       <a href="#flow">Recovery flow</a>
+      <a href="#bootstrap">CLI bootstrap</a>
       <a href="#authority">Authority</a>
       <a href="#gates">Gates</a>
       <a href="#build">Build contract</a>
@@ -278,24 +280,24 @@
   <main class="shell">
     <section id="decision">
       <div class="section-kicker">01 | Decided solution</div>
-      <h2>One temporary workflow, no production refactor</h2>
-      <p class="section-intro">Copy the reviewed release workflow at its frozen Git blob and change only the trigger context, fixed identity gates, failed-run proof, credential routing, and recovery evidence names. The implementation diff adds exactly one file.</p>
+      <h2>One existing workflow, three deterministic installs</h2>
+      <p class="section-intro">Modify only the landed recovery workflow. Add the same credential-free, SHA-256-pinned CLI bootstrap after Node setup in prepare, assembly, and publication. Keep the normal Release workflow and every recovery classifier, permission, secret boundary, mutation source, and create-step name unchanged.</p>
 
       <div class="grid-3">
         <article class="card tone-green">
           <div class="metric">1</div>
-          <h3>Implementation path</h3>
+          <h3>Modified implementation path</h3>
           <p><code>.github/workflows/recover-immutable-v0.30.1.yml</code></p>
         </article>
         <article class="card tone-blue">
-          <div class="metric">0</div>
-          <h3>Runtime inputs</h3>
-          <p>Only an empty <code>workflow_dispatch</code>. No version, tag, SHA, Release ID, title, body, asset, repository, failed-run ID, or confirmation input.</p>
+          <div class="metric">3</div>
+          <h3>Job-local bootstraps</h3>
+          <p>Exactly <code>prepare-recovery</code>, <code>assemble-release</code>, and <code>publish-and-verify-release</code>. Never <code>build-release</code>.</p>
         </article>
         <article class="card tone-amber">
-          <div class="metric">3</div>
-          <h3>Mutation sources</h3>
-          <p>One draft POST, one serial 16-file upload loop, and one PATCH containing only <code>{"draft":false}</code>.</p>
+          <div class="metric">0</div>
+          <h3>New Release mutations</h3>
+          <p>The existing one draft POST, one serial 16-file upload loop, and one <code>{"draft":false}</code> PATCH remain the only mutation sources.</p>
         </article>
       </div>
 
@@ -308,72 +310,81 @@
         <div class="identity"><span>Release title</span><b>Agents Commander v0.30.1</b></div>
         <div class="identity"><span>Concurrency</span><b class="mono">release-v0.30.1</b></div>
         <div class="identity"><span>Immutable setting</span><b class="mono">enabled:true / enforced_by_owner:false</b></div>
-        <div class="identity"><span>Historical failed run</span><b class="mono">32791566112 / attempt 1</b></div>
+        <div class="identity"><span>Original failed run</span><b class="mono">32791566112 / attempt 1</b></div>
+        <div class="identity"><span>Failed recovery run</span><b class="mono">32883517350 / attempt 1</b></div>
+        <div class="identity"><span>Reviewed CLI</span><b class="mono">gh 2.86.0</b></div>
+        <div class="identity"><span>Landed workflow blob</span><b class="mono">a49b2ab1765fa1714002b1a5ccc4db6c6d4d437d</b></div>
+        <div class="identity"><span>Landed workflow SHA-256</span><b class="mono">34B7F64C25582C8D805F4E4616BC0A45DFE670DF62788D7EB42E322C896EFF83</b></div>
       </div>
 
       <div class="card tone-blue" style="margin-top:18px">
         <h3>Locked workflow envelope</h3>
         <ul>
-          <li><code>name</code> and fixed <code>run-name</code> are both <code>Recover immutable Release v0.30.1</code>.</li>
+          <li>The landed <code>name</code>, fixed <code>run-name</code>, empty <code>workflow_dispatch</code>, permissions, concurrency, job graph, identities, and evidence contracts stay unchanged.</li>
           <li>The only trigger is an empty <code>workflow_dispatch</code>; top-level <code>permissions:{}</code>; no push, pull request, schedule, workflow call, repository dispatch, Release trigger, environment, or deployment gate.</li>
           <li>Concurrency is the literal <code>release-v0.30.1</code> with <code>cancel-in-progress:false</code>. Matrix <code>fail-fast:false</code>; assembly requires all four builders.</li>
           <li>No workflow-level token or secret environment variable. Shell blocks fail fast and receive GitHub expressions only through step environment, never interpolated executable source.</li>
-          <li>Every GitHub CLI or REST operation selects <code>mblua/AgentsCommander</code> explicitly.</li>
+          <li>Every GitHub CLI or REST operation still selects <code>mblua/AgentsCommander</code> explicitly. The pinned binary must win PATH before the first <code>gh</code> call in each applicable job.</li>
         </ul>
       </div>
     </section>
 
     <section id="evidence">
-      <div class="section-kicker">02 | Cause and state gap</div>
-      <h2>The tag succeeded; authority failed before Release creation</h2>
-      <p class="section-intro">Run <code>32791566112</code> used the normal workflow token for the immutable-release settings endpoint. That token had Contents write and Metadata read, while the endpoint requires repository Administration read. HTTP 403 occurred before the Release 404 classifier and before every mutation.</p>
+      <div class="section-kicker">02 | New blocker and unchanged state</div>
+      <h2>The recovery failed closed on hosted CLI drift</h2>
+      <p class="section-intro">The original tag run <code>32791566112</code> established the Administration-read defect. That defect was addressed in the landed recovery workflow. Recovery run <code>32883517350</code> then proved a separate design gap: <code>ubuntu-22.04</code> image version <code>20260817.266.1</code>, manifest <code>ubuntu22/20260817.266</code>, supplied <code>gh 2.97.0</code>, while the reviewed workflow required exact <code>2.86.0</code>.</p>
 
       <div class="timeline" aria-label="Failure timeline">
         <article class="moment">
-          <h3>Tag exists</h3>
-          <p class="fine">Annotated object <code>5e4da64...</code> peels to approved commit <code>da116e0...</code>.</p>
+          <h3>Recovery bytes land</h3>
+          <p class="fine">Main <code>5c7c1ce...</code>; recovery blob <code>a49b2ab...</code>; committed-byte SHA-256 <code>34B7F64C...</code>.</p>
         </article>
         <article class="moment fail">
-          <h3>Authority check fails</h3>
-          <p class="fine">Job <code>97633984311</code>, step 4, exact name <code>Validate authority and classify the release</code>, HTTP 403.</p>
+          <h3>CLI identity fails</h3>
+          <p class="fine">Run <code>32883517350</code>, job <code>97918449982</code>, step 5. Hosted <code>2.97.0</code> does not equal reviewed <code>2.86.0</code>.</p>
         </article>
         <article class="moment stop">
-          <h3>Downstream work skips</h3>
-          <p class="fine">Build, assembly, and publisher jobs never run. Original run artifact count is exactly zero.</p>
+          <h3>Mutation boundary skips</h3>
+          <p class="fine">Exact create step <code>Create the sole fresh draft and reconcile its result</code> is completed/skipped. All downstream jobs skip; artifact count is zero.</p>
         </article>
         <article class="moment">
-          <h3>Gap remains</h3>
-          <p class="fine">Release <code>v0.30.1</code> is exact 404; npm <code>@mblua/agentscommander@0.30.1</code> is absent.</p>
+          <h3>External state stays safe</h3>
+          <p class="fine">Release remains exact 404; npm 0.30.1 remains absent; annotated tag object and peel remain unchanged.</p>
         </article>
       </div>
 
       <div class="grid-2" style="margin-top:22px">
         <article class="card tone-red">
           <h3>Why rerun is prohibited</h3>
-          <p>A rerun retains the tag commit, frozen workflow bytes, <code>GITHUB_SHA</code>, <code>GITHUB_REF</code>, and the same unauthorized credential class. It is neither corrective nor useful.</p>
+          <p>A rerun of <code>32883517350</code> retains the old workflow bytes and moving runner contract. Use a separately reviewed implementation, fresh live preflight, and separate owner authorization for one new no-input dispatch.</p>
         </article>
         <article class="card tone-green">
-          <h3>Why a main-only recovery works</h3>
-          <p><code>workflow_dispatch</code> runs from a workflow present on the default branch. The new file can bind the historical tag and commit while using a narrowly scoped Administration-read PAT only for immutable-setting GETs.</p>
+          <h3>Smallest correction</h3>
+          <p>Download the official x64 Linux archive independently in the three jobs that invoke <code>gh</code>, verify its literal bytes before extraction, prepend only its fixed bin directory, and retain every existing release-state guard.</p>
         </article>
+      </div>
+
+      <div class="card tone-green" style="margin-top:18px">
+        <h3>Current reviews pass; historical approvals remain audit evidence only</h3>
+        <p>Old plan blob <code>62895f04770b62a5838704b11bb61cabba291f7e</code>, SHA-256 <code>95A54C0FB9E9F242980F20F4FCAF0D57015A3A2FF21AA31DEC7E0B933936B094</code>, and impact blob <code>14236921d56b90a9c5796461ff8e0740d433c34a</code>, SHA-256 <code>38B621FDB471891CCD48C3DEFDE58933E799F6BF04C6066E6904F3935483CD07</code>, governed the landed workflow. Their historical READY and Step 7.5 approvals do not authorize this correction. For the exact current plan at reviewed head <code>a8910732da43f715efafaabf7acbd5f71b5cc1fa</code>, developer round-2 enrichment passed, formal Step 6 rereview returned <code>FORMAL_STEP_6_PASS</code> with zero blockers and zero optional findings, independent release/shipper validation passed the complete positive and retained negative fixtures, and final Step 7 architect consensus produced the fresh dependency-cycle and layering certificate below. Step 7.5 human impact approval and workgroup purge remain mandatory before implementation handoff.</p>
       </div>
     </section>
 
     <section id="impact">
       <div class="section-kicker">03 | Evidence-backed file impact</div>
-      <h2>One modified path, twelve related-only paths</h2>
-      <p class="section-intro">The green node is the entire implementation surface. Every lower node constrains its bytes or behavior and must remain byte-identical. If implementation changes a related-only path, adds another path, or edits an existing path, planning stops.</p>
+      <h2>One modified path, every related path frozen</h2>
+      <p class="section-intro">The green node is the entire later implementation surface. Every lower node constrains its bytes or behavior and must remain byte-identical. If implementation changes another path, the correction returns to Full planning.</p>
 
       <div class="impact-root">
-        <div class="tag mono">ADD | SOLE IMPLEMENTATION CHANGE</div>
+        <div class="tag mono">MODIFY | SOLE IMPLEMENTATION CHANGE</div>
         <h3><code>.github/workflows/recover-immutable-v0.30.1.yml</code></h3>
-        <p>Main-branch, no-input, version-specific recovery for the existing tag and missing Release.</p>
+        <p>Add exactly three identical CLI bootstrap steps plus strictly necessary same-file PATH/version assertions. Preserve every Release mutation and state-machine boundary.</p>
       </div>
       <div class="connector" aria-hidden="true"></div>
       <div class="impact-map">
-        <article class="impact-group" data-link="copy and constrain">
+        <article class="impact-group" data-link="preserve and constrain">
           <h3>Release state machine</h3>
-          <div class="path-row"><code>.github/workflows/release.yml</code><p>Copy four jobs, action pins, permissions pattern, matrix, transport, classifier, mutation boundaries, attestation checks, and evidence retention. Blob <span class="mono">a5e437996ea3a91e0688842f80e6c466f35cff19</span>.</p></div>
+          <div class="path-row"><code>.github/workflows/release.yml</code><p>Frozen source of the landed state machine. Preserve byte-identically at blob <span class="mono">a5e437996ea3a91e0688842f80e6c466f35cff19</span>; its separate runner-drift risk is out of scope.</p></div>
           <div class="path-row"><code>CHANGELOG.md</code><p>Sole Release body source. Blob <span class="mono">b0095eac4158e3fa575de36b1f4be9ada94b542e</span>. No body hash is frozen.</p></div>
           <p class="no-touch">RELATED ONLY | DO NOT EDIT</p>
         </article>
@@ -403,9 +414,9 @@
         <article class="card tone-green">
           <h3>In scope</h3>
           <ul>
-            <li>Add the temporary recovery workflow and reuse the frozen state machine.</li>
-            <li>Bind the existing tag, tag object, commit, failed run, body source, action pins, toolchains, matrix, assets, and checksums.</li>
-            <li>Use the PAT for exactly five immutable-setting GET steps and the normal token for Release operations.</li>
+            <li>Modify only the existing temporary recovery workflow.</li>
+            <li>Install and prove exact <code>gh 2.86.0</code> in prepare, assembly, and publication before their first <code>gh</code> call.</li>
+            <li>Preserve the existing tag, tag object, commit, original and recovery-run proofs, body source, action pins, permissions, secrets, matrix, assets, checksums, and mutation counts.</li>
             <li>Preserve v0.30.0 and every pre-existing Release; retain run/attempt-qualified evidence.</li>
             <li>Plan later deletion as a separate reviewed one-file cleanup.</li>
           </ul>
@@ -414,8 +425,9 @@
           <h3>Out of scope</h3>
           <ul class="ban-list">
             <li>No tag move, delete, recreate, force update, or synthetic fallback.</li>
-            <li>No rerun of historical run <code>32791566112</code>.</li>
+            <li>No rerun of historical run <code>32791566112</code> or recovery run <code>32883517350</code>; no new dispatch under this plan revision.</li>
             <li>No edit to the production workflow, app, package, changelog, lock, config, documentation, or test files.</li>
+            <li>No CLI install in <code>build-release</code>, relaxed/ranged version, hosted-CLI fallback, <code>sudo</code>, package manager, third-party action, container, custom runner, or cross-job artifact transport.</li>
             <li>No npm publish, OIDC, registry credential, dist-tag, or Phase B work.</li>
             <li>No Release/asset repair, clobber, delete, recreate, retag, or generic recovery abstraction.</li>
             <li>No PAT/secret rotation, revocation, rename, copy, disclosure, or settings mutation.</li>
@@ -427,16 +439,16 @@
     <section id="flow">
       <div class="section-kicker">04 | Recovery state machine</div>
       <h2>Query first; mutate only from exact absence</h2>
-      <p class="section-intro">Use the copied four-job graph. Fresh mode builds and assembles; exact immutable resume skips every Release mutation and reconstructs evidence by numeric asset ID. Every other state blocks.</p>
+      <p class="section-intro">Use the landed four-job graph. Fresh mode builds and assembles; exact immutable resume skips every Release mutation and reconstructs evidence by numeric asset ID. Every other state blocks.</p>
 
       <div class="flow" aria-label="Workflow job graph">
-        <article class="lane tone-blue"><div class="step">JOB 01 | 15 MIN</div><div class="job">prepare-recovery</div><div class="condition">always starts</div><p class="fine">Validate dispatch, main, blobs, failed run, tag, body, immutable setting, historical snapshot, and Release classifier.</p></article>
+        <article class="lane tone-blue"><div class="step">JOB 01 | 15 MIN</div><div class="job">prepare-recovery</div><div class="condition">bootstrap, then classify</div><p class="fine">Select pinned CLI, then validate dispatch, main, blobs, both failed-run proofs, tag, body, immutable setting, historical snapshot, and Release classifier.</p></article>
         <div class="arrow" aria-hidden="true">→</div>
-        <article class="lane tone-green"><div class="step">JOB 02 | 90 MIN</div><div class="job">build-release[4]</div><div class="condition">fresh only</div><p class="fine">Four fixed builders at the peeled commit; no Release credential; 4/3/4/4 staged payloads.</p></article>
+        <article class="lane tone-green"><div class="step">JOB 02 | 90 MIN</div><div class="job">build-release[4]</div><div class="condition">fresh only | no gh</div><p class="fine">Four fixed builders at the peeled commit; no CLI bootstrap or Release credential; 4/3/4/4 staged payloads.</p></article>
         <div class="arrow" aria-hidden="true">→</div>
-        <article class="lane tone-green"><div class="step">JOB 03 | 45 MIN</div><div class="job">assemble-release</div><div class="condition">fresh only</div><p class="fine">ID-bound transport, exact SHASUMS, one serial non-clobber upload loop, verified draft evidence.</p></article>
+        <article class="lane tone-green"><div class="step">JOB 03 | 45 MIN</div><div class="job">assemble-release</div><div class="condition">bootstrap | fresh only</div><p class="fine">Select pinned CLI before API access, then ID-bound transport, exact SHASUMS, one serial non-clobber upload loop, and verified draft evidence.</p></article>
         <div class="arrow" aria-hidden="true">→</div>
-        <article class="lane tone-violet"><div class="step">JOB 04 | 30 MIN</div><div class="job">publish-and-verify-release</div><div class="condition">fresh or resume</div><p class="fine">One publication PATCH in fresh mode, then common immutable verification and final evidence. <code>always()</code> admits intentional resume skips only.</p></article>
+        <article class="lane tone-violet"><div class="step">JOB 04 | 30 MIN</div><div class="job">publish-and-verify-release</div><div class="condition">bootstrap | fresh or resume</div><p class="fine">Select pinned CLI before API access, then one publication PATCH in fresh mode and common immutable verification. <code>always()</code> admits intentional resume skips only.</p></article>
       </div>
 
       <div class="branch-grid">
@@ -458,8 +470,47 @@
       </div>
     </section>
 
+    <section id="bootstrap">
+      <div class="section-kicker">05 | Deterministic CLI bootstrap</div>
+      <h2>Verify literal bytes before any job-local <code>gh</code> call</h2>
+      <p class="section-intro">Repeat one identical step named <code>Install exact GitHub CLI 2.86.0</code> because jobs share neither filesystem nor PATH. Place it immediately after <code>Set up Node.js</code> in prepare, assembly, and publication. The builder has no <code>gh</code> use and receives no bootstrap.</p>
+
+      <div class="identity-grid">
+        <div class="identity"><span>Version</span><b class="mono">2.86.0</b></div>
+        <div class="identity"><span>Archive bytes</span><b class="mono">13627589</b></div>
+        <div class="identity"><span>Redirect policy</span><b>0 or 1, HTTPS only</b></div>
+        <div class="identity"><span>Archive URL</span><b class="mono">https://github.com/cli/cli/releases/download/v2.86.0/gh_2.86.0_linux_amd64.tar.gz</b></div>
+        <div class="identity"><span>Literal SHA-256</span><b class="mono">f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7</b></div>
+        <div class="identity"><span>Exact member</span><b class="mono">gh_2.86.0_linux_amd64/bin/gh</b></div>
+        <div class="identity"><span>Install root</span><b class="mono">${RUNNER_TEMP}/agentscommander-gh-2.86.0</b></div>
+        <div class="identity"><span>Selected bin directory</span><b class="mono">${RUNNER_TEMP}/agentscommander-gh-2.86.0/gh_2.86.0_linux_amd64/bin</b></div>
+        <div class="identity"><span>Connect timeout</span><b class="mono">20 seconds</b></div>
+        <div class="identity"><span>Total timeout</span><b class="mono">180 seconds</b></div>
+      </div>
+
+      <div class="grid-3" style="margin-top:18px">
+        <article class="card tone-green"><h3>prepare-recovery</h3><p>Install after Node setup. Prove fixed canonical PATH and exact version before the initial settings read or classifier. Any failure means no draft POST.</p></article>
+        <article class="card tone-green"><h3>assemble-release</h3><p>Install after Node setup. Prove fixed canonical PATH and exact version before the first API read. Any failure means zero asset uploads.</p></article>
+        <article class="card tone-green"><h3>publish-and-verify-release</h3><p>Install after Node setup. Prove fixed canonical PATH and exact version before publication-tool checks. Any failure means zero PATCH calls.</p></article>
+      </div>
+
+      <div class="gate-list" style="margin-top:18px">
+        <article class="gate"><h3>Credential-free network</h3><p>Fixed public URL, curl configuration and retries disabled, no token, secret, cookie, credential, authorization header, <code>.netrc</code>, action input, or <code>gh</code>. Fail on transport/non-2xx; final status 200; no downgrade; at most one HTTPS redirect.</p></article>
+        <article class="gate"><h3>Bounded transfer</h3><p>Connect at most 20 seconds, total transfer at most 180 seconds, cap at exact expected size, and require both curl and filesystem sizes to equal <code>13627589</code>. Do not log the response body.</p></article>
+        <article class="gate"><h3>Checksum before extraction</h3><p>Compare the downloaded archive to the literal lowercase digest before listing or extracting. A checksum fetched in the same run is never the trust anchor.</p></article>
+        <article class="gate"><h3>Exact filesystem member</h3><p>Write payloads only beneath the fixed <code>RUNNER_TEMP</code> root and extract only the exact member with the GNU tar 1.34-compatible sequence <code>--gzip --extract --file</code>, fixed archive, <code>--directory</code>, fixed fresh root, <code>--no-wildcards --anchored --no-same-owner --same-permissions --keep-old-files --</code>, and the literal member. Explicitly forbid <code>--no-overwrite-dir</code>, which is incompatible with <code>--keep-old-files</code>. Require a canonical regular non-symlink executable and a hard error on collision. Reject missing, renamed, duplicate, linked, absolute, or traversing members.</p></article>
+        <article class="gate"><h3>PATH precedence</h3><p>Append only the fixed bin directory to <code>GITHUB_PATH</code>. Prove <code>command -v gh</code> resolves the canonical selected binary in the bootstrap and again in the next assertion step.</p></article>
+        <article class="gate"><h3>Exact report</h3><p>The selected binary must report exactly <code>2.86.0</code>. Never fall back to hosted <code>2.97.0</code> or later. No <code>sudo</code>, <code>apt</code>, <code>dpkg</code>, package script, third-party setup action, container, custom runner, or Actions artifact transport.</p></article>
+      </div>
+
+      <div class="card tone-blue" style="margin-top:18px">
+        <h3>Generic prior-run proof remains byte-identical</h3>
+        <p>Every non-current recovery run/attempt must be terminal and contain exactly one terminal prepare job plus the exact step <code>Create the sole fresh draft and reconcile its result</code>. Only <code>status:completed</code> with <code>conclusion:skipped</code> is safe-before-POST evidence, and exact Release 404 is still additionally required. Missing, renamed, nonterminal, successful, failed, null, duplicated, extra-attempt, or ambiguous evidence blocks <code>fresh</code>. Run <code>32883517350</code> currently satisfies this generic proof; it is not hardcoded and does not itself authorize a future dispatch.</p>
+      </div>
+    </section>
+
     <section id="authority">
-      <div class="section-kicker">05 | Authority separation</div>
+      <div class="section-kicker">06 | Authority separation</div>
       <h2>Two credentials never share a mutation boundary</h2>
       <div class="token-map">
         <article class="token admin">
@@ -490,7 +541,7 @@
     </section>
 
     <section id="gates">
-      <div class="section-kicker">06 | Fail-closed gates</div>
+      <div class="section-kicker">07 | Fail-closed gates</div>
       <h2>Every mutable edge is preceded by live revalidation</h2>
       <div class="gate-list">
         <article class="gate"><h3>Dispatch and repository</h3><p>Require <code>workflow_dispatch</code>, repository <code>mblua/AgentsCommander</code>, <code>refs/heads/main</code>, ref name <code>main</code>, exact workflow path, default branch <code>main</code>, and dispatch SHA equal current remote main.</p></article>
@@ -499,7 +550,7 @@
         <article class="gate"><h3>Tag object and peel</h3><p>Remote and local Git object checks must agree that <code>refs/tags/v0.30.1</code> points to annotated tag object <code>5e4da64...</code> and recursively peels only to <code>da116e0...</code>.</p></article>
         <article class="gate"><h3>Version and Release body</h3><p>Checkout only the peeled commit with full history and no persisted credential. Run existing version synchronization. Read the checked-out <code>CHANGELOG.md</code> as UTF-8 and derive the exact body contract below.</p></article>
         <article class="gate"><h3>Historical preservation</h3><p>Snapshot all existing Releases and assets through complete 100-record pagination. Require explicit v0.30.0 ID <code>374749117</code>, peeled commit <code>45530b46b0a3d4bfe8715ac8b19916df98b6f8cd</code>, public non-prerelease state, and 16 assets. Sort Releases and assets by numeric ID/name; record identity, body hash, flags, timestamps, and every asset ID/name/size/state/digest/API/browser URL. Duplicate, malformed, or incomplete data blocks. Compare canonical pre/post snapshots excluding only new v0.30.1.</p></article>
-        <article class="gate"><h3>Concurrency and prior attempts</h3><p>Literal group <code>release-v0.30.1</code>, cancellation disabled, and only the current recovery run in progress. A later attempt may mutate only from exact 404 when no prior recovery crossed POST; exact immutable state permits read-only resume.</p></article>
+        <article class="gate"><h3>Concurrency and prior attempts</h3><p>Literal group <code>release-v0.30.1</code>, cancellation disabled, and only the current recovery run in progress. Run <code>32883517350</code> must remain terminal with the exact create step completed/skipped. Every prior attempt is generically classified; no run-specific escape hatch exists.</p></article>
         <article class="gate"><h3>Mutation-adjacent race checks</h3><p>Requery main, tag, failed-run proof, immutable setting, Release ID/state/inventory, and preservation snapshot immediately before POST, first upload, and PATCH. Never adapt constants inside a run.</p></article>
       </div>
 
@@ -519,8 +570,8 @@
     </section>
 
     <section id="build">
-      <div class="section-kicker">07 | Frozen build and transport contract</div>
-      <h2>Build exact historical bytes with reviewed pins</h2>
+      <div class="section-kicker">08 | Frozen build and transport contract</div>
+      <h2>Build bytes and seven action pins stay unchanged</h2>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Matrix key</th><th>Runner</th><th>Build argument</th><th>Payloads</th></tr></thead>
@@ -534,7 +585,7 @@
       </div>
 
       <div class="grid-3" style="margin-top:18px">
-        <article class="card"><h3>Toolchains</h3><ul><li>Node <code>22.23.2</code></li><li>npm <code>10.9.8</code></li><li>Rust <code>1.98.0</code></li><li>GitHub CLI <code>2.86.0</code></li></ul></article>
+        <article class="card"><h3>Toolchains</h3><ul><li>Node <code>22.23.2</code></li><li>npm <code>10.9.8</code></li><li>Rust <code>1.98.0</code></li><li>GitHub CLI exact <code>2.86.0</code>, now explicitly acquired only in the three <code>gh</code>-using Linux jobs.</li></ul></article>
         <article class="card"><h3>Builder boundary</h3><ul><li>Checkout exact <code>da116e0...</code>.</li><li>No Release ID or Release/admin credential.</li><li><code>npm ci</code> plus existing version check.</li><li>Preserve Windows SignPath placeholder.</li><li>Reject traversal, reparse, symlink, mode, and basename surprises.</li></ul></article>
         <article class="card"><h3>Transport boundary</h3><ul><li>One mode-preserving outer tar per matrix.</li><li>Artifact name includes run ID, attempt, matrix key.</li><li>Overwrite false; hidden excluded; missing fatal.</li><li>Resolve and download by exact Actions artifact ID and service digest.</li><li>Assembler has no checkout.</li></ul></article>
       </div>
@@ -557,7 +608,7 @@
     </section>
 
     <section id="assets">
-      <div class="section-kicker">08 | Closed Release payload</div>
+      <div class="section-kicker">09 | Closed Release payload</div>
       <h2>Fifteen build payloads plus one checksum file</h2>
       <p class="section-intro"><code>SHASUMS256.txt</code> is exactly 15 bytewise-sorted LF-terminated rows. Each row is lowercase 64-hex SHA-256, two ASCII spaces, and the exact basename. It has no self-entry, prefix, blank row, duplicate, extra, or missing record.</p>
       <div class="table-wrap">
@@ -592,14 +643,15 @@
 
       <div class="grid-2" style="margin-top:18px">
         <article class="card tone-blue"><h3>Before publication</h3><ul><li>Exact mutable draft, identity, zero-to-prefix-to-full inventory, positive sizes, uploaded states, and API digests.</li><li>Download all 16 by captured REST asset ID into an empty directory.</li><li>Accept direct 200 or one absolute credential-free HTTPS 302 only; never forward Authorization to redirect.</li><li>Reverify name, size, digest, SHASUMS, three alias equalities, and installer selections.</li><li>Retain a verified-draft Actions artifact with 16 files plus canonical identity and manifest records.</li></ul></article>
-        <article class="card tone-violet"><h3>After publication or in resume</h3><ul><li>Require exact published immutable identity and all 16 assets.</li><li>Assert GitHub CLI <code>2.86.0</code>, then run <code>gh release verify v0.30.1 --repo mblua/AgentsCommander --format json</code> and parse signed tag, commit, and asset subjects.</li><li>Run <code>gh release verify-asset v0.30.1 &lt;exact-local-path&gt; --repo mblua/AgentsCommander --format json</code> once for each of the 16 local files.</li><li>Compare all historical Release/asset snapshots byte-state-equivalently.</li><li>Emit a canonical record with mode, run/attempt/path/head, failed-run proof, tag/peel, Release identity/body hash, all asset records, checksum hash, attestations, history hash, and mutation invocation/outcome flags.</li><li>Upload <code>recover-v0.30.1-&lt;run_id&gt;-&lt;run_attempt&gt;-final-evidence</code> with overwrite false and report its artifact ID/service digest.</li><li>Read-only polling is bounded to 30 attempts at ten seconds; it never repeats a mutation.</li></ul></article>
+        <article class="card tone-violet"><h3>After publication or in resume</h3><ul><li>Require exact published immutable identity and all 16 assets.</li><li>Require PATH to resolve the canonical pinned <code>RUNNER_TEMP</code> binary and assert exact GitHub CLI <code>2.86.0</code>, then run <code>gh release verify v0.30.1 --repo mblua/AgentsCommander --format json</code> and parse signed tag, commit, and asset subjects.</li><li>Run <code>gh release verify-asset v0.30.1 &lt;exact-local-path&gt; --repo mblua/AgentsCommander --format json</code> once for each of the 16 local files.</li><li>Compare all historical Release/asset snapshots byte-state-equivalently.</li><li>Emit a canonical record with mode, run/attempt/path/head, failed-run proof, tag/peel, Release identity/body hash, all asset records, checksum hash, attestations, history hash, and mutation invocation/outcome flags.</li><li>Upload <code>recover-v0.30.1-&lt;run_id&gt;-&lt;run_attempt&gt;-final-evidence</code> with overwrite false and report its artifact ID/service digest.</li><li>Read-only polling is bounded to 30 attempts at ten seconds; it never repeats a mutation.</li></ul></article>
       </div>
     </section>
 
     <section id="failures">
-      <div class="section-kicker">09 | Failure and retry rules</div>
+      <div class="section-kicker">10 | Failure and retry rules</div>
       <h2>Uncertainty is state to inspect, never permission to retry</h2>
       <div class="failure-grid">
+        <article class="failure-card"><h3>CLI bootstrap or PATH proof fails</h3><p>Stop before the first job-local <code>gh</code> call. Prepare cannot classify or POST; assembly uploads zero assets; publication issues zero PATCH calls. Never fall back to the hosted CLI.</p></article>
         <article class="failure-card"><h3>Before POST, still exact 404</h3><p>No Release mutation exists. Review the cause and confirm no prior recovery crossed POST. A new main dispatch or later attempt may re-enter <code>fresh</code> only through the full classifier.</p></article>
         <article class="failure-card"><h3>Admin read or evidence differs</h3><p>Stop before the next mutation. Never fall back to the normal token, another credential, cached data, or an assumption.</p></article>
         <article class="failure-card"><h3>POST invoked, response uncertain</h3><p>Query once. Exact immutable success may enter read-only resume; every draft, partial, or ambiguous state blocks. Never issue a second POST.</p></article>
@@ -613,19 +665,20 @@
     </section>
 
     <section id="delivery">
-      <div class="section-kicker">10 | Implementation order</div>
-      <h2>Recovery and cleanup remain separate changes</h2>
+      <div class="section-kicker">11 | Implementation order</div>
+      <h2>Correction, dispatch, and cleanup remain separate gates</h2>
       <div class="phase-grid">
         <article class="phase">
           <span class="number">1</span>
-          <h3>One-file implementation</h3>
+          <h3>One-file correction</h3>
           <ol>
-            <li>Reconfirm base and fixed Git identities read-only.</li>
-            <li>Copy the frozen production workflow blob.</li>
-            <li>Apply only recovery substitutions from the Markdown.</li>
+            <li>Reconfirm base, landed recovery blob, and frozen normal workflow read-only.</li>
+            <li>Add the identical bootstrap in exactly the three <code>gh</code>-using jobs.</li>
+            <li>Make only strictly necessary same-file PATH/version assertion changes.</li>
+            <li>Preserve the state machine, exact create-step name, permissions, secrets, action pins, and mutation counts.</li>
             <li>Run static and temporary executable fixtures.</li>
-            <li>Commit exactly the new workflow and review the one-file diff.</li>
-            <li>Merge normally to main; record merge SHA and workflow SHA-256 externally.</li>
+            <li>Commit exactly the modified workflow and review its one-file diff.</li>
+            <li>Merge normally to main; record merge SHA and new workflow blob/SHA-256 externally.</li>
           </ol>
         </article>
         <article class="phase">
@@ -633,8 +686,9 @@
           <h3>Owner-controlled dispatch</h3>
           <ol>
             <li>Reconfirm secret validity without reading its value.</li>
-            <li>Reconfirm tag, Release 404, failed run, settings, blobs, history, npm absence.</li>
-            <li>Dispatch once from main with no inputs.</li>
+            <li>Reconfirm tag, Release 404, original failed run, run <code>32883517350</code> terminal/create-skipped proof, settings, corrected bytes, history, and npm absence.</li>
+            <li>Obtain a fresh explicit owner authorization for one new no-input dispatch. Prior authorization does not carry forward.</li>
+            <li>Dispatch once from reviewed main. Never rerun <code>32883517350</code>.</li>
             <li>Monitor to terminal state and query before any follow-up.</li>
             <li>Record actual mutating run/attempt and verifier run/attempt, Release and asset IDs, checksums, attestations, evidence artifact, and unchanged history.</li>
           </ol>
@@ -654,28 +708,33 @@
     </section>
 
     <section id="acceptance">
-      <div class="section-kicker">11 | Objective acceptance</div>
+      <div class="section-kicker">12 | Objective acceptance</div>
       <h2>Static proof, executable fixtures, live postconditions</h2>
       <div class="accept-grid">
-        <article class="accept"><h3>Static workflow proof</h3><ul class="checklist"><li>YAML parses; exactly four jobs and four matrix entries.</li><li>Only empty <code>workflow_dispatch</code>; top-level permissions empty; literal concurrency and no cancellation.</li><li>Only the seven full action pins; no tag/branch action reference.</li><li>Exactly five references to the named admin secret, each on one isolated settings GET.</li><li>Exactly one draft POST source, one serial upload source, and one <code>draft:false</code> PATCH source.</li><li>No clobber, Release/tag/settings delete or repair, tag mutation, npm publish, mutation retry wrapper, or user-controlled identity.</li><li>Exact release-commit checkouts, no persisted credentials, no assembler checkout, no builder Release credentials.</li><li>Static inspection proves one UTF-8 changelog read, the exact two heading regexes, one ECMAScript <code>.trim()</code>, one exclusive <code>wx</code> notes-file creation with exactly one appended LF, no separate CRLF/BOM handling, jq <code>--rawfile</code> from that notes file, and byte-for-byte comparison of every parsed Release body to the same file.</li><li>Run/attempt-qualified artifact names, overwrite false, downloads by ID.</li><li>Every shell/inline program passes syntax checks; fixed-tree version and Node checks pass.</li><li><code>git diff --check</code> passes and implementation diff is exactly one workflow path.</li></ul></article>
-        <article class="accept"><h3>Executable state fixtures</h3><ul class="checklist"><li>Exact absence selects <code>fresh</code>; exact immutable 16-asset state selects zero-mutation <code>resume</code>.</li><li>Every draft, partial, mutable, wrong, malformed, unauthorized, timeout, 5xx, or ambiguous state selects <code>conflict</code>.</li><li>Fresh mock observes one POST, 16 uploads, and one PATCH only.</li><li>Wrong tag/run/blob/ref/token/history fails before the next mutation.</li><li>Release-metadata fixtures cover the next-level-two-heading and EOF boundaries; reject missing or duplicate <code>0.30.1</code> headings and an empty trimmed body; prove heading exclusion, one ECMAScript <code>.trim()</code>, exactly one appended LF, and no separate CRLF or BOM normalization path.</li><li>Four transport archives reconstruct 15 safe payloads and reject traversal, links, devices, duplicates, modes, stale attempts, or wrong service digest.</li><li>SHASUMS is byte-deterministic and exact.</li><li>Bounded 200/302 download behavior is enforced.</li><li>Lost PATCH plus exact immutable readback never causes a second PATCH.</li><li>Fresh and resume produce byte-identical canonical manifests; resume can mutate only final Actions evidence.</li></ul></article>
-        <article class="accept"><h3>Live immutable result</h3><ul class="checklist"><li>Record every recovery run ID/attempt and distinguish the mutating run from the terminal verifier when different.</li><li>Tag object and peeled commit remain exact; no tag mutation command ran.</li><li>One exact Release has correct target, title/body bytes, public non-prerelease immutable state.</li><li>All 16 named assets are unique, uploaded, positive, and match local/API SHA-256.</li><li>SHASUMS covers exactly the other 15 assets; all three alias pairs are byte-identical.</li><li>Release attestation and all 16 asset attestations verify.</li><li>Final canonical manifest and Actions evidence ID/digest are retained.</li><li>v0.30.0 and all historical Release/asset records are unchanged.</li><li>npm 0.30.1 remains absent; no npm mutation occurred.</li><li>PAT and secret remain undisclosed and unchanged; implementation worktree is clean.</li></ul></article>
-        <article class="accept"><h3>Compatibility and structural gate</h3><ul class="checklist"><li>No application runtime, UI, CLI, PTY/ConPTY, IPC, config, persistence, Rust API, TypeScript type, package dependency, or consumer asset-name behavior changes.</li><li>Windows path guards normalize drive/case, stay within workspace, reject reparse/traversal, and do not introduce <code>cmd.exe /C</code> wrapping.</li><li>Final module arc enumeration is <code>0 added / 0 removed</code>; the one workflow YAML path is outside every application module root, no SCC can be created or grown, and no lower layer gains <code>AppHandle</code>, <code>tauri</code>, or UI transport.</li><li>The workgroup <code>rust-levelization-run</code> detector is unavailable, so certification uses the explicit per-arc manual fallback and does not claim remeasurement of pre-existing SCCs. Require the exact one-workflow diff and byte-identical arc record; if scope expands, stop and require unchanged <code>cyclicSccs</code>, identical SCC member sets, zero cross-boundary arcs, byte-identical arc record, and green layering guards.</li><li>Cleanup passes only when its diff deletes the one temporary workflow, no run is active, exact immutable evidence still verifies, history is unchanged, and the workflow is no longer dispatchable.</li></ul></article>
+        <article class="accept"><h3>Static workflow proof</h3><ul class="checklist"><li>YAML parses; exactly four jobs and four matrix entries; envelope and empty no-input dispatch remain unchanged.</li><li>Exactly three identically named/body CLI bootstraps follow Node setup in prepare, assembly, and publication before their first <code>gh</code>; none exists in the builder.</li><li>Every bootstrap contains the exact URL, size, digest, member, fixed paths, 20/180-second timeouts, no retry, one-HTTPS-redirect/no-downgrade policy, final status/size checks, checksum-before-extract order, regular non-symlink executable proof, PATH precedence, and exact version. Its extraction sequence is exactly <code>--gzip --extract --file</code>, fixed archive, <code>--directory</code>, fixed fresh root, <code>--no-wildcards --anchored --no-same-owner --same-permissions --keep-old-files --</code>, and the literal member; <code>--no-overwrite-dir</code> is forbidden and a selected-path collision remains a hard error.</li><li>No bootstrap token, secret, auth header, credential, cookie, package manager, third-party action, container, custom runner, or Actions artifact transport exists.</li><li>Only the seven existing action pins and five isolated admin-secret reads remain.</li><li>The exact create-step name and generic prior-run classifier are byte-identical; no run-specific <code>32883517350</code> constant exists.</li><li>Exactly one draft POST source, one serial upload source, and one <code>draft:false</code> PATCH source remain.</li><li>Existing changelog/body, artifact, classifier, verifier, syntax, version, and mutation-prohibition checks remain green.</li><li><code>.github/workflows/release.yml</code> remains byte-identical; <code>git diff --check</code> passes; implementation diff is exactly the recovery workflow; no helper/test file is committed.</li></ul></article>
+        <article class="accept"><h3>Executable state fixtures</h3><ul class="checklist"><li>On Ubuntu 22.04 with GNU tar exactly 1.34, one complete exact unmodified bootstrap scalar uses the real fixed official archive and production tools, proves the curl metadata, size, digest, member type/mode, compatible extraction vector, and canonical selected path, then executes the selected binary and proves its <code>gh version</code> output reports exact version <code>2.86.0</code> before the final <code>GITHUB_PATH</code> write.</li><li>With hosted <code>gh 2.97.0</code>, pinned <code>2.86.0</code> wins PATH and the mocked classifier reaches its first read.</li><li>Bad status, connection/total timeout, second redirect, HTTP downgrade, credential-bearing URL, wrong size, one-byte corruption, missing/renamed/duplicate/wrong member, traversal, symlink, a pre-existing selected-path collision, non-executable output, wrong canonical PATH, or binary reporting <code>2.97.0</code> produces zero subsequent <code>gh</code>/Release mutation calls.</li><li>Assembly installer failure proves zero uploads; publication installer failure proves zero PATCH calls.</li><li>Terminal prior run plus exact create step completed/skipped plus exact 404 may select <code>fresh</code>. Nonterminal, missing/duplicate prepare, missing/renamed create step, success/failure/cancelled/null conclusion, extra incomplete attempt, or ambiguous jobs reject <code>fresh</code>.</li><li>Exact absence selects <code>fresh</code>; exact immutable 16-asset state selects zero-Release-mutation <code>resume</code>; every partial, mutable, wrong, malformed, unauthorized, 5xx, timeout, or ambiguous Release state selects <code>conflict</code>.</li><li>Fresh mock still observes one POST, 16 uploads, and one PATCH only.</li><li>Existing metadata, transport, SHASUMS, asset-download, lost-PATCH, and fresh/resume canonical-manifest fixtures remain green.</li></ul></article>
+        <article class="accept"><h3>Live immutable result</h3><ul class="checklist"><li>Run <code>32883517350</code> remains terminal/create-skipped; record every later recovery run ID/attempt and distinguish the mutating run from the terminal verifier when different.</li><li>Each <code>gh</code>-using job records canonical resolution of the reviewed <code>RUNNER_TEMP</code> binary and exact version <code>2.86.0</code>; hosted CLI is unused.</li><li>Tag object and peeled commit remain exact; no tag mutation command ran.</li><li>One exact Release has correct target, title/body bytes, public non-prerelease immutable state.</li><li>All 16 named assets are unique, uploaded, positive, and match local/API SHA-256; SHASUMS and three alias equalities remain exact.</li><li>Release attestation and all 16 asset attestations verify; final canonical manifest and Actions evidence ID/digest are retained.</li><li>v0.30.0 and all historical Release/asset records are unchanged; npm 0.30.1 remains absent.</li><li>PAT and secret remain undisclosed and unchanged; implementation worktree is clean.</li></ul></article>
+        <article class="accept"><h3>Compatibility and structural gate</h3><ul class="checklist"><li>No application runtime, UI, CLI, PTY/ConPTY, IPC, config, persistence, Rust API, TypeScript type, package dependency, or consumer asset-name behavior changes.</li><li>Windows path guards normalize drive/case, stay within workspace, reject reparse/traversal, and do not introduce <code>cmd.exe /C</code> wrapping.</li><li>The fresh clean-tree certificate compares base <code>5e94bef8f92b5ec50dfbdafaaa95cd857155d149</code> with reviewed head <code>a8910732da43f715efafaabf7acbd5f71b5cc1fa</code>; both have exact <code>src-tauri</code> tree <code>2dbcd4115333dad5adaca30a4725385b7c442a95</code>.</li><li><code>cyclicSccs</code> remains <code>1 -&gt; 1</code>. The sole cyclic SCC has the identical 85-module member set in both graphs, canonical member-set SHA-256 <code>F11E08FD541290172E7058C7DAEA511B4B6DF48A41D4A6F9BB2D4927ECB1A86B</code>.</li><li>The measured arc delta is <code>0 added / 0 removed</code> with zero cross-boundary arcs. Base, head, and committed <code>src-tauri/module-arcs.txt</code> are byte-identical at 1,030 arcs and 81,643 LF bytes, SHA-256 <code>E9160F4E537CD19A400394F58339F373346997621B9DB25EAFC5A8EA36E182FA</code>, Git blob <code>10b04d9f4d14f3c128a97b5896e5e3aed568de63</code>.</li><li>All 42 arc-record self-tests and all 8 tests across <code>loops_layering</code>, <code>instance_gitignore_layering</code>, and <code>project_settings_layering</code> pass. No lower layer gains <code>AppHandle</code>, <code>tauri</code>, or another UI-transport dependency.</li><li>Detector limitations are unchanged base-to-head and cannot weaken this zero-module-delta certificate because the exact source tree and arc record are identical and three independent layering guards pass.</li><li>Implementation review must rerun the same clean-tree detector, SCC-member, arc-record, arc-delta, and structural-guard gate. Any module delta or changed application path is a scope breach and returns the work to Full planning. Cleanup remains a separate one-file deletion after exact immutable success and retained evidence.</li></ul></article>
       </div>
 
       <div class="card tone-amber" style="margin-top:18px">
         <h3>Explicit residual risks</h3>
         <ul>
-          <li>GitHub-hosted runners, GitHub REST, immutable enforcement, Release attestations, and the pinned action repositories remain external dependencies.</li>
+          <li>Official CLI asset and GitHub/release-assets network availability remain external. Outage, removal, status drift, or digest drift blocks safely.</li>
+          <li>The upstream v2.86.0 Release currently reports mutable, so the literal reviewed archive digest is essential. Replacement produces a checksum stop, not execution.</li>
+          <li>The hosted OS and its basic <code>curl</code>, <code>tar</code>, and SHA-256 tools remain external. Three independent 13.6 MB downloads add accepted latency and availability risk.</li>
+          <li>GitHub REST, immutable enforcement, Release attestations, and the pinned action repositories remain external dependencies.</li>
           <li>A failure after draft creation can leave a mutable draft that requires separate owner reconciliation; the workflow will not repair it.</li>
           <li>A failure after PATCH invocation can leave committed immutable state before final evidence is stored. Exact read-only resume recovers evidence, not rollback.</li>
           <li>The existing Windows SignPath placeholder remains accepted release policy and is neither fixed nor worsened here.</li>
+          <li>The admin token expires on <code>2026-09-01</code> and must be revalidated immediately before a later authorized dispatch.</li>
+          <li>The normal <code>.github/workflows/release.yml</code> retains a separate moving-runner CLI risk and must remain byte-identical in this correction.</li>
           <li>Main can advance between review and dispatch. Runtime binds the executing file to the dispatched default-branch SHA and the frozen release/changelog blobs; PR review and human dispatch ownership remain controls.</li>
         </ul>
       </div>
 
       <div class="draft-stop">
-        <strong>READY_FOR_IMPLEMENTATION.</strong> Step 5 developer enrichment is complete and its Release-body byte contract is synchronized here. The user-authorized independent shipper issued <code>FORMAL_STEP_6_PASS</code> at head <code>fbb3e4103eb08502b25f8469b9968c98a6587f36</code>, with no blocking release-risk defect and no required plan addition. Final architect consensus revalidated the frozen one-workflow surface, Markdown/HTML parity, and the dependency/layering gate: module arcs are 0 added / 0 removed, no SCC or cross-boundary-arc exposure exists, and no lower layer gains UI transport. No open decision, unresolved placeholder, competing alternative, or implementer choice remains. Step 7.5 must still freeze and verify the exact artifact bytes, obtain explicit human approval, and purge raw planning context. Until then, no implementation, merge, dispatch, publication, cleanup, or external mutation is authorized by this artifact.
+        <strong>READY_FOR_IMPLEMENTATION.</strong> Developer round-2 enrichment passed, formal Step 6 rereview passed, independent release/shipper validation passed, synchronized artifact review passed, and final architect consensus produced the fresh dependency-cycle and layering certificate. This is a technical plan consensus only. Step 7.5 human impact approval and workgroup purge remain mandatory blockers before implementation handoff. After a later reviewed implementation merge and fresh live preflight, a separate owner authorization is required for exactly one new no-input dispatch. Never rerun <code>32883517350</code>. No implementation, merge, dispatch, Release or npm mutation, tag or secret change, cleanup, deployment, or other external mutation is authorized by this plan certification.
       </div>
     </section>
   </main>

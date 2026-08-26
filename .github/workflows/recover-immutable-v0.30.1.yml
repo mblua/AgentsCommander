@@ -41,6 +41,131 @@ jobs:
           node-version: 22.23.2
           package-manager-cache: false
 
+      - name: Install exact GitHub CLI 2.86.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -n "${RUNNER_TEMP:-}" && "$RUNNER_TEMP" == /* ]]
+          [[ -n "${GITHUB_PATH:-}" && "$GITHUB_PATH" == /* ]]
+          [[ -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          runner_temp_canonical="$(realpath -- "$RUNNER_TEMP")"
+          [[ "$runner_temp_canonical" == /* ]]
+
+          install_root="$runner_temp_canonical/agentscommander-gh-2.86.0"
+          archive_path="$install_root/gh_2.86.0_linux_amd64.tar.gz"
+          curl_metadata_path="$install_root/curl-metadata.json"
+          archive_member="gh_2.86.0_linux_amd64/bin/gh"
+          binary_path="$install_root/gh_2.86.0_linux_amd64/bin/gh"
+          bin_directory="$install_root/gh_2.86.0_linux_amd64/bin"
+          [[ ! -e "$install_root" && ! -L "$install_root" ]]
+          mkdir -m 0700 -- "$install_root"
+          [[ -d "$install_root" && ! -L "$install_root" ]]
+          [[ "$(stat -c '%a' -- "$install_root")" == "700" ]]
+          install_root_canonical="$(realpath -- "$install_root")"
+          [[ "$install_root_canonical" == "$runner_temp_canonical/agentscommander-gh-2.86.0" ]]
+
+          curl --disable \
+            --location \
+            --max-redirs 1 \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --disallow-username-in-url \
+            --connect-timeout 20 \
+            --max-time 180 \
+            --max-filesize 13627589 \
+            --fail \
+            --silent \
+            --show-error \
+            --output "$archive_path" \
+            --write-out '%{json}' \
+            'https://github.com/cli/cli/releases/download/v2.86.0/gh_2.86.0_linux_amd64.tar.gz' \
+            > "$curl_metadata_path"
+
+          [[ -f "$curl_metadata_path" && ! -L "$curl_metadata_path" ]]
+          curl_metadata_size="$(stat -c '%s' -- "$curl_metadata_path")"
+          [[ "$curl_metadata_size" =~ ^[1-9][0-9]*$ ]]
+          (( curl_metadata_size <= 8192 ))
+          CURL_METADATA_PATH="$curl_metadata_path" node <<'NODE'
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync(process.env.CURL_METADATA_PATH, 'utf8'));
+          if (
+            !metadata
+            || typeof metadata !== 'object'
+            || Array.isArray(metadata)
+            || !Number.isInteger(metadata.http_code)
+            || metadata.http_code !== 200
+            || !Number.isInteger(metadata.num_redirects)
+            || ![0, 1].includes(metadata.num_redirects)
+            || !Number.isInteger(metadata.size_download)
+            || metadata.size_download !== 13627589
+            || typeof metadata.url_effective !== 'string'
+          ) {
+            throw new Error('GitHub CLI download metadata is not exact');
+          }
+          const effectiveUrl = new URL(metadata.url_effective);
+          if (
+            effectiveUrl.protocol !== 'https:'
+            || effectiveUrl.username !== ''
+            || effectiveUrl.password !== ''
+          ) {
+            throw new Error('GitHub CLI effective URL is not credential-free HTTPS');
+          }
+          NODE
+          [[ -f "$archive_path" && ! -L "$archive_path" ]]
+          [[ "$(stat -c '%s' -- "$archive_path")" == "13627589" ]]
+          [[ "$(sha256sum -- "$archive_path" | awk '{print $1}')" == "f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7" ]]
+
+          archive_listing="$(
+            tar \
+              --gzip \
+              --list \
+              --verbose \
+              --file "$archive_path" \
+              --no-wildcards \
+              --anchored \
+              -- \
+              "$archive_member"
+          )"
+          mapfile -t archive_entries <<< "$archive_listing"
+          [[ "${#archive_entries[@]}" -eq 1 ]]
+          read -r entry_mode entry_owner entry_size entry_date entry_time entry_name entry_extra \
+            <<< "${archive_entries[0]}"
+          [[ "$entry_mode" == "-rwxr-xr-x" ]]
+          [[ "$entry_name" == "$archive_member" ]]
+          [[ -z "${entry_extra:-}" ]]
+
+          tar \
+            --gzip \
+            --extract \
+            --file "$archive_path" \
+            --directory "$install_root" \
+            --no-wildcards \
+            --anchored \
+            --no-same-owner \
+            --same-permissions \
+            --keep-old-files \
+            -- \
+            "$archive_member"
+
+          [[ -f "$binary_path" ]]
+          [[ ! -L "$binary_path" ]]
+          [[ -x "$binary_path" ]]
+          [[ "$(stat -c '%a' -- "$binary_path")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$binary_path")" == "1" ]]
+          binary_canonical="$(realpath -- "$binary_path")"
+          [[ "$binary_canonical" == "$binary_path" ]]
+          [[ "$binary_canonical" == "$install_root_canonical/"* ]]
+
+          PATH="$bin_directory:$PATH"
+          export PATH
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$binary_canonical" ]]
+          [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
+
+          printf '%s\n' "$bin_directory" >> "$GITHUB_PATH"
+
       - name: Read the immutable setting for initial authority
         shell: bash
         env:
@@ -147,6 +272,15 @@ jobs:
           jq -e '((.inputs // {}) | type == "object" and length == 0)' "$GITHUB_EVENT_PATH" > /dev/null
           [[ "$(node --version)" == "v22.23.2" ]]
           [[ "$(npm --version)" == "10.9.8" ]]
+          expected_gh="${RUNNER_TEMP}/agentscommander-gh-2.86.0/gh_2.86.0_linux_amd64/bin/gh"
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ -f "$expected_gh" ]]
+          [[ ! -L "$expected_gh" ]]
+          [[ -x "$expected_gh" ]]
+          [[ "$(stat -c '%a' -- "$expected_gh")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$expected_gh")" == "1" ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$(realpath -- "$expected_gh")" ]]
           [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
           [[ -z "$(git status --porcelain=v1)" ]]
           [[ "$(git rev-parse HEAD)" == "$release_sha" ]]
@@ -2479,12 +2613,147 @@ jobs:
           node-version: 22.23.2
           package-manager-cache: false
 
+      - name: Install exact GitHub CLI 2.86.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -n "${RUNNER_TEMP:-}" && "$RUNNER_TEMP" == /* ]]
+          [[ -n "${GITHUB_PATH:-}" && "$GITHUB_PATH" == /* ]]
+          [[ -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          runner_temp_canonical="$(realpath -- "$RUNNER_TEMP")"
+          [[ "$runner_temp_canonical" == /* ]]
+
+          install_root="$runner_temp_canonical/agentscommander-gh-2.86.0"
+          archive_path="$install_root/gh_2.86.0_linux_amd64.tar.gz"
+          curl_metadata_path="$install_root/curl-metadata.json"
+          archive_member="gh_2.86.0_linux_amd64/bin/gh"
+          binary_path="$install_root/gh_2.86.0_linux_amd64/bin/gh"
+          bin_directory="$install_root/gh_2.86.0_linux_amd64/bin"
+          [[ ! -e "$install_root" && ! -L "$install_root" ]]
+          mkdir -m 0700 -- "$install_root"
+          [[ -d "$install_root" && ! -L "$install_root" ]]
+          [[ "$(stat -c '%a' -- "$install_root")" == "700" ]]
+          install_root_canonical="$(realpath -- "$install_root")"
+          [[ "$install_root_canonical" == "$runner_temp_canonical/agentscommander-gh-2.86.0" ]]
+
+          curl --disable \
+            --location \
+            --max-redirs 1 \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --disallow-username-in-url \
+            --connect-timeout 20 \
+            --max-time 180 \
+            --max-filesize 13627589 \
+            --fail \
+            --silent \
+            --show-error \
+            --output "$archive_path" \
+            --write-out '%{json}' \
+            'https://github.com/cli/cli/releases/download/v2.86.0/gh_2.86.0_linux_amd64.tar.gz' \
+            > "$curl_metadata_path"
+
+          [[ -f "$curl_metadata_path" && ! -L "$curl_metadata_path" ]]
+          curl_metadata_size="$(stat -c '%s' -- "$curl_metadata_path")"
+          [[ "$curl_metadata_size" =~ ^[1-9][0-9]*$ ]]
+          (( curl_metadata_size <= 8192 ))
+          CURL_METADATA_PATH="$curl_metadata_path" node <<'NODE'
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync(process.env.CURL_METADATA_PATH, 'utf8'));
+          if (
+            !metadata
+            || typeof metadata !== 'object'
+            || Array.isArray(metadata)
+            || !Number.isInteger(metadata.http_code)
+            || metadata.http_code !== 200
+            || !Number.isInteger(metadata.num_redirects)
+            || ![0, 1].includes(metadata.num_redirects)
+            || !Number.isInteger(metadata.size_download)
+            || metadata.size_download !== 13627589
+            || typeof metadata.url_effective !== 'string'
+          ) {
+            throw new Error('GitHub CLI download metadata is not exact');
+          }
+          const effectiveUrl = new URL(metadata.url_effective);
+          if (
+            effectiveUrl.protocol !== 'https:'
+            || effectiveUrl.username !== ''
+            || effectiveUrl.password !== ''
+          ) {
+            throw new Error('GitHub CLI effective URL is not credential-free HTTPS');
+          }
+          NODE
+          [[ -f "$archive_path" && ! -L "$archive_path" ]]
+          [[ "$(stat -c '%s' -- "$archive_path")" == "13627589" ]]
+          [[ "$(sha256sum -- "$archive_path" | awk '{print $1}')" == "f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7" ]]
+
+          archive_listing="$(
+            tar \
+              --gzip \
+              --list \
+              --verbose \
+              --file "$archive_path" \
+              --no-wildcards \
+              --anchored \
+              -- \
+              "$archive_member"
+          )"
+          mapfile -t archive_entries <<< "$archive_listing"
+          [[ "${#archive_entries[@]}" -eq 1 ]]
+          read -r entry_mode entry_owner entry_size entry_date entry_time entry_name entry_extra \
+            <<< "${archive_entries[0]}"
+          [[ "$entry_mode" == "-rwxr-xr-x" ]]
+          [[ "$entry_name" == "$archive_member" ]]
+          [[ -z "${entry_extra:-}" ]]
+
+          tar \
+            --gzip \
+            --extract \
+            --file "$archive_path" \
+            --directory "$install_root" \
+            --no-wildcards \
+            --anchored \
+            --no-same-owner \
+            --same-permissions \
+            --keep-old-files \
+            -- \
+            "$archive_member"
+
+          [[ -f "$binary_path" ]]
+          [[ ! -L "$binary_path" ]]
+          [[ -x "$binary_path" ]]
+          [[ "$(stat -c '%a' -- "$binary_path")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$binary_path")" == "1" ]]
+          binary_canonical="$(realpath -- "$binary_path")"
+          [[ "$binary_canonical" == "$binary_path" ]]
+          [[ "$binary_canonical" == "$install_root_canonical/"* ]]
+
+          PATH="$bin_directory:$PATH"
+          export PATH
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$binary_canonical" ]]
+          [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
+
+          printf '%s\n' "$bin_directory" >> "$GITHUB_PATH"
+
       - name: Assert Node.js and npm
         shell: bash
         run: |
           set -euo pipefail
           [[ "$(node --version)" == "v22.23.2" ]]
           [[ "$(npm --version)" == "10.9.8" ]]
+          expected_gh="${RUNNER_TEMP}/agentscommander-gh-2.86.0/gh_2.86.0_linux_amd64/bin/gh"
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ -f "$expected_gh" ]]
+          [[ ! -L "$expected_gh" ]]
+          [[ -x "$expected_gh" ]]
+          [[ "$(stat -c '%a' -- "$expected_gh")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$expected_gh")" == "1" ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$(realpath -- "$expected_gh")" ]]
+          [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
 
       - name: Reconstruct the fixed release notes
         shell: bash
@@ -4286,12 +4555,146 @@ jobs:
           node-version: 22.23.2
           package-manager-cache: false
 
+      - name: Install exact GitHub CLI 2.86.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -n "${RUNNER_TEMP:-}" && "$RUNNER_TEMP" == /* ]]
+          [[ -n "${GITHUB_PATH:-}" && "$GITHUB_PATH" == /* ]]
+          [[ -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          runner_temp_canonical="$(realpath -- "$RUNNER_TEMP")"
+          [[ "$runner_temp_canonical" == /* ]]
+
+          install_root="$runner_temp_canonical/agentscommander-gh-2.86.0"
+          archive_path="$install_root/gh_2.86.0_linux_amd64.tar.gz"
+          curl_metadata_path="$install_root/curl-metadata.json"
+          archive_member="gh_2.86.0_linux_amd64/bin/gh"
+          binary_path="$install_root/gh_2.86.0_linux_amd64/bin/gh"
+          bin_directory="$install_root/gh_2.86.0_linux_amd64/bin"
+          [[ ! -e "$install_root" && ! -L "$install_root" ]]
+          mkdir -m 0700 -- "$install_root"
+          [[ -d "$install_root" && ! -L "$install_root" ]]
+          [[ "$(stat -c '%a' -- "$install_root")" == "700" ]]
+          install_root_canonical="$(realpath -- "$install_root")"
+          [[ "$install_root_canonical" == "$runner_temp_canonical/agentscommander-gh-2.86.0" ]]
+
+          curl --disable \
+            --location \
+            --max-redirs 1 \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --disallow-username-in-url \
+            --connect-timeout 20 \
+            --max-time 180 \
+            --max-filesize 13627589 \
+            --fail \
+            --silent \
+            --show-error \
+            --output "$archive_path" \
+            --write-out '%{json}' \
+            'https://github.com/cli/cli/releases/download/v2.86.0/gh_2.86.0_linux_amd64.tar.gz' \
+            > "$curl_metadata_path"
+
+          [[ -f "$curl_metadata_path" && ! -L "$curl_metadata_path" ]]
+          curl_metadata_size="$(stat -c '%s' -- "$curl_metadata_path")"
+          [[ "$curl_metadata_size" =~ ^[1-9][0-9]*$ ]]
+          (( curl_metadata_size <= 8192 ))
+          CURL_METADATA_PATH="$curl_metadata_path" node <<'NODE'
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync(process.env.CURL_METADATA_PATH, 'utf8'));
+          if (
+            !metadata
+            || typeof metadata !== 'object'
+            || Array.isArray(metadata)
+            || !Number.isInteger(metadata.http_code)
+            || metadata.http_code !== 200
+            || !Number.isInteger(metadata.num_redirects)
+            || ![0, 1].includes(metadata.num_redirects)
+            || !Number.isInteger(metadata.size_download)
+            || metadata.size_download !== 13627589
+            || typeof metadata.url_effective !== 'string'
+          ) {
+            throw new Error('GitHub CLI download metadata is not exact');
+          }
+          const effectiveUrl = new URL(metadata.url_effective);
+          if (
+            effectiveUrl.protocol !== 'https:'
+            || effectiveUrl.username !== ''
+            || effectiveUrl.password !== ''
+          ) {
+            throw new Error('GitHub CLI effective URL is not credential-free HTTPS');
+          }
+          NODE
+          [[ -f "$archive_path" && ! -L "$archive_path" ]]
+          [[ "$(stat -c '%s' -- "$archive_path")" == "13627589" ]]
+          [[ "$(sha256sum -- "$archive_path" | awk '{print $1}')" == "f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7" ]]
+
+          archive_listing="$(
+            tar \
+              --gzip \
+              --list \
+              --verbose \
+              --file "$archive_path" \
+              --no-wildcards \
+              --anchored \
+              -- \
+              "$archive_member"
+          )"
+          mapfile -t archive_entries <<< "$archive_listing"
+          [[ "${#archive_entries[@]}" -eq 1 ]]
+          read -r entry_mode entry_owner entry_size entry_date entry_time entry_name entry_extra \
+            <<< "${archive_entries[0]}"
+          [[ "$entry_mode" == "-rwxr-xr-x" ]]
+          [[ "$entry_name" == "$archive_member" ]]
+          [[ -z "${entry_extra:-}" ]]
+
+          tar \
+            --gzip \
+            --extract \
+            --file "$archive_path" \
+            --directory "$install_root" \
+            --no-wildcards \
+            --anchored \
+            --no-same-owner \
+            --same-permissions \
+            --keep-old-files \
+            -- \
+            "$archive_member"
+
+          [[ -f "$binary_path" ]]
+          [[ ! -L "$binary_path" ]]
+          [[ -x "$binary_path" ]]
+          [[ "$(stat -c '%a' -- "$binary_path")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$binary_path")" == "1" ]]
+          binary_canonical="$(realpath -- "$binary_path")"
+          [[ "$binary_canonical" == "$binary_path" ]]
+          [[ "$binary_canonical" == "$install_root_canonical/"* ]]
+
+          PATH="$bin_directory:$PATH"
+          export PATH
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$binary_canonical" ]]
+          [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
+
+          printf '%s\n' "$bin_directory" >> "$GITHUB_PATH"
+
       - name: Assert reviewed publication tools
         shell: bash
         run: |
           set -euo pipefail
           [[ "$(node --version)" == "v22.23.2" ]]
           [[ "$(npm --version)" == "10.9.8" ]]
+          expected_gh="${RUNNER_TEMP}/agentscommander-gh-2.86.0/gh_2.86.0_linux_amd64/bin/gh"
+          resolved_gh="$(command -v gh)"
+          [[ "$resolved_gh" == /* ]]
+          [[ -f "$expected_gh" ]]
+          [[ ! -L "$expected_gh" ]]
+          [[ -x "$expected_gh" ]]
+          [[ "$(stat -c '%a' -- "$expected_gh")" == "755" ]]
+          [[ "$(stat -c '%h' -- "$expected_gh")" == "1" ]]
+          [[ "$(realpath -- "$resolved_gh")" == "$(realpath -- "$expected_gh")" ]]
           [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
 
           gh release verify --repo mblua/AgentsCommander --help \
