@@ -19,6 +19,7 @@ import {
   resetAgentUpdateForTests,
   wireAgentUpdateListeners,
 } from "./agent-update";
+import { deriveTimelineNodes } from "./agent-update-status";
 
 const [store, setAgentUpdateStore] = agentUpdateStore;
 
@@ -427,8 +428,16 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
     fake.emitFromBackend("agent_update_command_started", node("codex"));
     fake.emitFromBackend("agent_install_state_changed", { command: "codex", install: installed("2.1", 1) });
     expect(store.installAfter.codex).toEqual(installed("2.1", 1));
+    const codexView = () =>
+      deriveTimelineNodes(store.nodes, store.running, store.results, store.installAfter).find(
+        (view) => view.command === "codex"
+      );
+    // ...the running node shows no transition yet...
+    expect(codexView()).toMatchObject({ state: "updating", detail: null });
     fake.emitFromBackend("agent_update_command_finished", ok("codex"));
     expect(store.installAfter.codex).toEqual(installed("2.1", 1));
+    // ...and deriveTimelineNodes shows it once the result arrives
+    expect(codexView()).toMatchObject({ state: "ok", detail: "2.0 → 2.1" });
 
     // after the result: seq 3 is kept, a later seq 2 is ignored
     fake.emitFromBackend("agent_update_command_finished", ok("claude"));
