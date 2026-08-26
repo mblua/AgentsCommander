@@ -339,7 +339,9 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
-      # OIDC Trusted Publishing needs npm >= 11.5.1; node 22 ships 10.9.8.
+      # OIDC Trusted Publishing needs npm >= 11.5.1, and node 22 ships 10.9.8.
+      # This pin is what makes OIDC engage at all: without it npm silently
+      # falls back to token auth and nothing looks wrong.
       # Same pin as version-sync-check.yml.
       - name: Pin npm version
         run: npm install -g npm@11.6.2
@@ -351,23 +353,20 @@ jobs:
           echo "npm  $(npm --version)   (OIDC trusted publishing needs >= 11.5.1)"
           echo "node $(node --version)  (OIDC trusted publishing needs >= 22.14.0)"
 
-      # Auth is mid-migration to OIDC Trusted Publishing (issue #1563), and both
-      # credentials are deliberately present at once. npm detects the OIDC
-      # environment and uses it "before falling back to traditional tokens", so
-      # this publishes via OIDC when the trusted publisher matches and via
-      # NODE_AUTH_TOKEN when it does not. Either way the release ships.
+      # Authenticates via OIDC Trusted Publishing. There is no npm token: the
+      # trusted publisher on npmjs.com is pinned to owner mblua, repo
+      # AgentsCommander, workflow release.yml, no environment, npm publish only.
       #
-      # --provenance is redundant under OIDC (trusted publishing generates
-      # attestations on its own) but required on the token path, and it is not
-      # an error to pass it, so it stays until the token is gone.
+      # No --provenance flag: trusted publishing generates the attestation on
+      # its own. The flag is only needed on the token path.
       #
-      # Once a release has demonstrably published via OIDC, drop the env block
-      # and the flag, then delete the NPM_AGENTSCOMMANDER secret.
+      # To confirm a release really used OIDC, check the registry metadata
+      # rather than the publish log, which does not say. `_npmUser` carries a
+      # `trustedPublisher` object on the OIDC path and is a plain account on the
+      # token path. See docs/npm-authentication.md in the release skill.
       - name: Publish @mblua/agentscommander
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_AGENTSCOMMANDER }}
-        run: npm publish --provenance --access public
+        run: npm publish --access public
 
       - name: Wait for the registry to serve the new version
         shell: bash
