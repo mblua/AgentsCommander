@@ -6,6 +6,14 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.30.3
+
+### Changed
+
+- **Releases now publish to npm via OIDC Trusted Publishing.** `publish-npm` pins npm to 11.6.2, because OIDC trusted publishing requires npm >= 11.5.1 and the Node 22 runner ships 10.9.8. The `NPM_AGENTSCOMMANDER` token is retained as a fallback for this release only; npm prefers OIDC and falls back to a token, so the migration carries no risk to the release itself. No application change: this version is functionally identical to 0.30.2. ([#1563](https://github.com/mblua/AgentsCommander/issues/1563))
+
+## 0.30.2
+
 ### Added
 
 - **Web server: the bind address is now editable from the titlebar popover.** The PORT row grew into a BIND section (ADDR + PORT). The address chooser offers `Localhost only (127.0.0.1)`, `All interfaces (0.0.0.0)` (which discloses that any device on your network can reach the server), every detected IPv4 with its adapter name (virtual and tunnel adapters grouped and collapsed), and a validated manual entry. A stored address that is no longer on the machine stays visible as a disabled `Unavailable` row. Applying an address restarts a running server, starts a stopped-but-enabled one, and only saves otherwise. ([#1453](https://github.com/mblua/AgentsCommander/issues/1453))

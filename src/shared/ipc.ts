@@ -1,7 +1,10 @@
 import { isBrowser, isTauri } from "./platform";
 import {
+  executeUiTerminalController,
   measurePtyViewport,
   rememberSpawnViewport,
+  resetUiTerminalControllerForTests,
+  type UiTerminalOperation,
 } from "./terminal-viewport";
 import type {
   ListenOptions,
@@ -68,6 +71,7 @@ import type {
   SpecBoardDocument,
   SpecBoardSnapshot,
   SpecBoardChangedEvent,
+  UiAutomationAction,
   UiAutomationRequest,
   UiAutomationResponse,
   ResourceKillRequest,
@@ -94,6 +98,8 @@ import type {
   WatcherReachRow,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
+
+export type { UiTerminalOperation };
 
 export interface SessionRepoInput {
   label: string;
@@ -573,14 +579,19 @@ export const AutomationAPI = {
   enabled: () => transport.invoke<boolean>("ui_automation_enabled"),
   frontendReady: (window: string) =>
     transport.invoke<void>("ui_automation_frontend_ready", { window }),
-  complete: (result: UiAutomationResponse) =>
+  complete: (result: UiAutomationResponse<UiAutomationAction>) =>
     transport.invoke<void>("ui_automation_complete", { result }),
+  executeTerminalController: executeUiTerminalController,
+  resetTerminalControllerForTests: resetUiTerminalControllerForTests,
 };
 
 export function onUiAutomationRequest(
-  callback: (request: UiAutomationRequest) => void
+  callback: (request: UiAutomationRequest<UiAutomationAction>) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<UiAutomationRequest>("ui_automation_request", callback);
+  return transport.listen<UiAutomationRequest<UiAutomationAction>>(
+    "ui_automation_request",
+    callback,
+  );
 }
 
 export function onErrorLogEvent(
