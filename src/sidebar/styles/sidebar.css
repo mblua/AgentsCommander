@@ -2619,6 +2619,15 @@ html.light-theme .settings-api-client-warning {
   gap: var(--spacing-xs);
 }
 
+/* #1551 Settings > Coding Agents read-only Auto-update table (plan 5.14). */
+.settings-auto-update-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
+.settings-auto-update-table th, .settings-auto-update-table td { text-align: left; vertical-align: top; padding: 2px var(--spacing-xs); border-bottom: 1px solid var(--sidebar-border); }
+.settings-auto-update-table th { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sidebar-fg-dim); }
+.settings-auto-update-note { margin-left: var(--spacing-xs); font-size: 10px; color: var(--sidebar-fg-dim); }
+.settings-auto-update-table td[data-ac-state="ask"], .settings-auto-update-table td[data-ac-state="checking"], .settings-auto-update-table td[data-ac-state="updating"] { color: var(--status-pending); }
+.settings-auto-update-table td[data-ac-state="installed"], .settings-auto-update-table td[data-ac-state="ok"] { color: var(--status-waiting); }
+.settings-auto-update-table td[data-ac-state="missing"], .settings-auto-update-table td[data-ac-state="probe-failed"], .settings-auto-update-table td[data-ac-state="failed"] { color: var(--status-exited); }
+
 /* compare zone: two rails side by side */
 .settings-compare-zone {
   min-width: 0;
