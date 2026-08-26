@@ -1,2788 +1,390 @@
-name: Release v0.30.1
+name: Release
+
+# One paved path from a tag to production:
+#
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# ...produces a published GitHub Release with every platform asset and a
+# matching @mblua/agentscommander@X.Y.Z on the public npm registry.
+#
+# Job order is load-bearing. npm/install.js resolves its binaries from
+#   https://github.com/<repo>/releases/download/vX.Y.Z/<asset>
+# and that URL 404s while the release is still a draft, so npm must not be
+# published until publish-github has flipped the release out of draft.
+#
+# This workflow is deliberately version-agnostic. Never pin it to a single
+# tag; a release pipeline that only knows how to ship one version is not a
+# release pipeline.
 
 on:
   push:
     tags:
-      - 'v0.30.1'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: release-v0.30.1
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  prepare-release:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+  # ---------------------------------------------------------------------
+  # Fail before spending 40 minutes of matrix build time on a bad tag.
+  # ---------------------------------------------------------------------
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.prepare.outputs.release_id }}
-      release_mode: ${{ steps.prepare.outputs.release_mode }}
-      repository_id: ${{ steps.prepare.outputs.repository_id }}
-      tag_object_sha: ${{ steps.prepare.outputs.tag_object_sha }}
-      release_sha: ${{ steps.prepare.outputs.release_sha }}
+      version: ${{ steps.check.outputs.version }}
     steps:
-      - name: Check out the release commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - uses: actions/checkout@v5
 
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
-          node-version: 22.23.2
-          package-manager-cache: false
+          node-version: 22
 
-      - name: Validate authority and classify the release
-        id: prepare
+      - name: Tag must match every version location in the tree
+        id: check
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_EVENT: ${{ github.event_name }}
-          EXPECTED_REF: ${{ github.ref }}
-          EXPECTED_REPOSITORY: ${{ github.repository }}
-          EXPECTED_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          [[ "$EXPECTED_REPOSITORY" == "mblua/AgentsCommander" ]]
-          [[ "$EXPECTED_EVENT" == "push" ]]
-          [[ "$EXPECTED_REF" == "refs/tags/v0.30.1" ]]
-          [[ "$(node --version)" == "v22.23.2" ]]
-          [[ "$(npm --version)" == "10.9.8" ]]
-          [[ -z "$(git status --porcelain=v1)" ]]
+          version="${TAG#v}"
 
-          tag_ref="refs/tags/v0.30.1"
-          [[ "$(git cat-file -t "$tag_ref")" == "tag" ]]
-          tag_object_sha="$(git rev-parse "$tag_ref")"
-          release_sha="$(git rev-parse "$tag_ref^{commit}")"
-          head_sha="$(git rev-parse HEAD)"
-          [[ "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$(git cat-file -t "$release_sha")" == "commit" ]]
-          [[ "$release_sha" == "$head_sha" ]]
-          [[ "$release_sha" == "$EXPECTED_SHA" ]]
-
-          git show "$release_sha:.github/workflows/release.yml" > "$RUNNER_TEMP/release-at-tag.yml"
-          cmp --silent .github/workflows/release.yml "$RUNNER_TEMP/release-at-tag.yml"
+          # Every version location (package.json, package-lock.json, Cargo.toml,
+          # Cargo.lock, tauri.conf.json, npm/package.json, npm/install.js) must
+          # already agree with each other.
           npm run version:check
 
-          NOTES_PATH="$RUNNER_TEMP/release-notes.md" node <<'NODE'
-          const fs = require('node:fs');
-          const text = fs.readFileSync('CHANGELOG.md', 'utf8');
-          const heading = /^## 0\.30\.1[ \t]*$/gm;
-          const matches = [...text.matchAll(heading)];
-          if (matches.length !== 1) {
-            throw new Error(`expected one 0.30.1 changelog heading, found ${matches.length}`);
-          }
-          const start = matches[0].index + matches[0][0].length;
-          const rest = text.slice(start);
-          const next = rest.search(/^## [^\r\n]+$/m);
-          const body = (next === -1 ? rest : rest.slice(0, next)).trim();
-          if (!body) {
-            throw new Error('0.30.1 changelog body is empty');
-          }
-          fs.writeFileSync(process.env.NOTES_PATH, `${body}\n`, { flag: 'wx' });
-          NODE
+          manifest="$(node -p "require('./package.json').version")"
+          npm_manifest="$(node -p "require('./npm/package.json').version")"
 
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/immutable-releases \
-            > "$RUNNER_TEMP/immutable-setting-prepare.json"
-          jq -e '.enabled == true' "$RUNNER_TEMP/immutable-setting-prepare.json" > /dev/null
-
-          set +e
-          gh api \
-            --include \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/releases/tags/v0.30.1 \
-            > "$RUNNER_TEMP/release-query.txt" 2> "$RUNNER_TEMP/release-query.err"
-          query_rc=$?
-          set -e
-          query_status="$(
-            awk '/^HTTP\// { gsub("\r", "", $2); status=$2 } END { print status }' \
-              "$RUNNER_TEMP/release-query.txt"
-          )"
-
-          if [[ "$query_status" == "404" ]]; then
-            [[ "$query_rc" -ne 0 ]]
-            release_mode="fresh"
-          elif [[ "$query_status" == "200" ]]; then
-            [[ "$query_rc" -eq 0 ]]
-            gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              /repos/mblua/AgentsCommander/releases/tags/v0.30.1 \
-              > "$RUNNER_TEMP/release-query.json"
-
-            classification="$(
-              NOTES_PATH="$RUNNER_TEMP/release-notes.md" \
-              RELEASE_SHA="$release_sha" \
-              SNAPSHOT="$RUNNER_TEMP/release-query.json" \
-              node <<'NODE'
-          const fs = require('node:fs');
-          const expectedNames = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'SHASUMS256.txt',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-          ];
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          const expectedBody = fs.readFileSync(process.env.NOTES_PATH, 'utf8');
-          if (
-            !Number.isInteger(release.id)
-            || release.id <= 0
-            || release.tag_name !== 'v0.30.1'
-            || release.target_commitish !== process.env.RELEASE_SHA
-            || release.name !== 'Agents Commander v0.30.1'
-            || release.body !== expectedBody
-            || release.prerelease !== false
-            || !Array.isArray(release.assets)
-          ) {
-            throw new Error('existing Release identity is conflicting or ambiguous');
-          }
-          if (release.draft === true && release.immutable === false) {
-            process.stdout.write('compatible-draft');
-          } else if (release.draft === false && release.immutable === true) {
-            const byName = new Map();
-            const ids = new Set();
-            for (const asset of release.assets) {
-              if (
-                !expectedNames.includes(asset.name)
-                || byName.has(asset.name)
-                || !Number.isInteger(asset.id)
-                || asset.id <= 0
-                || ids.has(asset.id)
-                || !Number.isInteger(asset.size)
-                || asset.size <= 0
-                || asset.state !== 'uploaded'
-                || !/^sha256:[0-9a-f]{64}$/.test(asset.digest)
-                || asset.url
-                  !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
-              ) {
-                throw new Error(`immutable Release asset is invalid: ${asset.name}`);
-              }
-              byName.set(asset.name, asset);
-              ids.add(asset.id);
-            }
-            if (
-              byName.size !== expectedNames.length
-              || expectedNames.some((name) => !byName.has(name))
-            ) {
-              throw new Error('immutable Release asset inventory is not exact');
-            }
-            process.stdout.write('resume');
-          } else {
-            throw new Error('existing Release state is conflicting or ambiguous');
-          }
-          NODE
-            )"
-
-            if [[ "$classification" == "compatible-draft" ]]; then
-              echo "A compatible draft already exists. Follow the approved owner recovery rule before a full rerun." >&2
-              exit 1
-            fi
-            [[ "$classification" == "resume" ]]
-            release_mode="resume"
-            release_id="$(jq -r '.id' "$RUNNER_TEMP/release-query.json")"
-          else
-            echo "Release query returned an ambiguous status: rc=$query_rc status=$query_status" >&2
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::tag $TAG does not match package.json version $manifest."
+            echo "::error::Run 'npm run version:bump -- $version', merge, then retag."
+            exit 1
+          fi
+          if [ "$npm_manifest" != "$version" ]; then
+            echo "::error::npm/package.json is at $npm_manifest but the tag is $TAG."
             exit 1
           fi
 
-          repository_id="$(
-            gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              /repos/mblua/AgentsCommander \
-              --jq '.id'
-          )"
-          [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version from $TAG"
 
-          if [[ "$release_mode" == "fresh" ]]; then
-            jq -n \
-              --arg tag_name "v0.30.1" \
-              --arg target_commitish "$release_sha" \
-              --arg name "Agents Commander v0.30.1" \
-              --rawfile body "$RUNNER_TEMP/release-notes.md" \
-              '{
-                tag_name: $tag_name,
-                target_commitish: $target_commitish,
-                name: $name,
-                body: $body,
-                draft: true,
-                prerelease: false
-              }' > "$RUNNER_TEMP/create-release.json"
-
-            gh api \
-              --method POST \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              /repos/mblua/AgentsCommander/releases \
-              --input "$RUNNER_TEMP/create-release.json" \
-              > "$RUNNER_TEMP/draft-release-created.json"
-
-            jq -e \
-              --arg target "$release_sha" \
-              '
-                (.id | type == "number" and . > 0)
-                and .tag_name == "v0.30.1"
-                and .target_commitish == $target
-                and .name == "Agents Commander v0.30.1"
-                and .draft == true
-                and .prerelease == false
-                and .immutable == false
-                and (.assets | type == "array" and length == 0)
-              ' "$RUNNER_TEMP/draft-release-created.json" > /dev/null
-
-            release_id="$(jq -r '.id' "$RUNNER_TEMP/draft-release-created.json")"
+      - name: Version must not already exist on npm
+        shell: bash
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # npm versions are immutable. Catch the collision now rather than
+          # after the GitHub Release is already published.
+          if npm view "@mblua/agentscommander@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@mblua/agentscommander@$VERSION is already published. Bump and retag."
+            exit 1
           fi
-          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
-          {
-            echo "release_id=$release_id"
-            echo "release_mode=$release_mode"
-            echo "repository_id=$repository_id"
-            echo "tag_object_sha=$tag_object_sha"
-            echo "release_sha=$release_sha"
-          } >> "$GITHUB_OUTPUT"
+          echo "@mblua/agentscommander@$VERSION is free."
 
-  build-release:
-    needs: prepare-release
-    if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
+  # ---------------------------------------------------------------------
+  # Build every platform and upload into a DRAFT release.
+  # ---------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.platform }}${{ matrix.label && format(' {0}', matrix.label) || '' }})
+    needs: guard
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: linux-x86_64
-            platform: ubuntu-22.04
-            args: '--config src-tauri/tauri.prod.conf.json'
-            transport_tar: release-linux-x86_64-payload.tar
-            raw_path: target/release/agentscommander
-            payload_names: '["Agents.Commander-0.30.1-1.x86_64.rpm","Agents.Commander_0.30.1_amd64.AppImage","Agents.Commander_0.30.1_amd64.deb","agentscommander-linux-x86_64"]'
-          - variant: windows-x86_64
-            platform: windows-latest
+          - platform: windows-latest
             args: '--config src-tauri/tauri.prod.conf.json --bundles nsis'
-            transport_tar: release-windows-x86_64-payload.tar
-            raw_path: target/release/agentscommander.exe
-            payload_names: '["Agents.Commander_0.30.1_x64-setup.exe","agentscommander-testeable-windows-x86_64.exe","agentscommander-windows-x86_64.exe"]'
-          - variant: macos-aarch64
-            platform: macos-latest
+          - platform: ubuntu-22.04
+            args: '--config src-tauri/tauri.prod.conf.json'
+          - platform: macos-latest
+            label: aarch64
             args: '--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin'
-            rust_target: aarch64-apple-darwin
-            transport_tar: release-macos-aarch64-payload.tar
-            raw_path: target/aarch64-apple-darwin/release/agentscommander
-            payload_names: '["Agents.Commander_0.30.1_aarch64.dmg","Agents.Commander_aarch64.app.tar.gz","agentscommander-mac-aarch64","agentscommander-mac-aarch64.app.tar.gz"]'
-          - variant: macos-x86_64
-            platform: macos-latest
+          - platform: macos-latest
+            label: x86_64
             args: '--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin'
-            rust_target: x86_64-apple-darwin
-            transport_tar: release-macos-x86_64-payload.tar
-            raw_path: target/x86_64-apple-darwin/release/agentscommander
-            payload_names: '["Agents.Commander_0.30.1_x64.dmg","Agents.Commander_x64.app.tar.gz","agentscommander-mac-x86_64","agentscommander-mac-x86_64.app.tar.gz"]'
+
     runs-on: ${{ matrix.platform }}
+
     steps:
-      - name: Check out the release commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Install Linux system dependencies
-        if: matrix.variant == 'linux-x86_64'
+      - name: Generate changelog
+        if: matrix.platform == 'windows-latest'
+        id: changelog
         shell: bash
         run: |
-          set -euo pipefail
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            FEATS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" | sed 's/^[a-f0-9]* /- /')
+            FIXES=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^fix" | sed 's/^[a-f0-9]* /- /')
+            DOCS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^docs" | sed 's/^[a-f0-9]* /- /')
+            OTHER=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" --grep="^fix" --grep="^docs" --invert-grep | sed 's/^[a-f0-9]* /- /')
+            BODY=""
+            [ -n "$FEATS" ] && BODY="${BODY}### Features\n${FEATS}\n\n"
+            [ -n "$FIXES" ] && BODY="${BODY}### Fixes\n${FIXES}\n\n"
+            [ -n "$DOCS" ] && BODY="${BODY}### Docs\n${DOCS}\n\n"
+            [ -n "$OTHER" ] && BODY="${BODY}### Other\n${OTHER}\n\n"
+          else
+            BODY="Initial release"
+          fi
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
-          node-version: 22.23.2
-          package-manager-cache: false
+          node-version: 22
 
-      - name: Assert Node.js and npm
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$(node --version)" == "v22.23.2" ]]
-          [[ "$(npm --version)" == "10.9.8" ]]
-
-      - name: Install the Rust toolchain
-        if: ${{ !startsWith(matrix.variant, 'macos-') }}
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable ref snapshot; toolchain 1.98.0
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install the Rust toolchain and Apple target
-        if: ${{ startsWith(matrix.variant, 'macos-') }}
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable ref snapshot; toolchain 1.98.0
-        with:
-          toolchain: 1.98.0
-          targets: ${{ matrix.rust_target }}
-
-      - name: Assert the Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rust_version="$(rustc -vV)"
-          [[ "$(sed -n 's/^release: //p' <<< "$rust_version")" == "1.98.0" ]]
-          [[ "$(sed -n 's/^commit-hash: //p' <<< "$rust_version")" == "88d9e12ae178fab0fb5cc050a94da85685d449ea" ]]
-          [[ "$(sed -n 's/^commit-date: //p' <<< "$rust_version")" == "2026-08-18" ]]
-
-      - name: Restore the Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: release-${{ matrix.variant }}
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci
+      - name: Install frontend dependencies
+        run: npm install
 
-      - name: Build the release payload
-        id: tauri-build
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+      - name: Build and upload bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Agents Commander ${{ github.ref_name }}'
+          releaseBody: |
+            ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
+
+            ### Install from npm
+
+            ```
+            npx @mblua/agentscommander@${{ needs.guard.outputs.version }}
+            ```
+
+            ### Trust and privacy
+            - [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.
+            - [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)
+          releaseDraft: true
+          prerelease: false
           args: ${{ matrix.args }}
 
-      - name: SignPath integration placeholder
-        if: matrix.variant == 'windows-x86_64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "SignPath integration remains pending maintainer setup and approval."
-          echo "The Windows artifacts produced by this workflow may be unsigned."
-          echo "See CODE_SIGNING_POLICY.md for the accepted placeholder policy."
-
-      - name: Validate and stage the closed payload
-        shell: bash
+      - name: Upload raw binaries consumed by the npm package
         env:
-          ARTIFACT_PATHS: ${{ steps.tauri-build.outputs.artifactPaths }}
-          PAYLOAD_NAMES: ${{ matrix.payload_names }}
-          RAW_PATH: ${{ matrix.raw_path }}
-          TRANSPORT_TAR: ${{ matrix.transport_tar }}
-          VARIANT: ${{ matrix.variant }}
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const { spawnSync } = require('node:child_process');
-
-          function fail(message) {
-            throw new Error(message);
-          }
-
-          function isBelow(root, candidate) {
-            const relative = path.relative(root, candidate);
-            return relative !== ''
-              && relative !== '..'
-              && !relative.startsWith(`..${path.sep}`)
-              && !path.isAbsolute(relative);
-          }
-
-          function rejectLinkedComponents(root, candidate) {
-            const relative = path.relative(root, candidate);
-            if (
-              relative === ''
-              || relative === '..'
-              || relative.startsWith(`..${path.sep}`)
-              || path.isAbsolute(relative)
-            ) {
-              fail(`source is not below root target/: ${candidate}`);
-            }
-            let current = root;
-            for (const part of relative.split(path.sep)) {
-              current = path.join(current, part);
-              if (fs.lstatSync(current).isSymbolicLink()) {
-                fail(`linked or reparse-point source is forbidden: ${current}`);
-              }
-            }
-          }
-
-          function canonicalSource(repo, targetRoot, input, expectedKind) {
-            const lexical = path.resolve(repo, input);
-            rejectLinkedComponents(path.join(repo, 'target'), lexical);
-            const forbidden = path.join(repo, 'src-tauri', 'target');
-            if (lexical === forbidden || isBelow(forbidden, lexical)) {
-              fail(`src-tauri/target source is forbidden: ${input}`);
-            }
-            const canonical = fs.realpathSync(lexical);
-            if (!isBelow(targetRoot, canonical)) {
-              fail(`canonical source is not below repository target/: ${input}`);
-            }
-            const stat = fs.lstatSync(lexical);
-            if (stat.isSymbolicLink()) {
-              fail(`linked or reparse-point source is forbidden: ${input}`);
-            }
-            if (expectedKind === 'file' && !stat.isFile()) {
-              fail(`expected regular file: ${input}`);
-            }
-            if (expectedKind === 'directory' && !stat.isDirectory()) {
-              fail(`expected directory: ${input}`);
-            }
-            if (expectedKind === 'file' && stat.size <= 0) {
-              fail(`zero-byte source is forbidden: ${input}`);
-            }
-            return canonical;
-          }
-
-          function copyExclusive(source, destination) {
-            fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
-            const stat = fs.lstatSync(destination);
-            if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0) {
-              fail(`invalid staged file: ${destination}`);
-            }
-          }
-
-          function digest(file) {
-            return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-          }
-
-          let artifactPaths;
-          try {
-            artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS);
-          } catch (error) {
-            fail(`artifactPaths is not valid JSON: ${error.message}`);
-          }
-          if (
-            !Array.isArray(artifactPaths)
-            || artifactPaths.some((item) => typeof item !== 'string' || item.length === 0)
-          ) {
-            fail('artifactPaths must be a JSON string array');
-          }
-
-          const payloadNames = JSON.parse(process.env.PAYLOAD_NAMES);
-          if (
-            !Array.isArray(payloadNames)
-            || payloadNames.some((item) => typeof item !== 'string' || path.basename(item) !== item)
-            || new Set(payloadNames).size !== payloadNames.length
-          ) {
-            fail('payload names are not a unique basename array');
-          }
-
-          const repo = fs.realpathSync(process.env.GITHUB_WORKSPACE);
-          const targetInput = path.join(repo, 'target');
-          const targetStat = fs.lstatSync(targetInput);
-          if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
-            fail('repository target/ must be a real directory');
-          }
-          const targetRoot = fs.realpathSync(targetInput);
-          const variant = process.env.VARIANT;
-          const sourceByName = new Map();
-          for (const item of artifactPaths) {
-            const absolute = path.resolve(repo, item);
-            const basename = path.basename(absolute);
-            const folded = basename.toLowerCase();
-            if ([...sourceByName.keys()].some((name) => name.toLowerCase() === folded)) {
-              fail(`duplicate artifact basename: ${basename}`);
-            }
-            sourceByName.set(basename, absolute);
-          }
-
-          const expectedSources = {
-            'linux-x86_64': [
-              ['Agents Commander-0.30.1-1.x86_64.rpm', 'file'],
-              ['Agents Commander_0.30.1_amd64.AppImage', 'file'],
-              ['Agents Commander_0.30.1_amd64.deb', 'file'],
-            ],
-            'windows-x86_64': [
-              ['Agents Commander_0.30.1_x64-setup.exe', 'file'],
-            ],
-            'macos-aarch64': [
-              ['Agents Commander_0.30.1_aarch64.dmg', 'file'],
-              ['Agents Commander.app', 'directory'],
-            ],
-            'macos-x86_64': [
-              ['Agents Commander_0.30.1_x64.dmg', 'file'],
-              ['Agents Commander.app', 'directory'],
-            ],
-          }[variant];
-          if (!expectedSources) {
-            fail(`unknown build variant: ${variant}`);
-          }
-          if (sourceByName.size !== expectedSources.length) {
-            fail(`unexpected artifactPaths count for ${variant}: ${sourceByName.size}`);
-          }
-
-          const canonical = new Map();
-          for (const [basename, kind] of expectedSources) {
-            const source = sourceByName.get(basename);
-            if (!source) {
-              fail(`missing expected build output: ${basename}`);
-            }
-            canonical.set(basename, canonicalSource(repo, targetRoot, source, kind));
-          }
-
-          const raw = canonicalSource(repo, targetRoot, process.env.RAW_PATH, 'file');
-          const stageDir = path.join(process.env.RUNNER_TEMP, `release-payload-${variant}`);
-          if (fs.existsSync(stageDir)) {
-            fail(`staging directory already exists: ${stageDir}`);
-          }
-          fs.mkdirSync(stageDir);
-
-          const bundleMaps = {
-            'linux-x86_64': [
-              ['Agents Commander-0.30.1-1.x86_64.rpm', 'Agents.Commander-0.30.1-1.x86_64.rpm'],
-              ['Agents Commander_0.30.1_amd64.AppImage', 'Agents.Commander_0.30.1_amd64.AppImage'],
-              ['Agents Commander_0.30.1_amd64.deb', 'Agents.Commander_0.30.1_amd64.deb'],
-            ],
-            'windows-x86_64': [
-              ['Agents Commander_0.30.1_x64-setup.exe', 'Agents.Commander_0.30.1_x64-setup.exe'],
-            ],
-            'macos-aarch64': [
-              ['Agents Commander_0.30.1_aarch64.dmg', 'Agents.Commander_0.30.1_aarch64.dmg'],
-            ],
-            'macos-x86_64': [
-              ['Agents Commander_0.30.1_x64.dmg', 'Agents.Commander_0.30.1_x64.dmg'],
-            ],
-          }[variant];
-          for (const [sourceName, destinationName] of bundleMaps) {
-            copyExclusive(canonical.get(sourceName), path.join(stageDir, destinationName));
-          }
-
-          if (variant === 'linux-x86_64') {
-            const destination = path.join(stageDir, 'agentscommander-linux-x86_64');
-            copyExclusive(raw, destination);
-            fs.chmodSync(destination, 0o755);
-          } else if (variant === 'windows-x86_64') {
-            const publicPath = path.join(stageDir, 'agentscommander-windows-x86_64.exe');
-            const testablePath = path.join(stageDir, 'agentscommander-testeable-windows-x86_64.exe');
-            copyExclusive(raw, publicPath);
-            copyExclusive(raw, testablePath);
-            if (digest(publicPath) !== digest(testablePath)) {
-              fail('Windows public aliases are not byte-identical');
-            }
-          } else {
-            const app = canonical.get('Agents Commander.app');
-            const archive = canonicalSource(repo, targetRoot, `${app}.tar.gz`, 'file');
-            const arch = variant === 'macos-aarch64' ? 'aarch64' : 'x64';
-            const rawName = variant === 'macos-aarch64'
-              ? 'agentscommander-mac-aarch64'
-              : 'agentscommander-mac-x86_64';
-            const tauriArchive = path.join(stageDir, `Agents.Commander_${arch}.app.tar.gz`);
-            const installerArchive = path.join(stageDir, `${rawName}.app.tar.gz`);
-            const rawDestination = path.join(stageDir, rawName);
-            copyExclusive(archive, tauriArchive);
-            copyExclusive(archive, installerArchive);
-            copyExclusive(raw, rawDestination);
-            fs.chmodSync(rawDestination, 0o755);
-            if (digest(tauriArchive) !== digest(installerArchive)) {
-              fail('macOS app archive aliases are not byte-identical');
-            }
-          }
-
-          const staged = fs.readdirSync(stageDir, { withFileTypes: true });
-          const stagedNames = staged.map((entry) => entry.name).sort();
-          const expectedNames = [...payloadNames].sort();
-          if (
-            staged.some((entry) => !entry.isFile() || entry.isSymbolicLink())
-            || JSON.stringify(stagedNames) !== JSON.stringify(expectedNames)
-          ) {
-            fail(`closed staged inventory mismatch: ${JSON.stringify(stagedNames)}`);
-          }
-          for (const name of expectedNames) {
-            if (fs.statSync(path.join(stageDir, name)).size <= 0) {
-              fail(`zero-byte staged file: ${name}`);
-            }
-          }
-
-          const transportName = process.env.TRANSPORT_TAR;
-          if (path.basename(transportName) !== transportName) {
-            fail('transport tar must be a basename');
-          }
-          const transportPath = path.join(process.env.RUNNER_TEMP, transportName);
-          if (fs.existsSync(transportPath)) {
-            fail(`transport tar already exists: ${transportPath}`);
-          }
-          const tarResult = spawnSync(
-            'tar',
-            ['-cf', transportName, '-C', stageDir, '--', ...payloadNames],
-            { cwd: process.env.RUNNER_TEMP, encoding: 'utf8' },
-          );
-          if (tarResult.status !== 0) {
-            fail(`tar creation failed: ${tarResult.stderr}`);
-          }
-          const tarList = spawnSync(
-            'tar',
-            ['-tf', transportName],
-            { cwd: process.env.RUNNER_TEMP, encoding: 'utf8' },
-          );
-          if (tarList.status !== 0) {
-            fail(`tar inventory failed: ${tarList.stderr}`);
-          }
-          const members = tarList.stdout.split(/\r?\n/).filter(Boolean);
-          if (JSON.stringify(members) !== JSON.stringify(payloadNames)) {
-            fail(`transport tar inventory mismatch: ${JSON.stringify(members)}`);
-          }
-          if (fs.statSync(transportPath).size <= 0) {
-            fail('transport tar is empty');
-          }
-          NODE
-
-      - name: Upload the transport artifact
-        id: transport-upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-${{ matrix.variant }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/${{ matrix.transport_tar }}
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: false
-          retention-days: 7
-
-      - name: Record the transport artifact
-        id: transport-record
-        shell: bash
-        env:
-          ARTIFACT_DIGEST: ${{ steps.transport-upload.outputs.artifact-digest }}
-          ARTIFACT_ID: ${{ steps.transport-upload.outputs.artifact-id }}
-          ARTIFACT_URL: ${{ steps.transport-upload.outputs.artifact-url }}
-        run: |
-          set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$ARTIFACT_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$ARTIFACT_ID" ]]
-          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          {
-            echo "artifact_id=$ARTIFACT_ID"
-            echo "artifact_url=$ARTIFACT_URL"
-            echo "artifact_digest=$ARTIFACT_DIGEST"
-          } >> "$GITHUB_OUTPUT"
-
-  assemble-release:
-    needs:
-      - prepare-release
-      - build-release
-    if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    outputs:
-      handoff_id: ${{ steps.record-handoff.outputs.handoff_id }}
-      handoff_name: ${{ steps.record-handoff.outputs.handoff_name }}
-      handoff_url: ${{ steps.record-handoff.outputs.handoff_url }}
-      handoff_digest: ${{ steps.record-handoff.outputs.handoff_digest }}
-      manifest_hash: ${{ steps.manifest.outputs.manifest_hash }}
-    steps:
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 22.23.2
-          package-manager-cache: false
-
-      - name: Assert Node.js and npm
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$(node --version)" == "v22.23.2" ]]
-          [[ "$(npm --version)" == "10.9.8" ]]
-
-      - name: Resolve the current-run transport artifacts
-        id: resolve
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-            > "$RUNNER_TEMP/transport-artifacts-api.json"
-
-          INPUT_PATH="$RUNNER_TEMP/transport-artifacts-api.json" \
-          RECORD_PATH="$RUNNER_TEMP/transport-artifacts.json" \
-          node <<'NODE'
-          const fs = require('node:fs');
-          const body = JSON.parse(fs.readFileSync(process.env.INPUT_PATH, 'utf8'));
-          const suffix = `run-${process.env.GITHUB_RUN_ID}-attempt-${process.env.GITHUB_RUN_ATTEMPT}`;
-          const expected = [
-            ['linux', `release-linux-x86_64-${suffix}`],
-            ['windows', `release-windows-x86_64-${suffix}`],
-            ['macos_arm', `release-macos-aarch64-${suffix}`],
-            ['macos_intel', `release-macos-x86_64-${suffix}`],
-          ];
-          if (
-            !Number.isInteger(body.total_count)
-            || body.total_count !== 4
-            || !Array.isArray(body.artifacts)
-            || body.artifacts.length !== 4
-          ) {
-            throw new Error('current run must contain exactly four transport artifacts');
-          }
-          const byName = new Map();
-          const ids = new Set();
-          for (const artifact of body.artifacts) {
-            if (byName.has(artifact.name)) {
-              throw new Error(`duplicate artifact record: ${artifact.name}`);
-            }
-            byName.set(artifact.name, artifact);
-            if (!Number.isInteger(artifact.id) || artifact.id <= 0 || ids.has(artifact.id)) {
-              throw new Error(`invalid or duplicate artifact id: ${artifact.id}`);
-            }
-            ids.add(artifact.id);
-            if (
-              artifact.expired !== false
-              || !Number.isInteger(artifact.size_in_bytes)
-              || artifact.size_in_bytes <= 0
-              || !/^sha256:[0-9a-f]{64}$/.test(artifact.digest)
-              || artifact.created_at !== artifact.updated_at
-              || artifact.url !== `https://api.github.com/repos/mblua/AgentsCommander/actions/artifacts/${artifact.id}`
-              || artifact.archive_download_url !== `${artifact.url}/zip`
-              || Number(artifact.workflow_run?.id) !== Number(process.env.GITHUB_RUN_ID)
-              || artifact.workflow_run?.head_sha !== process.env.EXPECTED_SHA
-            ) {
-              throw new Error(`invalid, expired, or overwritten artifact: ${artifact.name}`);
-            }
-          }
-          if (
-            body.artifacts.some(
-              (artifact) => !expected.some(([, name]) => name === artifact.name),
-            )
-          ) {
-            throw new Error('unexpected current-run artifact record');
-          }
-
-          const records = [];
-          const output = [];
-          for (const [key, name] of expected) {
-            const artifact = byName.get(name);
-            if (!artifact) {
-              throw new Error(`missing transport artifact: ${name}`);
-            }
-            records.push({
-              digest: artifact.digest,
-              id: artifact.id,
-              name: artifact.name,
-              size: artifact.size_in_bytes,
-              url: artifact.url,
-            });
-            output.push(`${key}_id=${artifact.id}`);
-            output.push(`${key}_digest=${artifact.digest}`);
-            output.push(`${key}_url=${artifact.url}`);
-          }
-          fs.writeFileSync(process.env.RECORD_PATH, `${JSON.stringify(records, null, 2)}\n`, {
-            flag: 'wx',
-          });
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `${output.join('\n')}\n`);
-          NODE
-
-      - name: Download the Linux transport by ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ steps.resolve.outputs.linux_id }}
-          digest-mismatch: error
-          path: ${{ runner.temp }}/transport/linux
-          merge-multiple: true
-
-      - name: Download the Windows transport by ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ steps.resolve.outputs.windows_id }}
-          digest-mismatch: error
-          path: ${{ runner.temp }}/transport/windows
-          merge-multiple: true
-
-      - name: Download the macOS ARM64 transport by ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ steps.resolve.outputs.macos_arm_id }}
-          digest-mismatch: error
-          path: ${{ runner.temp }}/transport/macos-arm
-          merge-multiple: true
-
-      - name: Download the macOS Intel transport by ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ steps.resolve.outputs.macos_intel_id }}
-          digest-mismatch: error
-          path: ${{ runner.temp }}/transport/macos-intel
-          merge-multiple: true
-
-      - name: Validate and extract the transport archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import os
-          import re
-          import shutil
-          import stat
-          import tarfile
-          from pathlib import Path, PurePosixPath
-
-          runner_temp = Path(os.environ["RUNNER_TEMP"])
-          payload_dir = runner_temp / "release-payload"
-          payload_dir.mkdir(mode=0o700)
-
-          transports = [
-              (
-                  runner_temp / "transport/linux",
-                  "release-linux-x86_64-payload.tar",
-                  [
-                      "Agents.Commander-0.30.1-1.x86_64.rpm",
-                      "Agents.Commander_0.30.1_amd64.AppImage",
-                      "Agents.Commander_0.30.1_amd64.deb",
-                      "agentscommander-linux-x86_64",
-                  ],
-              ),
-              (
-                  runner_temp / "transport/windows",
-                  "release-windows-x86_64-payload.tar",
-                  [
-                      "Agents.Commander_0.30.1_x64-setup.exe",
-                      "agentscommander-testeable-windows-x86_64.exe",
-                      "agentscommander-windows-x86_64.exe",
-                  ],
-              ),
-              (
-                  runner_temp / "transport/macos-arm",
-                  "release-macos-aarch64-payload.tar",
-                  [
-                      "Agents.Commander_0.30.1_aarch64.dmg",
-                      "Agents.Commander_aarch64.app.tar.gz",
-                      "agentscommander-mac-aarch64",
-                      "agentscommander-mac-aarch64.app.tar.gz",
-                  ],
-              ),
-              (
-                  runner_temp / "transport/macos-intel",
-                  "release-macos-x86_64-payload.tar",
-                  [
-                      "Agents.Commander_0.30.1_x64.dmg",
-                      "Agents.Commander_x64.app.tar.gz",
-                      "agentscommander-mac-x86_64",
-                      "agentscommander-mac-x86_64.app.tar.gz",
-                  ],
-              ),
-          ]
-          executable_names = {
-              "agentscommander-linux-x86_64",
-              "agentscommander-mac-aarch64",
-              "agentscommander-mac-x86_64",
-          }
-          all_expected = set()
-
-          for directory, tar_name, expected_order in transports:
-              entries = list(directory.iterdir())
-              if (
-                  len(entries) != 1
-                  or entries[0].name != tar_name
-                  or entries[0].is_symlink()
-                  or not entries[0].is_file()
-                  or entries[0].stat().st_size <= 0
-              ):
-                  raise RuntimeError(f"closed transport inventory mismatch in {directory}")
-              tar_path = entries[0]
-              expected = set(expected_order)
-              if len(expected) != len(expected_order):
-                  raise RuntimeError(f"duplicate expected member in {tar_name}")
-
-              with tarfile.open(tar_path, mode="r:") as archive:
-                  members = archive.getmembers()
-                  names = []
-                  folded = set()
-                  for member in members:
-                      name = member.name
-                      pure = PurePosixPath(name)
-                      if (
-                          not name
-                          or name.startswith(("/", "\\"))
-                          or "\\" in name
-                          or re.match(r"^[A-Za-z]:", name)
-                          or pure.is_absolute()
-                          or any(part in ("", ".", "..") for part in pure.parts)
-                      ):
-                          raise RuntimeError(f"unsafe tar member: {name!r}")
-                      lowered = name.casefold()
-                      if lowered in folded:
-                          raise RuntimeError(f"duplicate tar member: {name}")
-                      folded.add(lowered)
-                      if not member.isreg():
-                          raise RuntimeError(f"non-regular tar member: {name}")
-                      if member.size <= 0:
-                          raise RuntimeError(f"zero-byte tar member: {name}")
-                      if name in executable_names and member.mode & 0o111 == 0:
-                          raise RuntimeError(f"Unix raw binary is not executable: {name}")
-                      names.append(name)
-
-                  if names != expected_order or set(names) != expected:
-                      raise RuntimeError(
-                          f"unexpected tar inventory in {tar_name}: {names!r}"
-                      )
-
-                  for member in members:
-                      if member.name in all_expected:
-                          raise RuntimeError(f"duplicate payload basename: {member.name}")
-                      all_expected.add(member.name)
-                      source = archive.extractfile(member)
-                      if source is None:
-                          raise RuntimeError(f"cannot read tar member: {member.name}")
-                      destination = payload_dir / member.name
-                      with source, destination.open("xb") as output:
-                          shutil.copyfileobj(source, output)
-                      os.chmod(destination, stat.S_IMODE(member.mode))
-                      if destination.stat().st_size != member.size:
-                          raise RuntimeError(f"extracted size mismatch: {member.name}")
-
-          if len(all_expected) != 15:
-              raise RuntimeError(f"expected 15 unique payload files, found {len(all_expected)}")
-          actual = {entry.name for entry in payload_dir.iterdir()}
-          if (
-              actual != all_expected
-              or any(entry.is_symlink() or not entry.is_file() for entry in payload_dir.iterdir())
-          ):
-              raise RuntimeError("final extracted payload inventory mismatch")
-          PY
-
-      - name: Create and independently verify checksums
-        shell: bash
-        env:
-          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
-        run: |
-          set -euo pipefail
-          assets=(
-            "Agents.Commander-0.30.1-1.x86_64.rpm"
-            "Agents.Commander_0.30.1_aarch64.dmg"
-            "Agents.Commander_0.30.1_amd64.AppImage"
-            "Agents.Commander_0.30.1_amd64.deb"
-            "Agents.Commander_0.30.1_x64-setup.exe"
-            "Agents.Commander_0.30.1_x64.dmg"
-            "Agents.Commander_aarch64.app.tar.gz"
-            "Agents.Commander_x64.app.tar.gz"
-            "agentscommander-linux-x86_64"
-            "agentscommander-mac-aarch64"
-            "agentscommander-mac-aarch64.app.tar.gz"
-            "agentscommander-mac-x86_64"
-            "agentscommander-mac-x86_64.app.tar.gz"
-            "agentscommander-testeable-windows-x86_64.exe"
-            "agentscommander-windows-x86_64.exe"
-          )
-          (
-            cd "$PAYLOAD_DIR"
-            LC_ALL=C sha256sum -- "${assets[@]}" \
-              | LC_ALL=C sort -k2,2 \
-              > SHASUMS256.txt
-          )
-
-          node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const directory = process.env.PAYLOAD_DIR;
-          const expected = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-          ];
-          const manifest = fs.readFileSync(path.join(directory, 'SHASUMS256.txt'), 'utf8');
-          const lines = manifest.split('\n').filter(Boolean);
-          if (lines.length !== 15 || !manifest.endsWith('\n')) {
-            throw new Error('checksum manifest must contain exactly 15 newline-terminated rows');
-          }
-          const parsed = lines.map((line) => {
-            const match = /^([0-9a-f]{64})  ([^\r\n]+)$/.exec(line);
-            if (!match) {
-              throw new Error(`invalid checksum row: ${line}`);
-            }
-            return { digest: match[1], name: match[2] };
-          });
-          if (JSON.stringify(parsed.map((row) => row.name)) !== JSON.stringify(expected)) {
-            throw new Error('checksum rows are not in exact C-locale filename order');
-          }
-          for (const row of parsed) {
-            const actual = crypto
-              .createHash('sha256')
-              .update(fs.readFileSync(path.join(directory, row.name)))
-              .digest('hex');
-            if (actual !== row.digest) {
-              throw new Error(`independent checksum mismatch: ${row.name}`);
-            }
-          }
-          const installerNames = [
-            'agentscommander-linux-x86_64',
-            'agentscommander-windows-x86_64.exe',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64.app.tar.gz',
-          ];
-          const installerSelections = [];
-          for (const requested of installerNames) {
-            const matches = lines.filter((line) => line.includes(requested));
-            if (matches.length !== 1) {
-              throw new Error(`installer substring match is not unique: ${requested}`);
-            }
-            const token = /^([0-9a-f]{64})  ([^\r\n]+)$/.exec(matches[0])?.[2];
-            if (token !== requested) {
-              throw new Error(`installer checksum token mismatch: ${requested}`);
-            }
-            installerSelections.push({ matchCount: matches.length, requested, token });
-          }
-          fs.writeFileSync(
-            path.join(process.env.RUNNER_TEMP, 'checksum-assertions.json'),
-            `${JSON.stringify({ checksumRows: parsed, installerSelections }, null, 2)}\n`,
-            { flag: 'wx' },
-          );
-          NODE
-
-      - name: Revalidate the draft and upload the closed release asset set
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-        run: |
-          set -euo pipefail
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            > "$RUNNER_TEMP/draft-before-upload.json"
-
-          SNAPSHOT="$RUNNER_TEMP/draft-before-upload.json" node <<'NODE'
-          const fs = require('node:fs');
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          if (
-            Number(release.id) !== Number(process.env.RELEASE_ID)
-            || release.tag_name !== 'v0.30.1'
-            || release.target_commitish !== process.env.RELEASE_SHA
-            || release.name !== 'Agents Commander v0.30.1'
-            || release.draft !== true
-            || release.prerelease !== false
-            || release.immutable !== false
-            || !Array.isArray(release.assets)
-            || release.assets.length !== 0
-          ) {
-            throw new Error('fresh draft snapshot is not the empty authorized release');
-          }
-          NODE
-
-          assets=(
-            "Agents.Commander-0.30.1-1.x86_64.rpm"
-            "Agents.Commander_0.30.1_aarch64.dmg"
-            "Agents.Commander_0.30.1_amd64.AppImage"
-            "Agents.Commander_0.30.1_amd64.deb"
-            "Agents.Commander_0.30.1_x64-setup.exe"
-            "Agents.Commander_0.30.1_x64.dmg"
-            "Agents.Commander_aarch64.app.tar.gz"
-            "Agents.Commander_x64.app.tar.gz"
-            "agentscommander-linux-x86_64"
-            "agentscommander-mac-aarch64"
-            "agentscommander-mac-aarch64.app.tar.gz"
-            "agentscommander-mac-x86_64"
-            "agentscommander-mac-x86_64.app.tar.gz"
-            "agentscommander-testeable-windows-x86_64.exe"
-            "agentscommander-windows-x86_64.exe"
-            "SHASUMS256.txt"
-          )
-          for asset in "${assets[@]}"; do
-            gh release upload \
-              v0.30.1 \
-              "$PAYLOAD_DIR/$asset" \
-              --repo mblua/AgentsCommander
-          done
-
-      - name: Poll and capture uploaded release asset metadata
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-        run: |
-          set -euo pipefail
-          complete=0
-          for attempt in $(seq 1 30); do
-            gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-              > "$RUNNER_TEMP/draft-assets-poll.json"
-            set +e
-            SNAPSHOT="$RUNNER_TEMP/draft-assets-poll.json" \
-            RECORD_PATH="$RUNNER_TEMP/release-asset-records.json" \
-            node <<'NODE'
-          const fs = require('node:fs');
-          const expected = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-            'SHASUMS256.txt',
-          ];
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          if (
-            Number(release.id) !== Number(process.env.RELEASE_ID)
-            || release.tag_name !== 'v0.30.1'
-            || release.target_commitish !== process.env.RELEASE_SHA
-            || release.name !== 'Agents Commander v0.30.1'
-            || release.draft !== true
-            || release.prerelease !== false
-            || release.immutable !== false
-            || !Array.isArray(release.assets)
-          ) {
-            throw new Error('draft identity or state changed while polling assets');
-          }
-          const byName = new Map();
-          const ids = new Set();
-          for (const asset of release.assets) {
-            if (!expected.includes(asset.name)) {
-              throw new Error(`unexpected release asset: ${asset.name}`);
-            }
-            if (byName.has(asset.name)) {
-              throw new Error(`duplicate release asset: ${asset.name}`);
-            }
-            byName.set(asset.name, asset);
-            if (!Number.isInteger(asset.id) || asset.id <= 0 || ids.has(asset.id)) {
-              throw new Error(`invalid or duplicate release asset id: ${asset.id}`);
-            }
-            ids.add(asset.id);
-          }
-          if (byName.size < expected.length) {
-            process.exit(75);
-          }
-          const records = [];
-          for (const name of expected) {
-            const asset = byName.get(name);
-            if (
-              !asset
-              || asset.state !== 'uploaded'
-              || !Number.isInteger(asset.size)
-              || asset.size <= 0
-            ) {
-              process.exit(75);
-            }
-            if (!/^sha256:[0-9a-f]{64}$/.test(asset.digest)) {
-              if (asset.digest == null || asset.digest === '') {
-                process.exit(75);
-              }
-              throw new Error(`invalid release asset digest: ${name}`);
-            }
-            if (
-              asset.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
-            ) {
-              throw new Error(`unexpected release asset URL: ${name}`);
-            }
-            records.push({
-              digest: asset.digest,
-              id: asset.id,
-              name: asset.name,
-              size: asset.size,
-              state: asset.state,
-              url: asset.url,
-            });
-          }
-          fs.writeFileSync(process.env.RECORD_PATH, `${JSON.stringify(records, null, 2)}\n`);
-          fs.copyFileSync(process.env.SNAPSHOT, `${process.env.RUNNER_TEMP}/draft-assets-complete.json`);
-          NODE
-            poll_rc=$?
-            set -e
-            if [[ "$poll_rc" -eq 0 ]]; then
-              complete=1
-              break
-            fi
-            [[ "$poll_rc" -eq 75 ]]
-            sleep 5
-          done
-          [[ "$complete" -eq 1 ]]
-
-      - name: Download every release asset by captured ID
-        shell: bash
-        env:
-          ASSET_RECORDS: ${{ runner.temp }}/release-asset-records.json
-          GH_TOKEN: ${{ github.token }}
-          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
-        run: |
-          set -euo pipefail
-          download_dir="$RUNNER_TEMP/release-downloads"
-          mkdir "$download_dir"
-
-          record_count="$(jq 'length' "$ASSET_RECORDS")"
-          [[ "$record_count" -eq 16 ]]
-          for index in $(seq 0 15); do
-            name="$(jq -r ".[$index].name" "$ASSET_RECORDS")"
-            asset_id="$(jq -r ".[$index].id" "$ASSET_RECORDS")"
-            expected_size="$(jq -r ".[$index].size" "$ASSET_RECORDS")"
-            expected_digest="$(jq -r ".[$index].digest" "$ASSET_RECORDS")"
-            [[ "$name" != *"/"* ]]
-            [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
-
-            headers="$RUNNER_TEMP/release-asset-$index.headers"
-            response="$RUNNER_TEMP/release-asset-$index.body"
-            status="$(
-              printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
-                | curl \
-                    --disable \
-                    --silent \
-                    --show-error \
-                    --max-redirs 0 \
-                    --config - \
-                    --header "Accept: application/octet-stream" \
-                    --header "X-GitHub-Api-Version: 2026-03-10" \
-                    --dump-header "$headers" \
-                    --output "$response" \
-                    --write-out '%{http_code}' \
-                    "https://api.github.com/repos/mblua/AgentsCommander/releases/assets/$asset_id"
-            )"
-
-            destination="$download_dir/$name"
-            if [[ "$status" == "200" ]]; then
-              mv "$response" "$destination"
-            elif [[ "$status" == "302" ]]; then
-              mapfile -t locations < <(
-                awk '
-                  BEGIN { IGNORECASE=1 }
-                  /^Location:/ {
-                    sub(/^Location:[[:space:]]+/, "")
-                    sub(/\r$/, "")
-                    print
-                  }
-                ' "$headers"
-              )
-              [[ "${#locations[@]}" -eq 1 ]]
-              location="$(
-                LOCATION="${locations[0]}" node <<'NODE'
-          const value = process.env.LOCATION;
-          const parsed = new URL(value);
-          if (
-            parsed.protocol !== 'https:'
-            || (parsed.port !== '' && parsed.port !== '443')
-            || parsed.username !== ''
-            || parsed.password !== ''
-            || parsed.hash !== ''
-          ) {
-            throw new Error('asset redirect is not absolute credential-free HTTPS on port 443');
-          }
-          process.stdout.write(parsed.href);
-          NODE
-              )"
-              second_status="$(
-                env -u GH_TOKEN curl \
-                  --disable \
-                  --silent \
-                  --show-error \
-                  --max-redirs 0 \
-                  --proto '=https' \
-                  --tlsv1.2 \
-                  --output "$destination" \
-                  --write-out '%{http_code}' \
-                  "$location"
-              )"
-              [[ "$second_status" == "200" ]]
-            else
-              echo "unexpected asset download status: $status" >&2
-              exit 1
-            fi
-
-            [[ -f "$destination" && ! -L "$destination" ]]
-            [[ "$(stat -c '%s' "$destination")" == "$expected_size" ]]
-            actual_digest="$(sha256sum -- "$destination" | awk '{print $1}')"
-            [[ "sha256:$actual_digest" == "$expected_digest" ]]
-            cmp --silent "$PAYLOAD_DIR/$name" "$destination"
-          done
-
-          DOWNLOAD_DIR="$download_dir" node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const records = JSON.parse(fs.readFileSync(process.env.ASSET_RECORDS, 'utf8'));
-          const proof = records.map((record) => {
-            const file = path.join(process.env.DOWNLOAD_DIR, record.name);
-            return {
-              digest: `sha256:${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}`,
-              id: record.id,
-              name: record.name,
-              size: fs.statSync(file).size,
-            };
-          });
-          fs.writeFileSync(
-            `${process.env.RUNNER_TEMP}/remote-download-verification.json`,
-            `${JSON.stringify(proof, null, 2)}\n`,
-            { flag: 'wx' },
-          );
-          NODE
-
-      - name: Create the canonical draft manifest and handoff
-        id: manifest
-        shell: bash
-        env:
-          ASSET_RECORDS: ${{ runner.temp }}/release-asset-records.json
-          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          REPOSITORY_ID: ${{ needs.prepare-release.outputs.repository_id }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          manifest="$RUNNER_TEMP/release-manifest-draft.json"
-          MANIFEST="$manifest" node <<'NODE'
-          const fs = require('node:fs');
-          function canonical(value) {
-            if (Array.isArray(value)) {
-              return value.map(canonical);
-            }
-            if (value && typeof value === 'object') {
-              return Object.fromEntries(
-                Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
-              );
-            }
-            return value;
-          }
-          const sourceAssets = JSON.parse(fs.readFileSync(process.env.ASSET_RECORDS, 'utf8'));
-          if (sourceAssets.length !== 16) {
-            throw new Error('draft manifest requires exactly 16 assets');
-          }
-          const expectedNames = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'SHASUMS256.txt',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-          ];
-          const compareNames = (left, right) => (
-            left.name === right.name ? 0 : (left.name < right.name ? -1 : 1)
-          );
-          const assets = sourceAssets.map((asset) => {
-            if (
-              !expectedNames.includes(asset.name)
-              || !Number.isInteger(asset.id)
-              || asset.id <= 0
-              || !Number.isInteger(asset.size)
-              || asset.size <= 0
-              || !/^sha256:[0-9a-f]{64}$/.test(asset.digest)
-              || asset.state !== 'uploaded'
-              || asset.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
-            ) {
-              throw new Error(`invalid source release asset record: ${asset.name}`);
-            }
-            return {
-              digest: asset.digest,
-              id: asset.id,
-              name: asset.name,
-              size: asset.size,
-            };
-          }).sort(compareNames);
-          if (
-            new Set(assets.map((asset) => asset.name)).size !== 16
-            || JSON.stringify(assets.map((asset) => asset.name)) !== JSON.stringify(expectedNames)
-          ) {
-            throw new Error('draft manifest assets are not the exact name-sorted set');
-          }
-          const manifest = canonical({
-            assets,
-            release: {
-              draft: true,
-              id: Number(process.env.RELEASE_ID),
-              immutable: false,
-              name: 'Agents Commander v0.30.1',
-              prerelease: false,
-              tagName: 'v0.30.1',
-              tagObjectSha: process.env.TAG_OBJECT_SHA,
-              targetCommitish: process.env.RELEASE_SHA,
-            },
-            repository: {
-              id: Number(process.env.REPOSITORY_ID),
-              name: 'mblua/AgentsCommander',
-            },
-          });
-          fs.writeFileSync(process.env.MANIFEST, `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
-          NODE
-
-          manifest_hash="$(sha256sum -- "$manifest" | awk '{print $1}')"
-          [[ "$manifest_hash" =~ ^[0-9a-f]{64}$ ]]
-          printf '%s  %s\n' \
-            "$manifest_hash" \
-            "release-manifest-draft.json" \
-            > "$RUNNER_TEMP/release-manifest-draft.json.sha256"
-
-          handoff="$RUNNER_TEMP/release-handoff"
-          mkdir "$handoff"
-          assets=(
-            "Agents.Commander-0.30.1-1.x86_64.rpm"
-            "Agents.Commander_0.30.1_aarch64.dmg"
-            "Agents.Commander_0.30.1_amd64.AppImage"
-            "Agents.Commander_0.30.1_amd64.deb"
-            "Agents.Commander_0.30.1_x64-setup.exe"
-            "Agents.Commander_0.30.1_x64.dmg"
-            "Agents.Commander_aarch64.app.tar.gz"
-            "Agents.Commander_x64.app.tar.gz"
-            "agentscommander-linux-x86_64"
-            "agentscommander-mac-aarch64"
-            "agentscommander-mac-aarch64.app.tar.gz"
-            "agentscommander-mac-x86_64"
-            "agentscommander-mac-x86_64.app.tar.gz"
-            "agentscommander-testeable-windows-x86_64.exe"
-            "agentscommander-windows-x86_64.exe"
-            "SHASUMS256.txt"
-          )
-          for asset in "${assets[@]}"; do
-            cp --preserve=mode -- "$PAYLOAD_DIR/$asset" "$handoff/$asset"
-          done
-          cp -- "$manifest" "$handoff/release-manifest-draft.json"
-          cp -- \
-            "$RUNNER_TEMP/release-manifest-draft.json.sha256" \
-            "$handoff/release-manifest-draft.json.sha256"
-
-          HANDOFF="$handoff" node <<'NODE'
-          const fs = require('node:fs');
-          const expected = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'SHASUMS256.txt',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-            'release-manifest-draft.json',
-            'release-manifest-draft.json.sha256',
-          ].sort();
-          const entries = fs.readdirSync(process.env.HANDOFF, { withFileTypes: true });
-          if (
-            entries.length !== 18
-            || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
-            || JSON.stringify(entries.map((entry) => entry.name).sort()) !== JSON.stringify(expected)
-          ) {
-            throw new Error('verified handoff does not have the exact 18-file inventory');
-          }
-          NODE
-
-          echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
-
-      - name: Upload the verified handoff
-        id: handoff-upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-v0.30.1-verified-payload-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/release-handoff/*
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: false
-          retention-days: 7
-
-      - name: Create prepublication evidence
-        shell: bash
-        env:
-          HANDOFF_DIGEST: ${{ steps.handoff-upload.outputs.artifact-digest }}
-          HANDOFF_ID: ${{ steps.handoff-upload.outputs.artifact-id }}
-          HANDOFF_URL: ${{ steps.handoff-upload.outputs.artifact-url }}
-        run: |
-          set -euo pipefail
-          handoff_name="release-v0.30.1-verified-payload-run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
-          [[ "$HANDOFF_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$HANDOFF_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$HANDOFF_ID" ]]
-          [[ "$HANDOFF_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-
-          evidence="$RUNNER_TEMP/prepublication-evidence"
-          mkdir "$evidence"
-          HANDOFF_NAME="$handoff_name" \
-          EVIDENCE="$evidence" \
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const identity = {
-            digest: process.env.HANDOFF_DIGEST,
-            id: Number(process.env.HANDOFF_ID),
-            name: process.env.HANDOFF_NAME,
-            runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-            runId: Number(process.env.GITHUB_RUN_ID),
-            url: process.env.HANDOFF_URL,
-          };
-          fs.writeFileSync(
-            path.join(process.env.EVIDENCE, 'handoff-artifact-identity.json'),
-            `${JSON.stringify(identity, null, 2)}\n`,
-            { flag: 'wx' },
-          );
-          NODE
-
-          cp -- "$RUNNER_TEMP/transport-artifacts-api.json" "$evidence/transport-artifacts-api.json"
-          cp -- "$RUNNER_TEMP/transport-artifacts.json" "$evidence/transport-artifacts.json"
-          cp -- "$RUNNER_TEMP/draft-before-upload.json" "$evidence/draft-before-upload.json"
-          cp -- "$RUNNER_TEMP/draft-assets-complete.json" "$evidence/draft-assets-complete.json"
-          cp -- "$RUNNER_TEMP/release-asset-records.json" "$evidence/release-asset-records.json"
-          cp -- "$RUNNER_TEMP/checksum-assertions.json" "$evidence/checksum-assertions.json"
-          cp -- \
-            "$RUNNER_TEMP/remote-download-verification.json" \
-            "$evidence/remote-download-verification.json"
-          cp -- "$RUNNER_TEMP/release-payload/SHASUMS256.txt" "$evidence/SHASUMS256.txt"
-          cp -- \
-            "$RUNNER_TEMP/release-manifest-draft.json" \
-            "$evidence/release-manifest-draft.json"
-          cp -- \
-            "$RUNNER_TEMP/release-manifest-draft.json.sha256" \
-            "$evidence/release-manifest-draft.json.sha256"
-          printf '%s\n' \
-            'transport-artifact-identities=verified' \
-            'transport-payloads=securely-extracted' \
-            'payload-inventory=closed-15-files' \
-            'checksum-rows=independently-verified' \
-            'installer-substring-selections=exact-and-unique' \
-            'draft-upload-state=closed-16-assets' \
-            'remote-asset-downloads=byte-identical' \
-            'handoff-inventory=closed-18-files' \
-            'handoff-artifact-identity=recorded' \
-            > "$evidence/prepublication-checks.log"
-
-          EVIDENCE="$evidence" node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const expected = [
-            'SHASUMS256.txt',
-            'checksum-assertions.json',
-            'draft-assets-complete.json',
-            'draft-before-upload.json',
-            'handoff-artifact-identity.json',
-            'prepublication-checks.log',
-            'release-asset-records.json',
-            'release-manifest-draft.json',
-            'release-manifest-draft.json.sha256',
-            'remote-download-verification.json',
-            'transport-artifacts-api.json',
-            'transport-artifacts.json',
-          ].sort();
-          const entries = fs.readdirSync(process.env.EVIDENCE, { withFileTypes: true });
-          if (
-            entries.length !== expected.length
-            || entries.some(
-              (entry) => !entry.isFile()
-                || entry.isSymbolicLink()
-                || fs.statSync(path.join(process.env.EVIDENCE, entry.name)).size <= 0,
-            )
-            || JSON.stringify(entries.map((entry) => entry.name).sort())
-              !== JSON.stringify(expected)
-          ) {
-            throw new Error('prepublication evidence inventory is not closed');
-          }
-          NODE
-
-      - name: Upload prepublication evidence
-        id: prepublication-upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-v0.30.1-prepublication-evidence-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/prepublication-evidence/*
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: false
-          retention-days: 7
-
-      - name: Record the verified artifacts
-        id: record-handoff
-        shell: bash
-        env:
-          HANDOFF_DIGEST: ${{ steps.handoff-upload.outputs.artifact-digest }}
-          HANDOFF_ID: ${{ steps.handoff-upload.outputs.artifact-id }}
-          HANDOFF_URL: ${{ steps.handoff-upload.outputs.artifact-url }}
-          PREPUBLICATION_DIGEST: ${{ steps.prepublication-upload.outputs.artifact-digest }}
-          PREPUBLICATION_ID: ${{ steps.prepublication-upload.outputs.artifact-id }}
-          PREPUBLICATION_URL: ${{ steps.prepublication-upload.outputs.artifact-url }}
-        run: |
-          set -euo pipefail
-          HANDOFF_NAME="release-v0.30.1-verified-payload-run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
-          [[ "$HANDOFF_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$HANDOFF_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$HANDOFF_ID" ]]
-          [[ "$HANDOFF_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$PREPUBLICATION_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$PREPUBLICATION_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$PREPUBLICATION_ID" ]]
-          [[ "$PREPUBLICATION_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          {
-            echo "handoff_id=$HANDOFF_ID"
-            echo "handoff_name=$HANDOFF_NAME"
-            echo "handoff_url=$HANDOFF_URL"
-            echo "handoff_digest=$HANDOFF_DIGEST"
-          } >> "$GITHUB_OUTPUT"
-
-  publish-and-verify-release:
-    needs:
-      - prepare-release
-      - assemble-release
-    if: ${{ always() && !cancelled() && needs.prepare-release.result == 'success' && (needs.prepare-release.outputs.release_mode == 'resume' || (needs.prepare-release.outputs.release_mode == 'fresh' && needs.assemble-release.result == 'success')) }}
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-      attestations: read
-    steps:
-      - name: Check out the release commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 22.23.2
-          package-manager-cache: false
-
-      - name: Assert reviewed publication tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$(node --version)" == "v22.23.2" ]]
-          [[ "$(npm --version)" == "10.9.8" ]]
-          [[ "$(gh --version | head -n 1 | awk '{print $3}')" == "2.86.0" ]]
-
-          gh release verify --repo mblua/AgentsCommander --help \
-            | grep -Fq 'gh release verify [<tag>] [flags]'
-          gh release verify-asset --repo mblua/AgentsCommander --help \
-            | grep -Fq 'gh release verify-asset [<tag>] <file-path> [flags]'
-
-          timeout --version | head -n 1 | grep -Fq 'GNU coreutils'
-          sha256sum --version | head -n 1 | grep -Fq 'GNU coreutils'
-          sha512sum --version | head -n 1 | grep -Fq 'GNU coreutils'
-          sort --version | head -n 1 | grep -Fq 'GNU coreutils'
-          tar --version | head -n 1 | grep -Fq 'GNU tar'
-
-      - name: Verify the handoff artifact record
-        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
-        shell: bash
-        env:
-          EXPECTED_DIGEST: ${{ needs.assemble-release.outputs.handoff_digest }}
-          EXPECTED_ID: ${{ needs.assemble-release.outputs.handoff_id }}
-          EXPECTED_NAME: ${{ needs.assemble-release.outputs.handoff_name }}
-          EXPECTED_SHA: ${{ github.sha }}
-          EXPECTED_URL: ${{ needs.assemble-release.outputs.handoff_url }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ "$EXPECTED_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$EXPECTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$EXPECTED_NAME" == "release-v0.30.1-verified-payload-run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT" ]]
-          [[ "$EXPECTED_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$EXPECTED_ID" ]]
-
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/actions/artifacts/$EXPECTED_ID" \
-            > "$RUNNER_TEMP/handoff-artifact-record.json"
-
-          RECORD="$RUNNER_TEMP/handoff-artifact-record.json" node <<'NODE'
-          const fs = require('node:fs');
-          const artifact = JSON.parse(fs.readFileSync(process.env.RECORD, 'utf8'));
-          if (
-            Number(artifact.id) !== Number(process.env.EXPECTED_ID)
-            || artifact.name !== process.env.EXPECTED_NAME
-            || artifact.expired !== false
-            || !Number.isInteger(artifact.size_in_bytes)
-            || artifact.size_in_bytes <= 0
-            || artifact.digest !== `sha256:${process.env.EXPECTED_DIGEST}`
-            || artifact.created_at !== artifact.updated_at
-            || artifact.url
-              !== `https://api.github.com/repos/mblua/AgentsCommander/actions/artifacts/${artifact.id}`
-            || artifact.archive_download_url !== `${artifact.url}/zip`
-            || Number(artifact.workflow_run?.id) !== Number(process.env.GITHUB_RUN_ID)
-            || artifact.workflow_run?.head_sha !== process.env.EXPECTED_SHA
-          ) {
-            throw new Error('handoff artifact metadata does not match its recorded identity');
-          }
-          NODE
-
-      - name: Download the verified handoff only by ID
-        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.assemble-release.outputs.handoff_id }}
-          digest-mismatch: error
-          path: ${{ runner.temp }}/release-handoff
-          merge-multiple: true
-
-      - name: Reconstruct the verified handoff from the immutable release
-        id: reconstruct
-        if: ${{ needs.prepare-release.outputs.release_mode == 'resume' }}
-        timeout-minutes: 10
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          REPOSITORY_ID: ${{ needs.prepare-release.outputs.repository_id }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-
-          git fetch \
-            --no-tags \
-            origin \
-            "+refs/tags/v0.30.1:refs/tags/ac-release-v0.30.1"
-          [[ "$(git cat-file -t refs/tags/ac-release-v0.30.1)" == "tag" ]]
-          remote_tag_object="$(git rev-parse refs/tags/ac-release-v0.30.1)"
-          remote_release_sha="$(git rev-parse refs/tags/ac-release-v0.30.1^{commit})"
-          [[ "$remote_tag_object" == "$TAG_OBJECT_SHA" ]]
-          [[ "$(git cat-file -t "$remote_release_sha")" == "commit" ]]
-          [[ "$remote_release_sha" == "$RELEASE_SHA" ]]
-
-          git fetch \
-            --no-tags \
-            origin \
-            "+refs/heads/main:refs/remotes/origin/ac-release-main"
-          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/ac-release-main
-          git show "$RELEASE_SHA:.github/workflows/release.yml" \
-            > "$RUNNER_TEMP/release-workflow-resume.yml"
-          git show "refs/remotes/origin/ac-release-main:.github/workflows/release.yml" \
-            > "$RUNNER_TEMP/main-workflow-resume.yml"
-          cmp --silent "$RUNNER_TEMP/release-workflow-resume.yml" "$RUNNER_TEMP/main-workflow-resume.yml"
-
-          NOTES_PATH="$RUNNER_TEMP/release-notes-resume.md" node <<'NODE'
-          const fs = require('node:fs');
-          const text = fs.readFileSync('CHANGELOG.md', 'utf8');
-          const heading = /^## 0\.30\.1[ \t]*$/gm;
-          const matches = [...text.matchAll(heading)];
-          if (matches.length !== 1) {
-            throw new Error(`expected one 0.30.1 changelog heading, found ${matches.length}`);
-          }
-          const start = matches[0].index + matches[0][0].length;
-          const rest = text.slice(start);
-          const next = rest.search(/^## [^\r\n]+$/m);
-          const body = (next === -1 ? rest : rest.slice(0, next)).trim();
-          if (!body) {
-            throw new Error('0.30.1 changelog body is empty');
-          }
-          fs.writeFileSync(process.env.NOTES_PATH, `${body}\n`, { flag: 'wx' });
-          NODE
-
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/immutable-releases \
-            > "$RUNNER_TEMP/immutable-setting-resume.json"
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            > "$RUNNER_TEMP/immutable-release-resume.json"
-
-          handoff="$RUNNER_TEMP/release-handoff"
-          mkdir "$handoff"
-          ASSET_RECORDS="$RUNNER_TEMP/release-asset-records-resume.json" \
-          HANDOFF="$handoff" \
-          IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-resume.json" \
-          NOTES_PATH="$RUNNER_TEMP/release-notes-resume.md" \
-          SNAPSHOT="$RUNNER_TEMP/immutable-release-resume.json" \
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          function canonical(value) {
-            if (Array.isArray(value)) {
-              return value.map(canonical);
-            }
-            if (value && typeof value === 'object') {
-              return Object.fromEntries(
-                Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
-              );
-            }
-            return value;
-          }
-          const expectedNames = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'SHASUMS256.txt',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-          ];
-          const setting = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_SETTING, 'utf8'));
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          const expectedBody = fs.readFileSync(process.env.NOTES_PATH, 'utf8');
-          if (
-            setting.enabled !== true
-            || Number(release.id) !== Number(process.env.RELEASE_ID)
-            || release.tag_name !== 'v0.30.1'
-            || release.target_commitish !== process.env.RELEASE_SHA
-            || release.name !== 'Agents Commander v0.30.1'
-            || release.body !== expectedBody
-            || release.draft !== false
-            || release.prerelease !== false
-            || release.immutable !== true
-            || !Array.isArray(release.assets)
-            || release.assets.length !== expectedNames.length
-          ) {
-            throw new Error('resume Release identity or immutable state is not exact');
-          }
-          const byName = new Map();
-          const ids = new Set();
-          for (const asset of release.assets) {
-            if (
-              !expectedNames.includes(asset.name)
-              || byName.has(asset.name)
-              || !Number.isInteger(asset.id)
-              || asset.id <= 0
-              || ids.has(asset.id)
-              || !Number.isInteger(asset.size)
-              || asset.size <= 0
-              || asset.state !== 'uploaded'
-              || !/^sha256:[0-9a-f]{64}$/.test(asset.digest)
-              || asset.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${asset.id}`
-            ) {
-              throw new Error(`resume Release asset is invalid: ${asset.name}`);
-            }
-            byName.set(asset.name, asset);
-            ids.add(asset.id);
-          }
-          if (expectedNames.some((name) => !byName.has(name))) {
-            throw new Error('resume Release asset inventory is not exact');
-          }
-          const records = expectedNames.map((name) => {
-            const asset = byName.get(name);
-            return {
-              digest: asset.digest,
-              id: asset.id,
-              name: asset.name,
-              size: asset.size,
-              state: asset.state,
-              url: asset.url,
-            };
-          });
-          fs.writeFileSync(
-            process.env.ASSET_RECORDS,
-            `${JSON.stringify(records, null, 2)}\n`,
-            { flag: 'wx' },
-          );
-          const compareNames = (left, right) => (
-            left.name === right.name ? 0 : (left.name < right.name ? -1 : 1)
-          );
-          const assets = records.map((asset) => ({
-            digest: asset.digest,
-            id: asset.id,
-            name: asset.name,
-            size: asset.size,
-          })).sort(compareNames);
-          const manifest = canonical({
-            assets,
-            release: {
-              draft: true,
-              id: Number(process.env.RELEASE_ID),
-              immutable: false,
-              name: 'Agents Commander v0.30.1',
-              prerelease: false,
-              tagName: 'v0.30.1',
-              tagObjectSha: process.env.TAG_OBJECT_SHA,
-              targetCommitish: process.env.RELEASE_SHA,
-            },
-            repository: {
-              id: Number(process.env.REPOSITORY_ID),
-              name: 'mblua/AgentsCommander',
-            },
-          });
-          fs.writeFileSync(
-            path.join(process.env.HANDOFF, 'release-manifest-draft.json'),
-            `${JSON.stringify(manifest)}\n`,
-            { flag: 'wx' },
-          );
-          NODE
-
-          manifest="$handoff/release-manifest-draft.json"
-          manifest_hash="$(sha256sum -- "$manifest" | awk '{print $1}')"
-          [[ "$manifest_hash" =~ ^[0-9a-f]{64}$ ]]
-          printf '%s  %s\n' \
-            "$manifest_hash" \
-            "release-manifest-draft.json" \
-            > "$handoff/release-manifest-draft.json.sha256"
-
-          records="$RUNNER_TEMP/release-asset-records-resume.json"
-          [[ "$(jq 'length' "$records")" -eq 16 ]]
-          for index in $(seq 0 15); do
-            name="$(jq -r ".[$index].name" "$records")"
-            asset_id="$(jq -r ".[$index].id" "$records")"
-            expected_size="$(jq -r ".[$index].size" "$records")"
-            expected_digest="$(jq -r ".[$index].digest" "$records")"
-            [[ "$name" != *"/"* ]]
-            [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
-
-            headers="$RUNNER_TEMP/resume-release-asset-$index.headers"
-            response="$RUNNER_TEMP/resume-release-asset-$index.body"
-            status="$(
-              printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" \
-                | curl \
-                    --disable \
-                    --silent \
-                    --show-error \
-                    --max-redirs 0 \
-                    --config - \
-                    --header "Accept: application/octet-stream" \
-                    --header "X-GitHub-Api-Version: 2026-03-10" \
-                    --dump-header "$headers" \
-                    --output "$response" \
-                    --write-out '%{http_code}' \
-                    "https://api.github.com/repos/mblua/AgentsCommander/releases/assets/$asset_id"
-            )"
-
-            destination="$handoff/$name"
-            if [[ "$status" == "200" ]]; then
-              mv "$response" "$destination"
-            elif [[ "$status" == "302" ]]; then
-              mapfile -t locations < <(
-                awk '
-                  BEGIN { IGNORECASE=1 }
-                  /^Location:/ {
-                    sub(/^Location:[[:space:]]+/, "")
-                    sub(/\r$/, "")
-                    print
-                  }
-                ' "$headers"
-              )
-              [[ "${#locations[@]}" -eq 1 ]]
-              location="$(
-                LOCATION="${locations[0]}" node <<'NODE'
-          const value = process.env.LOCATION;
-          const parsed = new URL(value);
-          if (
-            parsed.protocol !== 'https:'
-            || (parsed.port !== '' && parsed.port !== '443')
-            || parsed.username !== ''
-            || parsed.password !== ''
-            || parsed.hash !== ''
-          ) {
-            throw new Error('asset redirect is not absolute credential-free HTTPS on port 443');
-          }
-          process.stdout.write(parsed.href);
-          NODE
-              )"
-              second_status="$(
-                env -u GH_TOKEN curl \
-                  --disable \
-                  --silent \
-                  --show-error \
-                  --max-redirs 0 \
-                  --proto '=https' \
-                  --tlsv1.2 \
-                  --output "$destination" \
-                  --write-out '%{http_code}' \
-                  "$location"
-              )"
-              [[ "$second_status" == "200" ]]
-            else
-              echo "unexpected resume asset download status: $status" >&2
-              exit 1
-            fi
-
-            [[ -f "$destination" && ! -L "$destination" ]]
-            [[ "$(stat -c '%s' "$destination")" == "$expected_size" ]]
-            actual_digest="$(sha256sum -- "$destination" | awk '{print $1}')"
-            [[ "sha256:$actual_digest" == "$expected_digest" ]]
-          done
-
-          {
-            echo "manifest_hash=$manifest_hash"
-            echo "reconstruction_status=verified"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify the complete handoff locally
-        shell: bash
-        env:
-          FRESH_MANIFEST_HASH: ${{ needs.assemble-release.outputs.manifest_hash }}
-          HANDOFF: ${{ runner.temp }}/release-handoff
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          REPOSITORY_ID: ${{ needs.prepare-release.outputs.repository_id }}
-          RESUME_MANIFEST_HASH: ${{ steps.reconstruct.outputs.manifest_hash }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          case "$RELEASE_MODE" in
-            fresh) expected_manifest_hash="$FRESH_MANIFEST_HASH" ;;
-            resume) expected_manifest_hash="$RESUME_MANIFEST_HASH" ;;
-            *) echo "invalid release mode: $RELEASE_MODE" >&2; exit 1 ;;
-          esac
-          [[ "$expected_manifest_hash" =~ ^[0-9a-f]{64}$ ]]
-          EXPECTED_MANIFEST_HASH="$expected_manifest_hash" node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const assets = [
-            'Agents.Commander-0.30.1-1.x86_64.rpm',
-            'Agents.Commander_0.30.1_aarch64.dmg',
-            'Agents.Commander_0.30.1_amd64.AppImage',
-            'Agents.Commander_0.30.1_amd64.deb',
-            'Agents.Commander_0.30.1_x64-setup.exe',
-            'Agents.Commander_0.30.1_x64.dmg',
-            'Agents.Commander_aarch64.app.tar.gz',
-            'Agents.Commander_x64.app.tar.gz',
-            'agentscommander-linux-x86_64',
-            'agentscommander-mac-aarch64',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64',
-            'agentscommander-mac-x86_64.app.tar.gz',
-            'agentscommander-testeable-windows-x86_64.exe',
-            'agentscommander-windows-x86_64.exe',
-            'SHASUMS256.txt',
-          ];
-          const expectedInventory = [
-            ...assets,
-            'release-manifest-draft.json',
-            'release-manifest-draft.json.sha256',
-          ].sort();
-          const entries = fs.readdirSync(process.env.HANDOFF, { withFileTypes: true });
-          if (
-            entries.length !== 18
-            || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
-            || JSON.stringify(entries.map((entry) => entry.name).sort())
-              !== JSON.stringify(expectedInventory)
-          ) {
-            throw new Error('downloaded handoff inventory is not the exact 18-file set');
-          }
-
-          const hashFile = path.join(process.env.HANDOFF, 'release-manifest-draft.json.sha256');
-          const hashRow = fs.readFileSync(hashFile, 'utf8');
-          const hashMatch = /^([0-9a-f]{64})  release-manifest-draft\.json\n$/.exec(hashRow);
-          if (!hashMatch || hashMatch[1] !== process.env.EXPECTED_MANIFEST_HASH) {
-            throw new Error('draft manifest hash record is invalid');
-          }
-          const manifestPath = path.join(process.env.HANDOFF, 'release-manifest-draft.json');
-          const manifestBytes = fs.readFileSync(manifestPath);
-          const manifestHash = crypto.createHash('sha256').update(manifestBytes).digest('hex');
-          if (manifestHash !== hashMatch[1]) {
-            throw new Error('draft manifest bytes do not match the recorded hash');
-          }
-          const manifest = JSON.parse(manifestBytes);
-          const compareNames = (left, right) => (
-            left === right ? 0 : (left < right ? -1 : 1)
-          );
-          const manifestNames = [...assets].sort(compareNames);
-          if (
-            manifest.repository?.id !== Number(process.env.REPOSITORY_ID)
-            || manifest.repository?.name !== 'mblua/AgentsCommander'
-            || manifest.release?.id !== Number(process.env.RELEASE_ID)
-            || manifest.release?.tagName !== 'v0.30.1'
-            || manifest.release?.tagObjectSha !== process.env.TAG_OBJECT_SHA
-            || manifest.release?.targetCommitish !== process.env.RELEASE_SHA
-            || manifest.release?.name !== 'Agents Commander v0.30.1'
-            || manifest.release?.draft !== true
-            || manifest.release?.prerelease !== false
-            || manifest.release?.immutable !== false
-            || !Array.isArray(manifest.assets)
-            || manifest.assets.length !== 16
-            || JSON.stringify(manifest.assets.map((asset) => asset.name))
-              !== JSON.stringify(manifestNames)
-          ) {
-            throw new Error('draft manifest identity, state, or asset order is invalid');
-          }
-
-          const recordIds = new Set();
-          for (const record of manifest.assets) {
-            if (
-              !Number.isInteger(record.id)
-              || record.id <= 0
-              || recordIds.has(record.id)
-              || !Number.isInteger(record.size)
-              || record.size <= 0
-              || !/^sha256:[0-9a-f]{64}$/.test(record.digest)
-              || JSON.stringify(Object.keys(record).sort())
-                !== JSON.stringify(['digest', 'id', 'name', 'size'])
-            ) {
-              throw new Error(`invalid manifest asset record: ${record.name}`);
-            }
-            recordIds.add(record.id);
-            const file = path.join(process.env.HANDOFF, record.name);
-            const bytes = fs.readFileSync(file);
-            const digest = `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
-            if (bytes.length !== record.size || digest !== record.digest) {
-              throw new Error(`handoff payload mismatch: ${record.name}`);
-            }
-          }
-
-          const checksum = fs
-            .readFileSync(path.join(process.env.HANDOFF, 'SHASUMS256.txt'), 'utf8')
-            .split('\n')
-            .filter(Boolean);
-          if (checksum.length !== 15) {
-            throw new Error('handoff checksum manifest does not have 15 rows');
-          }
-          const checksumNames = assets.filter((name) => name !== 'SHASUMS256.txt');
-          checksum.forEach((line, index) => {
-            const match = /^([0-9a-f]{64})  ([^\r\n]+)$/.exec(line);
-            const name = checksumNames[index];
-            if (!match || match[2] !== name) {
-              throw new Error(`invalid handoff checksum row ${index + 1}`);
-            }
-            const actual = crypto
-              .createHash('sha256')
-              .update(fs.readFileSync(path.join(process.env.HANDOFF, name)))
-              .digest('hex');
-            if (actual !== match[1]) {
-              throw new Error(`handoff checksum mismatch: ${name}`);
-            }
-          });
-
-          const installerNames = [
-            'agentscommander-linux-x86_64',
-            'agentscommander-windows-x86_64.exe',
-            'agentscommander-mac-aarch64.app.tar.gz',
-            'agentscommander-mac-x86_64.app.tar.gz',
-          ];
-          for (const requested of installerNames) {
-            const matches = checksum.filter((line) => line.includes(requested));
-            const token = /^([0-9a-f]{64})  ([^\r\n]+)$/.exec(matches[0] ?? '')?.[2];
-            if (matches.length !== 1 || token !== requested) {
-              throw new Error(`installer checksum selection is not exact: ${requested}`);
-            }
-          }
-
-          function sameBytes(left, right) {
-            return fs.readFileSync(path.join(process.env.HANDOFF, left))
-              .equals(fs.readFileSync(path.join(process.env.HANDOFF, right)));
-          }
-          if (
-            !sameBytes(
-              'agentscommander-testeable-windows-x86_64.exe',
-              'agentscommander-windows-x86_64.exe',
-            )
-            || !sameBytes(
-              'Agents.Commander_aarch64.app.tar.gz',
-              'agentscommander-mac-aarch64.app.tar.gz',
-            )
-            || !sameBytes(
-              'Agents.Commander_x64.app.tar.gz',
-              'agentscommander-mac-x86_64.app.tar.gz',
-            )
-          ) {
-            throw new Error('public alias payloads are not byte-identical');
-          }
-          NODE
-
-      - name: Revalidate the complete draft
-        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HANDOFF: ${{ runner.temp }}/release-handoff
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-        run: |
-          set -euo pipefail
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            > "$RUNNER_TEMP/draft-before-publication.json"
-
-          SNAPSHOT="$RUNNER_TEMP/draft-before-publication.json" node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const manifest = JSON.parse(
-            fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
-          );
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          const remoteAssets = [...release.assets]
-            .sort((left, right) => left.name.localeCompare(right.name, 'en'));
-          const expectedAssets = [...manifest.assets]
-            .sort((left, right) => left.name.localeCompare(right.name, 'en'));
-          if (
-            Number(release.id) !== manifest.release.id
-            || release.tag_name !== manifest.release.tagName
-            || release.target_commitish !== manifest.release.targetCommitish
-            || release.name !== manifest.release.name
-            || release.draft !== true
-            || release.prerelease !== false
-            || release.immutable !== false
-            || remoteAssets.length !== 16
-          ) {
-            throw new Error('fresh draft snapshot identity or state changed');
-          }
-          for (let index = 0; index < expectedAssets.length; index += 1) {
-            const remote = remoteAssets[index];
-            const expected = expectedAssets[index];
-            if (
-              remote.name !== expected.name
-              || remote.id !== expected.id
-              || remote.size !== expected.size
-              || remote.state !== 'uploaded'
-              || remote.digest !== expected.digest
-              || remote.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${expected.id}`
-            ) {
-              throw new Error(`fresh draft asset changed: ${expected.name}`);
-            }
-          }
-          NODE
-
-      - name: Publish through the single authorized mutation
-        id: publish
-        if: ${{ needs.prepare-release.outputs.release_mode == 'fresh' }}
-        continue-on-error: true
-        timeout-minutes: 10
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HANDOFF: ${{ runner.temp }}/release-handoff
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-
-          git fetch \
-            --no-tags \
-            origin \
-            "+refs/tags/v0.30.1:refs/tags/ac-release-v0.30.1"
-          [[ "$(git cat-file -t refs/tags/ac-release-v0.30.1)" == "tag" ]]
-          remote_tag_object="$(git rev-parse refs/tags/ac-release-v0.30.1)"
-          remote_release_sha="$(git rev-parse refs/tags/ac-release-v0.30.1^{commit})"
-          [[ "$remote_tag_object" == "$TAG_OBJECT_SHA" ]]
-          [[ "$(git cat-file -t "$remote_release_sha")" == "commit" ]]
-          [[ "$remote_release_sha" == "$RELEASE_SHA" ]]
-
-          git fetch \
-            --no-tags \
-            origin \
-            "+refs/heads/main:refs/remotes/origin/ac-release-main"
-          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/ac-release-main
-          git show "$RELEASE_SHA:.github/workflows/release.yml" \
-            > "$RUNNER_TEMP/release-workflow.yml"
-          git show "refs/remotes/origin/ac-release-main:.github/workflows/release.yml" \
-            > "$RUNNER_TEMP/main-workflow.yml"
-          cmp --silent "$RUNNER_TEMP/release-workflow.yml" "$RUNNER_TEMP/main-workflow.yml"
-
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/immutable-releases \
-            > "$RUNNER_TEMP/immutable-setting-critical.json"
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            > "$RUNNER_TEMP/draft-critical.json"
-
-          IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-critical.json" \
-          SNAPSHOT="$RUNNER_TEMP/draft-critical.json" \
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const setting = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_SETTING, 'utf8'));
-          const manifest = JSON.parse(
-            fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
-          );
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          if (setting.enabled !== true) {
-            throw new Error('immutable releases are no longer enabled');
-          }
-          if (
-            Number(release.id) !== manifest.release.id
-            || release.tag_name !== manifest.release.tagName
-            || release.target_commitish !== manifest.release.targetCommitish
-            || release.name !== manifest.release.name
-            || release.draft !== true
-            || release.prerelease !== false
-            || release.immutable !== false
-            || !Array.isArray(release.assets)
-            || release.assets.length !== 16
-          ) {
-            throw new Error('critical draft snapshot identity or state changed');
-          }
-          const remoteByName = new Map(release.assets.map((asset) => [asset.name, asset]));
-          if (remoteByName.size !== 16) {
-            throw new Error('critical draft contains duplicate assets');
-          }
-          for (const expected of manifest.assets) {
-            const remote = remoteByName.get(expected.name);
-            if (
-              !remote
-              || remote.id !== expected.id
-              || remote.size !== expected.size
-              || remote.state !== 'uploaded'
-              || remote.digest !== expected.digest
-              || remote.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${expected.id}`
-            ) {
-              throw new Error(`critical draft asset changed: ${expected.name}`);
-            }
-          }
-          NODE
-          gh api \
-            --method PATCH \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            --input - \
-            > "$RUNNER_TEMP/publish-response.json" <<'JSON'
-          {"draft":false}
-          JSON
-
-      - name: Reconcile and verify the immutable release
-        id: reconcile
-        if: ${{ always() && !cancelled() }}
-        timeout-minutes: 20
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HANDOFF: ${{ runner.temp }}/release-handoff
-          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-          RECONSTRUCTION_STATUS: ${{ steps.reconstruct.outputs.reconstruction_status }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_MODE" == "fresh" || "$RELEASE_MODE" == "resume" ]]
-          if [[ "$RELEASE_MODE" == "resume" ]]; then
-            [[ "$PUBLISH_OUTCOME" == "skipped" ]]
-            [[ "$RECONSTRUCTION_STATUS" == "verified" ]]
-          else
-            [[ -z "$RECONSTRUCTION_STATUS" ]]
+          TAG="${{ github.ref_name }}"
+          if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
+            node scripts/copy-testable-binary.mjs
+            cp target/release/agentscommander.exe agentscommander-windows-x86_64.exe
+            cp target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
+            gh release upload "$TAG" agentscommander-windows-x86_64.exe --clobber
+            gh release upload "$TAG" agentscommander-testeable-windows-x86_64.exe --clobber
+          elif [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
+            cp target/release/agentscommander agentscommander-linux-x86_64
+            gh release upload "$TAG" agentscommander-linux-x86_64 --clobber
+          elif [[ "${{ matrix.args }}" == *aarch64* ]]; then
+            cp target/aarch64-apple-darwin/release/agentscommander agentscommander-mac-aarch64
+            gh release upload "$TAG" agentscommander-mac-aarch64 --clobber
+            APP_TAR=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
+            cp "$APP_TAR" agentscommander-mac-aarch64.app.tar.gz
+            gh release upload "$TAG" agentscommander-mac-aarch64.app.tar.gz --clobber
+          elif [[ "${{ matrix.args }}" == *x86_64* ]]; then
+            cp target/x86_64-apple-darwin/release/agentscommander agentscommander-mac-x86_64
+            gh release upload "$TAG" agentscommander-mac-x86_64 --clobber
+            APP_TAR=$(find target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
+            cp "$APP_TAR" agentscommander-mac-x86_64.app.tar.gz
+            gh release upload "$TAG" agentscommander-mac-x86_64.app.tar.gz --clobber
           fi
-          published=0
-          for attempt in $(seq 1 60); do
-            gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-              > "$RUNNER_TEMP/published-release-poll.json"
-            gh api \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              /repos/mblua/AgentsCommander/immutable-releases \
-              > "$RUNNER_TEMP/immutable-setting-poll.json"
 
-            set +e
-            IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-poll.json" \
-            SNAPSHOT="$RUNNER_TEMP/published-release-poll.json" \
-            node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const setting = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_SETTING, 'utf8'));
-          const manifest = JSON.parse(
-            fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
-          );
-          const release = JSON.parse(fs.readFileSync(process.env.SNAPSHOT, 'utf8'));
-          if (setting.enabled !== true) {
-            throw new Error('immutable release setting is no longer enabled');
-          }
-          if (
-            Number(release.id) !== manifest.release.id
-            || release.tag_name !== manifest.release.tagName
-            || release.target_commitish !== manifest.release.targetCommitish
-            || release.name !== manifest.release.name
-            || release.prerelease !== false
-            || !Array.isArray(release.assets)
-            || release.assets.length !== 16
-          ) {
-            throw new Error('published release identity or base state changed');
-          }
-          const byName = new Map(release.assets.map((asset) => [asset.name, asset]));
-          if (byName.size !== 16) {
-            throw new Error('published release contains duplicate assets');
-          }
-          for (const expected of manifest.assets) {
-            const remote = byName.get(expected.name);
-            if (
-              !remote
-              || remote.id !== expected.id
-              || remote.size !== expected.size
-              || remote.state !== 'uploaded'
-              || remote.digest !== expected.digest
-              || remote.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${expected.id}`
-            ) {
-              throw new Error(`published release asset changed: ${expected.name}`);
-            }
-          }
-          if (release.draft === false && release.immutable === true) {
-            process.exit(0);
-          }
-          if (
-            (release.draft === true && release.immutable === false)
-            || (release.draft === false && release.immutable === false)
-          ) {
-            process.exit(75);
-          }
-          throw new Error('published release entered an invalid state');
-          NODE
-            reconcile_rc=$?
-            set -e
-            if [[ "$reconcile_rc" -eq 0 ]]; then
-              published=1
-              break
-            fi
-            [[ "$reconcile_rc" -eq 75 ]]
-            sleep 5
-          done
-          [[ "$published" -eq 1 ]]
+  # ---------------------------------------------------------------------
+  # SHASUMS256.txt over every asset. npm/install.js verifies against this.
+  # ---------------------------------------------------------------------
+  checksums:
+    name: checksums
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
 
-          assets=(
-            "Agents.Commander-0.30.1-1.x86_64.rpm"
-            "Agents.Commander_0.30.1_aarch64.dmg"
-            "Agents.Commander_0.30.1_amd64.AppImage"
-            "Agents.Commander_0.30.1_amd64.deb"
-            "Agents.Commander_0.30.1_x64-setup.exe"
-            "Agents.Commander_0.30.1_x64.dmg"
-            "Agents.Commander_aarch64.app.tar.gz"
-            "Agents.Commander_x64.app.tar.gz"
-            "agentscommander-linux-x86_64"
-            "agentscommander-mac-aarch64"
-            "agentscommander-mac-aarch64.app.tar.gz"
-            "agentscommander-mac-x86_64"
-            "agentscommander-mac-x86_64.app.tar.gz"
-            "agentscommander-testeable-windows-x86_64.exe"
-            "agentscommander-windows-x86_64.exe"
-            "SHASUMS256.txt"
-          )
-
-          attestations_verified=0
-          for attempt in $(seq 1 60); do
-            if timeout 30s \
-              gh release verify \
-                v0.30.1 \
-                --repo mblua/AgentsCommander \
-                --format json \
-                > "$RUNNER_TEMP/release-verify.json" \
-                2> "$RUNNER_TEMP/release-verify.err"; then
-              all_assets_verified=1
-              for index in "${!assets[@]}"; do
-                ordinal="$(printf '%02d' "$((index + 1))")"
-                if ! timeout 30s \
-                  gh release verify-asset \
-                    v0.30.1 \
-                    "$HANDOFF/${assets[$index]}" \
-                    --repo mblua/AgentsCommander \
-                    --format json \
-                    > "$RUNNER_TEMP/asset-verify-$ordinal.json" \
-                    2> "$RUNNER_TEMP/asset-verify-$ordinal.err"; then
-                  all_assets_verified=0
-                  break
-                fi
-              done
-              if [[ "$all_assets_verified" -eq 1 ]]; then
-                attestations_verified=1
-                break
-              fi
-            fi
-            sleep 5
-          done
-          [[ "$attestations_verified" -eq 1 ]]
-
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "/repos/mblua/AgentsCommander/releases/$RELEASE_ID" \
-            > "$RUNNER_TEMP/published-release.json"
-          gh api \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            /repos/mblua/AgentsCommander/immutable-releases \
-            > "$RUNNER_TEMP/immutable-setting-final.json"
-
-          FINAL_SNAPSHOT="$RUNNER_TEMP/published-release.json" \
-          IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-final.json" \
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const setting = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_SETTING, 'utf8'));
-          const manifest = JSON.parse(
-            fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
-          );
-          const release = JSON.parse(fs.readFileSync(process.env.FINAL_SNAPSHOT, 'utf8'));
-          if (
-            setting.enabled !== true
-            || Number(release.id) !== manifest.release.id
-            || release.tag_name !== manifest.release.tagName
-            || release.target_commitish !== manifest.release.targetCommitish
-            || release.name !== manifest.release.name
-            || release.draft !== false
-            || release.prerelease !== false
-            || release.immutable !== true
-            || !Array.isArray(release.assets)
-            || release.assets.length !== 16
-          ) {
-            throw new Error('final immutable release snapshot is invalid');
-          }
-          const byName = new Map(release.assets.map((asset) => [asset.name, asset]));
-          if (byName.size !== 16) {
-            throw new Error('final immutable release contains duplicate assets');
-          }
-          for (const expected of manifest.assets) {
-            const remote = byName.get(expected.name);
-            if (
-              !remote
-              || remote.id !== expected.id
-              || remote.size !== expected.size
-              || remote.state !== 'uploaded'
-              || remote.digest !== expected.digest
-              || remote.url
-                !== `https://api.github.com/repos/mblua/AgentsCommander/releases/assets/${expected.id}`
-            ) {
-              throw new Error(`final immutable asset changed: ${expected.name}`);
-            }
-          }
-          NODE
-
-          mapfile -t remote_tag_lines < <(
-            git ls-remote --refs origin refs/tags/v0.30.1
-          )
-          [[ "${#remote_tag_lines[@]}" -eq 1 ]]
-          read -r final_tag_object final_tag_ref <<< "${remote_tag_lines[0]}"
-          [[ "$final_tag_ref" == "refs/tags/v0.30.1" ]]
-          [[ "$final_tag_object" == "$TAG_OBJECT_SHA" ]]
-          [[ "$(git cat-file -t "$final_tag_object")" == "tag" ]]
-          final_release_sha="$(git rev-parse "$final_tag_object^{commit}")"
-          [[ "$(git cat-file -t "$final_release_sha")" == "commit" ]]
-          [[ "$final_release_sha" == "$RELEASE_SHA" ]]
-
-          evidence="$RUNNER_TEMP/final-evidence"
-          mkdir "$evidence"
-          EVIDENCE="$evidence" \
-          FINAL_SNAPSHOT="$RUNNER_TEMP/published-release.json" \
-          IMMUTABLE_SETTING="$RUNNER_TEMP/immutable-setting-final.json" \
-          node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          function canonical(value) {
-            if (Array.isArray(value)) {
-              return value.map(canonical);
-            }
-            if (value && typeof value === 'object') {
-              return Object.fromEntries(
-                Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
-              );
-            }
-            return value;
-          }
-
-          const draft = JSON.parse(
-            fs.readFileSync(path.join(process.env.HANDOFF, 'release-manifest-draft.json'), 'utf8'),
-          );
-          const releaseMode = process.env.RELEASE_MODE;
-          if (releaseMode !== 'fresh' && releaseMode !== 'resume') {
-            throw new Error(`invalid release mode in final evidence: ${releaseMode}`);
-          }
-          const reconstructionStatus = releaseMode === 'resume'
-            ? process.env.RECONSTRUCTION_STATUS
-            : 'not-required';
-          if (releaseMode === 'resume' && reconstructionStatus !== 'verified') {
-            throw new Error('resume reconstruction was not verified');
-          }
-          const immutable = canonical({
-            ...draft,
-            release: {
-              ...draft.release,
-              draft: false,
-              immutable: true,
-            },
-          });
-          const immutablePath = path.join(
-            process.env.EVIDENCE,
-            'release-manifest-immutable.json',
-          );
-          fs.writeFileSync(immutablePath, `${JSON.stringify(immutable)}\n`, { flag: 'wx' });
-          const immutableHash = crypto
-            .createHash('sha256')
-            .update(fs.readFileSync(immutablePath))
-            .digest('hex');
-          fs.writeFileSync(
-            `${immutablePath}.sha256`,
-            `${immutableHash}  release-manifest-immutable.json\n`,
-            { flag: 'wx' },
-          );
-
-          const finalRecord = canonical({
-            immutableManifestHash: immutableHash,
-            publishStepOutcome: process.env.PUBLISH_OUTCOME,
-            reconstructionStatus,
-            releaseId: Number(process.env.RELEASE_ID),
-            releaseMode,
-            releaseSha: process.env.RELEASE_SHA,
-            runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-            runId: Number(process.env.GITHUB_RUN_ID),
-            tagObjectSha: process.env.TAG_OBJECT_SHA,
-          });
-          fs.writeFileSync(
-            path.join(process.env.EVIDENCE, 'final-evidence.json'),
-            `${JSON.stringify(finalRecord)}\n`,
-            { flag: 'wx' },
-          );
-          const commandStatuses = canonical({
-            assetVerify: draft.assets.map((asset) => ({ name: asset.name, status: 0 })),
-            finalImmutableSettingRead: 0,
-            finalReleaseRead: 0,
-            finalSnapshotValidation: 0,
-            finalTagCommitType: 0,
-            finalTagObjectType: 0,
-            finalTagPeel: 0,
-            finalTagRefRead: 0,
-            publishPatchStepOutcome: process.env.PUBLISH_OUTCOME,
-            reconciliation: 0,
-            releaseVerify: 0,
-            resumeReconstruction: releaseMode === 'resume' ? 0 : null,
-          });
-          fs.writeFileSync(
-            path.join(process.env.EVIDENCE, 'command-statuses.json'),
-            `${JSON.stringify(commandStatuses)}\n`,
-            { flag: 'wx' },
-          );
-          fs.copyFileSync(
-            process.env.FINAL_SNAPSHOT,
-            path.join(process.env.EVIDENCE, 'published-release.json'),
-          );
-          fs.copyFileSync(
-            process.env.IMMUTABLE_SETTING,
-            path.join(process.env.EVIDENCE, 'immutable-setting.json'),
-          );
-          fs.copyFileSync(
-            `${process.env.RUNNER_TEMP}/release-verify.json`,
-            path.join(process.env.EVIDENCE, 'release-verify.json'),
-          );
-          for (let index = 1; index <= 16; index += 1) {
-            const ordinal = String(index).padStart(2, '0');
-            fs.copyFileSync(
-              `${process.env.RUNNER_TEMP}/asset-verify-${ordinal}.json`,
-              path.join(process.env.EVIDENCE, `asset-verify-${ordinal}.json`),
-            );
-          }
-
-          const expected = [
-            'command-statuses.json',
-            'final-evidence.json',
-            'immutable-setting.json',
-            'published-release.json',
-            'release-manifest-immutable.json',
-            'release-manifest-immutable.json.sha256',
-            'release-verify.json',
-            ...Array.from(
-              { length: 16 },
-              (_, index) => `asset-verify-${String(index + 1).padStart(2, '0')}.json`,
-            ),
-          ].sort();
-          const entries = fs.readdirSync(process.env.EVIDENCE, { withFileTypes: true });
-          if (
-            entries.length !== expected.length
-            || entries.some(
-              (entry) => !entry.isFile()
-                || entry.isSymbolicLink()
-                || fs.statSync(path.join(process.env.EVIDENCE, entry.name)).size <= 0,
-            )
-            || JSON.stringify(entries.map((entry) => entry.name).sort())
-              !== JSON.stringify(expected)
-          ) {
-            throw new Error('final evidence inventory is not closed');
-          }
-          fs.appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `immutable_manifest_hash=${immutableHash}\n`,
-          );
-          NODE
-
-      - name: Upload final immutable-release evidence
-        id: final-evidence-upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-v0.30.1-final-evidence-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/final-evidence/*
-          if-no-files-found: error
-          overwrite: false
-          include-hidden-files: false
-          retention-days: 90
-
-      - name: Record final immutable-release evidence
-        id: final-record
-        shell: bash
+      - name: Generate and upload checksums
         env:
-          ARTIFACT_DIGEST: ${{ steps.final-evidence-upload.outputs.artifact-digest }}
-          ARTIFACT_ID: ${{ steps.final-evidence-upload.outputs.artifact-id }}
-          ARTIFACT_URL: ${{ steps.final-evidence-upload.outputs.artifact-url }}
-          IMMUTABLE_MANIFEST_HASH: ${{ steps.reconcile.outputs.immutable_manifest_hash }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          RELEASE_MODE: ${{ needs.prepare-release.outputs.release_mode }}
-          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
-          TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$ARTIFACT_URL" == "https://github.com/mblua/AgentsCommander/actions/runs/$GITHUB_RUN_ID/artifacts/$ARTIFACT_ID" ]]
-          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$IMMUTABLE_MANIFEST_HASH" =~ ^[0-9a-f]{64}$ ]]
-          jq -n \
-            --argjson runId "$GITHUB_RUN_ID" \
-            --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
-            --argjson releaseId "$RELEASE_ID" \
-            --arg releaseMode "$RELEASE_MODE" \
-            --arg tagObjectSha "$TAG_OBJECT_SHA" \
-            --arg releaseSha "$RELEASE_SHA" \
-            --argjson artifactId "$ARTIFACT_ID" \
-            --arg artifactUrl "$ARTIFACT_URL" \
-            --arg artifactDigest "$ARTIFACT_DIGEST" \
-            --arg immutableManifestHash "$IMMUTABLE_MANIFEST_HASH" \
-            '{
-              runId: $runId,
-              runAttempt: $runAttempt,
-              releaseId: $releaseId,
-              releaseMode: $releaseMode,
-              tagObjectSha: $tagObjectSha,
-              releaseSha: $releaseSha,
-              artifactId: $artifactId,
-              artifactUrl: $artifactUrl,
-              artifactDigest: $artifactDigest,
-              immutableManifestHash: $immutableManifestHash
-            }' \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          TAG="${{ github.ref_name }}"
+          mkdir -p release-assets
+          cd release-assets
+          gh release download "$TAG"
+          sha256sum * > ../SHASUMS256.txt
+          cd ..
+          cat SHASUMS256.txt
+          gh release upload "$TAG" SHASUMS256.txt --clobber
+
+  # ---------------------------------------------------------------------
+  # Flip the draft to published, but only once the assets npm depends on
+  # are provably present and downloadable.
+  # ---------------------------------------------------------------------
+  publish-github:
+    name: publish-github
+    needs: [guard, checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release and prove the npm assets resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # A draft release is invisible to GET /releases/tags/{tag}; that
+          # endpoint only serves published releases. Resolving the draft by
+          # tag through it is what silently skipped the v0.30.1 release run.
+          # List and filter instead.
+          release_id="$(gh api --paginate "repos/$REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)"
+
+          if [ -z "$release_id" ]; then
+            echo "::error::No release found for tag $TAG."
+            exit 1
+          fi
+          echo "Release id for $TAG is $release_id"
+
+          gh api "repos/$REPO/releases/$release_id/assets" --paginate \
+            --jq '.[].name' | sort > present.txt
+          echo "Assets attached:"
+          sed 's/^/  /' present.txt
+
+          # These are exactly the files npm/install.js downloads at postinstall
+          # time. If any is missing, npm installs would break for that platform,
+          # so refuse to publish.
+          cat > required.txt <<'EOF'
+          SHASUMS256.txt
+          agentscommander-linux-x86_64
+          agentscommander-mac-aarch64.app.tar.gz
+          agentscommander-mac-x86_64.app.tar.gz
+          agentscommander-windows-x86_64.exe
+          EOF
+
+          missing=0
+          while read -r asset; do
+            [ -z "$asset" ] && continue
+            if ! grep -qxF "$asset" present.txt; then
+              echo "::error::Required asset missing from the release: $asset"
+              missing=1
+            fi
+          done < required.txt
+          [ "$missing" -eq 0 ] || exit 1
+
+          gh api -X PATCH "repos/$REPO/releases/$release_id" \
+            -F draft=false -f make_latest=true >/dev/null
+
+          state="$(gh api "repos/$REPO/releases/$release_id" --jq '.draft')"
+          [ "$state" = "false" ] || { echo "::error::Release is still a draft."; exit 1; }
+
+          # Final proof: the exact URL npm/install.js will hit must resolve.
+          # This is the check that distinguishes "published" from "works".
+          url="https://github.com/$REPO/releases/download/$TAG/SHASUMS256.txt"
+          curl -sSfL --retry 5 --retry-delay 5 -o /dev/null "$url"
+          echo "Release $TAG is published and its assets are publicly downloadable."
+
+  # ---------------------------------------------------------------------
+  # Publish to npm, then prove a clean install actually works.
+  # ---------------------------------------------------------------------
+  publish-npm:
+    name: publish-npm
+    needs: [guard, publish-github]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # provenance attestation
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish @mblua/agentscommander
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AGENTSCOMMANDER }}
+        run: npm publish --provenance --access public
+
+      - name: Wait for the registry to serve the new version
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            got="$(npm view "@mblua/agentscommander@$VERSION" version 2>/dev/null || true)"
+            if [ "$got" = "$VERSION" ]; then
+              echo "Registry is serving $VERSION."
+              exit 0
+            fi
+            echo "Attempt $attempt: not visible yet, waiting."
+            sleep 10
+          done
+          echo "::error::@mblua/agentscommander@$VERSION never became visible."
+          exit 1
+
+      - name: Smoke test a clean install from the registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Installs the real published tarball and lets postinstall download
+          # and checksum-verify the Linux binary from the GitHub Release.
+          # This exercises the whole chain the way a user does.
+          work="$(mktemp -d)"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "@mblua/agentscommander@$VERSION"
+          test -x node_modules/@mblua/agentscommander/bin/agentscommander
+          echo "Clean install of $VERSION succeeded."
+
+      - name: Report
+        shell: bash
+        run: |
           {
-            echo "artifact_id=$ARTIFACT_ID"
-            echo "artifact_url=$ARTIFACT_URL"
-            echo "artifact_digest=$ARTIFACT_DIGEST"
-            echo "immutable_manifest_hash=$IMMUTABLE_MANIFEST_HASH"
-          } >> "$GITHUB_OUTPUT"
+            echo "### Released $VERSION"
+            echo
+            echo "- GitHub Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+            echo "- npm: https://www.npmjs.com/package/@mblua/agentscommander/v/$VERSION"
+            echo
+            echo '```'
+            echo "npx @mblua/agentscommander@$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
