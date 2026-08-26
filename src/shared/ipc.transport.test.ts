@@ -386,3 +386,115 @@ describe("shared ipc transport seam", () => {
     }
   });
 });
+
+describe("agent-update ipc contract (#1551)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  const NODE = {
+    command: "codex",
+    label: "Codex",
+    updateCommands: ["codex update"],
+    installBefore: { status: "installed", version: "1.0", path: "C:\\bin\\codex.cmd", seq: 0 },
+  };
+
+  it("AgentUpdateAPI.getOverview invokes get_agent_update_overview with no args", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const rows = [
+      {
+        key: "codex",
+        label: "Codex",
+        command: "codex",
+        color: "#10b981",
+        updateCommands: ["codex update"],
+        install: { status: "checking", seq: 0 },
+      },
+    ];
+    fake.resolve("get_agent_update_overview", rows);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      await expect(ipc.AgentUpdateAPI.getOverview()).resolves.toEqual(rows);
+    } finally {
+      restore();
+    }
+    expect(fake.callsFor("get_agent_update_overview")).toEqual([
+      { cmd: "get_agent_update_overview", args: {} },
+    ]);
+  });
+
+  it("the per-command, skip and install listeners subscribe to the exact event names and pass the payload through", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const started = vi.fn();
+      const skipped = vi.fn();
+      const finished = vi.fn();
+      const install = vi.fn();
+      const unlisteners = await Promise.all([
+        ipc.onAgentUpdateCommandStarted(started),
+        ipc.onAgentUpdateCommandSkipped(skipped),
+        ipc.onAgentUpdateCommandFinished(finished),
+        ipc.onAgentInstallStateChanged(install),
+      ]);
+      expect(fake.listensFor("agent_update_command_started")).toHaveLength(1);
+      expect(fake.listensFor("agent_update_command_skipped")).toHaveLength(1);
+      expect(fake.listensFor("agent_update_command_finished")).toHaveLength(1);
+      expect(fake.listensFor("agent_install_state_changed")).toHaveLength(1);
+
+      fake.emitFromBackend("agent_update_command_started", NODE);
+      expect(started).toHaveBeenCalledTimes(1);
+      expect(started).toHaveBeenCalledWith(NODE);
+
+      fake.emitFromBackend("agent_update_command_skipped", { command: "pi", label: "Pi" });
+      expect(skipped).toHaveBeenCalledWith({ command: "pi", label: "Pi" });
+
+      const result = { command: "codex", label: "Codex", ok: false, error: "exit code 1" };
+      fake.emitFromBackend("agent_update_command_finished", result);
+      expect(finished).toHaveBeenCalledWith(result);
+
+      const changed = { command: "codex", install: { status: "missing", detail: "'codex' was not found on PATH", seq: 3 } };
+      fake.emitFromBackend("agent_install_state_changed", changed);
+      expect(install).toHaveBeenCalledWith(changed);
+
+      for (const unlisten of unlisteners) unlisten();
+      fake.emitFromBackend("agent_update_command_started", NODE);
+      expect(started).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("onAgentUpdatePromptClosed and onAgentUpdatesStarted pass the payload through and map an absent payload to null", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const closed = vi.fn();
+      const started = vi.fn();
+      await ipc.onAgentUpdatePromptClosed(closed);
+      await ipc.onAgentUpdatesStarted(started);
+      expect(fake.listensFor("agent_update_prompt_closed")).toHaveLength(1);
+      expect(fake.listensFor("agent_updates_started")).toHaveLength(1);
+
+      fake.emitFromBackend("agent_update_prompt_closed", { command: "claude", label: "Claude" });
+      expect(closed).toHaveBeenLastCalledWith({ command: "claude", label: "Claude" });
+      fake.emitFromBackend("agent_update_prompt_closed", null);
+      expect(closed).toHaveBeenLastCalledWith(null);
+      fake.emitFromBackend("agent_update_prompt_closed", undefined);
+      expect(closed).toHaveBeenLastCalledWith(null);
+
+      fake.emitFromBackend("agent_updates_started", { nodes: [NODE] });
+      expect(started).toHaveBeenLastCalledWith({ nodes: [NODE] });
+      fake.emitFromBackend("agent_updates_started", null);
+      expect(started).toHaveBeenLastCalledWith(null);
+      fake.emitFromBackend("agent_updates_started", undefined);
+      expect(started).toHaveBeenLastCalledWith(null);
+    } finally {
+      restore();
+    }
+  });
+});

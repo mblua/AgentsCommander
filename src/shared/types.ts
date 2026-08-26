@@ -394,10 +394,11 @@ export interface CodingAgentDefinition {
   /** #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
    * array of COMPLETE command strings, each executed sequentially (e.g.
    * ["claude --update"] or ["claude --update", "npm i -g @scope/cli"]).
-   * NOT argv tokens. Empty = no update command. Inert until the follow-up
-   * update-check feature reads it. */
+   * NOT argv tokens. Empty = no update command. Consumed by the #1327 startup
+   * update pass (`build_update_plan`) and listed by the #1551 Settings
+   * Auto-update table. */
   updateCommands: string[];
-  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert until the follow-up feature reads it. */
+  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
   autoUpdate: boolean;
 }
 
@@ -816,12 +817,60 @@ export interface AgentUpdatePrompt {
   label: string;
 }
 
+/** #1551 - a command in the startup update pass (start order); also the payload of `agent_update_prompt_closed`. */
+export interface AgentUpdateCommandRef {
+  command: string;
+  label: string;
+}
+
+export type InstallStatus = "checking" | "missing" | "installed" | "probeFailed" | "unprobed";
+
+/** #1551 - resolved install state of one catalog command; `path`/`detail` absent when the backend has none.
+ *  `seq` is the backend cache's commit counter (0 = `checking`); a higher `seq` is always the newer state. */
+export interface InstallState {
+  status: InstallStatus;
+  version?: string | null;
+  path?: string | null;
+  detail?: string | null;
+  seq: number;
+}
+
+/** #1551 - one update-capable catalog entry (catalog order, duplicates kept). Configured/registered/live facts are FE-derived. */
+export interface AgentUpdateOverviewRow {
+  key: string;
+  label: string;
+  command: string;
+  color: string;
+  updateCommands: string[];
+  install: InstallState;
+}
+
+export interface AgentInstallStateChanged {
+  command: string;
+  install: InstallState;
+}
+
+/** #1551 round 5 - one agent of this boot's startup pass, in pass (catalog) order; also the payload of `agent_update_command_started`.
+ *  `installBefore` is the pre-update probe result (absent until that probe ran; `seq` 0, never cached). */
+export interface AgentUpdateNode {
+  command: string;
+  label: string;
+  updateCommands: string[];
+  installBefore?: InstallState | null;
+}
+
 export interface AgentUpdateStatus {
   inProgress: boolean;
   /** The currently displayed prompt (sequential phase: at most one);
    * restored from the snapshot by a late-mounting sidebar. */
   prompt: AgentUpdatePrompt | null;
   results: AgentUpdateResult[];
+  /** #1551 - commands whose update sequence is running, in start order. */
+  running: AgentUpdateCommandRef[];
+  /** #1551 - policy recorded by the winning answer per prompted command this boot; absent on an older backend. */
+  answered?: Record<string, boolean>;
+  /** #1551 - the pass nodes in pass order; absent on an older backend. */
+  nodes?: AgentUpdateNode[];
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";

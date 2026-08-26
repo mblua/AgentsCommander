@@ -5,12 +5,14 @@ import { FakeTransport } from "../../shared/testing/fake-transport";
 import { __setTransportForTests } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import type { AgentUpdatePrompt } from "../../shared/types";
-import { agentUpdateStore } from "../agent-update";
+import { agentUpdateStore, resetAgentUpdateForTests } from "../agent-update";
 import AgentUpdateOverlay from "./AgentUpdateOverlay";
 
 const [, setAgentUpdateStore] = agentUpdateStore;
 
-const PROMPT: AgentUpdatePrompt = { command: "claude", label: "Claude" };
+// Frozen: a Solid path write (`set("prompt", next)`) merges `next` INTO the object the store
+// already holds; the store copies a frozen object, so the shared constant is never mutated.
+const PROMPT: AgentUpdatePrompt = Object.freeze({ command: "claude", label: "Claude" });
 
 function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   const element = document.querySelector<T>(`[data-ac-testid="${testId}"]`);
@@ -35,7 +37,7 @@ describe("AgentUpdateOverlay (#1327)", () => {
     fake = new FakeTransport();
     restore = __setTransportForTests(fake);
     toastStore.clear();
-    setAgentUpdateStore({ inProgress: false, prompt: null });
+    resetAgentUpdateForTests();
     const root = document.createElement("div");
     document.body.appendChild(root);
     dispose = render(() => <AgentUpdateOverlay />, root);
@@ -45,7 +47,7 @@ describe("AgentUpdateOverlay (#1327)", () => {
     dispose?.();
     dispose = null;
     toastStore.clear();
-    setAgentUpdateStore({ inProgress: false, prompt: null });
+    resetAgentUpdateForTests();
     document.body.replaceChildren();
     restore();
     vi.restoreAllMocks();
