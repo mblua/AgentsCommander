@@ -339,6 +339,30 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
+      # OIDC Trusted Publishing needs npm >= 11.5.1; node 22 ships 10.9.8.
+      # Same pin as version-sync-check.yml.
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Show OIDC preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "npm  $(npm --version)   (OIDC trusted publishing needs >= 11.5.1)"
+          echo "node $(node --version)  (OIDC trusted publishing needs >= 22.14.0)"
+
+      # Auth is mid-migration to OIDC Trusted Publishing (issue #1563), and both
+      # credentials are deliberately present at once. npm detects the OIDC
+      # environment and uses it "before falling back to traditional tokens", so
+      # this publishes via OIDC when the trusted publisher matches and via
+      # NODE_AUTH_TOKEN when it does not. Either way the release ships.
+      #
+      # --provenance is redundant under OIDC (trusted publishing generates
+      # attestations on its own) but required on the token path, and it is not
+      # an error to pass it, so it stays until the token is gone.
+      #
+      # Once a release has demonstrably published via OIDC, drop the env block
+      # and the flag, then delete the NPM_AGENTSCOMMANDER secret.
       - name: Publish @mblua/agentscommander
         working-directory: npm
         env:
