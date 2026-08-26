@@ -1524,6 +1524,50 @@ html.light-theme .root-agent-avatar {
   justify-content: center;
 }
 
+/* #1551 round 5/6 - the Option 2 staged-progress timeline of the startup overlay (plan 5.14: the exact
+   transcription of index-V1.html #opcion-2 with the production tokens; the round-4 row rules never landed). */
+.agent-update-card--timeline { width: 460px; align-items: stretch; }
+.agent-update-header { display: flex; align-items: center; gap: var(--spacing-md); }
+.agent-update-spinner--small { width: 18px; height: 18px; border-width: 2px; flex: none; }
+.agent-update-done { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--status-waiting); color: var(--status-waiting); padding: 4px; display: grid; place-items: center; flex: none; }
+.agent-update-done--small { width: 18px; height: 18px; border-width: 2px; padding: 2px; }
+.agent-update-done svg { width: 100%; height: 100%; display: block; }
+.agent-update-header-text { display: flex; flex-direction: column; min-width: 0; }
+.agent-update-card--timeline .agent-update-text { text-align: left; }
+.agent-update-progress-text { font-family: var(--font-ui); font-size: var(--font-size-sm); color: var(--sidebar-fg-dim); font-variant-numeric: tabular-nums; }
+.agent-update-progress { height: 4px; border-radius: 2px; background: var(--sidebar-border); overflow: hidden; }
+.agent-update-progress-fill { height: 100%; background: var(--accent-color, #0a84ff); transition: width 0.4s ease; }
+.agent-update-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
+.agent-update-node { position: relative; display: grid; grid-template-columns: 22px 1fr; gap: 0 10px; padding: 6px 8px; border-radius: 6px; border-left: 2px solid transparent; font-family: var(--font-ui); color: var(--sidebar-fg); }
+.agent-update-node::before { content: ""; position: absolute; left: 18px; top: 28px; bottom: -6px; width: 2px; background: var(--sidebar-border); }
+.agent-update-node:last-child::before { display: none; }
+.agent-update-node[data-ac-state="updating"] { background: var(--sidebar-active); border-left-color: var(--accent-color, #0a84ff); }
+.agent-update-node-marker { position: relative; z-index: 1; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--sidebar-border); background: var(--sidebar-surface); display: grid; place-items: center; padding: 3px; }
+.agent-update-node-marker svg { width: 100%; height: 100%; display: block; }
+.agent-update-node[data-ac-state="ok"] .agent-update-node-marker { border-color: var(--status-waiting); background: var(--status-waiting); color: var(--sidebar-bg); }
+.agent-update-node[data-ac-state="failed"] .agent-update-node-marker { border-color: var(--status-exited); background: var(--status-exited); color: var(--sidebar-bg); }
+.agent-update-node[data-ac-state="updating"] .agent-update-node-marker { border-top-color: var(--accent-color, #0a84ff); animation: agent-update-spin 0.9s linear infinite; }
+.agent-update-node-body { min-width: 0; display: flex; flex-direction: column; }
+.agent-update-node-label { font-size: var(--font-size-md); font-weight: 600; }
+.agent-update-node[data-ac-state="pending"] .agent-update-node-label { color: var(--sidebar-fg-dim); font-weight: 400; }
+.agent-update-node-line { font-size: var(--font-size-sm); color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
+/* #1551 round 6 - coordinator decision on FE N4: the small state word keeps AA contrast; the pending label and marker stay dimmed like the prototype. */
+.agent-update-node[data-ac-state="pending"] .agent-update-node-state { color: var(--sidebar-fg); }
+.agent-update-node[data-ac-state="updating"] .agent-update-node-line { color: var(--sidebar-fg); }
+.agent-update-node[data-ac-state="ok"] .agent-update-node-line { color: var(--status-waiting); }
+.agent-update-node[data-ac-state="failed"] .agent-update-node-line { color: var(--status-exited); }
+.agent-update-node-command code { display: block; margin-top: 2px; font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 10px; color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
+.agent-update-node-bar { height: 3px; margin-top: 5px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent-color, #0a84ff), transparent); background-size: 200% 100%; animation: agent-update-shimmer 1.2s linear infinite; }
+@keyframes agent-update-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.agent-update-summary-actions { display: flex; justify-content: flex-end; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-update-spinner, .agent-update-node[data-ac-state="updating"] .agent-update-node-marker { animation: none; }
+  .agent-update-spinner { border-top-color: var(--accent-color, #0a84ff); border-right-color: var(--accent-color, #0a84ff); }
+  .agent-update-node[data-ac-state="updating"] .agent-update-node-marker { border-top-color: var(--accent-color, #0a84ff); border-right-color: var(--accent-color, #0a84ff); }
+  .agent-update-node-bar { animation: none; background: var(--accent-color, #0a84ff); opacity: 0.5; }
+  .agent-update-progress-fill { transition: none; }
+}
+
 .modal-container {
   background: var(--sidebar-surface);
   border: 1px solid var(--sidebar-border);
