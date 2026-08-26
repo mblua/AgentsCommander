@@ -1427,6 +1427,7 @@ const ProjectPanel: Component = () => {
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
                 data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
+                data-ac-testid-private="true"
               >
                 {/* #777: built-in Non-stop slot, pinned above the user groups. */}
                 <button
@@ -1434,6 +1435,7 @@ const ProjectPanel: Component = () => {
                   title={`Watch this workgroup in the ${DEFAULT_NON_STOP_NAME} group`}
                   onClick={() => void toggleNonStop(wg)}
                   data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
+                  data-ac-testid-private="true"
                 >
                   <span class="session-context-option-check">
                     {nonStopChecked(wg) ? "✓" : ""}
@@ -1465,6 +1467,7 @@ const ProjectPanel: Component = () => {
                           void toggleExistingGroup(wg, group.id);
                         }}
                         data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
+                        data-ac-testid-private="true"
                       >
                         <span class="session-context-option-check">
                           {selected() ? "\u2713" : ""}
@@ -1497,6 +1500,7 @@ const ProjectPanel: Component = () => {
                         reclampGroupFlyout();
                       }}
                       data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
+                      data-ac-testid-private="true"
                     >
                       Create new group
                     </button>
@@ -1555,6 +1559,7 @@ const ProjectPanel: Component = () => {
                 activateGroupFlyout(e.currentTarget);
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
+              data-ac-testid-private="true"
             >
               <span class="session-context-option-icon" aria-hidden="true" />
               <span>Add to Group</span>
@@ -1609,6 +1614,7 @@ const ProjectPanel: Component = () => {
                       focusRepoTriggerQuietly(anchor);
                     }}
                     data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.flyout`}
+                    data-ac-testid-private="true"
                   >
                     <For each={repoBrowseItems(repo())}>
                       {(item) => (
@@ -1617,6 +1623,7 @@ const ProjectPanel: Component = () => {
                           title={item.url}
                           onClick={() => void openRepoBrowse(item.url)}
                           data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.${item.id}`}
+                          data-ac-testid-private="true"
                           data-ac-role="menuitem"
                         >
                           {item.label}
@@ -1668,6 +1675,7 @@ const ProjectPanel: Component = () => {
                         }
                       }}
                       data-ac-testid={`${testIdPrefix()}.${index()}`}
+                      data-ac-testid-private="true"
                       data-ac-role="menuitem"
                     >
                       <span class="session-context-option-icon" aria-hidden="true">
@@ -1687,6 +1695,7 @@ const ProjectPanel: Component = () => {
                         <span
                           class="session-context-submenu-arrow"
                           data-ac-testid={`${testIdPrefix()}.${index()}.browse.arrow`}
+                          data-ac-testid-private="true"
                         >
                           &rsaquo;
                         </span>
@@ -2306,6 +2315,7 @@ const ProjectPanel: Component = () => {
               class="replica-item"
               classList={{ active: session()?.id === sessionsStore.activeId }}
               data-ac-testid={rowTestId()}
+              data-ac-testid-private="true"
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
@@ -2327,6 +2337,7 @@ const ProjectPanel: Component = () => {
                         class="coord-communication-slot"
                         data-kind="raiseHand"
                         data-ac-testid={communicationSlotTestId()}
+                        data-ac-testid-private="true"
                         title="Raised hand"
                         aria-label="Raised hand"
                       >
@@ -2336,7 +2347,11 @@ const ProjectPanel: Component = () => {
                   </div>
                 </Show>
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
-                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
+                <div
+                  class="ac-discovery-badges"
+                  data-ac-testid={badgesTestId()}
+                  data-ac-testid-private="true"
+                >
                   {/* #552/#580: the coordinator idle (minutes) badge leads the
                       row; the neutral AUTO-CLOSED pill REPLACES it when the team
                       is auto-closed (mutually exclusive — the #580 XOR gate), so
@@ -2389,6 +2404,7 @@ const ProjectPanel: Component = () => {
                           class={`ac-discovery-badge branch${repo.dirty === true ? " dirty" : ""}`}
                           title={formatReplicaRepoBadgeTitle(repo)}
                           data-ac-testid={repoBadgeTestId(repo.label, index())}
+                          data-ac-testid-private="true"
                         >
                           {formatReplicaRepoBadgeLabel(repo)}
                         </span>
@@ -2405,6 +2421,7 @@ const ProjectPanel: Component = () => {
                     <ContextBadge
                       percent={ctxPercent()}
                       testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      testIdPrivate={true}
                     />
                   </Show>
                   {/* #592 - drift indicator for a WG replica session. Mirrors the
@@ -2416,6 +2433,7 @@ const ProjectPanel: Component = () => {
                   <Show when={session()?.profileOutdated}>
                     <ProfileOutdatedBadge
                       testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      testIdPrivate={true}
                       onReload={() => {
                         const s = session();
                         if (s) void restartReplicaSession(s.id);
@@ -2625,6 +2643,7 @@ const ProjectPanel: Component = () => {
                       setNewLoopTarget({ projectPath: proj.path });
                     }}
                     data-ac-testid={`loop.action.new.${projectAutomationId()}.projectMenu`}
+                    data-ac-testid-private="true"
                   >
                     New Loop
                   </button>
@@ -2633,6 +2652,7 @@ const ProjectPanel: Component = () => {
                     class="session-context-option"
                     onClick={() => void handleArchiveProject()}
                     data-ac-testid={`project.action.archive.${projectAutomationId()}`}
+                    data-ac-testid-private="true"
                   >
                     Archive Project
                   </button>
@@ -2841,6 +2861,7 @@ const ProjectPanel: Component = () => {
                         onClick={() => togglePanelCollapsed(loopsCollapsedKey)}
                         onContextMenu={handleLoopsHeaderContextMenu}
                         data-ac-testid={`project.loops.header.${projectAutomationId()}`}
+                        data-ac-testid-private="true"
                       >
                         <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(loopsCollapsedKey) }}>
                           &#x25BE;
@@ -2868,6 +2889,7 @@ const ProjectPanel: Component = () => {
                                 onContextMenu={(e) => handleLoopContextMenu(e, loop)}
                                 title={loop.promptPreview}
                                 data-ac-testid={loopTestId(loop)}
+                                data-ac-testid-private="true"
                                 data-ac-state={[
                                   loop.enabled ? "enabled" : "loop-disabled",
                                   loop.pendingDueAt ? "pending" : "",
@@ -2915,6 +2937,7 @@ const ProjectPanel: Component = () => {
                               setNewLoopTarget({ projectPath: proj.path });
                             }}
                             data-ac-testid={`loop.action.new.${projectAutomationId()}`}
+                            data-ac-testid-private="true"
                           >
                             New Loop
                           </button>
@@ -3071,6 +3094,7 @@ const ProjectPanel: Component = () => {
                               setAgentCtxMenu(null);
                             }}
                             data-ac-testid={`agent.action.delete.${automationIdPart(agentCtxMenu()!.agent.path)}`}
+                            data-ac-testid-private="true"
                             data-ac-role="menuitem"
                           >
                             <TrashIcon /> Delete
@@ -3108,6 +3132,7 @@ const ProjectPanel: Component = () => {
                             class="agent-modal"
                             style={{ "max-width": "360px" }}
                             data-ac-testid={`agent.delete.dialog.${automationIdPart(deletingAgent()!.path)}`}
+                            data-ac-testid-private="true"
                           >
                             <div class="agent-modal-header">
                               <span class="agent-modal-title">Delete Agent</span>
@@ -3120,6 +3145,7 @@ const ProjectPanel: Component = () => {
                                 <div
                                   class="new-agent-error"
                                   data-ac-testid={`agent.delete.error.${automationIdPart(deletingAgent()!.path)}`}
+                                  data-ac-testid-private="true"
                                 >
                                   {agentDeleteError()}
                                 </div>
@@ -3130,6 +3156,7 @@ const ProjectPanel: Component = () => {
                                 class="new-agent-cancel-btn"
                                 onClick={closeAgentDeleteModal}
                                 data-ac-testid={`agent.delete.cancel.${automationIdPart(deletingAgent()!.path)}`}
+                                data-ac-testid-private="true"
                               >
                                 Cancel
                               </button>
@@ -3138,6 +3165,7 @@ const ProjectPanel: Component = () => {
                                 style={{ "background": "var(--danger, #c0392b)" }}
                                 disabled={agentDeleteInProgress()}
                                 data-ac-testid={`agent.delete.confirm.${automationIdPart(deletingAgent()!.path)}`}
+                                data-ac-testid-private="true"
                                 onClick={async () => {
                                   if (agentDeleteInProgress()) return;
                                   setAgentDeleteInProgress(true);
@@ -3386,6 +3414,7 @@ const ProjectPanel: Component = () => {
                       });
                     }}
                     data-ac-testid={`loop.action.runNow.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                    data-ac-testid-private="true"
                   >
                     Run Now
                   </button>
@@ -3398,6 +3427,7 @@ const ProjectPanel: Component = () => {
                       if (menu) setEditingLoopTarget({ projectPath: proj.path, loopId: menu.loop.id });
                     }}
                     data-ac-testid={`loop.action.edit.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                    data-ac-testid-private="true"
                   >
                     Edit
                   </button>
@@ -3415,6 +3445,7 @@ const ProjectPanel: Component = () => {
                       });
                     }}
                     data-ac-testid={`loop.action.toggle.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                    data-ac-testid-private="true"
                   >
                     {loopCtxMenu()!.loop.enabled ? "Disable" : "Enable"}
                   </button>
@@ -3431,6 +3462,7 @@ const ProjectPanel: Component = () => {
                       setDeletingLoop(menu.loop);
                     }}
                     data-ac-testid={`loop.action.delete.${projectAutomationId()}.${automationIdPart(loopCtxMenu()!.loop.id)}`}
+                    data-ac-testid-private="true"
                   >
                     Delete Loop
                   </button>
@@ -3446,6 +3478,7 @@ const ProjectPanel: Component = () => {
                     class="agent-modal"
                     style={{ "max-width": "360px" }}
                     data-ac-testid={`loop.delete.dialog.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                    data-ac-testid-private="true"
                   >
                     <div class="agent-modal-header">
                       <span class="agent-modal-title">Delete Loop</span>
@@ -3464,6 +3497,7 @@ const ProjectPanel: Component = () => {
                         onClick={closeLoopDeleteModal}
                         disabled={currentLoopDeleteInProgress()}
                         data-ac-testid={`loop.delete.cancel.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                        data-ac-testid-private="true"
                       >
                         Cancel
                       </button>
@@ -3477,6 +3511,7 @@ const ProjectPanel: Component = () => {
                           void deleteLoop(loop);
                         }}
                         data-ac-testid={`loop.delete.confirm.${projectAutomationId()}.${automationIdPart(deletingLoop()!.id)}`}
+                        data-ac-testid-private="true"
                       >
                         {currentLoopDeleteInProgress() ? "Deleting..." : "Delete"}
                       </button>

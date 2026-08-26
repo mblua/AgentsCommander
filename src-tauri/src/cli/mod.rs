@@ -224,6 +224,34 @@ pub enum Commands {
     /// Wait until a WebView automation target is available by data-ac-testid
     #[command(hide = true)]
     UiWait(crate::testability::ui_automation::UiWaitArgs),
+    /// Describe the supported UI automation contract and live windows
+    #[command(hide = true)]
+    UiCapabilities(crate::testability::ui_automation::UiCapabilitiesArgs),
+    /// List bounded public WebView automation targets
+    #[command(hide = true)]
+    UiList(crate::testability::ui_automation::UiListArgs),
+    /// Focus one exact WebView automation target
+    #[command(hide = true)]
+    UiFocus(crate::testability::ui_automation::UiFocusArgs),
+}
+
+impl Commands {
+    pub fn is_ui_automation_command(&self) -> bool {
+        matches!(
+            self,
+            Self::UiQuery(_)
+                | Self::UiClick(_)
+                | Self::UiContextClick(_)
+                | Self::UiHover(_)
+                | Self::UiSet(_)
+                | Self::UiType(_)
+                | Self::UiBackend(_)
+                | Self::UiWait(_)
+                | Self::UiCapabilities(_)
+                | Self::UiList(_)
+                | Self::UiFocus(_)
+        )
+    }
 }
 
 /// Attach to parent console (or allocate a new one) ONLY if both stdout and stderr
@@ -327,7 +355,12 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
 /// Caller contract: `attach_parent_console()` MUST be called before this — see
 /// `main.rs`. Done there (not here) so the eprintln!s inside `init_logger()`
 /// reach the user's terminal on Windows release builds.
-pub fn handle_cli(cmd: Commands) -> i32 {
+pub fn handle_cli(
+    cmd: Commands,
+    ui_context: Option<&crate::testability::ui_automation::UiCliDispatchContext>,
+) -> i32 {
+    let missing_ui_context =
+        crate::testability::ui_automation::execute_missing_cli_context;
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
@@ -357,20 +390,47 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TerminalSnapshot(args) => terminal_snapshot::execute(args),
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
-        Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
-        Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
+        Commands::UiQuery(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_query(context, args)
+        }),
+        Commands::UiClick(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_click(context, args)
+        }),
         Commands::UiContextClick(args) => {
-            crate::testability::ui_automation::execute_context_click(args)
+            ui_context.map_or_else(missing_ui_context, |context| {
+                crate::testability::ui_automation::execute_context_click(context, args)
+            })
         }
-        Commands::UiHover(args) => crate::testability::ui_automation::execute_hover(args),
+        Commands::UiHover(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_hover(context, args)
+        }),
         #[cfg(target_os = "windows")]
         Commands::WindowList(args) => window_list::execute(args),
         #[cfg(target_os = "windows")]
         Commands::WindowScreenshot(args) => window_screenshot::execute(args),
-        Commands::UiSet(args) => crate::testability::ui_automation::execute_set(args),
-        Commands::UiType(args) => crate::testability::ui_automation::execute_type(args),
-        Commands::UiBackend(args) => crate::testability::ui_automation::execute_backend(args),
-        Commands::UiWait(args) => crate::testability::ui_automation::execute_wait(args),
+        Commands::UiSet(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_set(context, args)
+        }),
+        Commands::UiType(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_type(context, args)
+        }),
+        Commands::UiBackend(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_backend(context, args)
+        }),
+        Commands::UiWait(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_wait(context, args)
+        }),
+        Commands::UiCapabilities(args) => {
+            ui_context.map_or_else(missing_ui_context, |context| {
+                crate::testability::ui_automation::execute_capabilities(context, args)
+            })
+        }
+        Commands::UiList(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_list(context, args)
+        }),
+        Commands::UiFocus(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_focus(context, args)
+        }),
     };
 
     flush_outputs();

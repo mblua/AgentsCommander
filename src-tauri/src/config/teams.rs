@@ -967,6 +967,22 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
     Ok(None)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedSessionScope {
+    pub cwd: crate::path_identity::VerifiedPathIdentity,
+    pub replica: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
+pub(crate) fn verified_session_scope_from_cwd(
+    cwd: &Path,
+) -> Result<VerifiedSessionScope, String> {
+    let cwd = crate::path_identity::verify_directory(cwd)?;
+    let replica = strict_wg_replica_anchor_from_cwd(&cwd.canonical_path)?
+        .map(|path| crate::path_identity::verify_directory(&path))
+        .transpose()?;
+    Ok(VerifiedSessionScope { cwd, replica })
+}
+
 /// Derive the universal create-gate key from the verified directory layout
 /// alone. Ordinary session creation must not depend on team membership,
 /// replica config, matrix config, or the privileged SQLite store being healthy.

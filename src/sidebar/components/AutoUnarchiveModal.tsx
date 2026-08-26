@@ -99,6 +99,7 @@ const AutoUnarchiveModal: Component = () => {
                       class="auto-unarchive-row"
                       title={entry.path}
                       data-ac-testid={`autoUnarchive.row.${automationIdPart(entry.path)}`}
+                      data-ac-testid-private="true"
                     >
                       <strong>{entry.folderName}</strong>
                       <Show when={entry.sessionName}>

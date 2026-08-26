@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { executeAutomationRequest, resetAutomationBridgeForTests } from "./automation-bridge";
 import type { UiAutomationAction, UiAutomationRequest, UiAutomationResponse } from "./types";
 
@@ -13,6 +15,17 @@ vi.mock("./ipc", () => ({
 }));
 
 let topmostElement: Element | null = null;
+
+function productionSourceFiles(
+  directory = "src",
+  extensions = new Set([".ts", ".tsx"]),
+): string[] {
+  return ts.sys
+    .readDirectory(directory, [...extensions], undefined, ["**/*"])
+    .map((path) => path.replaceAll("\\", "/"))
+    .filter((path) => !path.includes(".test."))
+    .sort();
+}
 
 function request(
   action: UiAutomationAction,
@@ -378,7 +391,7 @@ describe("automation bridge", () => {
 
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected timeout");
-    expect(response.error).toBe("timeout");
+    expect(response.error).toBe("request_expired");
 
     await vi.advanceTimersByTimeAsync(5);
   });
@@ -432,7 +445,7 @@ describe("automation bridge", () => {
 
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected timeout");
-    expect(response.error).toBe("timeout");
+    expect(response.error).toBe("request_expired");
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
     expect(response.available?.map((target) => target.testId)).toContain("expired.click");
     expect(onClick).not.toHaveBeenCalled();
@@ -453,7 +466,7 @@ describe("automation bridge", () => {
 
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected timeout");
-    expect(response.error).toBe("timeout");
+    expect(response.error).toBe("request_expired");
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
     expect(response.available?.map((availableTarget) => availableTarget.testId)).toContain(
       "expired.context",
@@ -479,7 +492,7 @@ describe("automation bridge", () => {
 
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected timeout");
-    expect(response.error).toBe("timeout");
+    expect(response.error).toBe("request_expired");
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
     expect(input.value).toBe("before");
     expect(onInput).not.toHaveBeenCalled();
@@ -921,7 +934,7 @@ describe("automation bridge", () => {
 
       expect(response.ok).toBe(false);
       if (response.ok) throw new Error("expected timeout");
-      expect(response.error).toBe("timeout");
+      expect(response.error).toBe("request_expired");
       expect(log).toEqual([]);
     });
 
@@ -1085,6 +1098,337 @@ describe("automation bridge", () => {
         expect(event.button).toBe(0);
         expect(event.buttons).toBe(0); // a hover presses nothing
       }
+    });
+  });
+
+  describe("bounded public discovery and focus", () => {
+    it("lists only public safe IDs with literal prefix/role filters and deterministic order", async () => {
+      const second = addTarget("button", "fixture.Z", "second");
+      second.setAttribute("data-ac-role", "button");
+      const first = addTarget("button", "fixture.A", "first");
+      first.setAttribute("data-ac-role", "button");
+      first.setAttribute("data-ac-state", "ready");
+      const privateTarget = addTarget("button", "fixture.private", "secret");
+      privateTarget.setAttribute("data-ac-role", "button");
+      privateTarget.setAttribute("data-ac-testid-private", "true");
+      addTarget("button", "not a safe id", "malformed").setAttribute("data-ac-role", "button");
+      addTarget("div", "fixture.region", "region").setAttribute("data-ac-role", "region");
+
+      const response = await executeAutomationRequest("main", {
+        ...request("list", ""),
+        selector: undefined,
+        prefix: "fixture.",
+        role: "button",
+      });
+      expect(response.ok).toBe(true);
+      if (!response.ok || response.action !== "list") throw new Error("expected list success");
+      expect(response.filters).toEqual({ prefix: "fixture.", role: "button" });
+      expect(response.targets.map((target) => target.testId)).toEqual(["fixture.A", "fixture.Z"]);
+      expect(response.targets[0]).toEqual({
+        testId: "fixture.A",
+        role: "button",
+        state: "ready",
+        visible: true,
+        disabled: false,
+        checked: null,
+        selected: null,
+        pressed: null,
+        expanded: null,
+        focused: false,
+      });
+      expect(response.matchedCount).toBe(2);
+      expect(response.returnedCount).toBe(2);
+      expect(JSON.stringify(response)).not.toContain("fixture.private");
+      expect(JSON.stringify(response)).not.toContain("secret");
+    });
+
+    it("structurally closes every dynamic private-ID source and prop-to-DOM sink", () => {
+      const sourceFiles = productionSourceFiles("src", new Set([".tsx"]));
+      const helperNames = [
+        "automationIdPart",
+        "archiveRowId",
+        "rowId",
+        "projectAutomationId",
+        "rowTestId",
+        "loopTestId",
+        "communicationSlotTestId",
+        "badgesTestId",
+        "repoBadgeTestId",
+        "testIdPrefix",
+      ];
+      const missingDirectMarkers: string[] = [];
+      const forwarding: string[] = [];
+      const directSourceFiles = new Set<string>();
+      let directSources = 0;
+
+      const openingFor = (attribute: ts.JsxAttribute) =>
+        attribute.parent.parent as ts.JsxOpeningLikeElement;
+      const attributesFor = (attribute: ts.JsxAttribute) => openingFor(attribute).attributes.properties;
+      const hasLiteralPrivateMarker = (attribute: ts.JsxAttribute) =>
+        attributesFor(attribute).some(
+          (candidate) =>
+            ts.isJsxAttribute(candidate) &&
+            candidate.name.getText() === "data-ac-testid-private" &&
+            candidate.initializer !== undefined &&
+            ts.isStringLiteral(candidate.initializer) &&
+            candidate.initializer.text === "true",
+        );
+      const hasTruePrivateProp = (attribute: ts.JsxAttribute) =>
+        attributesFor(attribute).some(
+          (candidate) =>
+            ts.isJsxAttribute(candidate) &&
+            candidate.name.getText() === "testIdPrivate" &&
+            !!candidate.initializer &&
+            ts.isJsxExpression(candidate.initializer) &&
+            candidate.initializer.expression?.kind === ts.SyntaxKind.TrueKeyword,
+        );
+
+      for (const relative of sourceFiles) {
+        const text = readFileSync(relative as unknown as URL, "utf8");
+        const source = ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+        const visit = (node: ts.Node) => {
+          if (ts.isJsxAttribute(node) && node.initializer) {
+            const name = node.name.getText(source);
+            const initializer = node.initializer.getText(source);
+            if (helperNames.some((helper) => initializer.includes(helper))) {
+              const tag = openingFor(node).tagName.getText(source);
+              if (name === "data-ac-testid") {
+                directSources += 1;
+                directSourceFiles.add(relative);
+                if (!hasLiteralPrivateMarker(node)) {
+                  missingDirectMarkers.push(`${relative}:${source.getLineAndCharacterOfPosition(node.pos).line + 1}`);
+                }
+              } else if (name === "testId") {
+                forwarding.push(`${tag}:${relative}`);
+                if (
+                  !["ContextBadge", "ProfileOutdatedBadge"].includes(tag) ||
+                  !hasTruePrivateProp(node)
+                ) {
+                  missingDirectMarkers.push(`${relative}:${source.getLineAndCharacterOfPosition(node.pos).line + 1}`);
+                }
+              }
+            }
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(source);
+      }
+
+      expect(directSources).toBeGreaterThan(0);
+      expect(missingDirectMarkers).toEqual([]);
+      expect([...directSourceFiles].sort()).toEqual([
+        "src/sidebar/components/ArchivedProjectsModal.tsx",
+        "src/sidebar/components/AutoUnarchiveModal.tsx",
+        "src/sidebar/components/ProjectPanel.tsx",
+      ]);
+      expect(forwarding.sort()).toEqual([
+        "ContextBadge:src/sidebar/components/ProjectPanel.tsx",
+        "ProfileOutdatedBadge:src/sidebar/components/ProjectPanel.tsx",
+      ]);
+
+      for (const relative of [
+        "src/sidebar/components/ContextBadge.tsx",
+        "src/sidebar/components/ProfileOutdatedBadge.tsx",
+      ]) {
+        const text = readFileSync(relative as unknown as URL, "utf8");
+        const source = ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+        let sinkCount = 0;
+        const visit = (node: ts.Node) => {
+          if (
+            ts.isJsxAttribute(node) &&
+            node.name.getText(source) === "data-ac-testid" &&
+            node.initializer?.getText(source).includes("props.testId")
+          ) {
+            sinkCount += 1;
+            const conditional = attributesFor(node).find(
+              (candidate) =>
+                ts.isJsxAttribute(candidate) &&
+                candidate.name.getText(source) === "data-ac-testid-private",
+            );
+            expect(conditional?.getText(source)).toContain(
+              'props.testIdPrivate ? "true" : undefined',
+            );
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(source);
+        expect(sinkCount).toBe(relative.includes("ContextBadge") ? 2 : 1);
+      }
+    });
+
+    it("keeps the full production authored-role inventory equal to the public role union", () => {
+      const authoredRoles = new Set<string>();
+      for (const relative of productionSourceFiles()) {
+        const text = readFileSync(relative as unknown as URL, "utf8");
+        const source = ts.createSourceFile(
+          relative,
+          text,
+          ts.ScriptTarget.Latest,
+          true,
+          relative.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        );
+        const visit = (node: ts.Node) => {
+          if (
+            ts.isJsxAttribute(node) &&
+            node.name.getText(source) === "data-ac-role" &&
+            node.initializer
+          ) {
+            if (ts.isStringLiteral(node.initializer)) {
+              if (node.initializer.text.length > 0) authoredRoles.add(node.initializer.text);
+            } else if (
+              ts.isJsxExpression(node.initializer) &&
+              node.initializer.expression &&
+              ts.isStringLiteral(node.initializer.expression)
+            ) {
+              if (node.initializer.expression.text.length > 0) {
+                authoredRoles.add(node.initializer.expression.text);
+              }
+            }
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(source);
+      }
+
+      const typesPath = "src/shared/types.ts";
+      const typesText = readFileSync(typesPath as unknown as URL, "utf8");
+      const typesSource = ts.createSourceFile(
+        typesPath,
+        typesText,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      let declaredRoles: string[] | undefined;
+      const visitTypes = (node: ts.Node) => {
+        if (
+          ts.isTypeAliasDeclaration(node) &&
+          node.name.text === "UiAutomationRole" &&
+          ts.isUnionTypeNode(node.type)
+        ) {
+          declaredRoles = node.type.types.map((member) => {
+            if (!ts.isLiteralTypeNode(member) || !ts.isStringLiteral(member.literal)) {
+              throw new Error("UiAutomationRole must remain a closed string-literal union");
+            }
+            return member.literal.text;
+          });
+        }
+        ts.forEachChild(node, visitTypes);
+      };
+      visitTypes(typesSource);
+
+      expect(authoredRoles.size).toBeGreaterThan(0);
+      expect([...authoredRoles].sort()).toEqual(declaredRoles?.slice().sort());
+      expect(declaredRoles).toHaveLength(25);
+      expect(authoredRoles).toEqual(
+        new Set([
+          "agent-preset", "alert", "button", "cell", "checkbox", "combobox", "dialog",
+          "group", "input", "list", "menu", "menuitem", "metric", "overlay", "region",
+          "row", "searchbox", "separator", "spinbutton", "status", "surface", "tab",
+          "text", "textbox", "toolbar",
+        ]),
+      );
+    });
+
+    it("preserves absent versus present-empty/path-shaped prefix only in the owning filters field", async () => {
+      const pathPrefix = "C:\\AC_UI_PREFIX_PATH_fixture\\repo";
+      for (const prefix of [undefined, "", pathPrefix]) {
+        const response = await executeAutomationRequest("main", {
+          ...request("list", ""),
+          selector: undefined,
+          prefix,
+        });
+        expect(response.ok).toBe(true);
+        if (!response.ok || response.action !== "list") throw new Error("expected list success");
+        expect(response.filters.prefix).toBe(prefix ?? null);
+        const encoded = JSON.stringify(response);
+        if (prefix) {
+          expect(encoded.split(prefix.replaceAll("\\", "\\\\")).length - 1).toBe(1);
+        }
+      }
+    });
+
+    it("excludes private targets before public target counts and diagnostics", async () => {
+      addTarget("button", "fixture.public", "public");
+      const privateTarget = addTarget("button", "fixture.private", "private-canary");
+      privateTarget.setAttribute("data-ac-testid-private", "true");
+
+      const list = await executeAutomationRequest("main", {
+        ...request("list", ""),
+        selector: undefined,
+      });
+      expect(list.ok).toBe(true);
+      if (!list.ok || list.action !== "list") throw new Error("expected list success");
+      expect(list.scan.targets).toBe(1);
+      expect(list.matchedCount).toBe(1);
+
+      const missing = await executeAutomationRequest("main", request("query", "fixture.missing"));
+      expect(missing.ok).toBe(false);
+      if (missing.ok) throw new Error("expected missing selector");
+      expect(missing.available?.map((target) => target.testId)).toEqual(["fixture.public"]);
+      expect(JSON.stringify(missing)).not.toContain("fixture.private");
+      expect(JSON.stringify(missing)).not.toContain("private-canary");
+    });
+
+    it("focuses only the exact focusable node and reports deepest public focus", async () => {
+      const button = addTarget("button", "fixture.focus", "Focus");
+      topmostElement = button;
+      const response = await executeAutomationRequest("main", request("focus", "fixture.focus"));
+      expect(response.ok).toBe(true);
+      if (!response.ok) throw new Error(response.message);
+      expect(response.target.focused).toBe(true);
+      expect(response.activeTestId).toBe("fixture.focus");
+      expect(document.activeElement).toBe(button);
+    });
+
+    it("never projects a focused private ID through target or activeTestId", async () => {
+      const button = addTarget("button", "fixture.privateFocus", "Private focus");
+      button.setAttribute("data-ac-testid-private", "true");
+      topmostElement = button;
+      const response = await executeAutomationRequest(
+        "main",
+        request("focus", "fixture.privateFocus"),
+      );
+      expect(response.ok).toBe(true);
+      if (!response.ok) throw new Error(response.message);
+      expect(response.target.testId).toBeNull();
+      expect(response.target.focused).toBe(true);
+      expect(response.activeTestId).toBeNull();
+    });
+
+    it("does not let a private duplicate suppress a uniquely public activeTestId", async () => {
+      const publicButton = addTarget("button", "fixture.sharedFocus", "Public focus");
+      const privateButton = addTarget("button", "fixture.sharedFocus", "Private duplicate");
+      privateButton.setAttribute("data-ac-testid-private", "true");
+      publicButton.focus();
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("query", "fixture.sharedFocus"),
+      );
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected duplicate selector");
+      expect(response.activeTestId).toBe("fixture.sharedFocus");
+      expect(JSON.stringify(response.available)).not.toContain("Private duplicate");
+    });
+
+    it("rejects non-focusable and replaced targets without dispatching another action", async () => {
+      const plain = addTarget("div", "fixture.plain", "Plain");
+      topmostElement = plain;
+      const nonFocusable = await executeAutomationRequest("main", request("focus", "fixture.plain"));
+      expect(nonFocusable.ok).toBe(false);
+      if (!nonFocusable.ok) expect(nonFocusable.error).toBe("target_not_focusable");
+
+      const button = addTarget("button", "fixture.replaced", "Replace");
+      topmostElement = button;
+      button.focus = () => {
+        const replacement = button.cloneNode(true) as HTMLButtonElement;
+        button.replaceWith(replacement);
+        replacement.focus();
+      };
+      const stale = await executeAutomationRequest("main", request("focus", "fixture.replaced"));
+      expect(stale.ok).toBe(false);
+      if (!stale.ok) expect(stale.error).toBe("target_stale");
     });
   });
 });

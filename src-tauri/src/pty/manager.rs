@@ -100,6 +100,12 @@ pub(crate) struct PtySnapshotRouteProof {
     saved_replica: Option<crate::path_identity::VerifiedPathIdentity>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiTerminalCaptureError {
+    Unavailable,
+    TooLarge,
+}
+
 /// A short-lived route lifecycle guard for one synchronous backend write.
 pub struct PtyRouteWriteGuard<'a> {
     session_id: Uuid,
@@ -954,6 +960,49 @@ impl PtySnapshotRouteProof {
         expected_cwd: &crate::path_identity::VerifiedPathIdentity,
         expected_replica: &crate::path_identity::VerifiedPathIdentity,
     ) -> TerminalScreenRead {
+        self.capture_verified_inner(expected_kind, expected_cwd, Some(expected_replica))
+    }
+
+    pub(crate) fn capture_verified_for_ui(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> Result<
+        Arc<terminal_snapshot_renderer::TerminalScreenModel>,
+        UiTerminalCaptureError,
+    > {
+        match self.capture_verified_inner(expected_kind, expected_cwd, expected_replica) {
+            TerminalScreenRead::Captured(model) => Ok(model),
+            TerminalScreenRead::Unavailable => Err(UiTerminalCaptureError::Unavailable),
+            TerminalScreenRead::TooLarge => Err(UiTerminalCaptureError::TooLarge),
+        }
+    }
+
+    pub(crate) fn ui_model_backend_matches(
+        &self,
+        model: &terminal_snapshot_renderer::TerminalScreenModel,
+        expected_kind: SessionBackendKind,
+    ) -> bool {
+        use terminal_snapshot_renderer::TerminalBackendKind;
+        matches!(
+            (expected_kind, model.session.backend),
+            (
+                SessionBackendKind::LocalProcess,
+                TerminalBackendKind::LocalProcess
+            ) | (
+                SessionBackendKind::ContainerTransport,
+                TerminalBackendKind::ContainerTransport
+            )
+        )
+    }
+
+    fn capture_verified_inner(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> TerminalScreenRead {
         let lifecycle_guard = match acquire_route_lifecycle(&self.route_lifecycle) {
             Ok(guard) => guard,
             Err(_) => return TerminalScreenRead::Unavailable,
@@ -973,16 +1022,18 @@ impl PtySnapshotRouteProof {
                     crate::path_identity::same_object(identity, expected_cwd)
                         && crate::path_identity::same_object(identity, &self.saved_cwd)
                 });
-            let replica_matches =
-                current
-                    .verified_replica_anchor
-                    .as_ref()
-                    .is_some_and(|identity| {
-                        crate::path_identity::same_object(identity, expected_replica)
-                            && self.saved_replica.as_ref().is_some_and(|saved| {
-                                crate::path_identity::same_object(identity, saved)
-                            })
-                    });
+            let replica_matches = match (
+                current.verified_replica_anchor.as_ref(),
+                self.saved_replica.as_ref(),
+                expected_replica,
+            ) {
+                (Some(current), Some(saved), Some(expected)) => {
+                    crate::path_identity::same_object(current, expected)
+                        && crate::path_identity::same_object(current, saved)
+                }
+                (None, None, None) => true,
+                _ => false,
+            };
             if current.generation != self.route_generation
                 || current.kind != self.route_kind
                 || current.kind != expected_kind
@@ -1010,6 +1061,15 @@ impl PtySnapshotRouteProof {
         expected_cwd: &crate::path_identity::VerifiedPathIdentity,
         expected_replica: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
+        self.matches_current_for_ui(expected_kind, expected_cwd, Some(expected_replica))
+    }
+
+    pub(crate) fn matches_current_for_ui(
+        &self,
+        expected_kind: SessionBackendKind,
+        expected_cwd: &crate::path_identity::VerifiedPathIdentity,
+        expected_replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+    ) -> bool {
         let Ok(registry) = self.route_registry.lock() else {
             return false;
         };
@@ -1027,15 +1087,18 @@ impl PtySnapshotRouteProof {
                             crate::path_identity::same_object(identity, expected_cwd)
                                 && crate::path_identity::same_object(identity, &self.saved_cwd)
                         })
-                    && current
-                        .verified_replica_anchor
-                        .as_ref()
-                        .is_some_and(|identity| {
-                            crate::path_identity::same_object(identity, expected_replica)
-                                && self.saved_replica.as_ref().is_some_and(|saved| {
-                                    crate::path_identity::same_object(identity, saved)
-                                })
-                        })
+                    && match (
+                        current.verified_replica_anchor.as_ref(),
+                        self.saved_replica.as_ref(),
+                        expected_replica,
+                    ) {
+                        (Some(current), Some(saved), Some(expected)) => {
+                            crate::path_identity::same_object(current, expected)
+                                && crate::path_identity::same_object(current, saved)
+                        }
+                        (None, None, None) => true,
+                        _ => false,
+                    }
             })
     }
 }

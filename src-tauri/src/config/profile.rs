@@ -95,6 +95,16 @@ pub fn mutex_name() -> &'static str {
     })
 }
 
+/// Windows single-instance mutex name for an intentional testable artifact.
+///
+/// The name is derived only from the verified physical configuration-directory
+/// object. Request enablement deliberately does not participate in this scope.
+pub fn testable_mutex_name(config_volume: u64, config_file: u64) -> String {
+    format!(
+        "Local\\AgentsCommander_SingleInstance_Testeable_Config_v1_{config_volume:016X}_{config_file:016X}\0"
+    )
+}
+
 /// #786: side-effect-free probe of whether a GUI instance for THIS binary
 /// identity is already running, by OPENING (not creating) the single-instance
 /// mutex. `OpenMutexW` never creates the mutex, so unlike `CreateMutexW` this
@@ -224,6 +234,15 @@ mod tests {
             name.starts_with("Local\\AgentsCommander_SingleInstance"),
             "unexpected mutex name shape: {name:?}"
         );
+    }
+
+    #[test]
+    fn testable_mutex_name_is_exact_and_nul_terminated() {
+        assert_eq!(
+            testable_mutex_name(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210),
+            "Local\\AgentsCommander_SingleInstance_Testeable_Config_v1_0123456789ABCDEF_FEDCBA9876543210\0"
+        );
+        assert_eq!(testable_mutex_name(0, 0).chars().filter(|c| *c == '\0').count(), 1);
     }
 
     /// #786 T9: in-process round-trip. Create the single-instance mutex under the

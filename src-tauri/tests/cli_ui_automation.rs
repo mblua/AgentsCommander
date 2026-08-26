@@ -1,9 +1,16 @@
-use serde_json::{json, Value};
+#[cfg(feature = "testable-ui-automation")]
+use serde_json::json;
+use serde_json::Value;
+#[cfg(feature = "testable-ui-automation")]
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(feature = "testable-ui-automation")]
+use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "testable-ui-automation")]
 use std::thread;
+#[cfg(feature = "testable-ui-automation")]
 use std::time::{Duration, Instant};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -89,6 +96,7 @@ fn run_with_env(
     )
 }
 
+#[cfg(feature = "testable-ui-automation")]
 fn run_without_draining_output_until_exit(
     bin: &Path,
     args: &[&str],
@@ -157,19 +165,27 @@ fn config_dir_for(bin: &Path) -> PathBuf {
     bin.parent().unwrap().join(format!(".{stem}"))
 }
 
-fn write_session(bin: &Path, pid: u32, ready_windows: &[&str]) {
+#[cfg(feature = "testable-ui-automation")]
+fn write_session(bin: &Path, pid: u32, started_at_unix_ms: i64, ready_windows: &[&str]) {
     let config_dir = config_dir_for(bin);
     let automation_dir = config_dir.join("ui-automation");
     std::fs::create_dir_all(automation_dir.join("requests")).unwrap();
     std::fs::create_dir_all(automation_dir.join("responses")).unwrap();
     let session = json!({
+        "schemaVersion": 1,
+        "instanceId": uuid::Uuid::new_v4().to_string(),
         "pid": pid,
-        "token": "00000000-0000-0000-0000-000000000497",
+        "token": "00000000-0000-4000-8000-000000000497",
         "exePath": bin.to_string_lossy(),
         "configDir": config_dir.to_string_lossy(),
+        "windowInventory": {
+            "status": "ready",
+            "observedCount": 1,
+            "limit": 32
+        },
         "windowLabels": ["main"],
         "readyWindowLabels": ready_windows,
-        "startedAtUnixMs": 1
+        "startedAtUnixMs": started_at_unix_ms
     });
     std::fs::write(
         automation_dir.join("session.json"),
@@ -178,21 +194,76 @@ fn write_session(bin: &Path, pid: u32, ready_windows: &[&str]) {
     .unwrap();
 }
 
+#[cfg(feature = "testable-ui-automation")]
 fn write_daemon_pid(bin: &Path, pid: u32) {
     let config_dir = config_dir_for(bin);
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(config_dir.join("daemon.pid"), pid.to_string()).unwrap();
 }
 
-#[cfg(target_os = "windows")]
-fn fake_live_pid() -> Option<u32> {
-    let pid = 4u32;
-    agentscommander_lib::testability::ui_automation::pid_is_alive(pid).then_some(pid)
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
+struct SessionOwner {
+    child: std::process::Child,
+    started_at_unix_ms: i64,
 }
 
-#[cfg(not(target_os = "windows"))]
-fn fake_live_pid() -> Option<u32> {
-    Some(std::process::id())
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
+impl Drop for SessionOwner {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
+fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    const WINDOWS_TO_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        if !ok {
+            return None;
+        }
+        let ticks = (u64::from(creation.dwHighDateTime) << 32)
+            | u64::from(creation.dwLowDateTime);
+        let unix_ticks = ticks.checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)?;
+        i64::try_from(unix_ticks / 10_000).ok()
+    }
+}
+
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
+fn spawn_session_owner(bin: &Path) -> SessionOwner {
+    let child = Command::new(bin)
+        .args([
+            "harness",
+            "--raw-command",
+            "powershell.exe -NoProfile -Command Start-Sleep -Seconds 30",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn same-executable session owner");
+    let started_at_unix_ms = process_started_at_unix_ms(child.id())
+        .expect("read same-executable session owner creation time");
+    SessionOwner {
+        child,
+        started_at_unix_ms,
+    }
 }
 
 #[test]
@@ -235,6 +306,94 @@ fn normal_binary_refuses_ui_context_click_with_json_only_stdout() {
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+#[test]
+fn normal_binary_refuses_every_new_ui_automation_verb_before_config_access() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-new-verbs-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let cases: &[&[&str]] = &[
+        &["ui-capabilities"],
+        &["ui-list", "--window", "main"],
+        &[
+            "ui-focus",
+            "--window",
+            "main",
+            "--selector",
+            "terminal.input",
+        ],
+        &[
+            "ui-wait",
+            "--window",
+            "main",
+            "--selector",
+            "terminal.input",
+            "--focused",
+            "true",
+        ],
+        &[
+            "ui-backend",
+            "--selector",
+            "terminal.snapshot",
+            "--window",
+            "main",
+        ],
+    ];
+    for args in cases {
+        let (code, stdout, stderr) = run(&bin, args);
+        assert_eq!(code, Some(1), "args={args:?}\nstdout: {stdout}\nstderr: {stderr}");
+        assert_empty_output("stderr", &stderr);
+        assert_eq!(
+            first_json(&stdout)["error"],
+            "refusing_non_testeable_binary",
+            "args={args:?}"
+        );
+    }
+    assert!(!config_dir_for(&bin).exists());
+}
+
+#[cfg(feature = "testable-ui-automation")]
+#[test]
+fn terminal_backend_selector_specific_flags_fail_as_machine_json() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-terminal-flags");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    std::fs::create_dir_all(config_dir_for(&bin)).unwrap();
+
+    for (args, expected) in [
+        (
+            vec!["ui-backend", "--selector", "terminal.snapshot"],
+            "malformed_request",
+        ),
+        (
+            vec![
+                "ui-backend",
+                "--selector",
+                "terminal.snapshot",
+                "--window",
+                "main",
+                "--session",
+                "not-a-uuid",
+            ],
+            "invalid_terminal_session",
+        ),
+        (
+            vec![
+                "ui-backend",
+                "--selector",
+                "resourceMonitor.watchdog",
+                "--window",
+                "main",
+            ],
+            "malformed_request",
+        ),
+    ] {
+        let (code, stdout, stderr) = run(&bin, &args);
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        assert_empty_output("stderr", &stderr);
+        assert_eq!(first_json(&stdout)["error"], expected);
+    }
 }
 
 #[test]
@@ -302,6 +461,7 @@ fn ui_automation_env_does_not_affect_cli_subcommands() {
     serde_json::from_str::<Value>(&stdout).expect("list-sessions stdout should be JSON");
 }
 
+#[cfg(feature = "testable-ui-automation")]
 #[test]
 fn missing_session_file_reports_automation_session_missing() {
     let _guard = test_lock();
@@ -322,12 +482,13 @@ fn missing_session_file_reports_automation_session_missing() {
     assert_eq!(first_json(&stdout)["error"], "automation_session_missing");
 }
 
+#[cfg(feature = "testable-ui-automation")]
 #[test]
 fn dead_session_pid_reports_stale_session() {
     let _guard = test_lock();
     let tmp = Tmp::new("ui-stale-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, u32::MAX, &["main"]);
+    write_session(&bin, u32::MAX, 1, &["main"]);
     let (code, stdout, stderr) = run(
         &bin,
         &[
@@ -343,16 +504,14 @@ fn dead_session_pid_reports_stale_session() {
     assert_eq!(first_json(&stdout)["error"], "automation_session_stale");
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn fake_response_makes_ui_query_succeed() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
@@ -424,16 +583,14 @@ fn fake_response_makes_ui_query_succeed() {
     assert_eq!(parsed["target"]["testId"], "onboarding.confirm");
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn fake_response_makes_ui_context_click_succeed() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-context-click-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
@@ -588,16 +745,14 @@ fn ui_hover_requires_selector_unless_leave() {
     );
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn fake_response_makes_ui_hover_succeed() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-hover-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
@@ -677,16 +832,14 @@ fn fake_response_makes_ui_hover_succeed() {
     assert_eq!(parsed["target"]["testId"], "replica.coord-a.menu.repo.0");
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn fake_response_makes_ui_hover_leave_succeed() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-hover-leave-fake-response");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
@@ -706,14 +859,14 @@ fn fake_response_makes_ui_hover_leave_succeed() {
                 assert_eq!(request["action"], "hover");
                 assert_eq!(request["value"], "leave");
                 // Target-free (plan R5): --leave takes no --selector and conflicts with it
-                // at the CLI, so the emitted selector is empty. The bridge intercepts
+                // at the CLI, so the wire request omits selector. The bridge intercepts
                 // `value == "leave"` BEFORE it resolves any node, which is what makes the
                 // leave form incapable of returning missing_selector / target_hidden /
-                // target_obscured, and it echoes the selector back so `complete()`'s
+                // target_obscured, and it normalizes the response selector to empty so `complete()`'s
                 // window/action/selector equality check in `complete()` still matches on ""
                 // (grep `fn complete`; the line number is deliberately omitted, it rotted
                 // twice already: 317 -> 361 -> 370).
-                assert_eq!(request["selector"], "");
+                assert!(request.get("selector").is_none());
                 let request_id = request["requestId"].as_str().unwrap();
                 let response = json!({
                     "ok": true,
@@ -764,16 +917,14 @@ fn fake_response_makes_ui_hover_leave_succeed() {
     assert_eq!(first_json(&stdout)["ok"], true);
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-timeout-poller");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let (code, stdout, stderr) = run(
         &bin,
         &[
@@ -793,16 +944,14 @@ fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
     assert_eq!(parsed["phase"], "awaiting_gui_poller");
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-query-inflight-timeout");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
 
@@ -861,16 +1010,14 @@ fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
     assert_eq!(parsed["phase"], "awaiting_frontend_response");
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn ui_query_large_missing_selector_response_is_bounded_stdout() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-large-missing-selector");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &["main"]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &["main"]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
     let responses_dir = automation_dir.join("responses");
@@ -972,16 +1119,14 @@ fn ui_query_large_missing_selector_response_is_bounded_stdout() {
     assert!(text.len() <= 83);
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-timeout-inflight");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, pid, &[]);
+    let owner = spawn_session_owner(&bin);
+    write_session(&bin, owner.child.id(), owner.started_at_unix_ms, &[]);
     let automation_dir = config_dir_for(&bin).join("ui-automation");
     let requests_dir = automation_dir.join("requests");
 
@@ -1043,19 +1188,20 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
     );
 }
 
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
 #[test]
 fn ui_query_retries_transient_missing_session_file() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-session-read-race");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    std::fs::create_dir_all(config_dir_for(&bin)).unwrap();
+    let owner = spawn_session_owner(&bin);
+    let pid = owner.child.id();
+    let started_at_unix_ms = owner.started_at_unix_ms;
     let writer_bin = bin.clone();
     let writer = thread::spawn(move || {
         thread::sleep(Duration::from_millis(50));
-        write_session(&writer_bin, pid, &["main"]);
+        write_session(&writer_bin, pid, started_at_unix_ms, &["main"]);
     });
 
     let (code, stdout, stderr) = run(
@@ -1079,17 +1225,16 @@ fn ui_query_retries_transient_missing_session_file() {
     assert_ne!(parsed["error"], "automation_session_missing");
 }
 
+#[cfg(feature = "testable-ui-automation")]
 #[test]
-fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_stdout() {
+fn stale_prior_session_with_running_daemon_remains_stale_and_read_only() {
     let _guard = test_lock();
-    let Some(pid) = fake_live_pid() else {
-        eprintln!("skip: no fake live pid available");
-        return;
-    };
     let tmp = Tmp::new("ui-disabled-stale-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    write_session(&bin, u32::MAX, &["main"]);
-    write_daemon_pid(&bin, pid);
+    write_session(&bin, u32::MAX, 1, &["main"]);
+    let session_path = config_dir_for(&bin).join("ui-automation/session.json");
+    let before = std::fs::read(&session_path).unwrap();
+    write_daemon_pid(&bin, std::process::id());
 
     let (code, stdout, stderr) = run(
         &bin,
@@ -1105,5 +1250,6 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
-    assert_eq!(parsed["error"], "automation_not_enabled");
+    assert_eq!(parsed["error"], "automation_session_stale");
+    assert_eq!(std::fs::read(session_path).unwrap(), before);
 }

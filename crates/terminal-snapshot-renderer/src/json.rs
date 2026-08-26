@@ -148,6 +148,73 @@ pub fn to_ascii_json_line<T: Serialize>(value: &T, cap: usize) -> Result<Vec<u8>
     Ok(bytes)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UiTerminalSelectionMode {
+    Active,
+    Explicit,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiTerminalSnapshotDocument {
+    pub schema_version: u32,
+    pub kind: String,
+    pub owner_window: String,
+    pub selection_mode: UiTerminalSelectionMode,
+    pub captured_at_unix_ms: i64,
+    pub session: TerminalSnapshotSession,
+    pub screen: TerminalScreen,
+    pub fidelity: TerminalSnapshotFidelity,
+}
+
+impl std::fmt::Debug for UiTerminalSnapshotDocument {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UiTerminalSnapshotDocument")
+            .field("schema_version", &self.schema_version)
+            .field("selection_mode", &self.selection_mode)
+            .field("session", &self.session)
+            .field("screen", &self.screen)
+            .field("fidelity", &self.fidelity)
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn ui_terminal_snapshot_document(
+    owner_window: String,
+    selection_mode: UiTerminalSelectionMode,
+    model: &TerminalScreenModel,
+) -> Result<UiTerminalSnapshotDocument, ProtocolError> {
+    model.validate()?;
+    if owner_window.is_empty() || owner_window.len() > 128 {
+        return Err(ProtocolError::Invalid);
+    }
+    let captured_at_unix_ms = chrono::DateTime::parse_from_rfc3339(&model.captured_at)
+        .map_err(|_| ProtocolError::Invalid)?
+        .timestamp_millis();
+    Ok(UiTerminalSnapshotDocument {
+        schema_version: SCHEMA_VERSION,
+        kind: "ui-terminal-snapshot".to_string(),
+        owner_window,
+        selection_mode,
+        captured_at_unix_ms,
+        session: model.session.clone(),
+        screen: model.screen.clone(),
+        fidelity: model.fidelity.clone(),
+    })
+}
+
+pub fn encode_ui_terminal_snapshot(
+    owner_window: String,
+    selection_mode: UiTerminalSelectionMode,
+    model: &TerminalScreenModel,
+    cap: usize,
+) -> Result<Vec<u8>, ProtocolError> {
+    let document = ui_terminal_snapshot_document(owner_window, selection_mode, model)?;
+    to_ascii_json(&document, cap.min(MAX_JSON_BYTES))
+}
+
 pub fn decode_bounded<T: DeserializeOwned>(input: &[u8], cap: usize) -> Result<T, ProtocolError> {
     if input.is_empty() || input.len() > cap {
         return Err(ProtocolError::TooLarge);
@@ -1045,6 +1112,54 @@ mod tests {
             crate::protocol::MAX_JSON_BYTES,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn ui_terminal_snapshot_has_the_bounded_owner_only_envelope() {
+        let model = fixture_model();
+        let bytes = encode_ui_terminal_snapshot(
+            "main".to_string(),
+            UiTerminalSelectionMode::Active,
+            &model,
+            2_097_152,
+        )
+        .unwrap();
+        let encoded = std::str::from_utf8(&bytes).unwrap();
+        assert!(encoded.starts_with(
+            "{\"schemaVersion\":1,\"kind\":\"ui-terminal-snapshot\",\"ownerWindow\":\"main\",\"selectionMode\":\"active\",\"capturedAtUnixMs\":"
+        ));
+        let document: UiTerminalSnapshotDocument = decode_bounded(&bytes, 2_097_152).unwrap();
+        assert_eq!(document.schema_version, SCHEMA_VERSION);
+        assert_eq!(document.kind, "ui-terminal-snapshot");
+        assert_eq!(document.owner_window, "main");
+        assert_eq!(document.selection_mode, UiTerminalSelectionMode::Active);
+        assert_eq!(document.captured_at_unix_ms, 1_785_468_600_123);
+        for forbidden in ["requester", "target", "requestId", "capturedAt"] {
+            assert!(!encoded.contains(&format!("\"{forbidden}\"")));
+        }
+    }
+
+    #[test]
+    fn ui_terminal_snapshot_obeys_owner_and_byte_limits() {
+        let model = fixture_model();
+        assert_eq!(
+            encode_ui_terminal_snapshot(
+                String::new(),
+                UiTerminalSelectionMode::Explicit,
+                &model,
+                2_097_152,
+            ),
+            Err(ProtocolError::Invalid)
+        );
+        assert_eq!(
+            encode_ui_terminal_snapshot(
+                "main".to_string(),
+                UiTerminalSelectionMode::Explicit,
+                &model,
+                16,
+            ),
+            Err(ProtocolError::TooLarge)
+        );
     }
 
     #[test]

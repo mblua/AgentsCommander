@@ -15,6 +15,7 @@ import { Component } from "solid-js";
 const ProfileOutdatedBadge: Component<{
   onReload: () => void;
   testId?: string;
+  testIdPrivate?: boolean;
 }> = (props) => {
   return (
     <button
@@ -22,6 +23,7 @@ const ProfileOutdatedBadge: Component<{
       class="profile-outdated-badge"
       title="Loaded profile no longer matches its configuration. Reload to relaunch with the current profile."
       data-ac-testid={props.testId}
+      data-ac-testid-private={props.testIdPrivate ? "true" : undefined}
       onClick={(e) => {
         e.stopPropagation();
         props.onReload();

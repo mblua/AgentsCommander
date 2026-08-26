@@ -171,6 +171,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                       "archived-projects-row-warning": !row.exists || !row.hasWorkspace,
                     }}
                     data-ac-testid={`archivedProjects.row.${rowId()}`}
+                    data-ac-testid-private="true"
                   >
                     <div class="archived-projects-main">
                       <div class="archived-projects-name" title={row.path}>
@@ -191,6 +192,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                         disabled={busy()}
                         onClick={() => void unarchive(row)}
                         data-ac-testid={`archivedProjects.unarchive.${rowId()}`}
+                        data-ac-testid-private="true"
                       >
                         {busy() ? "Unarchiving..." : "Unarchive"}
                       </button>
@@ -200,6 +202,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                           disabled={busy()}
                           onClick={() => void forget(row)}
                           data-ac-testid={`archivedProjects.forget.${rowId()}`}
+                          data-ac-testid-private="true"
                         >
                           Remove from list
                         </button>
@@ -211,6 +214,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
                           class="workgroup-groups-errors archived-projects-row-error"
                           role="alert"
                           data-ac-testid={`archivedProjects.rowError.${rowId()}`}
+                          data-ac-testid-private="true"
                         >
                           {message()}
                         </div>

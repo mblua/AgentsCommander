@@ -187,12 +187,60 @@ fn root_help_lists_public_subcommands() {
     // #654 (`d20f5ea`) hid these internal verbs from `--help` via `hide = true`.
     // They must NOT appear in root help. (#657 test-debt fix: the expected list
     // above still required them after #654 landed, leaving this test red on main.)
-    for hidden in ["role-experiment", "test-reset", "window-info"] {
+    for hidden in [
+        "role-experiment",
+        "test-reset",
+        "window-info",
+        "ui-query",
+        "ui-list",
+        "ui-click",
+        "ui-context-click",
+        "ui-hover",
+        "ui-focus",
+        "ui-set",
+        "ui-type",
+        "ui-backend",
+        "ui-wait",
+        "ui-capabilities",
+    ] {
         assert!(
             !stdout.contains(hidden),
             "root help must not list hidden verb {hidden}:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn exact_filename_root_help_exposes_ui_verbs_only_in_the_feature_artifact() {
+    let tmp = Tmp::new("conditional-ui-help");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    let config_dir = config_dir_for_bin(&bin);
+    let (code, stdout, stderr) = run(&bin, &["--help"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.trim().is_empty());
+    for command in [
+        "ui-query",
+        "ui-list",
+        "ui-click",
+        "ui-context-click",
+        "ui-hover",
+        "ui-focus",
+        "ui-set",
+        "ui-type",
+        "ui-backend",
+        "ui-wait",
+        "ui-capabilities",
+    ] {
+        assert_eq!(
+            stdout.contains(command),
+            cfg!(feature = "testable-ui-automation"),
+            "conditional help mismatch for {command}:\n{stdout}"
+        );
+    }
+    assert!(
+        !config_dir.exists(),
+        "help must not acquire a config witness or create config state"
+    );
 }
 
 #[test]
@@ -333,6 +381,23 @@ fn public_subcommand_help_contracts() {
         (&["harness", "--help"], &["--dry-run", "--raw-command"]),
         (&["test-reset", "--help"], &["--confirm-testeable"]),
         (&["window-info", "--help"], &["Usage:"]),
+        (&["ui-query", "--help"], &["--window", "--selector", "--timeout-ms"]),
+        (&["ui-list", "--help"], &["--window", "--prefix", "--role"]),
+        (&["ui-click", "--help"], &["--window", "--selector"]),
+        (&["ui-context-click", "--help"], &["--window", "--selector"]),
+        (&["ui-hover", "--help"], &["--window", "--selector", "--leave"]),
+        (&["ui-focus", "--help"], &["--window", "--selector"]),
+        (&["ui-set", "--help"], &["--window", "--selector", "--value"]),
+        (&["ui-type", "--help"], &["--window", "--selector", "--value"]),
+        (
+            &["ui-backend", "--help"],
+            &["--selector", "--window", "--session", "--value"],
+        ),
+        (
+            &["ui-wait", "--help"],
+            &["--selector", "--state", "--text", "--absent"],
+        ),
+        (&["ui-capabilities", "--help"], &["Usage:"]),
     ];
 
     for (args, markers) in cases {

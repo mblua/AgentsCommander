@@ -921,19 +921,56 @@ export interface ResourceKillResult {
 
 export type UiAutomationAction =
   | "query"
+  | "list"
   | "click"
   | "contextClick"
   | "hover"
   | "setValue"
   | "typeText"
+  | "focus"
   | "backend";
 
+export type UiAutomationRole =
+  | "agent-preset"
+  | "alert"
+  | "button"
+  | "cell"
+  | "checkbox"
+  | "combobox"
+  | "dialog"
+  | "group"
+  | "input"
+  | "list"
+  | "menu"
+  | "menuitem"
+  | "metric"
+  | "overlay"
+  | "region"
+  | "row"
+  | "searchbox"
+  | "separator"
+  | "spinbutton"
+  | "status"
+  | "surface"
+  | "tab"
+  | "text"
+  | "textbox"
+  | "toolbar";
+
 export interface UiAutomationRequest {
+  schemaVersion?: number;
+  instanceId?: string;
+  pid?: number;
+  startedAtUnixMs?: number;
   requestId: string;
   token: string;
+  exePath?: string;
+  configDir?: string;
   window: string;
   action: UiAutomationAction;
-  selector: string;
+  selector?: string;
+  prefix?: string | null;
+  role?: string | null;
   value?: string | null;
   expiresAtUnixMs?: number | null;
 }
@@ -946,8 +983,8 @@ export interface UiAutomationTargetRect {
 }
 
 export interface UiAutomationTarget {
-  testId: string;
-  role: string | null;
+  testId: string | null;
+  role: UiAutomationRole | null;
   state: string | null;
   metadata: Record<string, string>;
   tag: string;
@@ -958,7 +995,21 @@ export interface UiAutomationTarget {
   selected: boolean | null;
   pressed: boolean | null;
   expanded: boolean | null;
+  focused: boolean;
   rect: UiAutomationTargetRect | null;
+}
+
+export interface UiAutomationListTarget {
+  testId: string;
+  role: UiAutomationRole | null;
+  state: string | null;
+  visible: boolean;
+  disabled: boolean;
+  checked: boolean | null;
+  selected: boolean | null;
+  pressed: boolean | null;
+  expanded: boolean | null;
+  focused: boolean;
 }
 
 export interface UiAutomationDiagnostics {
@@ -982,10 +1033,38 @@ export type UiAutomationResponse =
       ok: true;
       requestId: string;
       window: string;
-      action: UiAutomationAction;
+      action: Exclude<UiAutomationAction, "list">;
       selector: string;
       target: UiAutomationTarget;
+      activeTestId: string | null;
       diagnostics?: UiAutomationDiagnostics;
+    }
+  | {
+      ok: true;
+      requestId: string;
+      window: string;
+      action: "list";
+      /** Runtime-absent compatibility keys keep legacy callers source-compatible. */
+      selector: never;
+      target: never;
+      diagnostics: never;
+      filters: { prefix: string | null; role: UiAutomationRole | null };
+      targets: UiAutomationListTarget[];
+      matchedCount: number;
+      matchedCountExact: boolean;
+      returnedCount: number;
+      limit: number;
+      truncated: boolean;
+      scan: {
+        elements: number;
+        elementLimit: number;
+        targets: number;
+        targetLimit: number;
+        openRoots: number;
+        openRootLimit: number;
+        truncated: boolean;
+      };
+      activeTestId: string | null;
     }
   | {
       ok: false;
@@ -999,12 +1078,17 @@ export type UiAutomationResponse =
         | "target_hidden"
         | "target_obscured"
         | "target_disabled"
+        | "target_stale"
+        | "target_not_focusable"
+        | "focus_failed"
+        | "request_expired"
         | "timeout"
         | "unsupported_action"
         | "value_not_supported"
         | "automation_bridge_exception";
       message: string;
       available?: UiAutomationTarget[];
+      activeTestId: string | null;
       diagnostics?: UiAutomationDiagnostics;
     };
 

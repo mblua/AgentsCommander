@@ -11,10 +11,13 @@ function target<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-function renderBadge(percent: number | null | undefined) {
+function renderBadge(percent: number | null | undefined, testIdPrivate?: boolean) {
   const root = document.createElement("div");
   document.body.append(root);
-  const dispose = render(() => <ContextBadge percent={percent} testId={TESTID} />, root);
+  const dispose = render(
+    () => <ContextBadge percent={percent} testId={TESTID} testIdPrivate={testIdPrivate} />,
+    root,
+  );
   return { dispose };
 }
 
@@ -113,6 +116,19 @@ describe("ContextBadge (#1033)", () => {
       expect(badge.hasAttribute("aria-live")).toBe(false);
       expect(badge.hasAttribute("aria-atomic")).toBe(false);
       expect(badge.getAttribute("data-ac-role")).toBe("status");
+    }
+  });
+
+  it("forwards the private test-id marker through both rendered branches only when opted in", () => {
+    for (const percent of [42, null]) {
+      for (const testIdPrivate of [true, false, undefined]) {
+        document.body.innerHTML = "";
+        renderBadge(percent, testIdPrivate);
+        const badge = target(TESTID);
+        expect(badge.getAttribute("data-ac-testid-private")).toBe(
+          testIdPrivate ? "true" : null,
+        );
+      }
     }
   });
 });

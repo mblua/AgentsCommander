@@ -438,13 +438,7 @@ pub fn init_logger() {
 fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<AppLogFile>>>) {
     builder.format(move |buf, record| {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let line = format!(
-            "{} [{}] {} — {}\n",
-            ts,
-            record.level(),
-            record.target(),
-            record.args()
-        );
+        let line = format_record_line(&ts, record);
         // #280 — universal secret scrub before the line reaches
         // stderr or app.log. Defends against new call sites and
         // third-party crate errors that may have bypassed api.rs's
@@ -475,6 +469,16 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
         }
         Ok(())
     });
+}
+
+fn format_record_line(timestamp: impl std::fmt::Display, record: &log::Record<'_>) -> String {
+    format!(
+        "{} [{}] {} — {}\n",
+        timestamp,
+        record.level(),
+        record.target(),
+        record.args()
+    )
 }
 
 fn init_logger_inner() {
@@ -705,6 +709,59 @@ pub fn spawn_error_emit_task(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_records_keep_the_exact_formatter_framing_and_private_selector() {
+        const TIMESTAMP: &str = "2026-08-26 12:34:56.789";
+        const TARGET: &str = "agentscommander_lib::ui_automation";
+        let selected = format_record_line(
+            TIMESTAMP,
+            &log::Record::builder()
+                .level(log::Level::Warn)
+                .target(TARGET)
+                .args(format_args!(
+                    "[ui-automation] event=request_rejected request=00000000-0000-4000-8000-000000000153 error=automation_flooded"
+                ))
+                .build(),
+        );
+        assert_eq!(
+            selected,
+            "2026-08-26 12:34:56.789 [WARN] agentscommander_lib::ui_automation — [ui-automation] event=request_rejected request=00000000-0000-4000-8000-000000000153 error=automation_flooded\n"
+        );
+        let selector = regex::Regex::new(
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[(ERROR|WARN|INFO|DEBUG|TRACE)\] agentscommander_lib::ui_automation — \[ui-automation\] ",
+        )
+        .expect("automation log selector");
+        assert!(selector.is_match(&selected));
+
+        for (target, body) in [
+            ("agentscommander_lib::other", "[ui-automation] event=request_rejected"),
+            (TARGET, "event=request_rejected"),
+            ("agentscommander_lib", "[app-outbox] C:\\private\\config"),
+            ("agentscommander_lib::session", "session path C:\\private\\session"),
+        ] {
+            let line = format_record_line(
+                TIMESTAMP,
+                &log::Record::builder()
+                    .level(log::Level::Warn)
+                    .target(target)
+                    .args(format_args!("{body}"))
+                    .build(),
+            );
+            assert!(!selector.is_match(&line), "unexpected automation selection: {line:?}");
+        }
+
+        let contaminated = format_record_line(
+            TIMESTAMP,
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target(TARGET)
+                .args(format_args!("[ui-automation] event=request_failed selector=AC_UI_PRIVATE_CANARY"))
+                .build(),
+        );
+        assert!(selector.is_match(&contaminated));
+        assert!(contaminated.contains("AC_UI_PRIVATE_CANARY"));
+    }
     // #612 the gate's enabled()/log() are `log::Log` trait methods; bring the
     // trait into scope so the tests can call them on a `LevelGateLogger` value.
     use log::Log;

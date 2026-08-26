@@ -9,6 +9,7 @@ export const CONTEXT_BADGE_TOOLTIP =
 const ContextBadge: Component<{
   percent: number | null | undefined;
   testId?: string;
+  testIdPrivate?: boolean;
 }> = (props) => {
   const reading = (): { value: number } | undefined => {
     const percent = props.percent;
@@ -23,6 +24,7 @@ const ContextBadge: Component<{
           class="ctx-badge unavailable"
           title={CONTEXT_BADGE_TOOLTIP}
           data-ac-testid={props.testId}
+          data-ac-testid-private={props.testIdPrivate ? "true" : undefined}
           data-ac-role="status"
           data-ac-state="unavailable"
         >
@@ -41,6 +43,7 @@ const ContextBadge: Component<{
           aria-valuetext={`Context ${value().value}% used`}
           title={CONTEXT_BADGE_TOOLTIP}
           data-ac-testid={props.testId}
+          data-ac-testid-private={props.testIdPrivate ? "true" : undefined}
           data-ac-role="status"
           data-ac-state="reading"
         >

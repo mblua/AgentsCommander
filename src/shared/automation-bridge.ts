@@ -3,8 +3,10 @@ import { isTauri } from "./platform";
 import type {
   UiAutomationAction,
   UiAutomationDiagnostics,
+  UiAutomationListTarget,
   UiAutomationRequest,
   UiAutomationResponse,
+  UiAutomationRole,
   UiAutomationTarget,
   UiAutomationTargetRect,
 } from "./types";
@@ -14,6 +16,19 @@ const MAX_SNAPSHOT_TEXT = 120;
 const MISSING_SELECTOR_RETRY_MS = 250;
 const MISSING_SELECTOR_RETRY_INTERVAL_MS = 25;
 const REDACTED_TEXT = "[redacted]";
+const MAX_TEST_ID_BYTES = 256;
+const MAX_LIST_TARGETS = 50;
+const MAX_SCAN_TARGETS = 1_000;
+const MAX_SCAN_ELEMENTS = 20_000;
+const MAX_OPEN_ROOTS = 64;
+const PUBLIC_TEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_STATE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+const SUPPORTED_ROLES = new Set<UiAutomationRole>([
+  "agent-preset", "alert", "button", "cell", "checkbox", "combobox", "dialog",
+  "group", "input", "list", "menu", "menuitem", "metric", "overlay", "region",
+  "row", "searchbox", "separator", "spinbutton", "status", "surface", "tab",
+  "text", "textbox", "toolbar",
+]);
 
 const SAFE_METADATA_ATTRIBUTES = [
   ["data-ac-agent-id", "agentId"],
@@ -53,15 +68,11 @@ export async function initAutomationBridge(windowLabel?: string): Promise<void> 
 
     void executeAutomationRequest(resolvedWindowLabel, request)
       .then((response) => AutomationAPI.complete(response))
-      .catch((error) => {
-        console.error("[automation] failed to complete request:", error);
-      });
+      .catch(() => {});
   });
 
   started = true;
-  await AutomationAPI.frontendReady(resolvedWindowLabel).catch((error) => {
-    console.error("[automation] frontend readiness failed:", error);
-  });
+  await AutomationAPI.frontendReady(resolvedWindowLabel).catch(() => {});
 }
 
 export function resetAutomationBridgeForTests(): void {
@@ -94,13 +105,17 @@ async function executeAutomationRequestInner(
   const expiredBeforeQuery = expiredRequestResponse(windowLabel, request, diagnostics);
   if (expiredBeforeQuery) return expiredBeforeQuery;
 
+  if (request.action === "list") {
+    return listResponse(windowLabel, request);
+  }
+
   if (request.action === "hover") {
     if (request.value != null && request.value !== "leave") {
       return errorResponse(
         windowLabel,
         request,
         "value_not_supported",
-        `Automation action "hover" accepts no value other than "leave" (got "${request.value}").`,
+        "Automation hover accepts no value other than the closed leave operation.",
         availableTargets(),
         diagnostics,
       );
@@ -123,7 +138,7 @@ async function executeAutomationRequestInner(
       windowLabel,
       request,
       "missing_selector",
-      `No automation target matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
+      "No public automation target matched the requested selector.",
       availableTargets(),
       diagnostics,
     );
@@ -134,8 +149,8 @@ async function executeAutomationRequestInner(
       windowLabel,
       request,
       "duplicate_selector",
-      `Multiple automation targets matched data-ac-testid="${request.selector}" in window "${windowLabel}".`,
-      matches.map((element) => snapshotTarget(element)),
+      "Multiple public automation targets matched the requested selector.",
+      availableTargets(matches),
       diagnostics,
     );
   }
@@ -146,7 +161,7 @@ async function executeAutomationRequestInner(
       windowLabel,
       request,
       "target_hidden",
-      `Automation target "${request.selector}" is hidden in window "${windowLabel}".`,
+      "The requested automation target is hidden.",
       availableTargets(),
       diagnostics,
     );
@@ -161,7 +176,7 @@ async function executeAutomationRequestInner(
       windowLabel,
       request,
       "target_disabled",
-      `Automation target "${request.selector}" is disabled in window "${windowLabel}".`,
+      "The requested automation target is disabled.",
       availableTargets(),
       diagnostics,
     );
@@ -173,15 +188,31 @@ async function executeAutomationRequestInner(
       windowLabel,
       request,
       "target_obscured",
-      `Automation target "${request.selector}" is obscured in window "${windowLabel}".`,
+      "The requested automation target is obscured.",
       availableTargets(),
-      { ...diagnostics, topmost: topmost.element ? snapshotTarget(topmost.element) : null },
+      {
+        ...diagnostics,
+        topmost:
+          topmost.element && publicAutomationTestId(topmost.element)
+            ? snapshotTarget(topmost.element)
+            : null,
+      },
     );
   }
 
   if (request.action === "hover") {
     const expired = expiredMutationResponse(windowLabel, request, diagnostics);
     if (expired) return expired;
+    if (!revalidateExactTarget(request, element)) {
+      return errorResponse(
+        windowLabel,
+        request,
+        "target_stale",
+        "Automation target changed before hover.",
+        availableTargets(),
+        diagnostics,
+      );
+    }
 
     const hover = dispatchHoverEnter(element);
     await settleAfterDomMutation();
@@ -194,6 +225,9 @@ async function executeAutomationRequestInner(
   if (request.action === "click") {
     const expired = expiredMutationResponse(windowLabel, request, diagnostics);
     if (expired) return expired;
+    if (!revalidateExactTarget(request, element)) {
+      return errorResponse(windowLabel, request, "target_stale", "Automation target changed before click.", availableTargets(), diagnostics);
+    }
     element.focus();
     element.click();
     await settleAfterDomMutation();
@@ -203,6 +237,9 @@ async function executeAutomationRequestInner(
   if (request.action === "contextClick") {
     const expired = expiredMutationResponse(windowLabel, request, diagnostics);
     if (expired) return expired;
+    if (!revalidateExactTarget(request, element)) {
+      return errorResponse(windowLabel, request, "target_stale", "Automation target changed before context click.", availableTargets(), diagnostics);
+    }
     element.focus();
     element.dispatchEvent(createContextMenuEvent(element, elementCenterPoint(element)));
     await settleAfterDomMutation();
@@ -211,6 +248,33 @@ async function executeAutomationRequestInner(
 
   if (request.action === "setValue" || request.action === "typeText") {
     return setElementValue(windowLabel, request, element, diagnostics);
+  }
+
+  if (request.action === "focus") {
+    if (!isProgrammaticallyFocusable(element)) {
+      return errorResponse(
+        windowLabel,
+        request,
+        "target_not_focusable",
+        "Automation target is not programmatically focusable.",
+        availableTargets(),
+        diagnostics,
+      );
+    }
+    const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+    if (expired) return expired;
+    if (!revalidateExactTarget(request, element)) {
+      return errorResponse(windowLabel, request, "target_stale", "Automation target changed before focus.", availableTargets(), diagnostics);
+    }
+    element.focus({ preventScroll: true });
+    await settleAfterDomMutation();
+    if (!revalidateExactTarget(request, element)) {
+      return errorResponse(windowLabel, request, "target_stale", "Automation target changed during focus.", availableTargets(), diagnostics);
+    }
+    if (deepestActiveElement() !== element) {
+      return errorResponse(windowLabel, request, "focus_failed", "The browser did not retain focus on the automation target.", availableTargets(), diagnostics);
+    }
+    return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
   return errorResponse(
@@ -238,7 +302,7 @@ async function setElementValue(
       windowLabel,
       request,
       "value_not_supported",
-      `Automation target "${request.selector}" does not support setValue.`,
+      "The requested automation target does not support value mutation.",
       availableTargets(),
       diagnostics,
     );
@@ -246,6 +310,16 @@ async function setElementValue(
 
   const expired = expiredMutationResponse(windowLabel, request, diagnostics);
   if (expired) return expired;
+  if (!revalidateExactTarget(request, element)) {
+    return errorResponse(
+      windowLabel,
+      request,
+      "target_stale",
+      "Automation target changed before value mutation.",
+      availableTargets(),
+      diagnostics,
+    );
+  }
 
   element.focus();
   element.value = request.value ?? "";
@@ -279,7 +353,7 @@ function expiredRequestResponse(
   return errorResponse(
     windowLabel,
     request,
-    "timeout",
+    "request_expired",
     `Automation request "${request.requestId}" expired before the frontend could complete "${request.action}".`,
     availableTargets(),
     {
@@ -304,9 +378,10 @@ function successResponse(
     ok: true,
     requestId: request.requestId,
     window: windowLabel,
-    action: request.action,
-    selector: request.selector,
+    action: request.action as Exclude<UiAutomationAction, "list">,
+    selector: request.selector ?? "",
     target,
+    activeTestId: activeTestId(),
     diagnostics,
   };
 }
@@ -324,10 +399,11 @@ function errorResponse(
     requestId: request.requestId,
     window: windowLabel,
     action: request.action,
-    selector: request.selector,
+    selector: request.selector ?? "",
     error,
     message,
     available,
+    activeTestId: activeTestId(),
     diagnostics,
   };
 }
@@ -340,7 +416,7 @@ function queryAutomationTargets(testId: string): HTMLElement[] {
 async function queryAutomationTargetsWithBriefRetry(
   request: UiAutomationRequest,
 ): Promise<HTMLElement[]> {
-  let matches = queryAutomationTargets(request.selector);
+  let matches = queryAutomationTargets(request.selector ?? "");
   if (matches.length > 0) return matches;
 
   const retryMs = missingSelectorRetryBudgetMs(request);
@@ -363,7 +439,7 @@ async function queryAutomationTargetsWithBriefRetry(
     );
     if (requestExpired(request, Date.now())) return [];
 
-    matches = queryAutomationTargets(request.selector);
+    matches = queryAutomationTargets(request.selector ?? "");
     if (matches.length > 0) return matches;
   }
 
@@ -380,11 +456,175 @@ function requestExpiryRemainingMs(request: UiAutomationRequest, nowUnixMs: numbe
   return Math.max(0, request.expiresAtUnixMs - nowUnixMs);
 }
 
-function availableTargets(): UiAutomationTarget[] {
-  return queryAcrossOpenRoots("[data-ac-testid]")
-    .map((element) => snapshotTarget(element))
-    .sort((a, b) => a.testId.localeCompare(b.testId))
-    .slice(0, MAX_AVAILABLE_TARGETS);
+function availableTargets(source?: HTMLElement[]): UiAutomationTarget[] {
+  const elements = source ?? scanAutomationElements().elements.map(({ element }) => element);
+  return elements
+    .map((element, ordinal) => ({ element, ordinal, testId: publicAutomationTestId(element) }))
+    .filter((candidate): candidate is { element: HTMLElement; ordinal: number; testId: string } =>
+      candidate.testId !== null,
+    )
+    .sort((left, right) => compareCodeUnits(left.testId, right.testId) || left.ordinal - right.ordinal)
+    .slice(0, MAX_AVAILABLE_TARGETS)
+    .map(({ element, testId }) => snapshotTargetWithPublicId(element, testId));
+}
+
+function listResponse(windowLabel: string, request: UiAutomationRequest): UiAutomationResponse {
+  const scanResult = scanAutomationElements();
+  const prefix = request.prefix === undefined || request.prefix === null ? null : request.prefix;
+  const requestedRole = supportedRole(request.role ?? null);
+  const matches = scanResult.elements
+    .map(({ element, ordinal }) => ({
+      element,
+      ordinal,
+      testId: publicAutomationTestId(element),
+      role: projectedRole(element),
+    }))
+    .filter(
+      (candidate): candidate is {
+        element: HTMLElement;
+        ordinal: number;
+        testId: string;
+        role: UiAutomationRole | null;
+      } =>
+        candidate.testId !== null &&
+        (prefix === null || candidate.testId.startsWith(prefix)) &&
+        (request.role == null || candidate.role === requestedRole),
+    )
+    .sort(
+      (left, right) =>
+        compareCodeUnits(left.testId, right.testId) ||
+        compareNullableCodeUnits(left.role, right.role) ||
+        left.ordinal - right.ordinal,
+    );
+  const targets = matches
+    .slice(0, MAX_LIST_TARGETS)
+    .map(({ element, testId, role }) => listTarget(element, testId, role));
+  const truncated = scanResult.scan.truncated || matches.length > MAX_LIST_TARGETS;
+  return {
+    ok: true,
+    requestId: request.requestId,
+    window: windowLabel,
+    action: "list",
+    filters: { prefix, role: requestedRole },
+    targets,
+    matchedCount: matches.length,
+    matchedCountExact: !scanResult.scan.truncated,
+    returnedCount: targets.length,
+    limit: MAX_LIST_TARGETS,
+    truncated,
+    scan: scanResult.scan,
+    activeTestId: activeTestId(),
+  } as UiAutomationResponse;
+}
+
+function scanAutomationElements(): {
+  elements: Array<{ element: HTMLElement; ordinal: number }>;
+  scan: {
+    elements: number;
+    elementLimit: number;
+    targets: number;
+    targetLimit: number;
+    openRoots: number;
+    openRootLimit: number;
+    truncated: boolean;
+  };
+} {
+  const candidates: Array<{ element: HTMLElement; ordinal: number }> = [];
+  const roots: Array<Document | ShadowRoot> = [document];
+  let elements = 0;
+  let targets = 0;
+  let openRoots = 0;
+  let ordinal = 0;
+  let truncated = false;
+
+  outer: while (roots.length > 0) {
+    if (openRoots >= MAX_OPEN_ROOTS) {
+      truncated = true;
+      break;
+    }
+    const root = roots.shift()!;
+    openRoots += 1;
+    for (const element of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+      if (elements >= MAX_SCAN_ELEMENTS) {
+        truncated = true;
+        break outer;
+      }
+      elements += 1;
+      if (element.shadowRoot) roots.push(element.shadowRoot);
+      if (publicAutomationTestId(element) === null) continue;
+      if (targets >= MAX_SCAN_TARGETS) {
+        truncated = true;
+        break outer;
+      }
+      targets += 1;
+      candidates.push({ element, ordinal: ordinal++ });
+    }
+  }
+
+  return {
+    elements: candidates,
+    scan: {
+      elements,
+      elementLimit: MAX_SCAN_ELEMENTS,
+      targets,
+      targetLimit: MAX_SCAN_TARGETS,
+      openRoots,
+      openRootLimit: MAX_OPEN_ROOTS,
+      truncated,
+    },
+  };
+}
+
+export function publicAutomationTestId(element: HTMLElement): string | null {
+  if (element.hasAttribute("data-ac-testid-private")) return null;
+  const testId = element.getAttribute("data-ac-testid");
+  if (!testId || !PUBLIC_TEST_ID_PATTERN.test(testId)) return null;
+  if (new TextEncoder().encode(testId).length > MAX_TEST_ID_BYTES) return null;
+  return testId;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareNullableCodeUnits(left: string | null, right: string | null): number {
+  if (left === null) return right === null ? 0 : -1;
+  if (right === null) return 1;
+  return compareCodeUnits(left, right);
+}
+
+function supportedRole(value: string | null): UiAutomationRole | null {
+  return value !== null && SUPPORTED_ROLES.has(value as UiAutomationRole)
+    ? (value as UiAutomationRole)
+    : null;
+}
+
+function projectedRole(element: HTMLElement): UiAutomationRole | null {
+  return supportedRole(element.getAttribute("data-ac-role") ?? element.getAttribute("role"));
+}
+
+function projectedState(element: HTMLElement): string | null {
+  const state = element.getAttribute("data-ac-state");
+  return state !== null && SAFE_STATE_PATTERN.test(state) ? state : null;
+}
+
+function listTarget(
+  element: HTMLElement,
+  testId: string,
+  role: UiAutomationRole | null,
+): UiAutomationListTarget {
+  return {
+    testId,
+    role,
+    state: projectedState(element),
+    visible: isElementVisible(element),
+    disabled: isElementDisabled(element),
+    checked: boolState(element, "checked"),
+    selected: boolState(element, "selected"),
+    pressed: ariaBool(element, "aria-pressed"),
+    expanded: ariaBool(element, "aria-expanded"),
+    focused: deepestActiveElement() === element,
+  };
 }
 
 function queryAcrossOpenRoots(selector: string): HTMLElement[] {
@@ -409,10 +649,17 @@ function cssEscape(value: string): string {
 }
 
 function snapshotTarget(element: HTMLElement): UiAutomationTarget {
+  return snapshotTargetWithPublicId(element, publicAutomationTestId(element));
+}
+
+function snapshotTargetWithPublicId(
+  element: HTMLElement,
+  testId: string | null,
+): UiAutomationTarget {
   return {
-    testId: element.getAttribute("data-ac-testid") ?? "",
-    role: element.getAttribute("data-ac-role") ?? element.getAttribute("role"),
-    state: element.getAttribute("data-ac-state"),
+    testId,
+    role: projectedRole(element),
+    state: projectedState(element),
     metadata: snapshotMetadata(element),
     tag: element.tagName.toLowerCase(),
     text: snapshotText(element),
@@ -422,8 +669,60 @@ function snapshotTarget(element: HTMLElement): UiAutomationTarget {
     selected: boolState(element, "selected"),
     pressed: ariaBool(element, "aria-pressed"),
     expanded: ariaBool(element, "aria-expanded"),
+    focused: deepestActiveElement() === element,
     rect: targetRect(element),
   };
+}
+
+function deepestActiveElement(): Element | null {
+  let active: Element | null = document.activeElement;
+  while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+    active = active.shadowRoot.activeElement;
+  }
+  return active;
+}
+
+function activeTestId(): string | null {
+  const active = deepestActiveElement();
+  if (!(active instanceof HTMLElement)) return null;
+  const testId = publicAutomationTestId(active);
+  if (testId === null) return null;
+  const matches = queryAutomationTargets(testId).filter(
+    (candidate) => publicAutomationTestId(candidate) === testId,
+  );
+  return matches.length === 1 && matches[0] === active ? testId : null;
+}
+
+function revalidateExactTarget(request: UiAutomationRequest, element: HTMLElement): boolean {
+  if (!element.isConnected || !request.selector) return false;
+  const matches = queryAutomationTargets(request.selector);
+  return matches.length === 1 && matches[0] === element;
+}
+
+function isProgrammaticallyFocusable(element: HTMLElement): boolean {
+  if (element instanceof HTMLButtonElement) return true;
+  if (element instanceof HTMLInputElement) return element.type.toLowerCase() !== "hidden";
+  if (element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) return true;
+  if (element instanceof HTMLAnchorElement || element instanceof HTMLAreaElement) {
+    return element.hasAttribute("href");
+  }
+  if (
+    element instanceof HTMLIFrameElement ||
+    element instanceof HTMLObjectElement ||
+    element instanceof HTMLEmbedElement
+  ) {
+    return true;
+  }
+  if (element instanceof HTMLAudioElement || element instanceof HTMLVideoElement) {
+    return element.controls;
+  }
+  if (element instanceof HTMLElement && element.tagName.toLowerCase() === "summary") {
+    const details = element.parentElement;
+    if (details?.tagName.toLowerCase() === "details") {
+      return Array.from(details.children).find((child) => child.tagName.toLowerCase() === "summary") === element;
+    }
+  }
+  return element.hasAttribute("tabindex") || element.isContentEditable;
 }
 
 function snapshotMetadata(element: HTMLElement): Record<string, string> {
@@ -714,12 +1013,12 @@ function takeUntil(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[
 }
 
 function testIdOf(element: HTMLElement | null): string | null {
-  return element?.getAttribute("data-ac-testid") ?? null;
+  return element ? publicAutomationTestId(element) : null;
 }
 
 function emptyHoverTarget(): UiAutomationTarget {
   return {
-    testId: "",
+    testId: null,
     role: null,
     state: null,
     metadata: {},
@@ -731,6 +1030,7 @@ function emptyHoverTarget(): UiAutomationTarget {
     selected: null,
     pressed: null,
     expanded: null,
+    focused: false,
     rect: null,
   };
 }

@@ -1,18 +1,28 @@
 use clap::Args;
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
+use terminal_snapshot_renderer::{
+    encode_ui_terminal_snapshot, ProtocolError, UiTerminalSelectionMode,
+    UiTerminalSnapshotDocument,
+};
 use uuid::Uuid;
 
+use crate::pty::manager::{PtyManager, PtySnapshotRouteProof, UiTerminalCaptureError};
+use crate::session::manager::{SessionManager, TerminalSnapshotSessionFact};
+use crate::session::selection::{SelectionCoordinator, SessionSelection};
 use crate::shutdown::ShutdownSignal;
 use crate::testability::window_placement::TESTABLE_EXE_NAME;
+use crate::DetachedSessionsState;
 
 pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
 pub const SESSION_FILE: &str = "session.json";
@@ -21,8 +31,46 @@ pub const RESPONSES_DIR: &str = "responses";
 pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
 pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
 pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
+const UI_AUTOMATION_LOG_TARGET: &str = "agentscommander_lib::ui_automation";
+
+#[derive(Clone, Copy)]
+enum UiAutomationLogEvent {
+    InitializeFailed,
+    ConfigIdentityFailed,
+    PollFailed,
+    RequestReadFailed,
+    BackendResponseWriteFailed,
+}
+
+impl UiAutomationLogEvent {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InitializeFailed => "initialize_failed",
+            Self::ConfigIdentityFailed => "config_identity_failed",
+            Self::PollFailed => "poll_failed",
+            Self::RequestReadFailed => "request_read_failed",
+            Self::BackendResponseWriteFailed => "backend_response_write_failed",
+        }
+    }
+}
+
+fn ui_automation_log_message(
+    event: UiAutomationLogEvent,
+    request_id: Option<&str>,
+    error: &'static str,
+) -> String {
+    match request_id {
+        Some(request_id) => format!(
+            "[ui-automation] event={} request={} error={error}",
+            event.as_str(),
+            request_id
+        ),
+        None => format!("[ui-automation] event={} error={error}", event.as_str()),
+    }
+}
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+const MAX_TIMEOUT_MS: u64 = 60_000;
 const POLL_MS: u64 = 50;
 const FS_RETRY_COUNT: usize = 8;
 const FS_RETRY_DELAY_MS: u64 = 25;
@@ -30,6 +78,160 @@ const SESSION_READ_RETRY_COUNT: usize = 8;
 const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
 const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
 const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
+const MAX_WINDOW_LABEL_BYTES: usize = 128;
+const MAX_SELECTOR_BYTES: usize = 256;
+const MAX_PREFIX_BYTES: usize = 256;
+const MAX_ROLE_BYTES: usize = 32;
+const MAX_STATE_PREDICATE_BYTES: usize = 64;
+const MAX_TEXT_PREDICATE_CHARS: usize = 80;
+const MAX_TEXT_PREDICATE_BYTES: usize = 320;
+const MAX_VALUE_BYTES: usize = 16_384;
+const MAX_SESSION_FILE_BYTES: usize = 16_384;
+const MAX_REQUEST_FILE_BYTES: usize = 32_768;
+const MAX_RESPONSE_JSON_BYTES: usize = 2_097_152;
+const MAX_STDOUT_JSON_BYTES: usize = 2_097_152;
+const MAX_REGISTERED_WINDOWS: usize = 32;
+const MAX_PENDING_TOTAL: usize = 32;
+const MAX_PENDING_PER_WINDOW: usize = 8;
+const MAX_PENDING_TERMINAL_SNAPSHOTS: usize = 2;
+const MAX_REQUEST_FILES_PER_SCAN: usize = 64;
+const MAX_LIST_RETURN_TARGETS: usize = 50;
+const MAX_LIST_SCAN_TARGETS: usize = 1_000;
+const MAX_LIST_SCAN_ELEMENTS: usize = 20_000;
+const MAX_LIST_OPEN_ROOTS: usize = 64;
+const MAX_TERMINAL_ROWS: usize = 200;
+const MAX_TERMINAL_COLUMNS: usize = 500;
+const MAX_TERMINAL_CELLS: usize = 100_000;
+const PROTOCOL_SCHEMA_VERSION: u32 = 1;
+const SUPPORTED_ROLES: [&str; 25] = [
+    "agent-preset",
+    "alert",
+    "button",
+    "cell",
+    "checkbox",
+    "combobox",
+    "dialog",
+    "group",
+    "input",
+    "list",
+    "menu",
+    "menuitem",
+    "metric",
+    "overlay",
+    "region",
+    "row",
+    "searchbox",
+    "separator",
+    "spinbutton",
+    "status",
+    "surface",
+    "tab",
+    "text",
+    "textbox",
+    "toolbar",
+];
+const CAPABILITY_ACTIONS: [&str; 10] = [
+    "query",
+    "list",
+    "wait",
+    "click",
+    "contextClick",
+    "hover",
+    "focus",
+    "setValue",
+    "typeText",
+    "backend",
+];
+const CAPABILITY_WAIT_PREDICATES: [&str; 8] = [
+    "state", "text", "enabled", "disabled", "selected", "expanded", "focused", "absent",
+];
+const CAPABILITY_BACKEND_SELECTORS: [&str; 2] = [
+    RESOURCE_WATCHDOG_BACKEND_SELECTOR,
+    "terminal.snapshot",
+];
+
+pub trait AutomationConfigWitness: Send + Sync + 'static {
+    fn canonical_path(&self) -> &Path;
+    fn object_parts(&self) -> (u64, u64);
+    fn verify_current(&self) -> bool;
+}
+
+pub trait InstanceIsolationTestHooks: Send + Sync + 'static {
+    fn after_ui_cli_context_acquired_before_logger(&self) {}
+    fn before_config_writer(&self) {}
+    fn after_owned_artifacts_published(&self) {}
+}
+
+pub struct NoopInstanceIsolationTestHooks;
+
+impl InstanceIsolationTestHooks for NoopInstanceIsolationTestHooks {}
+
+pub struct UiCliDispatchContext {
+    config_witness: Arc<dyn AutomationConfigWitness>,
+    identity_failed: AtomicBool,
+}
+
+impl UiCliDispatchContext {
+    pub fn new(config_witness: Arc<dyn AutomationConfigWitness>) -> Self {
+        Self {
+            config_witness,
+            identity_failed: AtomicBool::new(false),
+        }
+    }
+
+    pub fn verify_current(&self) -> bool {
+        if self.identity_failed.load(Ordering::SeqCst) {
+            return false;
+        }
+        if self.config_witness.verify_current() {
+            true
+        } else {
+            self.identity_failed.store(true, Ordering::SeqCst);
+            false
+        }
+    }
+
+    fn canonical_path(&self) -> &Path {
+        self.config_witness.canonical_path()
+    }
+
+    fn with_owned_automation_fs<T>(
+        &self,
+        operation: impl FnOnce(&Path) -> Result<T, Value>,
+    ) -> Result<T, Value> {
+        if !self.verify_current() {
+            return Err(automation_config_identity_unavailable_error());
+        }
+        operation(self.canonical_path())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LiveProcessIdentity {
+    executable: PathBuf,
+    started_at_unix_ms: i64,
+}
+
+trait LiveProcessIdentityProbe {
+    fn probe(&self, pid: u32) -> Option<LiveProcessIdentity>;
+}
+
+trait SessionLoadTestHooks: Send + Sync {
+    fn after_session_bytes_read(&self) {}
+}
+
+trait TerminalCaptureHooks: Send + Sync {
+    fn after_detached_guard_acquired(&self) {}
+    fn before_capture(&self) {}
+    fn after_capture_before_owner_revalidation(&self) {}
+    fn block_capture(&self) {}
+}
+
+struct NoopTerminalCaptureHooks;
+
+impl TerminalCaptureHooks for NoopTerminalCaptureHooks {}
+
+struct OsLiveProcessIdentityProbe;
 
 #[derive(Debug, Args)]
 pub struct UiQueryArgs {
@@ -108,6 +310,10 @@ pub struct UiBackendArgs {
     #[arg(long)]
     pub selector: String,
     #[arg(long)]
+    pub window: Option<String>,
+    #[arg(long)]
+    pub session: Option<String>,
+    #[arg(long)]
     pub value: Option<String>,
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
     pub timeout_ms: u64,
@@ -119,45 +325,131 @@ pub struct UiWaitArgs {
     pub window: String,
     #[arg(long)]
     pub selector: String,
+    #[arg(long)]
+    pub state: Vec<String>,
+    #[arg(long)]
+    pub text: Vec<String>,
+    #[arg(long)]
+    pub enabled: bool,
+    #[arg(long)]
+    pub disabled: bool,
+    #[arg(long)]
+    pub selected: Vec<String>,
+    #[arg(long)]
+    pub expanded: Vec<String>,
+    #[arg(long)]
+    pub focused: Vec<String>,
+    #[arg(long)]
+    pub absent: bool,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct UiCapabilitiesArgs {
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct UiListArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub prefix: Option<String>,
+    #[arg(long)]
+    pub role: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct UiFocusArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub selector: String,
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
     pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiAutomationSession {
+    pub schema_version: u32,
+    pub instance_id: String,
     pub pid: u32,
     pub token: String,
     pub exe_path: String,
     pub config_dir: String,
+    pub window_inventory: UiAutomationWindowInventory,
     pub window_labels: Vec<String>,
     pub ready_window_labels: Vec<String>,
     pub started_at_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiAutomationWindowInventory {
+    pub status: WindowInventoryStatus,
+    pub observed_count: u32,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum WindowInventoryStatus {
+    Ready,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiAutomationRequest {
+    pub schema_version: u32,
+    pub instance_id: String,
+    pub pid: u32,
+    pub started_at_unix_ms: i64,
     pub request_id: String,
     pub token: String,
+    pub exe_path: String,
+    pub config_dir: String,
     pub window: String,
     pub action: UiAutomationAction,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<UiTerminalSessionSelector>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_unix_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum UiTerminalSessionSelector {
+    Active,
+    Explicit { id: String },
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum UiAutomationAction {
     Query,
+    List,
     Click,
     ContextClick,
     Hover,
     SetValue,
     TypeText,
+    Focus,
     Backend,
 }
 
@@ -170,12 +462,14 @@ impl UiAutomationAction {
     #[cfg(test)]
     fn next_variant(self) -> Option<Self> {
         Some(match self {
-            Self::Query => Self::Click,
+            Self::Query => Self::List,
+            Self::List => Self::Click,
             Self::Click => Self::ContextClick,
             Self::ContextClick => Self::Hover,
             Self::Hover => Self::SetValue,
             Self::SetValue => Self::TypeText,
-            Self::TypeText => Self::Backend,
+            Self::TypeText => Self::Focus,
+            Self::Focus => Self::Backend,
             Self::Backend => return None,
         })
     }
@@ -196,12 +490,14 @@ impl UiAutomationAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAutomationResponse {
     pub ok: bool,
     pub request_id: String,
     pub window: String,
     pub action: UiAutomationAction,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub selector: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<Value>,
@@ -219,6 +515,60 @@ pub struct UiAutomationResponse {
     pub timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub active_test_id: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<UiListFilters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<UiListTarget>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_count_exact: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returned_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<UiListScan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_snapshot: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiListFilters {
+    pub prefix: Option<String>,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiListTarget {
+    pub test_id: String,
+    pub role: Option<String>,
+    pub state: Option<String>,
+    pub visible: bool,
+    pub disabled: bool,
+    pub checked: Option<bool>,
+    pub selected: Option<bool>,
+    pub pressed: Option<bool>,
+    pub expanded: Option<bool>,
+    pub focused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiListScan {
+    pub elements: usize,
+    pub element_limit: usize,
+    pub targets: usize,
+    pub target_limit: usize,
+    pub open_roots: usize,
+    pub open_root_limit: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +576,235 @@ struct PendingRequest {
     request: UiAutomationRequest,
     response_path: PathBuf,
     inflight_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalTaskPhase {
+    Running,
+    Joining,
+}
+
+struct TerminalTaskControl {
+    cancelled: Arc<AtomicBool>,
+    phase: TerminalTaskPhase,
+    handle: Option<JoinHandle<()>>,
+}
+
+struct TerminalTaskStartGate {
+    open: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl TerminalTaskStartGate {
+    fn closed() -> Self {
+        Self {
+            open: Mutex::new(false),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap_or_else(|error| error.into_inner());
+        while !*open {
+            open = self
+                .wake
+                .wait(open)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        self.wake.notify_one();
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TerminalOwnerWitness {
+    Main {
+        owner_window: String,
+        generation: u64,
+        session_id: Uuid,
+        selection: SessionSelection,
+    },
+    Detached {
+        owner_window: String,
+        generation: u64,
+        session_id: Uuid,
+    },
+}
+
+impl TerminalOwnerWitness {
+    fn owner_window(&self) -> &str {
+        match self {
+            Self::Main { owner_window, .. } | Self::Detached { owner_window, .. } => owner_window,
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Main { generation, .. } | Self::Detached { generation, .. } => *generation,
+        }
+    }
+
+    fn session_id(&self) -> Uuid {
+        match self {
+            Self::Main { session_id, .. } | Self::Detached { session_id, .. } => *session_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TerminalSnapshotTaskError {
+    code: &'static str,
+    message: &'static str,
+}
+
+impl TerminalSnapshotTaskError {
+    const fn new(code: &'static str, message: &'static str) -> Self {
+        Self { code, message }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowInventoryEntry {
+    ready: bool,
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct WindowInventory {
+    next_generation: u64,
+    entries: HashMap<String, WindowInventoryEntry>,
+    status: WindowInventoryStatus,
+}
+
+impl WindowInventory {
+    fn initial() -> Self {
+        let mut inventory = Self {
+            next_generation: 1,
+            entries: HashMap::new(),
+            status: WindowInventoryStatus::Ready,
+        };
+        let generation = inventory.take_generation();
+        inventory.entries.insert(
+            "main".to_string(),
+            WindowInventoryEntry {
+                ready: false,
+                generation,
+            },
+        );
+        inventory
+    }
+
+    fn take_generation(&mut self) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.saturating_add(1);
+        generation
+    }
+
+    fn mark_ready(&mut self, label: &str) {
+        let status_before = self.status;
+        let generation = self.take_generation();
+        self.entries
+            .entry(label.to_string())
+            .and_modify(|entry| {
+                entry.ready = true;
+                entry.generation = generation;
+            })
+            .or_insert(WindowInventoryEntry {
+                ready: true,
+                generation,
+            });
+        self.update_status();
+        if status_before != WindowInventoryStatus::Overflow
+            && self.status == WindowInventoryStatus::Overflow
+        {
+            self.bump_all_generations();
+        }
+    }
+
+    fn sync(&mut self, live_labels: Vec<String>) -> bool {
+        let live = live_labels.into_iter().collect::<HashSet<_>>();
+        let before_status = self.status;
+        let before_entries = self.entries.clone();
+        self.entries.retain(|label, _| live.contains(label));
+        for label in live {
+            if !self.entries.contains_key(&label) {
+                let generation = self.take_generation();
+                self.entries.insert(
+                    label,
+                    WindowInventoryEntry {
+                        ready: false,
+                        generation,
+                    },
+                );
+            }
+        }
+        let status_before = self.status;
+        self.update_status();
+        if status_before != WindowInventoryStatus::Overflow
+            && self.status == WindowInventoryStatus::Overflow
+        {
+            self.bump_all_generations();
+        }
+        before_status != self.status || before_entries != self.entries
+    }
+
+    fn bump_all_generations(&mut self) {
+        let labels = self.entries.keys().cloned().collect::<Vec<_>>();
+        for label in labels {
+            let generation = self.take_generation();
+            if let Some(entry) = self.entries.get_mut(&label) {
+                entry.generation = generation;
+            }
+        }
+    }
+
+    fn update_status(&mut self) {
+        self.status = if self.entries.len() > MAX_REGISTERED_WINDOWS {
+            WindowInventoryStatus::Overflow
+        } else {
+            WindowInventoryStatus::Ready
+        };
+    }
+
+    fn snapshot(&self) -> (WindowInventoryStatus, Vec<String>, Vec<String>) {
+        if self.status == WindowInventoryStatus::Overflow {
+            return (self.status, Vec::new(), Vec::new());
+        }
+        let mut labels = self.entries.keys().cloned().collect::<Vec<_>>();
+        labels.sort();
+        let mut ready = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.ready)
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>();
+        ready.sort();
+        (self.status, labels, ready)
+    }
+
+    fn is_ready(&self, label: &str) -> bool {
+        self.status == WindowInventoryStatus::Ready
+            && self.entries.get(label).is_some_and(|entry| entry.ready)
+    }
+
+    fn ready_generation(&self, label: &str) -> Option<u64> {
+        (self.status == WindowInventoryStatus::Ready)
+            .then(|| self.entries.get(label))
+            .flatten()
+            .filter(|entry| entry.ready)
+            .map(|entry| entry.generation)
+    }
+
+    fn is_overflow(&self) -> bool {
+        self.status == WindowInventoryStatus::Overflow
+    }
+
+    fn observed_count(&self) -> u32 {
+        u32::try_from(self.entries.len()).unwrap_or(u32::MAX)
+    }
 }
 
 #[derive(Clone)]
@@ -236,26 +815,73 @@ pub struct UiAutomationState {
 struct UiAutomationInner {
     enabled: bool,
     token: String,
+    instance_id: String,
     config_dir: PathBuf,
+    config_witness: Option<Arc<dyn AutomationConfigWitness>>,
     automation_dir: PathBuf,
     session_path: PathBuf,
-    window_labels: Mutex<HashSet<String>>,
-    ready_window_labels: Mutex<HashSet<String>>,
+    window_inventory: Mutex<WindowInventory>,
     pending: Mutex<HashMap<String, PendingRequest>>,
+    terminal_task_permits: Arc<tokio::sync::Semaphore>,
+    terminal_task_admission_closed: AtomicBool,
+    terminal_tasks: Mutex<HashMap<String, TerminalTaskControl>>,
     available: AtomicBool,
+    app_handle: Mutex<Option<AppHandle>>,
     exe_path: String,
     started_at_unix_ms: i64,
 }
 
 impl UiAutomationState {
-    pub fn new(enabled: bool, config_dir: PathBuf) -> Self {
+    pub fn new(
+        enabled: bool,
+        config_dir: PathBuf,
+        config_witness: Option<Arc<dyn AutomationConfigWitness>>,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_process_probe(
+            enabled,
+            config_dir,
+            config_witness,
+            &OsLiveProcessIdentityProbe,
+        )
+    }
+
+    fn new_with_process_probe(
+        enabled: bool,
+        config_dir: PathBuf,
+        config_witness: Option<Arc<dyn AutomationConfigWitness>>,
+        process_probe: &dyn LiveProcessIdentityProbe,
+    ) -> Result<Self, &'static str> {
+        let (config_dir, started_at_unix_ms, exe_path) = if enabled {
+            let witness = config_witness
+                .as_ref()
+                .ok_or("automation_config_identity_unavailable")?;
+            if !witness.verify_current()
+                || !paths_equal_for_compare(witness.canonical_path(), &config_dir)
+            {
+                return Err("automation_config_identity_unavailable");
+            }
+            let startup_executable = canonical_for_compare(
+                &std::env::current_exe().map_err(|_| "automation_session_stale")?,
+            );
+            let identity = process_probe
+                .probe(std::process::id())
+                .ok_or("automation_session_stale")?;
+            if identity.started_at_unix_ms <= 0
+                || !paths_equal_for_compare(&identity.executable, &startup_executable)
+            {
+                return Err("automation_session_stale");
+            }
+            (
+                witness.canonical_path().to_path_buf(),
+                identity.started_at_unix_ms,
+                startup_executable.to_string_lossy().into_owned(),
+            )
+        } else {
+            (config_dir, 0, current_exe_path_string())
+        };
         let automation_dir = config_dir.join(UI_AUTOMATION_DIR);
         let session_path = automation_dir.join(SESSION_FILE);
-        let exe_path = current_exe_path_string();
-        let mut window_labels = HashSet::new();
-        window_labels.insert("main".to_string());
-
-        Self {
+        Ok(Self {
             inner: Arc::new(UiAutomationInner {
                 enabled,
                 token: if enabled {
@@ -263,17 +889,28 @@ impl UiAutomationState {
                 } else {
                     String::new()
                 },
+                instance_id: if enabled {
+                    Uuid::new_v4().to_string()
+                } else {
+                    String::new()
+                },
                 config_dir,
+                config_witness,
                 automation_dir,
                 session_path,
-                window_labels: Mutex::new(window_labels),
-                ready_window_labels: Mutex::new(HashSet::new()),
+                window_inventory: Mutex::new(WindowInventory::initial()),
                 pending: Mutex::new(HashMap::new()),
+                terminal_task_permits: Arc::new(tokio::sync::Semaphore::new(
+                    MAX_PENDING_TERMINAL_SNAPSHOTS,
+                )),
+                terminal_task_admission_closed: AtomicBool::new(false),
+                terminal_tasks: Mutex::new(HashMap::new()),
                 available: AtomicBool::new(enabled),
+                app_handle: Mutex::new(None),
                 exe_path,
-                started_at_unix_ms: now_unix_ms(),
+                started_at_unix_ms,
             }),
-        }
+        })
     }
 
     pub fn enabled(&self) -> bool {
@@ -282,13 +919,26 @@ impl UiAutomationState {
 
     pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
         if !self.inner.enabled {
-            self.cleanup_session_file_unchecked();
             return;
         }
 
-        if let Err(e) = self.initialize_files() {
+        *self
+            .inner
+            .app_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(app.clone());
+
+        if self.initialize_files().is_err() {
             self.mark_unavailable();
-            log::error!("[ui-automation] failed to initialize files: {}", e);
+            log::error!(
+                target: UI_AUTOMATION_LOG_TARGET,
+                "{}",
+                ui_automation_log_message(
+                    UiAutomationLogEvent::InitializeFailed,
+                    None,
+                    "automation_filesystem_error",
+                )
+            );
             return;
         }
         self.inner.available.store(true, Ordering::SeqCst);
@@ -308,18 +958,171 @@ impl UiAutomationState {
 
     pub fn cleanup_session_file(&self) {
         if self.inner.enabled {
-            self.cleanup_session_file_unchecked();
+            self.cleanup_owned_automation_files();
         }
     }
 
-    fn cleanup_session_file_unchecked(&self) {
-        if let Err(e) = retry_remove_file(&self.inner.session_path) {
-            log::warn!(
-                "[ui-automation] failed to remove session file {}: {}",
-                self.inner.session_path.display(),
-                e
-            );
+    pub fn close_and_join_terminal_tasks(&self) {
+        {
+            let tasks = self
+                .inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.inner
+                .terminal_task_admission_closed
+                .store(true, Ordering::SeqCst);
+            for control in tasks.values() {
+                control.cancelled.store(true, Ordering::SeqCst);
+            }
         }
+
+        loop {
+            let next = {
+                let mut tasks = self
+                    .inner
+                    .terminal_tasks
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if tasks.is_empty() {
+                    None
+                } else {
+                    Some(tasks.iter_mut().find_map(|(request_id, control)| {
+                        control.handle.take().map(|handle| {
+                            control.phase = TerminalTaskPhase::Joining;
+                            (request_id.clone(), handle)
+                        })
+                    }))
+                }
+            };
+            let Some(next) = next else {
+                break;
+            };
+            let Some((request_id, handle)) = next else {
+                std::thread::yield_now();
+                continue;
+            };
+            let _ = handle.join();
+            self.inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&request_id);
+        }
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
+    fn reap_finished_terminal_tasks(&self) {
+        loop {
+            let next = {
+                let mut tasks = self
+                    .inner
+                    .terminal_tasks
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                tasks.iter_mut().find_map(|(request_id, control)| {
+                    if control.phase == TerminalTaskPhase::Running
+                        && control.handle.as_ref().is_some_and(JoinHandle::is_finished)
+                    {
+                        control.phase = TerminalTaskPhase::Joining;
+                        control
+                            .handle
+                            .take()
+                            .map(|handle| (request_id.clone(), handle))
+                    } else {
+                        None
+                    }
+                })
+            };
+            let Some((request_id, handle)) = next else {
+                return;
+            };
+            let _ = handle.join();
+            self.inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&request_id);
+        }
+    }
+
+    fn verify_config_ownership(&self) -> bool {
+        self.inner
+            .config_witness
+            .as_ref()
+            .is_some_and(|witness| witness.verify_current())
+    }
+
+    fn transition_config_identity_unavailable(&self) {
+        if !self.inner.available.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        {
+            let tasks = self
+                .inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.inner
+                .terminal_task_admission_closed
+                .store(true, Ordering::SeqCst);
+            for control in tasks.values() {
+                control.cancelled.store(true, Ordering::SeqCst);
+            }
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        log::error!(
+            target: UI_AUTOMATION_LOG_TARGET,
+            "{}",
+            ui_automation_log_message(
+                UiAutomationLogEvent::ConfigIdentityFailed,
+                None,
+                "automation_config_identity_unavailable",
+            )
+        );
+        if let Some(app) = self
+            .inner
+            .app_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .cloned()
+        {
+            app.exit(1);
+        }
+    }
+
+    fn with_owned_automation_fs<T>(
+        &self,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        if !self.verify_config_ownership() {
+            self.transition_config_identity_unavailable();
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "automation_config_identity_unavailable",
+            ));
+        }
+        operation()
+    }
+
+    fn cleanup_owned_automation_files(&self) {
+        if !self.verify_config_ownership() {
+            self.transition_config_identity_unavailable();
+            return;
+        }
+        let _ = self.with_owned_automation_fs(|| {
+            cleanup_stale_automation_files(&self.inner.automation_dir)
+        });
+        let _ = self.with_owned_automation_fs(|| retry_remove_file(&self.inner.session_path));
     }
 
     pub fn mark_frontend_ready(
@@ -335,22 +1138,11 @@ impl UiAutomationState {
                 return Err("frontend_ready_window_mismatch".to_string());
             }
         }
-        {
-            let mut labels = self
-                .inner
-                .window_labels
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            labels.insert(caller_label.to_string());
-        }
-        {
-            let mut ready = self
-                .inner
-                .ready_window_labels
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            ready.insert(caller_label.to_string());
-        }
+        self.inner
+            .window_inventory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mark_ready(caller_label);
         self.write_session_snapshot().map_err(|e| e.to_string())
     }
 
@@ -381,15 +1173,16 @@ impl UiAutomationState {
             result
         };
 
-        write_json_atomic_new(&pending.response_path, &response).map_err(|e| e.to_string())?;
-        let _ = retry_remove_file(&pending.inflight_path);
+        self.with_owned_automation_fs(|| write_json_atomic_new(&pending.response_path, &response))
+            .map_err(|error| error.to_string())?;
+        let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
         Ok(())
     }
 
     fn initialize_files(&self) -> io::Result<()> {
-        cleanup_stale_automation_files(&self.inner.automation_dir)?;
-        fs::create_dir_all(self.requests_dir())?;
-        fs::create_dir_all(self.responses_dir())?;
+        self.with_owned_automation_fs(|| cleanup_stale_automation_files(&self.inner.automation_dir))?;
+        self.with_owned_automation_fs(|| fs::create_dir_all(self.requests_dir()))?;
+        self.with_owned_automation_fs(|| fs::create_dir_all(self.responses_dir()))?;
         self.write_session_snapshot()
     }
 
@@ -398,51 +1191,69 @@ impl UiAutomationState {
     }
 
     fn write_session_snapshot(&self) -> io::Result<()> {
-        let window_labels = sorted_labels(
-            &self
+        let (status, window_labels, ready_window_labels, observed_count) = {
+            let inventory = self
                 .inner
-                .window_labels
+                .window_inventory
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
-        let ready_window_labels = sorted_labels(
-            &self
-                .inner
-                .ready_window_labels
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
+                .unwrap_or_else(|error| error.into_inner());
+            let (status, labels, ready) = inventory.snapshot();
+            (status, labels, ready, inventory.observed_count())
+        };
         let session = UiAutomationSession {
+            schema_version: PROTOCOL_SCHEMA_VERSION,
+            instance_id: self.inner.instance_id.clone(),
             pid: std::process::id(),
             token: self.inner.token.clone(),
             exe_path: self.inner.exe_path.clone(),
             config_dir: self.inner.config_dir.to_string_lossy().into_owned(),
+            window_inventory: UiAutomationWindowInventory {
+                status,
+                observed_count,
+                limit: MAX_REGISTERED_WINDOWS as u32,
+            },
             window_labels,
             ready_window_labels,
             started_at_unix_ms: self.inner.started_at_unix_ms,
         };
-        write_json_atomic_replace(&self.inner.session_path, &session)
+        self.with_owned_automation_fs(|| write_json_atomic_replace(&self.inner.session_path, &session))
     }
 
     fn poll_once(&self, app: &AppHandle) {
-        if let Err(e) = self.poll_once_inner(app) {
-            log::warn!("[ui-automation] poll failed: {}", e);
+        if self.poll_once_inner(app).is_err() {
+            log::warn!(
+                target: UI_AUTOMATION_LOG_TARGET,
+                "{}",
+                ui_automation_log_message(
+                    UiAutomationLogEvent::PollFailed,
+                    None,
+                    "automation_filesystem_error",
+                )
+            );
         }
     }
 
     fn poll_once_inner(&self, app: &AppHandle) -> io::Result<()> {
+        self.reap_finished_terminal_tasks();
         self.sync_live_window_labels(available_window_labels(app))?;
         self.expire_pending_requests();
 
         let requests_dir = self.requests_dir();
-        let entries = match fs::read_dir(&requests_dir) {
+        let entries = match self.with_owned_automation_fs(|| {
+            let mut paths = fs::read_dir(&requests_dir)?
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            paths.sort();
+            paths.truncate(MAX_REQUEST_FILES_PER_SCAN);
+            Ok(paths)
+        }) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
 
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for path in entries {
             let Some(request_file) = RequestFile::from_path(&path) else {
                 continue;
             };
@@ -456,49 +1267,79 @@ impl UiAutomationState {
     }
 
     fn sync_live_window_labels(&self, live_labels: Vec<String>) -> io::Result<()> {
-        let live_labels = live_labels.into_iter().collect::<HashSet<_>>();
-        let mut changed = false;
-
-        {
-            let mut labels = self
+        let (changed, overflow, observed_count) = {
+            let mut inventory = self
                 .inner
-                .window_labels
+                .window_inventory
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if *labels != live_labels {
-                *labels = live_labels.clone();
-                changed = true;
-            }
-        }
-
-        {
-            let mut ready = self
-                .inner
-                .ready_window_labels
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let before_len = ready.len();
-            ready.retain(|label| live_labels.contains(label));
-            if ready.len() != before_len {
-                changed = true;
-            }
-        }
+                .unwrap_or_else(|error| error.into_inner());
+            let changed = inventory.sync(live_labels);
+            (changed, inventory.is_overflow(), inventory.observed_count())
+        };
 
         if changed {
             self.write_session_snapshot()?;
         }
+        if overflow {
+            self.cancel_pending_for_window_overflow(observed_count);
+        }
         Ok(())
+    }
+
+    fn cancel_pending_for_window_overflow(&self, observed_count: u32) {
+        let pending = {
+            let tasks = self
+                .inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for control in tasks.values() {
+                control.cancelled.store(true, Ordering::SeqCst);
+            }
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .drain()
+                .map(|(_, pending)| pending)
+                .collect::<Vec<_>>()
+        };
+        for pending in pending {
+            let mut response = UiAutomationResponse::error_for_request(
+                &pending.request,
+                "registered_window_limit_exceeded",
+                "The running GUI registered more automation windows than supported.",
+            );
+            response.diagnostics = Some(json!({
+                "observedCount": observed_count,
+                "limit": MAX_REGISTERED_WINDOWS,
+            }));
+            let _ = self.with_owned_automation_fs(|| {
+                write_json_atomic_new(&pending.response_path, &response)
+            });
+            let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
+        }
     }
 
     fn expire_pending_requests(&self) {
         let now = now_unix_ms();
         let expired = {
+            let tasks = self
+                .inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
             let expired_ids: Vec<String> = pending_map
                 .iter()
                 .filter(|(_, pending)| request_expired(&pending.request, now))
                 .map(|(request_id, _)| request_id.clone())
                 .collect();
+            for request_id in &expired_ids {
+                if let Some(control) = tasks.get(request_id) {
+                    control.cancelled.store(true, Ordering::SeqCst);
+                }
+            }
             expired_ids
                 .into_iter()
                 .filter_map(|request_id| pending_map.remove(&request_id))
@@ -507,35 +1348,60 @@ impl UiAutomationState {
 
         for pending in expired {
             let response = expired_response_for_request(&pending.request);
-            if !pending.response_path.exists() {
-                let _ = write_json_atomic_new(&pending.response_path, &response);
+            let response_exists = self
+                .with_owned_automation_fs(|| pending.response_path.try_exists())
+                .unwrap_or(true);
+            if !response_exists {
+                let _ = self.with_owned_automation_fs(|| {
+                    write_json_atomic_new(&pending.response_path, &response)
+                });
             }
-            let _ = retry_remove_file(&pending.inflight_path);
+            let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
         }
     }
 
     fn process_request_file(&self, app: &AppHandle, request_file: RequestFile) {
-        let raw = match fs::read_to_string(&request_file.path) {
+        let raw = match self.with_owned_automation_fs(|| {
+            read_bounded_regular_file(&request_file.path, MAX_REQUEST_FILE_BYTES)
+        }) {
             Ok(raw) => raw,
             Err(e) => {
+                if e.kind() == io::ErrorKind::InvalidData
+                    && e.to_string() == "request_too_large"
+                {
+                    let response = UiAutomationResponse::minimal_error(
+                        &request_file.request_id,
+                        "main",
+                        UiAutomationAction::Query,
+                        "",
+                        "request_too_large",
+                        "Automation request file exceeded its byte limit.",
+                    );
+                    let _ = self.write_direct_response(&request_file, &response);
+                    return;
+                }
                 log::warn!(
-                    "[ui-automation] failed to read request {}: {}",
-                    request_file.path.display(),
-                    e
+                    target: UI_AUTOMATION_LOG_TARGET,
+                    "{}",
+                    ui_automation_log_message(
+                        UiAutomationLogEvent::RequestReadFailed,
+                        None,
+                        "automation_filesystem_error",
+                    )
                 );
                 return;
             }
         };
         let request: UiAutomationRequest = match serde_json::from_str(&raw) {
             Ok(request) => request,
-            Err(e) => {
+            Err(_) => {
                 let response = UiAutomationResponse::minimal_error(
                     &request_file.request_id,
                     "main",
                     UiAutomationAction::Query,
                     "",
                     "malformed_request",
-                    &format!("Request file was not valid JSON: {e}"),
+                    "Automation request file was not valid protocol JSON.",
                 );
                 let _ = self.write_direct_response(&request_file, &response);
                 return;
@@ -552,18 +1418,20 @@ impl UiAutomationState {
             return;
         }
 
+        if let Err((error, message)) = validate_request_shape_and_limits(&request) {
+            let response = UiAutomationResponse::error_for_request(&request, error, message);
+            let _ = self.write_direct_response(&request_file, &response);
+            return;
+        }
+
         if request_expired(&request, now_unix_ms()) {
             let response = expired_response_for_request(&request);
             let _ = self.write_direct_response(&request_file, &response);
             return;
         }
 
-        if request.token != self.inner.token {
-            let response = UiAutomationResponse::error_for_request(
-                &request,
-                "automation_session_stale",
-                "Automation token did not match the running GUI session.",
-            );
+        if let Err((error, message)) = self.validate_request_claims(&request, &request_file.path) {
+            let response = UiAutomationResponse::error_for_request(&request, error, message);
             let _ = self.write_direct_response(&request_file, &response);
             return;
         }
@@ -594,7 +1462,7 @@ impl UiAutomationState {
 
         let inflight_path = match self.ensure_inflight(&request_file) {
             Ok(path) => path,
-            Err(e) => {
+            Err(_) => {
                 let mut response = UiAutomationResponse::error_for_request(
                     &request,
                     "automation_filesystem_error",
@@ -602,8 +1470,6 @@ impl UiAutomationState {
                 );
                 response.diagnostics = Some(json!({
                     "operation": "rename_request_inflight",
-                    "path": request_file.path.to_string_lossy(),
-                    "message": e.to_string(),
                 }));
                 let _ = self.write_direct_response(&request_file, &response);
                 return;
@@ -612,23 +1478,44 @@ impl UiAutomationState {
 
         if request_expired(&request, now_unix_ms()) {
             let response = expired_response_for_request(&request);
-            let _ = write_json_atomic_new(&self.response_path(&request.request_id), &response);
-            let _ = retry_remove_file(&inflight_path);
+            let _ = self.with_owned_automation_fs(|| {
+                write_json_atomic_new(&self.response_path(&request.request_id), &response)
+            });
+            let _ = self.with_owned_automation_fs(|| retry_remove_file(&inflight_path));
             return;
         }
 
         let response_path = self.response_path(&request.request_id);
-        let pending = PendingRequest {
-            request: request.clone(),
-            response_path,
-            inflight_path,
-        };
         {
             let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending_map.insert(request.request_id.clone(), pending);
+            if pending_limit_reached_in(&pending_map, &request.window) {
+                drop(pending_map);
+                self.finish_claimed_request(
+                    &request,
+                    &inflight_path,
+                    &response_path,
+                    UiAutomationResponse::error_for_request(
+                        &request,
+                        "automation_flooded",
+                        "UI automation pending request capacity is exhausted.",
+                    ),
+                );
+                return;
+            }
+            pending_map.insert(
+                request.request_id.clone(),
+                PendingRequest {
+                    request: request.clone(),
+                    response_path,
+                    inflight_path,
+                },
+            );
         }
 
-        if let Err(e) = app.emit_to(&request.window, "ui_automation_request", &request) {
+        if app
+            .emit_to(&request.window, "ui_automation_request", &request)
+            .is_err()
+        {
             let pending = {
                 let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
                 pending_map.remove(&request.request_id)
@@ -640,9 +1527,10 @@ impl UiAutomationState {
                     "Failed to emit automation request to the requested WebView.",
                 );
                 response.available_windows = Some(available_window_labels(app));
-                response.diagnostics = Some(json!({ "message": e.to_string() }));
-                let _ = write_json_atomic_new(&pending.response_path, &response);
-                let _ = retry_remove_file(&pending.inflight_path);
+                let _ = self.with_owned_automation_fs(|| {
+                    write_json_atomic_new(&pending.response_path, &response)
+                });
+                let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
             }
         }
     }
@@ -653,30 +1541,52 @@ impl UiAutomationState {
         request_file: &RequestFile,
         request: &UiAutomationRequest,
     ) {
+        if request.selector == "terminal.snapshot" {
+            self.process_terminal_snapshot_request_file(app, request_file, request);
+            return;
+        }
         let inflight_path = match self.ensure_inflight(request_file) {
             Ok(path) => path,
-            Err(error) => {
-                let mut response = UiAutomationResponse::error_for_request(
+            Err(_) => {
+                let response = UiAutomationResponse::error_for_request(
                     request,
                     "automation_filesystem_error",
                     "Failed to mark backend automation request as inflight.",
                 );
-                response.diagnostics = Some(json!({ "message": error.to_string() }));
                 let _ = self.write_direct_response(request_file, &response);
                 return;
             }
         };
         let response_path = self.response_path(&request.request_id);
-        let pending = PendingRequest {
-            request: request.clone(),
-            response_path,
-            inflight_path,
-        };
-        self.inner
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(request.request_id.clone(), pending);
+        {
+            let mut pending_map = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if pending_limit_reached_in(&pending_map, &request.window) {
+                drop(pending_map);
+                self.finish_claimed_request(
+                    request,
+                    &inflight_path,
+                    &response_path,
+                    UiAutomationResponse::error_for_request(
+                        request,
+                        "automation_flooded",
+                        "UI automation pending request capacity is exhausted.",
+                    ),
+                );
+                return;
+            }
+            pending_map.insert(
+                request.request_id.clone(),
+                PendingRequest {
+                    request: request.clone(),
+                    response_path,
+                    inflight_path,
+                },
+            );
+        }
 
         let state = self.clone();
         let app = app.clone();
@@ -692,15 +1602,260 @@ impl UiAutomationState {
             let Some(pending) = pending else {
                 return;
             };
-            if let Err(error) = write_json_atomic_new(&pending.response_path, &response) {
+            if state
+                .with_owned_automation_fs(|| write_json_atomic_new(&pending.response_path, &response))
+                .is_err()
+            {
                 log::warn!(
-                    "[ui-automation] backend response write failed request={}: {}",
-                    request.request_id,
-                    error
+                    target: UI_AUTOMATION_LOG_TARGET,
+                    "{}",
+                    ui_automation_log_message(
+                        UiAutomationLogEvent::BackendResponseWriteFailed,
+                        Some(&request.request_id),
+                        "automation_filesystem_error",
+                    )
                 );
             }
-            let _ = retry_remove_file(&pending.inflight_path);
+            let _ = state.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
         });
+    }
+
+    fn process_terminal_snapshot_request_file(
+        &self,
+        app: &AppHandle,
+        request_file: &RequestFile,
+        request: &UiAutomationRequest,
+    ) {
+        self.reap_finished_terminal_tasks();
+        let inflight_path = match self.ensure_inflight(request_file) {
+            Ok(path) => path,
+            Err(_) => {
+                let response = UiAutomationResponse::error_for_request(
+                    request,
+                    "automation_filesystem_error",
+                    "Failed to mark terminal automation request as inflight.",
+                );
+                let _ = self.write_direct_response(request_file, &response);
+                return;
+            }
+        };
+        let response_path = self.response_path(&request.request_id);
+        let owner_window = request
+            .owner_window
+            .as_deref()
+            .unwrap_or(BACKEND_AUTOMATION_WINDOW);
+
+        let gate = Arc::new(TerminalTaskStartGate::closed());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut tasks = self
+            .inner
+            .terminal_tasks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self
+            .inner
+            .terminal_task_admission_closed
+            .load(Ordering::SeqCst)
+        {
+            drop(tasks);
+            self.finish_claimed_request(
+                request,
+                &inflight_path,
+                &response_path,
+                UiAutomationResponse::error_for_request(
+                    request,
+                    "terminal_snapshot_unavailable",
+                    "Terminal snapshot service is unavailable.",
+                ),
+            );
+            return;
+        }
+        let permit = match Arc::clone(&self.inner.terminal_task_permits).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(tasks);
+                self.finish_claimed_request(
+                    request,
+                    &inflight_path,
+                    &response_path,
+                    UiAutomationResponse::error_for_request(
+                        request,
+                        "automation_flooded",
+                        "UI automation pending request capacity is exhausted.",
+                    ),
+                );
+                return;
+            }
+        };
+        let mut pending = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if pending_limit_reached_in(&pending, owner_window) {
+            drop(pending);
+            drop(tasks);
+            drop(permit);
+            self.finish_claimed_request(
+                request,
+                &inflight_path,
+                &response_path,
+                UiAutomationResponse::error_for_request(
+                    request,
+                    "automation_flooded",
+                    "UI automation pending request capacity is exhausted.",
+                ),
+            );
+            return;
+        }
+
+        let worker_gate = Arc::clone(&gate);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let state = self.clone();
+        let app = app.clone();
+        let worker_request = request.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("ui-terminal-{}", request.request_id))
+            .spawn(move || {
+                let _permit = permit;
+                worker_gate.wait();
+                if worker_cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    run_terminal_snapshot_task(
+                        &state,
+                        &app,
+                        &worker_request,
+                        &worker_cancelled,
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err(TerminalSnapshotTaskError::new(
+                        "terminal_snapshot_unavailable",
+                        "Terminal snapshot capture was unavailable.",
+                    ))
+                });
+                if worker_cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                let response = match result {
+                    Ok(snapshot) => {
+                        UiAutomationResponse::terminal_success(&worker_request, snapshot)
+                    }
+                    Err(error) => UiAutomationResponse::error_for_request(
+                        &worker_request,
+                        error.code,
+                        error.message,
+                    ),
+                };
+                state.publish_terminal_task_response(
+                    &worker_request.request_id,
+                    &worker_cancelled,
+                    response,
+                );
+            });
+        let handle = match handle {
+            Ok(handle) => handle,
+            Err(_) => {
+                drop(pending);
+                drop(tasks);
+                self.finish_claimed_request(
+                    request,
+                    &inflight_path,
+                    &response_path,
+                    UiAutomationResponse::error_for_request(
+                        request,
+                        "terminal_snapshot_unavailable",
+                        "Terminal snapshot service is unavailable.",
+                    ),
+                );
+                return;
+            }
+        };
+
+        pending.insert(
+            request.request_id.clone(),
+            PendingRequest {
+                request: request.clone(),
+                response_path,
+                inflight_path,
+            },
+        );
+        tasks.insert(
+            request.request_id.clone(),
+            TerminalTaskControl {
+                cancelled,
+                phase: TerminalTaskPhase::Running,
+                handle: Some(handle),
+            },
+        );
+        drop(pending);
+        drop(tasks);
+        gate.open();
+    }
+
+    fn finish_claimed_request(
+        &self,
+        _request: &UiAutomationRequest,
+        inflight_path: &Path,
+        response_path: &Path,
+        response: UiAutomationResponse,
+    ) {
+        let _ = self.with_owned_automation_fs(|| write_json_atomic_new(response_path, &response));
+        let _ = self.with_owned_automation_fs(|| retry_remove_file(inflight_path));
+    }
+
+    fn publish_terminal_task_response(
+        &self,
+        request_id: &str,
+        cancelled: &AtomicBool,
+        response: UiAutomationResponse,
+    ) {
+        let pending = {
+            let tasks = self
+                .inner
+                .terminal_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if cancelled.load(Ordering::SeqCst) || !tasks.contains_key(request_id) {
+                return;
+            }
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if pending
+                .get(request_id)
+                .is_some_and(|entry| request_expired(&entry.request, now_unix_ms()))
+            {
+                cancelled.store(true, Ordering::SeqCst);
+                return;
+            }
+            pending.remove(request_id)
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        if cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        if self
+            .with_owned_automation_fs(|| write_json_atomic_new(&pending.response_path, &response))
+            .is_err()
+        {
+            log::warn!(
+                target: UI_AUTOMATION_LOG_TARGET,
+                "{}",
+                ui_automation_log_message(
+                    UiAutomationLogEvent::BackendResponseWriteFailed,
+                    Some(request_id),
+                    "automation_filesystem_error",
+                )
+            );
+        }
+        let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
@@ -711,12 +1866,97 @@ impl UiAutomationState {
             .contains_key(request_id)
     }
 
+    fn validate_request_claims(
+        &self,
+        request: &UiAutomationRequest,
+        request_path: &Path,
+    ) -> Result<(), (&'static str, &'static str)> {
+        if !current_exe_is_testable() {
+            return Err((
+                "refusing_non_testeable_binary",
+                "UI automation is only available from agentscommander_testeable.exe.",
+            ));
+        }
+        if request.token != self.inner.token {
+            return Err((
+                "automation_token_mismatch",
+                "Automation token did not match the running GUI session.",
+            ));
+        }
+        if request.instance_id != self.inner.instance_id {
+            return Err((
+                "automation_instance_mismatch",
+                "Automation instance did not match the running GUI session.",
+            ));
+        }
+        if request.pid != std::process::id() {
+            return Err((
+                "automation_pid_mismatch",
+                "Automation PID did not match the running GUI process.",
+            ));
+        }
+        if request.started_at_unix_ms != self.inner.started_at_unix_ms {
+            return Err((
+                "automation_session_stale",
+                "Automation process creation time did not match the running GUI process.",
+            ));
+        }
+        let live = OsLiveProcessIdentityProbe
+            .probe(std::process::id())
+            .ok_or((
+                "automation_session_stale",
+                "Could not prove the running GUI process identity.",
+            ))?;
+        if live.started_at_unix_ms != self.inner.started_at_unix_ms {
+            return Err((
+                "automation_session_stale",
+                "Automation process creation time no longer identifies the running GUI process.",
+            ));
+        }
+        if !paths_equal_for_compare(&live.executable, Path::new(&self.inner.exe_path))
+            || !paths_equal_for_compare(Path::new(&request.exe_path), Path::new(&self.inner.exe_path))
+        {
+            return Err((
+                "automation_executable_mismatch",
+                "Automation executable did not match the running GUI process.",
+            ));
+        }
+        let mailbox_config = request_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or((
+                "automation_config_mismatch",
+                "Automation mailbox was outside the running configuration.",
+            ))?;
+        if !paths_equal_for_compare(Path::new(&request.config_dir), &self.inner.config_dir)
+            || !paths_equal_for_compare(mailbox_config, &self.inner.config_dir)
+        {
+            return Err((
+                "automation_config_mismatch",
+                "Automation configuration did not match the running GUI session.",
+            ));
+        }
+        let inventory = self
+            .inner
+            .window_inventory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if inventory.status == WindowInventoryStatus::Overflow {
+            return Err((
+                "registered_window_limit_exceeded",
+                "The running GUI registered more automation windows than supported.",
+            ));
+        }
+        Ok(())
+    }
+
     fn is_window_ready(&self, window: &str) -> bool {
         self.inner
-            .ready_window_labels
+            .window_inventory
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(window)
+            .unwrap_or_else(|error| error.into_inner())
+            .is_ready(window)
     }
 
     fn ensure_inflight(&self, request_file: &RequestFile) -> io::Result<PathBuf> {
@@ -724,7 +1964,9 @@ impl UiAutomationState {
             RequestFileKind::Inflight => Ok(request_file.path.clone()),
             RequestFileKind::Ready => {
                 let inflight_path = self.inflight_path(&request_file.request_id);
-                retry_rename(&request_file.path, &inflight_path)?;
+                self.with_owned_automation_fs(|| {
+                    retry_rename(&request_file.path, &inflight_path)
+                })?;
                 Ok(inflight_path)
             }
         }
@@ -736,8 +1978,8 @@ impl UiAutomationState {
         response: &UiAutomationResponse,
     ) -> io::Result<()> {
         let response_path = self.response_path(&request_file.request_id);
-        write_json_atomic_new(&response_path, response)?;
-        let _ = retry_remove_file(&request_file.path);
+        self.with_owned_automation_fs(|| write_json_atomic_new(&response_path, response))?;
+        let _ = self.with_owned_automation_fs(|| retry_remove_file(&request_file.path));
         Ok(())
     }
 
@@ -760,6 +2002,34 @@ impl UiAutomationState {
 }
 
 impl UiAutomationResponse {
+    fn terminal_success(request: &UiAutomationRequest, terminal_snapshot: Value) -> Self {
+        Self {
+            ok: true,
+            request_id: request.request_id.clone(),
+            window: request.window.clone(),
+            action: request.action,
+            selector: request.selector.clone(),
+            target: None,
+            error: None,
+            message: None,
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: None,
+            phase: None,
+            active_test_id: Value::Null,
+            filters: None,
+            targets: None,
+            matched_count: None,
+            matched_count_exact: None,
+            returned_count: None,
+            limit: None,
+            truncated: None,
+            scan: None,
+            terminal_snapshot: Some(terminal_snapshot),
+        }
+    }
+
     fn minimal_error(
         request_id: &str,
         window: &str,
@@ -782,6 +2052,16 @@ impl UiAutomationResponse {
             available_windows: None,
             timeout_ms: None,
             phase: None,
+            active_test_id: Value::Null,
+            filters: None,
+            targets: None,
+            matched_count: None,
+            matched_count_exact: None,
+            returned_count: None,
+            limit: None,
+            truncated: None,
+            scan: None,
+            terminal_snapshot: None,
         }
     }
 
@@ -797,47 +2077,237 @@ impl UiAutomationResponse {
     }
 }
 
+fn pending_limit_reached_in(pending: &HashMap<String, PendingRequest>, window: &str) -> bool {
+    pending.len() >= MAX_PENDING_TOTAL
+        || pending
+            .values()
+            .filter(|entry| {
+                entry
+                    .request
+                    .owner_window
+                    .as_deref()
+                    .unwrap_or(&entry.request.window)
+                    == window
+            })
+            .count()
+            >= MAX_PENDING_PER_WINDOW
+}
+
+fn is_uuid_v4(value: &str) -> bool {
+    Uuid::parse_str(value)
+        .ok()
+        .is_some_and(|id| id.get_version() == Some(uuid::Version::Random))
+}
+
+fn validate_request_shape_and_limits(
+    request: &UiAutomationRequest,
+) -> Result<(), (&'static str, &'static str)> {
+    if request.schema_version != PROTOCOL_SCHEMA_VERSION
+        || !is_uuid_v4(&request.request_id)
+        || !is_uuid_v4(&request.instance_id)
+        || request.pid == 0
+        || request.started_at_unix_ms <= 0
+        || request.exe_path.is_empty()
+        || request.config_dir.is_empty()
+        || request.window.is_empty()
+    {
+        return Err((
+            "automation_protocol_mismatch",
+            "Automation request schema or identity shape was invalid.",
+        ));
+    }
+    validate_request_action_shape(request)?;
+    if request.window.as_bytes().len() > MAX_WINDOW_LABEL_BYTES {
+        return Err(("window_too_large", "Automation window label exceeded its limit."));
+    }
+    if request
+        .owner_window
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.as_bytes().len() > MAX_WINDOW_LABEL_BYTES)
+    {
+        return Err(("window_too_large", "Automation owner window label exceeded its limit."));
+    }
+    if request.session.as_ref().is_some_and(|session| match session {
+        UiTerminalSessionSelector::Active => false,
+        UiTerminalSessionSelector::Explicit { id } => !is_uuid_v4(id),
+    }) {
+        return Err((
+            "invalid_terminal_session",
+            "Terminal session selection was invalid.",
+        ));
+    }
+    if request.selector.as_bytes().len() > MAX_SELECTOR_BYTES {
+        return Err(("selector_too_large", "Automation selector exceeded its limit."));
+    }
+    if request
+        .prefix
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_PREFIX_BYTES)
+    {
+        return Err(("prefix_too_large", "Automation list prefix exceeded its limit."));
+    }
+    if request
+        .role
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_ROLE_BYTES)
+    {
+        return Err(("role_too_large", "Automation role exceeded its limit."));
+    }
+    if request.role.as_ref().is_some_and(|role| {
+        !SUPPORTED_ROLES.iter().any(|supported| supported == &role.as_str())
+    }) {
+        return Err(("invalid_role", "Automation role was not supported."));
+    }
+    if request
+        .value
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_VALUE_BYTES)
+    {
+        return Err(("value_too_large", "Automation value exceeded its limit."));
+    }
+    Ok(())
+}
+
+fn validate_request_action_shape(
+    request: &UiAutomationRequest,
+) -> Result<(), (&'static str, &'static str)> {
+    let malformed = || {
+        (
+            "malformed_request",
+            "Automation request fields did not match the selected action.",
+        )
+    };
+    match request.action {
+        UiAutomationAction::List => {
+            if !request.selector.is_empty()
+                || request.value.is_some()
+                || request.owner_window.is_some()
+                || request.session.is_some()
+            {
+                return Err(malformed());
+            }
+        }
+        UiAutomationAction::Backend => {
+            if request.selector.is_empty() || request.prefix.is_some() || request.role.is_some() {
+                return Err(malformed());
+            }
+            match request.selector.as_str() {
+                "terminal.snapshot" => {
+                    if request.value.is_some()
+                        || request.owner_window.is_none()
+                        || request.session.is_none()
+                    {
+                        return Err(malformed());
+                    }
+                }
+                RESOURCE_WATCHDOG_BACKEND_SELECTOR => {
+                    if request.owner_window.is_some() || request.session.is_some() {
+                        return Err(malformed());
+                    }
+                }
+                _ => {
+                    if request.owner_window.is_some() || request.session.is_some() {
+                        return Err(malformed());
+                    }
+                }
+            }
+        }
+        UiAutomationAction::SetValue | UiAutomationAction::TypeText => {
+            if request.selector.is_empty()
+                || request.value.is_none()
+                || request.prefix.is_some()
+                || request.role.is_some()
+                || request.owner_window.is_some()
+                || request.session.is_some()
+            {
+                return Err(malformed());
+            }
+        }
+        UiAutomationAction::Hover => {
+            if request.prefix.is_some()
+                || request.role.is_some()
+                || request.owner_window.is_some()
+                || request.session.is_some()
+                || (request.selector.is_empty() && request.value.as_deref() != Some("leave"))
+            {
+                return Err(malformed());
+            }
+        }
+        UiAutomationAction::Query
+        | UiAutomationAction::Click
+        | UiAutomationAction::ContextClick
+        | UiAutomationAction::Focus => {
+            if request.selector.is_empty()
+                || request.value.is_some()
+                || request.prefix.is_some()
+                || request.role.is_some()
+                || request.owner_window.is_some()
+                || request.session.is_some()
+            {
+                return Err(malformed());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct CliRequest {
     window: String,
     selector: String,
+    prefix: Option<String>,
+    role: Option<String>,
+    owner_window: Option<String>,
+    session: Option<UiTerminalSessionSelector>,
     action: UiAutomationAction,
     value: Option<String>,
     timeout_ms: u64,
 }
 
-pub fn execute_query(args: UiQueryArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_query(context: &UiCliDispatchContext, args: UiQueryArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::Query,
         value: None,
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_click(args: UiClickArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_click(context: &UiCliDispatchContext, args: UiClickArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::Click,
         value: None,
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_context_click(args: UiContextClickArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_context_click(context: &UiCliDispatchContext, args: UiContextClickArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::ContextClick,
         value: None,
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_hover(args: UiHoverArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_hover(context: &UiCliDispatchContext, args: UiHoverArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         // Empty for the target-free leave form. The bridge intercepts `value == "leave"`
         // before it resolves any selector, and the frontend echoes the request's selector
@@ -847,45 +2317,135 @@ pub fn execute_hover(args: UiHoverArgs) -> i32 {
         // time). `fn complete` is the stable anchor; a number here is a comment that lies
         // on a schedule.
         selector: args.selector.unwrap_or_default(),
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::Hover,
         value: args.leave.then(|| "leave".to_string()),
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_set(args: UiSetArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_set(context: &UiCliDispatchContext, args: UiSetArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::SetValue,
         value: Some(args.value),
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_type(args: UiTypeArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_type(context: &UiCliDispatchContext, args: UiTypeArgs) -> i32 {
+    execute_cli(context, CliRequest {
         window: args.window,
         selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
         action: UiAutomationAction::TypeText,
         value: Some(args.value),
         timeout_ms: args.timeout_ms,
     })
 }
 
-pub fn execute_backend(args: UiBackendArgs) -> i32 {
-    execute_cli(CliRequest {
+pub fn execute_backend(context: &UiCliDispatchContext, args: UiBackendArgs) -> i32 {
+    let UiBackendArgs {
+        selector,
+        window,
+        session,
+        value,
+        timeout_ms,
+    } = args;
+    let malformed = || {
+        preflight_error(
+            "malformed_request",
+            "Automation request fields did not match the selected action.",
+            None,
+        )
+    };
+    let (owner_window, session, value) = match selector.as_str() {
+        "terminal.snapshot" => {
+            let Some(owner_window) = window else {
+                print_stdout_value(&malformed());
+                return 1;
+            };
+            if value.is_some() {
+                print_stdout_value(&malformed());
+                return 1;
+            }
+            let session = match session.as_deref() {
+                None | Some("active") => UiTerminalSessionSelector::Active,
+                Some(value) => match Uuid::parse_str(value) {
+                    Ok(id) if id.get_version() == Some(uuid::Version::Random) => {
+                        UiTerminalSessionSelector::Explicit { id: id.to_string() }
+                    }
+                    _ => {
+                        print_stdout_value(&preflight_error(
+                            "invalid_terminal_session",
+                            "Terminal session selection was invalid.",
+                            None,
+                        ));
+                        return 1;
+                    }
+                },
+            };
+            (Some(owner_window), Some(session), None)
+        }
+        RESOURCE_WATCHDOG_BACKEND_SELECTOR => {
+            if window.is_some() || session.is_some() {
+                print_stdout_value(&malformed());
+                return 1;
+            }
+            (None, None, value)
+        }
+        _ => (None, None, value),
+    };
+    execute_cli(context, CliRequest {
         window: BACKEND_AUTOMATION_WINDOW.to_string(),
-        selector: args.selector,
+        selector,
+        prefix: None,
+        role: None,
+        owner_window,
+        session,
         action: UiAutomationAction::Backend,
-        value: args.value,
-        timeout_ms: args.timeout_ms,
+        value,
+        timeout_ms,
     })
 }
 
-pub fn execute_wait(args: UiWaitArgs) -> i32 {
+pub fn execute_wait(context: &UiCliDispatchContext, args: UiWaitArgs) -> i32 {
+    let predicates = match normalize_wait_predicates(&args) {
+        Ok(predicates) => predicates,
+        Err(error) => {
+            print_stdout_value(&error);
+            return 1;
+        }
+    };
+    let predicate_kinds = predicates
+        .iter()
+        .map(NormalizedWaitPredicate::kind)
+        .collect::<Vec<_>>();
+    let legacy = predicates.is_empty();
+    let absence = matches!(predicates.as_slice(), [NormalizedWaitPredicate::Absent]);
+    if let Err(error) = ensure_current_exe_is_testable()
+        .and_then(|_| load_session_for_cli(context, &args.window).map(|_| ()))
+    {
+        print_stdout_value(&error);
+        return 1;
+    }
+    let outer_request_id = Uuid::new_v4().to_string();
+    let started = Instant::now();
     let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
-    let mut last_response: Option<UiAutomationResponse> = None;
+    let mut attempts = 0_u32;
+    let mut last_target = Value::Null;
+    let mut last_observation: Option<&'static str> = None;
 
     loop {
         let remaining_ms = deadline
@@ -893,23 +2453,34 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
             .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
             .unwrap_or(0);
         if remaining_ms == 0 {
-            let timeout = last_response.unwrap_or_else(|| {
-                UiAutomationResponse::minimal_error(
-                    &Uuid::new_v4().to_string(),
-                    &args.window,
-                    UiAutomationAction::Query,
-                    &args.selector,
-                    "timeout",
-                    "Automation wait timed out before the selector became available.",
-                )
-            });
-            let mut timeout = timeout;
-            timeout.ok = false;
-            timeout.error = Some("timeout".to_string());
-            timeout.message =
-                Some("Automation wait timed out before the selector became available.".to_string());
-            timeout.timeout_ms = Some(args.timeout_ms);
-            timeout.phase = Some("wait_condition_not_met".to_string());
+            let timeout = UiWaitOutput {
+                ok: false,
+                request_id: outer_request_id,
+                window: args.window,
+                action: "query",
+                selector: args.selector,
+                target: last_target,
+                error: Some("timeout".to_string()),
+                message: Some(
+                    if legacy {
+                        "Automation wait timed out before the selector became available."
+                    } else {
+                        "Automation wait timed out before the requested condition was met."
+                    }
+                    .to_string(),
+                ),
+                available: None,
+                diagnostics: None,
+                available_windows: None,
+                timeout_ms: Some(args.timeout_ms),
+                phase: Some("wait_condition_not_met".to_string()),
+                kind: "ui-wait",
+                command: "ui-wait",
+                predicates: predicate_kinds,
+                attempts,
+                elapsed_ms: args.timeout_ms,
+                last_observation,
+            };
             print_stdout_json(&timeout);
             return 1;
         }
@@ -917,21 +2488,115 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
         let input = CliRequest {
             window: args.window.clone(),
             selector: args.selector.clone(),
+            prefix: None,
+            role: None,
+            owner_window: None,
+            session: None,
             action: UiAutomationAction::Query,
             value: None,
             timeout_ms: remaining_ms.min(500),
         };
 
-        match run_cli_request(&input) {
-            Ok(response) if response.ok => {
-                print_stdout_json(&response);
-                return 0;
-            }
+        attempts = attempts.saturating_add(1);
+        match run_cli_request(context, &input) {
             Ok(response) => {
-                last_response = Some(response);
+                let observation = wait_observation(&response);
+                let decision = if legacy {
+                    if response.ok {
+                        WaitDecision::Success(response.target.clone().unwrap_or(Value::Null))
+                    } else {
+                        WaitDecision::Retry(observation)
+                    }
+                } else if absence {
+                    match (response.ok, response.error.as_deref()) {
+                        (false, Some("missing_selector")) => WaitDecision::Success(Value::Null),
+                        (true, _) => WaitDecision::Retry("target_present"),
+                        (
+                            false,
+                            Some("target_hidden" | "duplicate_selector" | "request_expired"),
+                        ) => WaitDecision::Retry(observation),
+                        _ => WaitDecision::Fail,
+                    }
+                } else if response.ok {
+                    let target = response.target.clone().unwrap_or(Value::Null);
+                    if wait_predicates_match(&predicates, &target) {
+                        WaitDecision::Success(target)
+                    } else {
+                        WaitDecision::Retry("predicate_mismatch")
+                    }
+                } else if matches!(
+                    response.error.as_deref(),
+                    Some(
+                        "missing_selector"
+                            | "target_hidden"
+                            | "duplicate_selector"
+                            | "request_expired"
+                    )
+                ) {
+                    WaitDecision::Retry(observation)
+                } else {
+                    WaitDecision::Fail
+                };
+
+                match decision {
+                    WaitDecision::Success(target) => {
+                        let output = UiWaitOutput {
+                            ok: true,
+                            request_id: outer_request_id,
+                            window: args.window,
+                            action: "query",
+                            selector: args.selector,
+                            target,
+                            error: None,
+                            message: None,
+                            available: None,
+                            diagnostics: None,
+                            available_windows: None,
+                            timeout_ms: None,
+                            phase: None,
+                            kind: "ui-wait",
+                            command: "ui-wait",
+                            predicates: predicate_kinds,
+                            attempts,
+                            elapsed_ms: elapsed_ms(started),
+                            last_observation: None,
+                        };
+                        print_stdout_json(&output);
+                        return 0;
+                    }
+                    WaitDecision::Retry(observation) => {
+                        last_target = response.target.unwrap_or(Value::Null);
+                        last_observation = Some(observation);
+                    }
+                    WaitDecision::Fail => {
+                        let output = UiWaitOutput {
+                            ok: false,
+                            request_id: outer_request_id,
+                            window: args.window,
+                            action: "query",
+                            selector: args.selector,
+                            target: response.target.unwrap_or(Value::Null),
+                            error: response.error,
+                            message: response.message,
+                            available: response.available,
+                            diagnostics: response.diagnostics,
+                            available_windows: response.available_windows,
+                            timeout_ms: response.timeout_ms,
+                            phase: response.phase,
+                            kind: "ui-wait",
+                            command: "ui-wait",
+                            predicates: predicate_kinds,
+                            attempts,
+                            elapsed_ms: elapsed_ms(started),
+                            last_observation: Some(observation),
+                        };
+                        print_stdout_json(&output);
+                        return 1;
+                    }
+                }
             }
             Err(error) => {
-                print_stdout_json(&error);
+                print_stdout_value(&error);
                 return 1;
             }
         }
@@ -940,8 +2605,249 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
     }
 }
 
-fn execute_cli(input: CliRequest) -> i32 {
-    match run_cli_request(&input) {
+#[derive(Debug, Clone)]
+enum NormalizedWaitPredicate {
+    State(String),
+    Text(String),
+    Enabled,
+    Disabled,
+    Selected(bool),
+    Expanded(bool),
+    Focused(bool),
+    Absent,
+}
+
+impl NormalizedWaitPredicate {
+    fn kind(&self) -> UiWaitPredicateKind {
+        match self {
+            Self::State(_) => UiWaitPredicateKind::State,
+            Self::Text(_) => UiWaitPredicateKind::Text,
+            Self::Enabled => UiWaitPredicateKind::Enabled,
+            Self::Disabled => UiWaitPredicateKind::Disabled,
+            Self::Selected(_) => UiWaitPredicateKind::Selected,
+            Self::Expanded(_) => UiWaitPredicateKind::Expanded,
+            Self::Focused(_) => UiWaitPredicateKind::Focused,
+            Self::Absent => UiWaitPredicateKind::Absent,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum UiWaitPredicateKind {
+    State,
+    Text,
+    Enabled,
+    Disabled,
+    Selected,
+    Expanded,
+    Focused,
+    Absent,
+}
+
+impl UiWaitPredicateKind {
+    #[cfg(test)]
+    fn next_variant(self) -> Option<Self> {
+        Some(match self {
+            Self::State => Self::Text,
+            Self::Text => Self::Enabled,
+            Self::Enabled => Self::Disabled,
+            Self::Disabled => Self::Selected,
+            Self::Selected => Self::Expanded,
+            Self::Expanded => Self::Focused,
+            Self::Focused => Self::Absent,
+            Self::Absent => return None,
+        })
+    }
+
+    #[cfg(test)]
+    fn all() -> impl Iterator<Item = Self> {
+        std::iter::successors(Some(Self::State), |kind| kind.next_variant())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiWaitOutput {
+    ok: bool,
+    request_id: String,
+    window: String,
+    action: &'static str,
+    selector: String,
+    target: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available_windows: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    kind: &'static str,
+    command: &'static str,
+    predicates: Vec<UiWaitPredicateKind>,
+    attempts: u32,
+    elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_observation: Option<&'static str>,
+}
+
+enum WaitDecision {
+    Success(Value),
+    Retry(&'static str),
+    Fail,
+}
+
+fn normalize_wait_predicates(args: &UiWaitArgs) -> Result<Vec<NormalizedWaitPredicate>, Value> {
+    let invalid = || {
+        preflight_error(
+            "invalid_predicate_combination",
+            "UI wait predicates were repeated, invalid, or mutually incompatible.",
+            None,
+        )
+    };
+    if args.timeout_ms == 0
+        || args.timeout_ms > MAX_TIMEOUT_MS
+        || args.selector.is_empty()
+        || args.state.len() > 1
+        || args.text.len() > 1
+        || args.selected.len() > 1
+        || args.expanded.len() > 1
+        || args.focused.len() > 1
+        || (args.enabled && args.disabled)
+    {
+        return Err(invalid());
+    }
+    if args.selector.as_bytes().len() > MAX_SELECTOR_BYTES {
+        return Err(preflight_error(
+            "selector_too_large",
+            "Automation selector exceeded its limit.",
+            None,
+        ));
+    }
+    if args.state.first().is_some_and(|state| state.as_bytes().len() > MAX_STATE_PREDICATE_BYTES)
+        || args.text.first().is_some_and(|text| {
+            text.as_bytes().len() > MAX_TEXT_PREDICATE_BYTES
+                || text.chars().count() > MAX_TEXT_PREDICATE_CHARS
+        })
+    {
+        return Err(preflight_error(
+            "predicate_too_large",
+            "Automation wait predicate exceeded its limit.",
+            None,
+        ));
+    }
+    if args.state.first().is_some_and(|state| !safe_state_token(state)) {
+        return Err(invalid());
+    }
+    let parse_bool = |values: &[String]| -> Result<Option<bool>, Value> {
+        match values.first().map(String::as_str) {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(_) => Err(invalid()),
+        }
+    };
+    let selected = parse_bool(&args.selected)?;
+    let expanded = parse_bool(&args.expanded)?;
+    let focused = parse_bool(&args.focused)?;
+    let has_target_predicate = !args.state.is_empty()
+        || !args.text.is_empty()
+        || args.enabled
+        || args.disabled
+        || selected.is_some()
+        || expanded.is_some()
+        || focused.is_some();
+    if args.absent && has_target_predicate {
+        return Err(invalid());
+    }
+
+    let mut predicates = Vec::new();
+    if let Some(state) = args.state.first() {
+        predicates.push(NormalizedWaitPredicate::State(state.clone()));
+    }
+    if let Some(text) = args.text.first() {
+        predicates.push(NormalizedWaitPredicate::Text(text.clone()));
+    }
+    if args.enabled {
+        predicates.push(NormalizedWaitPredicate::Enabled);
+    }
+    if args.disabled {
+        predicates.push(NormalizedWaitPredicate::Disabled);
+    }
+    if let Some(selected) = selected {
+        predicates.push(NormalizedWaitPredicate::Selected(selected));
+    }
+    if let Some(expanded) = expanded {
+        predicates.push(NormalizedWaitPredicate::Expanded(expanded));
+    }
+    if let Some(focused) = focused {
+        predicates.push(NormalizedWaitPredicate::Focused(focused));
+    }
+    if args.absent {
+        predicates.push(NormalizedWaitPredicate::Absent);
+    }
+    Ok(predicates)
+}
+
+fn wait_predicates_match(predicates: &[NormalizedWaitPredicate], target: &Value) -> bool {
+    let Some(target) = target.as_object() else {
+        return false;
+    };
+    predicates.iter().all(|predicate| match predicate {
+        NormalizedWaitPredicate::State(expected) => {
+            target.get("state").and_then(Value::as_str) == Some(expected.as_str())
+        }
+        NormalizedWaitPredicate::Text(expected) => {
+            target.get("text").and_then(Value::as_str) == Some(expected.as_str())
+        }
+        NormalizedWaitPredicate::Enabled => {
+            target.get("disabled").and_then(Value::as_bool) == Some(false)
+        }
+        NormalizedWaitPredicate::Disabled => {
+            target.get("disabled").and_then(Value::as_bool) == Some(true)
+        }
+        NormalizedWaitPredicate::Selected(expected) => {
+            target.get("selected").and_then(Value::as_bool) == Some(*expected)
+        }
+        NormalizedWaitPredicate::Expanded(expected) => {
+            target.get("expanded").and_then(Value::as_bool) == Some(*expected)
+        }
+        NormalizedWaitPredicate::Focused(expected) => {
+            target.get("focused").and_then(Value::as_bool) == Some(*expected)
+        }
+        NormalizedWaitPredicate::Absent => false,
+    })
+}
+
+fn wait_observation(response: &UiAutomationResponse) -> &'static str {
+    if response.ok {
+        return "target_present";
+    }
+    match response.error.as_deref() {
+        Some("missing_selector") => "missing_selector",
+        Some("target_hidden") => "target_hidden",
+        Some("duplicate_selector") => "duplicate_selector",
+        Some("request_expired") => "request_expired",
+        Some("target_obscured") => "target_obscured",
+        Some("target_disabled") => "target_disabled",
+        Some("timeout") => "attempt_timeout",
+        _ => "bridge_error",
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn execute_cli(context: &UiCliDispatchContext, input: CliRequest) -> i32 {
+    match run_cli_request(context, &input) {
         Ok(response) if response.ok => {
             print_stdout_json(&response);
             0
@@ -951,10 +2857,330 @@ fn execute_cli(input: CliRequest) -> i32 {
             1
         }
         Err(error) => {
-            print_stdout_json(&error);
+            print_stdout_value(&error);
             1
         }
     }
+}
+
+pub fn execute_capabilities(
+    context: &UiCliDispatchContext,
+    args: UiCapabilitiesArgs,
+) -> i32 {
+    if let Err(error) = ensure_current_exe_is_testable() {
+        print_stdout_value(&error);
+        return 1;
+    }
+    if args.timeout_ms == 0 || args.timeout_ms > MAX_TIMEOUT_MS {
+        print_stdout_value(&preflight_error(
+            "invalid_timeout",
+            "Automation timeout must be between 1 and 60000 milliseconds.",
+            None,
+        ));
+        return 1;
+    }
+    match load_session_for_cli(context, BACKEND_AUTOMATION_WINDOW) {
+        Ok(session) => {
+            let ready = session
+                .ready_window_labels
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            let windows = session
+                .window_labels
+                .iter()
+                .map(|label| UiCapabilityWindow {
+                    label: label.clone(),
+                    ready: ready.contains(label),
+                })
+                .collect();
+            print_stdout_json(&UiCapabilitiesOutput {
+                ok: true,
+                kind: "ui-capabilities",
+                schema_version: PROTOCOL_SCHEMA_VERSION,
+                pid: session.pid,
+                actions: &CAPABILITY_ACTIONS,
+                wait_predicates: &CAPABILITY_WAIT_PREDICATES,
+                roles: &SUPPORTED_ROLES,
+                backend_selectors: &CAPABILITY_BACKEND_SELECTORS,
+                windows,
+                limits: UiCapabilityLimits::contract(),
+            });
+            0
+        }
+        Err(error) => {
+            print_stdout_value(&error);
+            1
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiCapabilityWindow {
+    label: String,
+    ready: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiCapabilitiesOutput {
+    ok: bool,
+    kind: &'static str,
+    schema_version: u32,
+    pid: u32,
+    actions: &'static [&'static str],
+    wait_predicates: &'static [&'static str],
+    roles: &'static [&'static str],
+    backend_selectors: &'static [&'static str],
+    windows: Vec<UiCapabilityWindow>,
+    limits: UiCapabilityLimits,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiCapabilityLimits {
+    default_timeout_ms: u64,
+    max_timeout_ms: u64,
+    poll_interval_ms: u64,
+    window_label_bytes: usize,
+    selector_bytes: usize,
+    prefix_bytes: usize,
+    role_bytes: usize,
+    state_predicate_bytes: usize,
+    text_predicate_chars: usize,
+    text_predicate_bytes: usize,
+    value_bytes: usize,
+    session_file_bytes: usize,
+    request_file_bytes: usize,
+    response_json_bytes: usize,
+    stdout_json_bytes: usize,
+    registered_windows: usize,
+    pending_total: usize,
+    pending_per_window: usize,
+    pending_terminal_snapshots: usize,
+    request_files_per_scan: usize,
+    diagnostic_targets: usize,
+    target_text_chars: usize,
+    list_return_targets: usize,
+    list_scan_targets: usize,
+    list_scan_elements: usize,
+    list_open_roots: usize,
+    terminal_rows: usize,
+    terminal_columns: usize,
+    terminal_cells: usize,
+}
+
+impl UiCapabilityLimits {
+    fn contract() -> Self {
+        Self {
+            default_timeout_ms: DEFAULT_TIMEOUT_MS,
+            max_timeout_ms: MAX_TIMEOUT_MS,
+            poll_interval_ms: POLL_MS,
+            window_label_bytes: MAX_WINDOW_LABEL_BYTES,
+            selector_bytes: MAX_SELECTOR_BYTES,
+            prefix_bytes: MAX_PREFIX_BYTES,
+            role_bytes: MAX_ROLE_BYTES,
+            state_predicate_bytes: MAX_STATE_PREDICATE_BYTES,
+            text_predicate_chars: MAX_TEXT_PREDICATE_CHARS,
+            text_predicate_bytes: MAX_TEXT_PREDICATE_BYTES,
+            value_bytes: MAX_VALUE_BYTES,
+            session_file_bytes: MAX_SESSION_FILE_BYTES,
+            request_file_bytes: MAX_REQUEST_FILE_BYTES,
+            response_json_bytes: MAX_RESPONSE_JSON_BYTES,
+            stdout_json_bytes: MAX_STDOUT_JSON_BYTES,
+            registered_windows: MAX_REGISTERED_WINDOWS,
+            pending_total: MAX_PENDING_TOTAL,
+            pending_per_window: MAX_PENDING_PER_WINDOW,
+            pending_terminal_snapshots: MAX_PENDING_TERMINAL_SNAPSHOTS,
+            request_files_per_scan: MAX_REQUEST_FILES_PER_SCAN,
+            diagnostic_targets: CLI_MAX_AVAILABLE_TARGETS,
+            target_text_chars: CLI_MAX_TARGET_TEXT_CHARS,
+            list_return_targets: MAX_LIST_RETURN_TARGETS,
+            list_scan_targets: MAX_LIST_SCAN_TARGETS,
+            list_scan_elements: MAX_LIST_SCAN_ELEMENTS,
+            list_open_roots: MAX_LIST_OPEN_ROOTS,
+            terminal_rows: MAX_TERMINAL_ROWS,
+            terminal_columns: MAX_TERMINAL_COLUMNS,
+            terminal_cells: MAX_TERMINAL_CELLS,
+        }
+    }
+}
+
+pub fn execute_list(context: &UiCliDispatchContext, args: UiListArgs) -> i32 {
+    let expected_prefix = args.prefix.clone();
+    let expected_role = args.role.clone();
+    let input = CliRequest {
+        window: args.window,
+        selector: String::new(),
+        prefix: args.prefix,
+        role: args.role,
+        owner_window: None,
+        session: None,
+        action: UiAutomationAction::List,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    };
+    match run_cli_request(context, &input) {
+        Ok(response) if response.ok => match ui_list_output(
+            &response,
+            expected_prefix.as_deref(),
+            expected_role.as_deref(),
+        ) {
+            Ok(output) => {
+                print_stdout_json(&output);
+                0
+            }
+            Err(error) => {
+                print_stdout_json(&error);
+                1
+            }
+        },
+        Ok(response) => {
+            print_stdout_json(&response);
+            1
+        }
+        Err(error) => {
+            print_stdout_value(&error);
+            1
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiListOutput {
+    ok: bool,
+    request_id: String,
+    window: String,
+    action: &'static str,
+    filters: UiListFilters,
+    targets: Vec<UiListTarget>,
+    matched_count: usize,
+    matched_count_exact: bool,
+    returned_count: usize,
+    limit: usize,
+    truncated: bool,
+    scan: UiListScan,
+    active_test_id: Option<String>,
+}
+
+fn safe_public_test_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= MAX_SELECTOR_BYTES
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'-')
+        })
+}
+
+fn safe_state_token(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= MAX_STATE_PREDICATE_BYTES
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'-')
+        })
+}
+
+fn ui_list_output(
+    response: &UiAutomationResponse,
+    expected_prefix: Option<&str>,
+    expected_role: Option<&str>,
+) -> Result<UiListOutput, UiAutomationResponse> {
+    let invalid = || {
+        UiAutomationResponse::minimal_error(
+            &response.request_id,
+            &response.window,
+            UiAutomationAction::List,
+            "",
+            "automation_protocol_mismatch",
+            "Automation list response did not match the bounded public projection contract.",
+        )
+    };
+    let filters = response.filters.clone().ok_or_else(&invalid)?;
+    let targets = response.targets.clone().ok_or_else(&invalid)?;
+    let matched_count = response.matched_count.ok_or_else(&invalid)?;
+    let matched_count_exact = response.matched_count_exact.ok_or_else(&invalid)?;
+    let returned_count = response.returned_count.ok_or_else(&invalid)?;
+    let limit = response.limit.ok_or_else(&invalid)?;
+    let truncated = response.truncated.ok_or_else(&invalid)?;
+    let scan = response.scan.clone().ok_or_else(&invalid)?;
+    let active_test_id = match &response.active_test_id {
+        Value::Null => None,
+        Value::String(value) if safe_public_test_id(value) => Some(value.clone()),
+        _ => return Err(invalid()),
+    };
+    if filters.prefix.as_deref() != expected_prefix
+        || filters.role.as_deref() != expected_role
+        || filters.role.as_ref().is_some_and(|role| {
+            !SUPPORTED_ROLES.iter().any(|supported| supported == &role.as_str())
+        })
+        || limit != MAX_LIST_RETURN_TARGETS
+        || returned_count != targets.len()
+        || returned_count > limit
+        || matched_count < returned_count
+        || matched_count_exact != !scan.truncated
+        || truncated != (scan.truncated || matched_count > limit)
+        || scan.element_limit != MAX_LIST_SCAN_ELEMENTS
+        || scan.target_limit != MAX_LIST_SCAN_TARGETS
+        || scan.open_root_limit != MAX_LIST_OPEN_ROOTS
+        || scan.elements > scan.element_limit
+        || scan.targets > scan.target_limit
+        || scan.open_roots > scan.open_root_limit
+    {
+        return Err(invalid());
+    }
+    if targets.iter().any(|target| {
+        !safe_public_test_id(&target.test_id)
+            || target.role.as_ref().is_some_and(|role| {
+                !SUPPORTED_ROLES.iter().any(|supported| supported == &role.as_str())
+            })
+            || target
+                .state
+                .as_ref()
+                .is_some_and(|state| !safe_state_token(state))
+    }) {
+        return Err(invalid());
+    }
+    if targets.windows(2).any(|pair| {
+        let left = (&pair[0].test_id, pair[0].role.as_deref());
+        let right = (&pair[1].test_id, pair[1].role.as_deref());
+        left > right
+    }) {
+        return Err(invalid());
+    }
+    Ok(UiListOutput {
+        ok: true,
+        request_id: response.request_id.clone(),
+        window: response.window.clone(),
+        action: "list",
+        filters,
+        targets,
+        matched_count,
+        matched_count_exact,
+        returned_count,
+        limit,
+        truncated,
+        scan,
+        active_test_id,
+    })
+}
+
+pub fn execute_focus(context: &UiCliDispatchContext, args: UiFocusArgs) -> i32 {
+    execute_cli(context, CliRequest {
+        window: args.window,
+        selector: args.selector,
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
+        action: UiAutomationAction::Focus,
+        value: None,
+        timeout_ms: args.timeout_ms,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -990,6 +3216,367 @@ impl BackendWatchdogMode {
             Self::KillGroup => "killGroup",
             Self::Tick => "tick",
             Self::QuarantineRetry => "quarantineRetry",
+        }
+    }
+}
+
+fn terminal_unavailable() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_snapshot_unavailable",
+        "Terminal snapshot capture was unavailable.",
+    )
+}
+
+fn terminal_stale() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_session_stale",
+        "Terminal session ownership changed during capture.",
+    )
+}
+
+fn terminal_missing() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_session_missing",
+        "Terminal session was not found.",
+    )
+}
+
+fn terminal_owner_mismatch() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_session_owner_mismatch",
+        "Terminal session did not belong to the requested owner window.",
+    )
+}
+
+fn terminal_owner_unsupported() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_owner_window_unsupported",
+        "Terminal owner window was not supported.",
+    )
+}
+
+fn terminal_too_large() -> TerminalSnapshotTaskError {
+    TerminalSnapshotTaskError::new(
+        "terminal_snapshot_too_large",
+        "Terminal snapshot exceeded its size limit.",
+    )
+}
+
+fn ready_window_generation(state: &UiAutomationState, label: &str) -> Option<u64> {
+    state
+        .inner
+        .window_inventory
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .ready_generation(label)
+}
+
+fn detached_session_from_owner_label(label: &str) -> Option<Uuid> {
+    let simple = label.strip_prefix("terminal-")?;
+    if simple.len() != 32
+        || !simple
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    Uuid::parse_str(simple).ok()
+}
+
+fn selection_snapshot_blocking(
+    selection_coordinator: &SelectionCoordinator,
+) -> Result<SessionSelection, TerminalSnapshotTaskError> {
+    tauri::async_runtime::block_on(selection_coordinator.snapshot()).map_err(|_| terminal_unavailable())
+}
+
+fn resolve_terminal_owner_witness_blocking(
+    state: &UiAutomationState,
+    request: &UiAutomationRequest,
+    selection_coordinator: &SelectionCoordinator,
+    detached_sessions: &DetachedSessionsState,
+) -> Result<TerminalOwnerWitness, TerminalSnapshotTaskError> {
+    let owner_window = request
+        .owner_window
+        .as_deref()
+        .ok_or_else(terminal_owner_unsupported)?;
+    let generation = ready_window_generation(state, owner_window).ok_or_else(terminal_stale)?;
+    let session_selector = request.session.as_ref().ok_or_else(terminal_owner_mismatch)?;
+
+    if owner_window == "main" {
+        let selection = selection_snapshot_blocking(selection_coordinator)?;
+        let selected_id = selection.id().ok_or_else(terminal_missing)?;
+        if !selection.has_pty() || !selection.displayable() || selection.detached() {
+            return Err(terminal_owner_mismatch());
+        }
+        if let UiTerminalSessionSelector::Explicit { id } = session_selector {
+            let requested_id = Uuid::parse_str(id).map_err(|_| terminal_owner_mismatch())?;
+            if requested_id != selected_id {
+                return Err(terminal_owner_mismatch());
+            }
+        }
+        return Ok(TerminalOwnerWitness::Main {
+            owner_window: owner_window.to_string(),
+            generation,
+            session_id: selected_id,
+            selection,
+        });
+    }
+
+    let label_id = detached_session_from_owner_label(owner_window)
+        .ok_or_else(terminal_owner_unsupported)?;
+    if let UiTerminalSessionSelector::Explicit { id } = session_selector {
+        let requested_id = Uuid::parse_str(id).map_err(|_| terminal_owner_mismatch())?;
+        if requested_id != label_id {
+            return Err(terminal_owner_mismatch());
+        }
+    }
+    let detached = detached_sessions.lock().map_err(|_| terminal_unavailable())?;
+    if !detached.contains(&label_id) {
+        return Err(terminal_stale());
+    }
+    drop(detached);
+    Ok(TerminalOwnerWitness::Detached {
+        owner_window: owner_window.to_string(),
+        generation,
+        session_id: label_id,
+    })
+}
+
+fn terminal_session_fact_blocking(
+    session_manager: &SessionManager,
+    session_id: Uuid,
+) -> Result<TerminalSnapshotSessionFact, TerminalSnapshotTaskError> {
+    debug_assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "terminal snapshot blocking lookup entered a Tokio runtime"
+    );
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(terminal_unavailable());
+    }
+    session_manager
+        .terminal_snapshot_session_fact_by_id_blocking(session_id)
+        .ok_or_else(terminal_missing)
+}
+
+fn revalidate_main_owner(
+    state: &UiAutomationState,
+    witness: &TerminalOwnerWitness,
+    selection_coordinator: &SelectionCoordinator,
+) -> Result<(), TerminalSnapshotTaskError> {
+    let TerminalOwnerWitness::Main {
+        owner_window,
+        generation,
+        selection,
+        ..
+    } = witness
+    else {
+        return Err(terminal_stale());
+    };
+    if ready_window_generation(state, owner_window) != Some(*generation)
+        || selection_snapshot_blocking(selection_coordinator)? != *selection
+    {
+        return Err(terminal_stale());
+    }
+    Ok(())
+}
+
+fn encode_terminal_snapshot_model(
+    request: &UiAutomationRequest,
+    witness: &TerminalOwnerWitness,
+    fact: &TerminalSnapshotSessionFact,
+    route_proof: &PtySnapshotRouteProof,
+    model: &terminal_snapshot_renderer::TerminalScreenModel,
+) -> Result<Value, TerminalSnapshotTaskError> {
+    let rows = usize::from(model.screen.dimensions.rows);
+    let columns = usize::from(model.screen.dimensions.columns);
+    let cells = rows.checked_mul(columns).ok_or_else(terminal_too_large)?;
+    if rows == 0
+        || columns == 0
+        || rows > MAX_TERMINAL_ROWS
+        || columns > MAX_TERMINAL_COLUMNS
+        || cells > MAX_TERMINAL_CELLS
+    {
+        return Err(terminal_too_large());
+    }
+    if model.session.id != witness.session_id().to_string()
+        || !route_proof.ui_model_backend_matches(model, fact.backend_kind)
+    {
+        return Err(terminal_stale());
+    }
+    let selection_mode = match request.session {
+        Some(UiTerminalSessionSelector::Active) => UiTerminalSelectionMode::Active,
+        Some(UiTerminalSessionSelector::Explicit { .. }) => UiTerminalSelectionMode::Explicit,
+        None => return Err(terminal_owner_mismatch()),
+    };
+    let bytes = encode_ui_terminal_snapshot(
+        witness.owner_window().to_string(),
+        selection_mode,
+        model,
+        MAX_RESPONSE_JSON_BYTES,
+    )
+    .map_err(|error| match error {
+        ProtocolError::TooLarge => terminal_too_large(),
+        ProtocolError::Invalid | ProtocolError::InvalidPng | ProtocolError::Serialization => {
+            terminal_unavailable()
+        }
+    })?;
+    serde_json::from_slice(&bytes).map_err(|_| terminal_unavailable())
+}
+
+fn capture_terminal_model(
+    route_proof: &PtySnapshotRouteProof,
+    fact: &TerminalSnapshotSessionFact,
+    scope: &crate::config::teams::VerifiedSessionScope,
+) -> Result<Arc<terminal_snapshot_renderer::TerminalScreenModel>, TerminalSnapshotTaskError> {
+    match route_proof.capture_verified_for_ui(
+        fact.backend_kind,
+        &scope.cwd,
+        scope.replica.as_ref(),
+    ) {
+        Ok(model) => Ok(model),
+        Err(UiTerminalCaptureError::TooLarge) => Err(terminal_too_large()),
+        Err(UiTerminalCaptureError::Unavailable) => Err(terminal_unavailable()),
+    }
+}
+
+fn run_terminal_snapshot_task(
+    state: &UiAutomationState,
+    app: &AppHandle,
+    request: &UiAutomationRequest,
+    cancelled: &AtomicBool,
+) -> Result<Value, TerminalSnapshotTaskError> {
+    run_terminal_snapshot_task_with_hooks(state, app, request, cancelled, &NoopTerminalCaptureHooks)
+}
+
+fn with_detached_membership_guard_caught<T>(
+    detached_sessions: &DetachedSessionsState,
+    operation: impl FnOnce(&HashSet<Uuid>) -> Result<T, TerminalSnapshotTaskError>,
+) -> Result<T, TerminalSnapshotTaskError> {
+    let guard = detached_sessions
+        .lock()
+        .map_err(|_| terminal_unavailable())?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| operation(&guard)));
+    drop(guard);
+    match outcome {
+        Ok(result) => result,
+        Err(_) => Err(terminal_unavailable()),
+    }
+}
+
+fn run_terminal_snapshot_task_with_hooks(
+    state: &UiAutomationState,
+    app: &AppHandle,
+    request: &UiAutomationRequest,
+    cancelled: &AtomicBool,
+    hooks: &dyn TerminalCaptureHooks,
+) -> Result<Value, TerminalSnapshotTaskError> {
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(terminal_unavailable());
+    }
+
+    let session_manager_state = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .inner()
+        .clone();
+    let session_manager = tauri::async_runtime::block_on(async move {
+        session_manager_state.read().await.clone()
+    });
+    let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let selection_coordinator = app.state::<SelectionCoordinator>().inner().clone();
+    let detached_sessions = app.state::<DetachedSessionsState>().inner().clone();
+
+    let witness = resolve_terminal_owner_witness_blocking(
+        state,
+        request,
+        &selection_coordinator,
+        &detached_sessions,
+    )?;
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(terminal_unavailable());
+    }
+    let fact = terminal_session_fact_blocking(&session_manager, witness.session_id())?;
+    let scope = crate::config::teams::verified_session_scope_from_cwd(Path::new(
+        &fact.working_directory,
+    ))
+    .map_err(|_| terminal_unavailable())?;
+    let route_proof = PtyManager::snapshot_route_proof(&pty_manager, witness.session_id())
+        .map_err(|_| terminal_unavailable())?;
+    if route_proof.backend_kind() != fact.backend_kind
+        || !route_proof.matches_current_for_ui(
+            fact.backend_kind,
+            &scope.cwd,
+            scope.replica.as_ref(),
+        )
+    {
+        return Err(terminal_stale());
+    }
+
+    match &witness {
+        TerminalOwnerWitness::Main { .. } => {
+            revalidate_main_owner(state, &witness, &selection_coordinator)?;
+            if terminal_session_fact_blocking(&session_manager, witness.session_id())? != fact {
+                return Err(terminal_stale());
+            }
+            if cancelled.load(Ordering::SeqCst) {
+                return Err(terminal_unavailable());
+            }
+            hooks.before_capture();
+            hooks.block_capture();
+            let model = capture_terminal_model(&route_proof, &fact, &scope)?;
+            hooks.after_capture_before_owner_revalidation();
+            if cancelled.load(Ordering::SeqCst) {
+                return Err(terminal_unavailable());
+            }
+            revalidate_main_owner(state, &witness, &selection_coordinator)?;
+            if terminal_session_fact_blocking(&session_manager, witness.session_id())? != fact
+                || !route_proof.matches_current_for_ui(
+                    fact.backend_kind,
+                    &scope.cwd,
+                    scope.replica.as_ref(),
+                )
+            {
+                return Err(terminal_stale());
+            }
+            encode_terminal_snapshot_model(request, &witness, &fact, &route_proof, &model)
+        }
+        TerminalOwnerWitness::Detached { session_id, .. } => {
+            with_detached_membership_guard_caught(&detached_sessions, |guard| {
+                if cancelled.load(Ordering::SeqCst)
+                    || !guard.contains(session_id)
+                    || ready_window_generation(state, witness.owner_window())
+                        != Some(witness.generation())
+                {
+                    return Err(terminal_stale());
+                }
+                hooks.after_detached_guard_acquired();
+                if terminal_session_fact_blocking(&session_manager, *session_id)? != fact
+                    || !route_proof.matches_current_for_ui(
+                        fact.backend_kind,
+                        &scope.cwd,
+                        scope.replica.as_ref(),
+                    )
+                {
+                    return Err(terminal_stale());
+                }
+                hooks.before_capture();
+                hooks.block_capture();
+                let model = capture_terminal_model(&route_proof, &fact, &scope)?;
+                hooks.after_capture_before_owner_revalidation();
+                if cancelled.load(Ordering::SeqCst)
+                    || terminal_session_fact_blocking(&session_manager, *session_id)? != fact
+                    || ready_window_generation(state, witness.owner_window())
+                        != Some(witness.generation())
+                    || !guard.contains(session_id)
+                    || !route_proof.matches_current_for_ui(
+                        fact.backend_kind,
+                        &scope.cwd,
+                        scope.replica.as_ref(),
+                    )
+                {
+                    return Err(terminal_stale());
+                }
+                encode_terminal_snapshot_model(request, &witness, &fact, &route_proof, &model)
+            })
         }
     }
 }
@@ -1235,47 +3822,70 @@ async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>
         available_windows: None,
         timeout_ms: None,
         phase: None,
+        active_test_id: Value::Null,
+        filters: None,
+        targets: None,
+        matched_count: None,
+        matched_count_exact: None,
+        returned_count: None,
+        limit: None,
+        truncated: None,
+        scan: None,
+        terminal_snapshot: None,
     }
 }
 
-fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
+fn run_cli_request(
+    context: &UiCliDispatchContext,
+    input: &CliRequest,
+) -> Result<UiAutomationResponse, Value> {
     ensure_current_exe_is_testable()?;
+    validate_cli_request(input)?;
 
-    let config_dir = config_dir_or_error()?;
+    if !context.verify_current() {
+        return Err(automation_config_identity_unavailable_error());
+    }
+    let config_dir = context.canonical_path().to_path_buf();
     let automation_dir = config_dir.join(UI_AUTOMATION_DIR);
     let session_path = automation_dir.join(SESSION_FILE);
-    let session = load_session_for_cli(&session_path, &input.window)?;
+    let session = load_session_for_cli(context, &input.window)?;
 
-    fs::create_dir_all(automation_dir.join(REQUESTS_DIR)).map_err(|e| {
-        preflight_error(
-            "automation_filesystem_error",
-            "Failed to create automation request directory.",
-            Some(json!({
-                "operation": "create_requests_dir",
-                "path": automation_dir.join(REQUESTS_DIR).to_string_lossy(),
-                "message": e.to_string(),
-            })),
-        )
+    context.with_owned_automation_fs(|_| {
+        fs::create_dir_all(automation_dir.join(REQUESTS_DIR)).map_err(|_| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation request directory.",
+                None,
+            )
+        })
     })?;
-    fs::create_dir_all(automation_dir.join(RESPONSES_DIR)).map_err(|e| {
-        preflight_error(
-            "automation_filesystem_error",
-            "Failed to create automation response directory.",
-            Some(json!({
-                "operation": "create_responses_dir",
-                "path": automation_dir.join(RESPONSES_DIR).to_string_lossy(),
-                "message": e.to_string(),
-            })),
-        )
+    context.with_owned_automation_fs(|_| {
+        fs::create_dir_all(automation_dir.join(RESPONSES_DIR)).map_err(|_| {
+            preflight_error(
+                "automation_filesystem_error",
+                "Failed to create automation response directory.",
+                None,
+            )
+        })
     })?;
 
     let request_id = Uuid::new_v4().to_string();
     let request = UiAutomationRequest {
+        schema_version: PROTOCOL_SCHEMA_VERSION,
+        instance_id: session.instance_id,
+        pid: session.pid,
+        started_at_unix_ms: session.started_at_unix_ms,
         request_id: request_id.clone(),
         token: session.token,
+        exe_path: session.exe_path,
+        config_dir: session.config_dir,
         window: input.window.clone(),
         action: input.action,
         selector: input.selector.clone(),
+        prefix: input.prefix.clone(),
+        role: input.role.clone(),
+        owner_window: input.owner_window.clone(),
+        session: input.session.clone(),
         value: input.value.clone(),
         expires_at_unix_ms: Some(request_expires_at_unix_ms(input.timeout_ms)),
     };
@@ -1290,49 +3900,62 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
         .join(RESPONSES_DIR)
         .join(format!("{request_id}.json"));
 
-    write_json_atomic_new(&request_path, &request).map_err(|e| {
-        response_error_value(
-            &request,
-            "automation_filesystem_error",
-            "Failed to write automation request file.",
-            Some(json!({
-                "operation": "write_request",
-                "path": request_path.to_string_lossy(),
-                "message": e.to_string(),
-            })),
-        )
+    context.with_owned_automation_fs(|_| {
+        write_json_atomic_new(&request_path, &request).map_err(|_| {
+            response_error_value(
+                &request,
+                "automation_filesystem_error",
+                "Failed to write automation request file.",
+                None,
+            )
+        })
     })?;
 
     let deadline = Instant::now() + Duration::from_millis(input.timeout_ms);
     loop {
-        if response_path.exists() {
-            let raw = fs::read_to_string(&response_path).map_err(|e| {
-                response_error_value(
-                    &request,
-                    "automation_filesystem_error",
-                    "Failed to read automation response file.",
-                    Some(json!({
-                        "operation": "read_response",
-                        "path": response_path.to_string_lossy(),
-                        "message": e.to_string(),
-                    })),
+        let response_exists = context.with_owned_automation_fs(|_| {
+            Ok(response_path.try_exists().unwrap_or(false))
+        })?;
+        if response_exists {
+            let raw = context.with_owned_automation_fs(|_| {
+                read_bounded_regular_file(&response_path, MAX_RESPONSE_JSON_BYTES).map_err(
+                    |error| {
+                        let (code, message) = if error.kind() == io::ErrorKind::InvalidData
+                            && error.to_string() == "response_too_large"
+                        {
+                            (
+                                "response_too_large",
+                                "Automation response file exceeded its byte limit.",
+                            )
+                        } else {
+                            (
+                                "automation_filesystem_error",
+                                "Failed to read automation response file.",
+                            )
+                        };
+                        response_error_value(&request, code, message, None)
+                    },
                 )
             })?;
-            let response: UiAutomationResponse = serde_json::from_str(&raw).map_err(|e| {
+            let response: UiAutomationResponse = serde_json::from_str(&raw).map_err(|_| {
                 response_error_value(
                     &request,
                     "automation_filesystem_error",
                     "Automation response file was not valid JSON.",
-                    Some(json!({
-                        "operation": "parse_response",
-                        "path": response_path.to_string_lossy(),
-                        "message": e.to_string(),
-                    })),
+                    None,
                 )
             })?;
-            let _ = retry_remove_file(&response_path);
-            let _ = retry_remove_file(&request_path);
-            let _ = retry_remove_file(&inflight_path);
+            let correlation = validate_response_correlation(&request, &response);
+            context.with_owned_automation_fs(|_| {
+                retry_remove_file(&response_path).map_err(|_| automation_config_identity_unavailable_error())
+            })?;
+            context.with_owned_automation_fs(|_| {
+                retry_remove_file(&request_path).map_err(|_| automation_config_identity_unavailable_error())
+            })?;
+            context.with_owned_automation_fs(|_| {
+                retry_remove_file(&inflight_path).map_err(|_| automation_config_identity_unavailable_error())
+            })?;
+            correlation?;
             return Ok(sanitize_response_for_cli(response));
         }
 
@@ -1344,13 +3967,18 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
             );
             timeout.timeout_ms = Some(input.timeout_ms);
             timeout.phase = Some(timeout_phase(
+                context,
                 &request_path,
                 &inflight_path,
                 &session_path,
                 &input.window,
-            ));
-            let _ = retry_remove_file(&request_path);
-            let _ = retry_remove_file(&inflight_path);
+            )?);
+            context.with_owned_automation_fs(|_| {
+                retry_remove_file(&request_path).map_err(|_| automation_config_identity_unavailable_error())
+            })?;
+            context.with_owned_automation_fs(|_| {
+                retry_remove_file(&inflight_path).map_err(|_| automation_config_identity_unavailable_error())
+            })?;
             return Ok(timeout);
         }
 
@@ -1358,7 +3986,239 @@ fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
     }
 }
 
-pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, String> {
+fn validate_response_correlation(
+    request: &UiAutomationRequest,
+    response: &UiAutomationResponse,
+) -> Result<(), Value> {
+    let mismatch = || {
+        response_error_value(
+            request,
+            "automation_protocol_mismatch",
+            "Automation response did not match the pending request contract.",
+            None,
+        )
+    };
+    if response.request_id != request.request_id
+        || response.window != request.window
+        || response.action != request.action
+        || response.selector != request.selector
+        || (response.ok && (response.error.is_some() || response.message.is_some()))
+        || (!response.ok && (response.error.is_none() || response.message.is_none()))
+    {
+        return Err(mismatch());
+    }
+    let has_list_payload = response.filters.is_some()
+        || response.targets.is_some()
+        || response.matched_count.is_some()
+        || response.matched_count_exact.is_some()
+        || response.returned_count.is_some()
+        || response.limit.is_some()
+        || response.truncated.is_some()
+        || response.scan.is_some();
+    if request.action == UiAutomationAction::List {
+        if response.ok != has_list_payload
+            || response.target.is_some()
+            || response.available.is_some()
+            || response.diagnostics.is_some()
+            || response.available_windows.is_some()
+            || response.timeout_ms.is_some()
+            || response.phase.is_some()
+            || response.terminal_snapshot.is_some()
+        {
+            return Err(mismatch());
+        }
+    } else if has_list_payload {
+        return Err(mismatch());
+    }
+    if response.available.is_some()
+        && !matches!(
+            response.error.as_deref(),
+            Some("missing_selector" | "duplicate_selector")
+        )
+    {
+        return Err(mismatch());
+    }
+    let terminal_request = request.action == UiAutomationAction::Backend
+        && request.selector == "terminal.snapshot";
+    if terminal_request {
+        if response.ok != response.terminal_snapshot.is_some()
+            || response.target.is_some()
+            || response.available.is_some()
+            || response.diagnostics.is_some()
+            || response.available_windows.is_some()
+            || !response.active_test_id.is_null()
+        {
+            return Err(mismatch());
+        }
+        if let Some(snapshot) = response.terminal_snapshot.as_ref() {
+            let document = serde_json::from_value::<UiTerminalSnapshotDocument>(snapshot.clone())
+                .map_err(|_| mismatch())?;
+            let expected_mode = match request.session.as_ref() {
+                Some(UiTerminalSessionSelector::Active) => UiTerminalSelectionMode::Active,
+                Some(UiTerminalSessionSelector::Explicit { .. }) => {
+                    UiTerminalSelectionMode::Explicit
+                }
+                None => return Err(mismatch()),
+            };
+            if document.schema_version != PROTOCOL_SCHEMA_VERSION
+                || document.kind != "ui-terminal-snapshot"
+                || request.owner_window.as_deref() != Some(document.owner_window.as_str())
+                || document.selection_mode != expected_mode
+            {
+                return Err(mismatch());
+            }
+            let expected_session = match request.session.as_ref() {
+                Some(UiTerminalSessionSelector::Explicit { id }) => Some(id.clone()),
+                Some(UiTerminalSessionSelector::Active) => request
+                    .owner_window
+                    .as_deref()
+                    .and_then(detached_session_from_owner_label)
+                    .map(|id| id.to_string())
+                    .filter(|_| request.owner_window.as_deref() != Some("main")),
+                None => None,
+            };
+            if expected_session.is_some_and(|id| document.session.id != id) {
+                return Err(mismatch());
+            }
+        }
+    } else if response.terminal_snapshot.is_some() {
+        return Err(mismatch());
+    }
+    if !matches!(response.active_test_id, Value::Null | Value::String(_)) {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
+fn validate_cli_request(input: &CliRequest) -> Result<(), Value> {
+    if input.timeout_ms == 0 || input.timeout_ms > MAX_TIMEOUT_MS {
+        return Err(preflight_error(
+            "invalid_timeout",
+            "Automation timeout must be between 1 and 60000 milliseconds.",
+            None,
+        ));
+    }
+    if input.window.as_bytes().len() > MAX_WINDOW_LABEL_BYTES {
+        return Err(preflight_error(
+            "window_too_large",
+            "Automation window label exceeded its limit.",
+            None,
+        ));
+    }
+    if input.owner_window.as_ref().is_some_and(|value| {
+        value.is_empty() || value.as_bytes().len() > MAX_WINDOW_LABEL_BYTES
+    }) {
+        return Err(preflight_error(
+            "window_too_large",
+            "Automation owner window label exceeded its limit.",
+            None,
+        ));
+    }
+    if input.session.as_ref().is_some_and(|session| match session {
+        UiTerminalSessionSelector::Active => false,
+        UiTerminalSessionSelector::Explicit { id } => !is_uuid_v4(id),
+    }) {
+        return Err(preflight_error(
+            "invalid_terminal_session",
+            "Terminal session selection was invalid.",
+            None,
+        ));
+    }
+    if input.selector.as_bytes().len() > MAX_SELECTOR_BYTES {
+        return Err(preflight_error(
+            "selector_too_large",
+            "Automation selector exceeded its limit.",
+            None,
+        ));
+    }
+    if input
+        .prefix
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_PREFIX_BYTES)
+    {
+        return Err(preflight_error(
+            "prefix_too_large",
+            "Automation list prefix exceeded its limit.",
+            None,
+        ));
+    }
+    if input
+        .role
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_ROLE_BYTES)
+    {
+        return Err(preflight_error(
+            "role_too_large",
+            "Automation role exceeded its limit.",
+            None,
+        ));
+    }
+    if input.role.as_ref().is_some_and(|role| {
+        !SUPPORTED_ROLES.iter().any(|supported| supported == &role.as_str())
+    }) {
+        return Err(preflight_error(
+            "invalid_role",
+            "Automation role was not supported.",
+            None,
+        ));
+    }
+    if input
+        .value
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_VALUE_BYTES)
+    {
+        return Err(preflight_error(
+            "value_too_large",
+            "Automation value exceeded its limit.",
+            None,
+        ));
+    }
+    let fields_match_action = match input.action {
+        UiAutomationAction::List => {
+            input.selector.is_empty()
+                && input.value.is_none()
+                && input.owner_window.is_none()
+                && input.session.is_none()
+        }
+        UiAutomationAction::Backend if input.selector == "terminal.snapshot" => {
+            input.value.is_none() && input.owner_window.is_some() && input.session.is_some()
+        }
+        UiAutomationAction::Backend => input.owner_window.is_none() && input.session.is_none(),
+        UiAutomationAction::SetValue | UiAutomationAction::TypeText => {
+            !input.selector.is_empty()
+                && input.value.is_some()
+                && input.owner_window.is_none()
+                && input.session.is_none()
+        }
+        UiAutomationAction::Hover => {
+            input.owner_window.is_none()
+                && input.session.is_none()
+                && (!input.selector.is_empty() || input.value.as_deref() == Some("leave"))
+        }
+        UiAutomationAction::Query
+        | UiAutomationAction::Click
+        | UiAutomationAction::ContextClick
+        | UiAutomationAction::Focus => {
+            !input.selector.is_empty()
+                && input.value.is_none()
+                && input.owner_window.is_none()
+                && input.session.is_none()
+        }
+    };
+    if !fields_match_action {
+        return Err(preflight_error(
+            "malformed_request",
+            "Automation request fields did not match the selected action.",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+pub fn resolve_enabled_from_cli_or_env(
+    ui_automation: bool,
+    testable_artifact: bool,
+) -> Result<bool, String> {
     let env_enabled = std::env::var(ENV_ENABLE)
         .ok()
         .is_some_and(|value| value == "1");
@@ -1366,13 +4226,8 @@ pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, Stri
     if !requested {
         return Ok(false);
     }
-    if !current_exe_is_testable() {
-        return Err(preflight_error(
-            "refusing_non_testeable_binary",
-            "UI automation is only available from agentscommander_testeable.exe.",
-            Some(json!({ "expected": TESTABLE_EXE_NAME })),
-        )
-        .to_string());
+    if !testable_artifact {
+        return Err(refusing_non_testeable_binary_error().to_string());
     }
     Ok(true)
 }
@@ -1388,11 +4243,16 @@ pub fn existing_enabled_session_for_current_config() -> bool {
     let Ok(session) = serde_json::from_str::<UiAutomationSession>(&raw) else {
         return false;
     };
-    validate_session_liveness(&session).is_ok()
+    validate_session_liveness(
+        &session,
+        &config_dir,
+        &OsLiveProcessIdentityProbe,
+    )
+    .is_ok()
 }
 
 pub fn automation_not_enabled_json() -> String {
-    automation_not_enabled_error().to_string()
+    compact_preflight_json(&automation_not_enabled_error())
 }
 
 fn automation_not_enabled_error() -> Value {
@@ -1403,10 +4263,47 @@ fn automation_not_enabled_error() -> Value {
     )
 }
 
-fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomationSession, Value> {
-    let raw = match read_session_file_with_retry(path) {
+fn load_session_for_cli(
+    context: &UiCliDispatchContext,
+    requested_window: &str,
+) -> Result<UiAutomationSession, Value> {
+    load_session_for_cli_with_process_probe(
+        context,
+        requested_window,
+        &OsLiveProcessIdentityProbe,
+        None,
+    )
+}
+
+fn load_session_for_cli_with_process_probe(
+    context: &UiCliDispatchContext,
+    requested_window: &str,
+    process_probe: &dyn LiveProcessIdentityProbe,
+    hooks: Option<&dyn SessionLoadTestHooks>,
+) -> Result<UiAutomationSession, Value> {
+    let path = context
+        .canonical_path()
+        .join(UI_AUTOMATION_DIR)
+        .join(SESSION_FILE);
+    let raw = match context.with_owned_automation_fs(|_| {
+        read_session_file_with_retry(&path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                json!({ "kind": "not_found" })
+            } else if error.kind() == io::ErrorKind::InvalidData
+                && error.to_string() == "session_file_too_large"
+            {
+                json!({ "kind": "too_large" })
+            } else {
+                preflight_error(
+                    "automation_filesystem_error",
+                    "Failed to read UI automation session file.",
+                    None,
+                )
+            }
+        })
+    }) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.get("kind").and_then(Value::as_str) == Some("not_found") => {
             let (error, message) = match crate::config::daemon_pid::detect_daemon_state() {
                 crate::config::daemon_pid::DaemonState::Running { .. } => {
                     return Err(automation_not_enabled_error());
@@ -1418,36 +4315,29 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
             };
             return Err(preflight_error(error, message, None));
         }
-        Err(e) => {
+        Err(error) if error.get("kind").and_then(Value::as_str) == Some("too_large") => {
             return Err(preflight_error(
-                "automation_filesystem_error",
-                "Failed to read UI automation session file.",
-                Some(json!({
-                    "operation": "read_session",
-                    "path": path.to_string_lossy(),
-                    "message": e.to_string(),
-                })),
+                "session_file_too_large",
+                "UI automation session file exceeded its byte limit.",
+                None,
             ));
         }
+        Err(error) => return Err(error),
     };
 
-    let session: UiAutomationSession = serde_json::from_str(&raw).map_err(|e| {
-        preflight_error(
-            "automation_session_stale",
-            "UI automation session file is malformed.",
-            Some(json!({ "message": e.to_string() })),
-        )
-    })?;
+    if let Some(hooks) = hooks {
+        hooks.after_session_bytes_read();
+    }
 
-    if let Err(e) = validate_session_liveness(&session) {
-        if matches!(
-            crate::config::daemon_pid::detect_daemon_state(),
-            crate::config::daemon_pid::DaemonState::Running { .. }
-        ) {
-            let _ = retry_remove_file(path);
-            return Err(automation_not_enabled_error());
-        }
-        return Err(e);
+    let session: UiAutomationSession =
+        serde_json::from_str(&raw).map_err(|_| automation_session_stale_error())?;
+
+    validate_session_liveness(&session, context.canonical_path(), process_probe)?;
+    if session.window_inventory.status == WindowInventoryStatus::Overflow {
+        return Err(registered_window_limit_error(
+            session.window_inventory.limit,
+            session.window_inventory.observed_count,
+        ));
     }
     if !is_backend_automation_window(requested_window)
         && !session
@@ -1468,55 +4358,84 @@ fn load_session_for_cli(path: &Path, requested_window: &str) -> Result<UiAutomat
     Ok(session)
 }
 
-fn validate_session_liveness(session: &UiAutomationSession) -> Result<(), Value> {
-    if session.pid == 0 || !pid_is_alive(session.pid) {
-        return Err(preflight_error(
-            "automation_session_stale",
-            "UI automation session PID is not alive.",
-            Some(json!({ "pid": session.pid })),
-        ));
+fn validate_session_liveness(
+    session: &UiAutomationSession,
+    expected_config_dir: &Path,
+    process_probe: &dyn LiveProcessIdentityProbe,
+) -> Result<(), Value> {
+    if !session_inventory_is_coherent(session)
+        || session.schema_version != PROTOCOL_SCHEMA_VERSION
+        || session.pid == 0
+        || session.started_at_unix_ms <= 0
+        || !is_uuid_v4(&session.instance_id)
+        || !is_uuid_v4(&session.token)
+        || session.exe_path.is_empty()
+        || session.config_dir.is_empty()
+        || !paths_equal_for_compare(Path::new(&session.config_dir), expected_config_dir)
+    {
+        return Err(automation_session_stale_error());
     }
 
-    let current_exe = current_exe_path_string();
-    if !paths_equal_for_compare(
-        &PathBuf::from(&session.exe_path),
-        &PathBuf::from(&current_exe),
-    ) {
-        return Err(preflight_error(
-            "automation_session_stale",
-            "UI automation session belongs to a different executable path.",
-            Some(json!({ "sessionExePath": session.exe_path })),
-        ));
+    let current_executable = std::env::current_exe()
+        .ok()
+        .map(|path| canonical_for_compare(&path))
+        .ok_or_else(automation_session_stale_error)?;
+    if !paths_equal_for_compare(Path::new(&session.exe_path), &current_executable) {
+        return Err(automation_session_stale_error());
     }
 
-    #[cfg(target_os = "windows")]
-    if let Some(process_path) = process_path(session.pid) {
-        if !paths_equal_for_compare(&process_path, &PathBuf::from(&session.exe_path)) {
-            return Err(preflight_error(
-                "automation_session_stale",
-                "UI automation session PID now belongs to a different executable.",
-                Some(json!({ "pid": session.pid })),
-            ));
+    let identity = process_probe
+        .probe(session.pid)
+        .ok_or_else(automation_session_stale_error)?;
+    if identity.started_at_unix_ms != session.started_at_unix_ms
+        || !paths_equal_for_compare(&identity.executable, Path::new(&session.exe_path))
+    {
+        return Err(automation_session_stale_error());
+    }
+    Ok(())
+}
+
+fn session_inventory_is_coherent(session: &UiAutomationSession) -> bool {
+    fn sorted_unique_bounded(labels: &[String]) -> bool {
+        labels.iter().all(|label| {
+            !label.is_empty() && label.as_bytes().len() <= MAX_WINDOW_LABEL_BYTES
+        }) && labels.windows(2).all(|pair| pair[0] < pair[1])
+    }
+
+    if session.window_inventory.limit != MAX_REGISTERED_WINDOWS as u32 {
+        return false;
+    }
+    match session.window_inventory.status {
+        WindowInventoryStatus::Ready => {
+            session.window_inventory.observed_count
+                == u32::try_from(session.window_labels.len()).unwrap_or(u32::MAX)
+                && session.window_labels.len() <= MAX_REGISTERED_WINDOWS
+                && sorted_unique_bounded(&session.window_labels)
+                && sorted_unique_bounded(&session.ready_window_labels)
+                && session
+                    .ready_window_labels
+                    .iter()
+                    .all(|ready| session.window_labels.binary_search(ready).is_ok())
+        }
+        WindowInventoryStatus::Overflow => {
+            session.window_inventory.observed_count > MAX_REGISTERED_WINDOWS as u32
+                && session.window_labels.is_empty()
+                && session.ready_window_labels.is_empty()
         }
     }
-
-    Ok(())
 }
 
 fn ensure_current_exe_is_testable() -> Result<(), Value> {
     if current_exe_is_testable() {
         Ok(())
     } else {
-        Err(preflight_error(
-            "refusing_non_testeable_binary",
-            "UI automation is only available from agentscommander_testeable.exe.",
-            Some(json!({ "expected": TESTABLE_EXE_NAME })),
-        ))
+        Err(refusing_non_testeable_binary_error())
     }
 }
 
-fn current_exe_is_testable() -> bool {
-    std::env::current_exe()
+pub fn current_exe_is_testable() -> bool {
+    cfg!(feature = "testable-ui-automation")
+        && std::env::current_exe()
         .ok()
         .and_then(|path| {
             path.file_name()
@@ -1525,14 +4444,34 @@ fn current_exe_is_testable() -> bool {
         .is_some_and(|name| name == TESTABLE_EXE_NAME)
 }
 
-fn config_dir_or_error() -> Result<PathBuf, Value> {
-    crate::config::config_dir().ok_or_else(|| {
-        preflight_error(
-            "automation_filesystem_error",
-            "Could not resolve the current binary config directory.",
-            None,
-        )
-    })
+struct OrderedPreflightValue<'a>(&'a serde_json::Map<String, Value>);
+
+impl Serialize for OrderedPreflightValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for key in ["ok", "error", "message"] {
+            if let Some(value) = self.0.get(key) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        for (key, value) in self.0 {
+            if !matches!(key.as_str(), "ok" | "error" | "message") {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+fn compact_preflight_json(value: &Value) -> String {
+    match value.as_object() {
+        Some(object) => serde_json::to_string(&OrderedPreflightValue(object)),
+        None => serde_json::to_string(value),
+    }
+    .expect("serializing a serde_json::Value cannot fail")
 }
 
 fn preflight_error(error: &str, message: &str, diagnostics: Option<Value>) -> Value {
@@ -1540,15 +4479,66 @@ fn preflight_error(error: &str, message: &str, diagnostics: Option<Value>) -> Va
         "ok": false,
         "error": error,
         "message": message,
-        "currentExePath": current_exe_path_string(),
     });
-    if let Some(config_dir) = crate::config::config_dir() {
-        value["configDir"] = json!(config_dir.to_string_lossy().into_owned());
-    }
     if let Some(diagnostics) = diagnostics {
         value["diagnostics"] = diagnostics;
     }
     value
+}
+
+fn refusing_non_testeable_binary_error() -> Value {
+    preflight_error(
+        "refusing_non_testeable_binary",
+        "UI automation is only available from agentscommander_testeable.exe.",
+        None,
+    )
+}
+
+pub fn refusing_non_testeable_binary_json() -> String {
+    compact_preflight_json(&refusing_non_testeable_binary_error())
+}
+
+fn automation_config_identity_unavailable_error() -> Value {
+    preflight_error(
+        "automation_config_identity_unavailable",
+        "Could not prove the testable configuration directory identity.",
+        None,
+    )
+}
+
+pub fn automation_config_identity_unavailable_json() -> String {
+    compact_preflight_json(&automation_config_identity_unavailable_error())
+}
+
+pub fn execute_missing_cli_context() -> i32 {
+    print_stdout_value(&automation_config_identity_unavailable_error());
+    1
+}
+
+pub fn automation_session_missing_json() -> String {
+    compact_preflight_json(&preflight_error(
+        "automation_session_missing",
+        "No UI automation session file exists for this testable binary.",
+        None,
+    ))
+}
+
+fn automation_session_stale_error() -> Value {
+    preflight_error(
+        "automation_session_stale",
+        "The UI automation session no longer identifies the live GUI process.",
+        None,
+    )
+}
+
+fn registered_window_limit_error(limit: u32, observed_count: u32) -> Value {
+    json!({
+        "ok": false,
+        "error": "registered_window_limit_exceeded",
+        "message": "The running GUI registered more automation windows than the supported limit.",
+        "limit": limit,
+        "observedCount": observed_count,
+    })
 }
 
 fn response_error_value(
@@ -1582,7 +4572,7 @@ fn request_expired(request: &UiAutomationRequest, now_ms: i64) -> bool {
 fn expired_response_for_request(request: &UiAutomationRequest) -> UiAutomationResponse {
     let mut response = UiAutomationResponse::error_for_request(
         request,
-        "timeout",
+        "request_expired",
         "Automation request expired before the GUI emitted it to the frontend.",
     );
     response.diagnostics = Some(json!({ "expiresAtUnixMs": request.expires_at_unix_ms }));
@@ -1651,50 +4641,70 @@ fn add_cli_truncation_diagnostics(
 
 fn print_stdout_json<T: Serialize>(value: &T) {
     match serde_json::to_string(value) {
-        Ok(json) => crate::cli_println!("{json}"),
-        Err(e) => crate::cli_println!(
-            "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":{}}}",
-            serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
+        Ok(json) => print_stdout_compact(json),
+        Err(_) => crate::cli_println!(
+            "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":\"Failed to serialize automation response.\"}}"
         ),
     }
 }
 
+fn print_stdout_value(value: &Value) {
+    print_stdout_compact(compact_preflight_json(value));
+}
+
+fn print_stdout_compact(json: String) {
+    if json.len() <= MAX_STDOUT_JSON_BYTES {
+        crate::cli_println!("{json}");
+    } else {
+        crate::cli_println!(
+            "{{\"ok\":false,\"error\":\"output_too_large\",\"message\":\"Automation output exceeded its byte limit.\"}}"
+        );
+    }
+}
+
 fn timeout_phase(
+    context: &UiCliDispatchContext,
     request_path: &Path,
     inflight_path: &Path,
     session_path: &Path,
     window: &str,
-) -> String {
-    if request_path.exists() {
-        return "awaiting_gui_poller".to_string();
+) -> Result<String, Value> {
+    if context.with_owned_automation_fs(|_| Ok(request_path.try_exists().unwrap_or(false)))? {
+        return Ok("awaiting_gui_poller".to_string());
     }
-    if inflight_path.exists() {
+    if context.with_owned_automation_fs(|_| Ok(inflight_path.try_exists().unwrap_or(false)))? {
         if is_backend_automation_window(window) {
-            return "awaiting_backend_response".to_string();
+            return Ok("awaiting_backend_response".to_string());
         }
-        if session_ready_for_window(session_path, window) {
-            "awaiting_frontend_response".to_string()
+        if session_ready_for_window(context, session_path, window)? {
+            Ok("awaiting_frontend_response".to_string())
         } else {
-            "awaiting_frontend_ready".to_string()
+            Ok("awaiting_frontend_ready".to_string())
         }
     } else {
-        "awaiting_gui_poller".to_string()
+        Ok("awaiting_gui_poller".to_string())
     }
 }
 
-fn session_ready_for_window(path: &Path, window: &str) -> bool {
+fn session_ready_for_window(
+    context: &UiCliDispatchContext,
+    path: &Path,
+    window: &str,
+) -> Result<bool, Value> {
     if is_backend_automation_window(window) {
-        return true;
+        return Ok(true);
     }
-    read_session_file_with_retry(path)
+    let raw = context.with_owned_automation_fs(|_| {
+        read_session_file_with_retry(path).map_err(|_| automation_config_identity_unavailable_error())
+    })?;
+    Ok(serde_json::from_str::<UiAutomationSession>(&raw)
         .ok()
-        .and_then(|raw| serde_json::from_str::<UiAutomationSession>(&raw).ok())
         .is_some_and(|session| {
             session
                 .ready_window_labels
                 .iter()
                 .any(|label| label == window)
-        })
+        }))
 }
 
 fn is_backend_automation_window(window: &str) -> bool {
@@ -1712,7 +4722,7 @@ fn write_json_atomic_replace<T: Serialize>(path: &Path, value: &T) -> io::Result
 fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
     let mut last_not_found = None;
     for attempt in 0..SESSION_READ_RETRY_COUNT {
-        match fs::read_to_string(path) {
+        match read_bounded_regular_file(path, MAX_SESSION_FILE_BYTES) {
             Ok(raw) => return Ok(raw),
             Err(e)
                 if e.kind() == io::ErrorKind::NotFound
@@ -1732,7 +4742,73 @@ fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
     }))
 }
 
+fn read_bounded_regular_file(path: &Path, limit: usize) -> io::Result<String> {
+    let limit_code = if limit == MAX_SESSION_FILE_BYTES {
+        "session_file_too_large"
+    } else if limit == MAX_REQUEST_FILE_BYTES {
+        "request_too_large"
+    } else {
+        "response_too_large"
+    };
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe_automation_file",
+            ));
+        }
+    }
+    let length = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if length > limit {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, limit_code));
+    }
+    let bytes = fs::read(path)?;
+    if bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            limit_code,
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid_utf8"))
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T, replace: bool) -> io::Result<()> {
+    let limit = if path.file_name().and_then(|name| name.to_str()) == Some(SESSION_FILE) {
+        MAX_SESSION_FILE_BYTES
+    } else if path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some(RESPONSES_DIR)
+    {
+        MAX_RESPONSE_JSON_BYTES
+    } else {
+        MAX_REQUEST_FILE_BYTES
+    };
+    let encoded = serde_json::to_vec(value)?;
+    if encoded.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            if limit == MAX_SESSION_FILE_BYTES {
+                "session_file_too_large"
+            } else if limit == MAX_RESPONSE_JSON_BYTES {
+                "response_too_large"
+            } else {
+                "request_too_large"
+            },
+        ));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1757,7 +4833,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T, replace: bool) -> io:
             .create_new(true)
             .open(&tmp_path)?
     };
-    serde_json::to_writer(&mut file, value)?;
+    file.write_all(&encoded)?;
     file.flush()?;
     drop(file);
 
@@ -1822,12 +4898,6 @@ fn cleanup_stale_automation_files(automation_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn sorted_labels(labels: &HashSet<String>) -> Vec<String> {
-    let mut labels: Vec<String> = labels.iter().cloned().collect();
-    labels.sort();
-    labels
-}
-
 fn available_window_labels(app: &AppHandle) -> Vec<String> {
     let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
     labels.sort();
@@ -1866,6 +4936,114 @@ fn now_unix_ms() -> i64 {
 }
 
 #[cfg(target_os = "windows")]
+struct OwnedLiveProcessHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for OwnedLiveProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl LiveProcessIdentityProbe for OsLiveProcessIdentityProbe {
+    fn probe(&self, pid: u32) -> Option<LiveProcessIdentity> {
+        use windows_sys::Win32::Foundation::{FILETIME, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        const WINDOWS_TO_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+        const TICKS_PER_MILLISECOND: u64 = 10_000;
+
+        unsafe {
+            let handle = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+                0,
+                pid,
+            );
+            if handle.is_null() {
+                return None;
+            }
+            let handle = OwnedLiveProcessHandle(handle);
+            if WaitForSingleObject(handle.0, 0) != WAIT_TIMEOUT {
+                return None;
+            }
+
+            let mut executable_buf = vec![0u16; 32_768];
+            let mut executable_len = executable_buf.len() as u32;
+            if QueryFullProcessImageNameW(
+                handle.0,
+                0,
+                executable_buf.as_mut_ptr(),
+                &mut executable_len,
+            ) == 0
+                || executable_len == 0
+            {
+                return None;
+            }
+
+            let mut creation = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut exit = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut kernel = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut user = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            if GetProcessTimes(
+                handle.0,
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            ) == 0
+            {
+                return None;
+            }
+            if WaitForSingleObject(handle.0, 0) != WAIT_TIMEOUT {
+                return None;
+            }
+
+            let creation_ticks =
+                (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+            let unix_ticks = creation_ticks.checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)?;
+            let unix_ms = unix_ticks / TICKS_PER_MILLISECOND;
+            let started_at_unix_ms = i64::try_from(unix_ms).ok()?;
+            if started_at_unix_ms <= 0 {
+                return None;
+            }
+
+            Some(LiveProcessIdentity {
+                executable: PathBuf::from(String::from_utf16_lossy(
+                    &executable_buf[..executable_len as usize],
+                )),
+                started_at_unix_ms,
+            })
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl LiveProcessIdentityProbe for OsLiveProcessIdentityProbe {
+    fn probe(&self, _pid: u32) -> Option<LiveProcessIdentity> {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, FALSE, STILL_ACTIVE,
@@ -1888,30 +5066,6 @@ pub fn pid_is_alive(pid: u32) -> bool {
 #[cfg(not(target_os = "windows"))]
 pub fn pid_is_alive(_pid: u32) -> bool {
     true
-}
-
-#[cfg(target_os = "windows")]
-fn process_path(pid: u32) -> Option<PathBuf> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
-        let mut buf = vec![0u16; 32768];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
-        let _ = CloseHandle(handle);
-        if ok == 0 || len == 0 {
-            return None;
-        }
-        Some(PathBuf::from(String::from_utf16_lossy(
-            &buf[..len as usize],
-        )))
-    }
 }
 
 #[derive(Debug)]
@@ -1971,6 +5125,470 @@ mod tests {
     use crate::DetachedSessionsState;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio_util::sync::CancellationToken;
+
+    struct TestAutomationConfigWitness {
+        canonical_path: PathBuf,
+    }
+
+    impl AutomationConfigWitness for TestAutomationConfigWitness {
+        fn canonical_path(&self) -> &Path {
+            &self.canonical_path
+        }
+
+        fn object_parts(&self) -> (u64, u64) {
+            (1, 1)
+        }
+
+        fn verify_current(&self) -> bool {
+            self.canonical_path.is_dir()
+        }
+    }
+
+    struct TestCurrentProcessProbe {
+        executable: PathBuf,
+    }
+
+    impl LiveProcessIdentityProbe for TestCurrentProcessProbe {
+        fn probe(&self, pid: u32) -> Option<LiveProcessIdentity> {
+            (pid == std::process::id()).then(|| LiveProcessIdentity {
+                executable: self.executable.clone(),
+                started_at_unix_ms: 1,
+            })
+        }
+    }
+
+    struct UnavailableProcessProbe;
+
+    impl LiveProcessIdentityProbe for UnavailableProcessProbe {
+        fn probe(&self, _pid: u32) -> Option<LiveProcessIdentity> {
+            None
+        }
+    }
+
+    struct FixedProcessProbe {
+        pid: u32,
+        executable: PathBuf,
+        started_at_unix_ms: i64,
+    }
+
+    impl LiveProcessIdentityProbe for FixedProcessProbe {
+        fn probe(&self, pid: u32) -> Option<LiveProcessIdentity> {
+            (pid == self.pid).then(|| LiveProcessIdentity {
+                executable: self.executable.clone(),
+                started_at_unix_ms: self.started_at_unix_ms,
+            })
+        }
+    }
+
+    struct PublishSessionAfterRead {
+        path: PathBuf,
+        session: UiAutomationSession,
+    }
+
+    impl SessionLoadTestHooks for PublishSessionAfterRead {
+        fn after_session_bytes_read(&self) {
+            write_json_atomic_replace(&self.path, &self.session)
+                .expect("publish replacement singleton session");
+        }
+    }
+
+    struct PanicAfterDetachedGuard;
+
+    impl TerminalCaptureHooks for PanicAfterDetachedGuard {
+        fn after_detached_guard_acquired(&self) {
+            panic!("injected detached capture panic");
+        }
+    }
+
+    fn test_automation_state(config_dir: &Path) -> UiAutomationState {
+        fs::create_dir_all(config_dir).unwrap();
+        let canonical_path = fs::canonicalize(config_dir).unwrap();
+        let witness: Arc<dyn AutomationConfigWitness> = Arc::new(TestAutomationConfigWitness {
+            canonical_path: canonical_path.clone(),
+        });
+        let executable = canonical_for_compare(&std::env::current_exe().unwrap());
+        UiAutomationState::new_with_process_probe(
+            true,
+            canonical_path,
+            Some(witness),
+            &TestCurrentProcessProbe { executable },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn enabled_state_process_probe_failure_is_filesystem_silent_and_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical_path = fs::canonicalize(tmp.path()).unwrap();
+        let witness: Arc<dyn AutomationConfigWitness> = Arc::new(TestAutomationConfigWitness {
+            canonical_path: canonical_path.clone(),
+        });
+
+        let result = UiAutomationState::new_with_process_probe(
+            true,
+            canonical_path,
+            Some(witness),
+            &UnavailableProcessProbe,
+        );
+
+        assert!(matches!(result, Err("automation_session_stale")));
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn managed_automation_types_are_send_sync_static() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<Arc<dyn AutomationConfigWitness>>();
+        assert_send_sync_static::<Arc<dyn InstanceIsolationTestHooks>>();
+        assert_send_sync_static::<UiCliDispatchContext>();
+        assert_send_sync_static::<UiAutomationState>();
+        assert_send_sync_static::<TerminalTaskControl>();
+        assert_send_sync_static::<Arc<dyn TerminalCaptureHooks>>();
+    }
+
+    #[test]
+    fn detached_capture_panic_drops_guard_normally_without_poisoning_consumers() {
+        let session_id = Uuid::new_v4();
+        let detached_sessions: DetachedSessionsState =
+            Arc::new(Mutex::new(HashSet::from([session_id])));
+        let hooks = PanicAfterDetachedGuard;
+
+        let result = with_detached_membership_guard_caught(&detached_sessions, |guard| {
+            assert!(guard.contains(&session_id));
+            hooks.after_detached_guard_acquired();
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(TerminalSnapshotTaskError {
+                code: "terminal_snapshot_unavailable",
+                ..
+            })
+        ));
+        assert!(!detached_sessions.is_poisoned());
+        let mut consumer = detached_sessions.lock().unwrap();
+        assert!(consumer.remove(&session_id));
+        assert!(consumer.insert(session_id));
+        assert!(consumer.contains(&session_id));
+    }
+
+    #[test]
+    fn window_inventory_is_complete_or_overflow_and_recovers_without_stale_count() {
+        let mut inventory = WindowInventory::initial();
+        let labels_32 = (0..32).map(|index| format!("window-{index:02}")).collect::<Vec<_>>();
+        assert!(inventory.sync(labels_32.clone()));
+        assert_eq!(inventory.status, WindowInventoryStatus::Ready);
+        assert_eq!(inventory.observed_count(), 32);
+        assert_eq!(inventory.snapshot().1, labels_32);
+
+        let generation_before_overflow = inventory.entries["window-00"].generation;
+        let labels_33 = (0..33).map(|index| format!("window-{index:02}")).collect::<Vec<_>>();
+        assert!(inventory.sync(labels_33));
+        assert_eq!(inventory.status, WindowInventoryStatus::Overflow);
+        assert_eq!(inventory.observed_count(), 33);
+        assert_eq!(inventory.snapshot().1, Vec::<String>::new());
+        assert!(inventory.entries["window-00"].generation > generation_before_overflow);
+
+        let swapped_33 = (1..34).map(|index| format!("window-{index:02}")).collect::<Vec<_>>();
+        assert!(inventory.sync(swapped_33));
+        assert_eq!(inventory.observed_count(), 33);
+        assert!(!inventory.entries.contains_key("window-00"));
+        assert!(inventory.entries.contains_key("window-33"));
+
+        let recovered = (2..34).map(|index| format!("window-{index:02}")).collect::<Vec<_>>();
+        assert!(inventory.sync(recovered.clone()));
+        assert_eq!(inventory.status, WindowInventoryStatus::Ready);
+        assert_eq!(inventory.snapshot().1, recovered);
+    }
+
+    #[test]
+    fn session_inventory_contract_rejects_partial_unsorted_and_mismatched_shapes() {
+        let mut session = UiAutomationSession {
+            schema_version: PROTOCOL_SCHEMA_VERSION,
+            instance_id: Uuid::new_v4().to_string(),
+            pid: 1,
+            token: Uuid::new_v4().to_string(),
+            exe_path: "fixture.exe".to_string(),
+            config_dir: "fixture-config".to_string(),
+            window_inventory: UiAutomationWindowInventory {
+                status: WindowInventoryStatus::Ready,
+                observed_count: 2,
+                limit: MAX_REGISTERED_WINDOWS as u32,
+            },
+            window_labels: vec!["main".to_string(), "resource-monitor".to_string()],
+            ready_window_labels: vec!["main".to_string()],
+            started_at_unix_ms: 1,
+        };
+        assert!(session_inventory_is_coherent(&session));
+
+        session.window_labels.swap(0, 1);
+        assert!(!session_inventory_is_coherent(&session));
+        session.window_labels.sort();
+        session.window_inventory.observed_count = 1;
+        assert!(!session_inventory_is_coherent(&session));
+
+        session.window_inventory = UiAutomationWindowInventory {
+            status: WindowInventoryStatus::Overflow,
+            observed_count: 33,
+            limit: MAX_REGISTERED_WINDOWS as u32,
+        };
+        assert!(!session_inventory_is_coherent(&session));
+        session.window_labels.clear();
+        session.ready_window_labels.clear();
+        assert!(session_inventory_is_coherent(&session));
+    }
+
+    #[test]
+    fn session_post_read_race_preserves_replacement_and_next_load_reaches_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = fs::canonicalize(temp.path()).unwrap();
+        let session_path = config_dir.join(UI_AUTOMATION_DIR).join(SESSION_FILE);
+        let executable = canonical_for_compare(&std::env::current_exe().unwrap());
+        let pid = 42_424;
+        let make_session =
+            |instance_id: &str, token: &str, started_at_unix_ms| UiAutomationSession {
+                schema_version: PROTOCOL_SCHEMA_VERSION,
+                instance_id: instance_id.to_string(),
+                pid,
+                token: token.to_string(),
+                exe_path: executable.to_string_lossy().into_owned(),
+                config_dir: config_dir.to_string_lossy().into_owned(),
+                window_inventory: UiAutomationWindowInventory {
+                    status: WindowInventoryStatus::Ready,
+                    observed_count: 1,
+                    limit: MAX_REGISTERED_WINDOWS as u32,
+                },
+                window_labels: vec!["main".to_string()],
+                ready_window_labels: vec!["main".to_string()],
+                started_at_unix_ms,
+            };
+        let stale_f1 = make_session(
+            "00000000-0000-4000-8000-000000000151",
+            "00000000-0000-4000-8000-000000000152",
+            111,
+        );
+        let live_f2 = make_session(
+            "00000000-0000-4000-8000-000000000153",
+            "00000000-0000-4000-8000-000000000154",
+            222,
+        );
+        write_json_atomic_replace(&session_path, &stale_f1).unwrap();
+        let expected_f2_bytes = serde_json::to_vec(&live_f2).unwrap();
+        let hooks = PublishSessionAfterRead {
+            path: session_path.clone(),
+            session: live_f2.clone(),
+        };
+        let probe = FixedProcessProbe {
+            pid,
+            executable,
+            started_at_unix_ms: 222,
+        };
+        let witness: Arc<dyn AutomationConfigWitness> = Arc::new(TestAutomationConfigWitness {
+            canonical_path: config_dir,
+        });
+        let context = UiCliDispatchContext::new(witness);
+
+        let stale = load_session_for_cli_with_process_probe(&context, "main", &probe, Some(&hooks))
+            .unwrap_err();
+        assert_eq!(stale["error"], "automation_session_stale");
+        assert_eq!(fs::read(&session_path).unwrap(), expected_f2_bytes);
+
+        let loaded =
+            load_session_for_cli_with_process_probe(&context, "main", &probe, None).unwrap();
+        assert_eq!(loaded.instance_id, live_f2.instance_id);
+        assert_eq!(fs::read(&session_path).unwrap(), expected_f2_bytes);
+    }
+
+    #[test]
+    fn preflight_error_compact_lines_are_byte_exact() {
+        assert_eq!(
+            format!("{}\n", refusing_non_testeable_binary_json()),
+            concat!(
+                "{\"ok\":false,\"error\":\"refusing_non_testeable_binary\",",
+                "\"message\":\"UI automation is only available from ",
+                "agentscommander_testeable.exe.\"}\n"
+            )
+        );
+        assert_eq!(
+            format!("{}\n", automation_session_missing_json()),
+            concat!(
+                "{\"ok\":false,\"error\":\"automation_session_missing\",",
+                "\"message\":\"No UI automation session file exists for this ",
+                "testable binary.\"}\n"
+            )
+        );
+        assert_eq!(
+            format!(
+                "{}\n",
+                compact_preflight_json(&automation_session_stale_error())
+            ),
+            concat!(
+                "{\"ok\":false,\"error\":\"automation_session_stale\",",
+                "\"message\":\"The UI automation session no longer identifies ",
+                "the live GUI process.\"}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn list_output_compact_line_is_byte_exact() {
+        let prefix = "AC_UI_PREFIX_00000000-0000-4000-8000-000000000155";
+        let response = UiAutomationResponse {
+            ok: true,
+            request_id: "00000000-0000-4000-8000-000000000155".to_string(),
+            window: "main".to_string(),
+            action: UiAutomationAction::List,
+            selector: String::new(),
+            target: None,
+            error: None,
+            message: None,
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: None,
+            phase: None,
+            active_test_id: Value::Null,
+            filters: Some(UiListFilters {
+                prefix: Some(prefix.to_string()),
+                role: None,
+            }),
+            targets: Some(Vec::new()),
+            matched_count: Some(0),
+            matched_count_exact: Some(true),
+            returned_count: Some(0),
+            limit: Some(MAX_LIST_RETURN_TARGETS),
+            truncated: Some(false),
+            scan: Some(UiListScan {
+                elements: 0,
+                element_limit: MAX_LIST_SCAN_ELEMENTS,
+                targets: 0,
+                target_limit: MAX_LIST_SCAN_TARGETS,
+                open_roots: 1,
+                open_root_limit: MAX_LIST_OPEN_ROOTS,
+                truncated: false,
+            }),
+            terminal_snapshot: None,
+        };
+        let output = ui_list_output(&response, Some(prefix), None).unwrap();
+        let line = format!("{}\n", serde_json::to_string(&output).unwrap());
+
+        assert_eq!(
+            line,
+            concat!(
+                "{\"ok\":true,\"requestId\":\"00000000-0000-4000-8000-000000000155\",",
+                "\"window\":\"main\",\"action\":\"list\",\"filters\":{\"prefix\":",
+                "\"AC_UI_PREFIX_00000000-0000-4000-8000-000000000155\",\"role\":null},",
+                "\"targets\":[],\"matchedCount\":0,\"matchedCountExact\":true,",
+                "\"returnedCount\":0,\"limit\":50,\"truncated\":false,\"scan\":{",
+                "\"elements\":0,\"elementLimit\":20000,\"targets\":0,\"targetLimit\":1000,",
+                "\"openRoots\":1,\"openRootLimit\":64,\"truncated\":false},",
+                "\"activeTestId\":null}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn wait_output_compact_lines_are_byte_exact_and_value_free() {
+        let success = UiWaitOutput {
+            ok: true,
+            request_id: "00000000-0000-4000-8000-000000000153".to_string(),
+            window: "main".to_string(),
+            action: "query",
+            selector: "fixture.absent".to_string(),
+            target: Value::Null,
+            error: None,
+            message: None,
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: None,
+            phase: None,
+            kind: "ui-wait",
+            command: "ui-wait",
+            predicates: vec![UiWaitPredicateKind::Absent],
+            attempts: 2,
+            elapsed_ms: 50,
+            last_observation: None,
+        };
+        let timeout = UiWaitOutput {
+            ok: false,
+            request_id: "00000000-0000-4000-8000-000000000154".to_string(),
+            window: "main".to_string(),
+            action: "query",
+            selector: "fixture.missing".to_string(),
+            target: Value::Null,
+            error: Some("timeout".to_string()),
+            message: Some(
+                "Automation wait timed out before the requested condition was met.".to_string(),
+            ),
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: Some(150),
+            phase: Some("wait_condition_not_met".to_string()),
+            kind: "ui-wait",
+            command: "ui-wait",
+            predicates: vec![
+                UiWaitPredicateKind::State,
+                UiWaitPredicateKind::Text,
+                UiWaitPredicateKind::Disabled,
+                UiWaitPredicateKind::Selected,
+                UiWaitPredicateKind::Expanded,
+                UiWaitPredicateKind::Focused,
+            ],
+            attempts: 3,
+            elapsed_ms: 150,
+            last_observation: Some("missing_selector"),
+        };
+        let success_line = format!("{}\n", serde_json::to_string(&success).unwrap());
+        let timeout_line = format!("{}\n", serde_json::to_string(&timeout).unwrap());
+
+        assert_eq!(
+            success_line,
+            concat!(
+                "{\"ok\":true,\"requestId\":\"00000000-0000-4000-8000-000000000153\",",
+                "\"window\":\"main\",\"action\":\"query\",\"selector\":\"fixture.absent\",",
+                "\"target\":null,\"kind\":\"ui-wait\",\"command\":\"ui-wait\",",
+                "\"predicates\":[\"absent\"],\"attempts\":2,\"elapsedMs\":50}\n"
+            )
+        );
+        assert_eq!(
+            timeout_line,
+            concat!(
+                "{\"ok\":false,\"requestId\":\"00000000-0000-4000-8000-000000000154\",",
+                "\"window\":\"main\",\"action\":\"query\",\"selector\":\"fixture.missing\",",
+                "\"target\":null,\"error\":\"timeout\",\"message\":",
+                "\"Automation wait timed out before the requested condition was met.\",",
+                "\"timeoutMs\":150,\"phase\":\"wait_condition_not_met\",\"kind\":\"ui-wait\",",
+                "\"command\":\"ui-wait\",\"predicates\":[\"state\",\"text\",\"disabled\",",
+                "\"selected\",\"expanded\",\"focused\"],\"attempts\":3,\"elapsedMs\":150,",
+                "\"lastObservation\":\"missing_selector\"}\n"
+            )
+        );
+        assert!(!timeout_line.contains("secret-state"));
+        assert!(!timeout_line.contains("AC_UI_PREDICATE_"));
+    }
+
+    #[test]
+    fn wait_predicate_kind_inventory_matches_capabilities_in_wire_order() {
+        let wire = UiWaitPredicateKind::all()
+            .map(|kind| {
+                serde_json::to_value(kind)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            wire,
+            CAPABILITY_WAIT_PREDICATES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[derive(Default)]
     struct UnsupportedAutomationBackend {
@@ -2159,11 +5777,21 @@ mod tests {
 
     fn watchdog_backend_request(mode: &str) -> UiAutomationRequest {
         UiAutomationRequest {
+            schema_version: PROTOCOL_SCHEMA_VERSION,
+            instance_id: Uuid::new_v4().to_string(),
+            pid: 1,
+            started_at_unix_ms: 1,
             request_id: Uuid::new_v4().to_string(),
             token: "token".to_string(),
+            exe_path: "test-executable".to_string(),
+            config_dir: "test-config".to_string(),
             window: BACKEND_AUTOMATION_WINDOW.to_string(),
             action: UiAutomationAction::Backend,
             selector: RESOURCE_WATCHDOG_BACKEND_SELECTOR.to_string(),
+            prefix: None,
+            role: None,
+            owner_window: None,
+            session: None,
             value: Some(mode.to_string()),
             expires_at_unix_ms: Some(now_unix_ms() + 1_000),
         }
@@ -2171,24 +5799,45 @@ mod tests {
 
     fn sample_request(request_id: String, selector: &str) -> UiAutomationRequest {
         UiAutomationRequest {
+            schema_version: PROTOCOL_SCHEMA_VERSION,
+            instance_id: Uuid::new_v4().to_string(),
+            pid: 1,
+            started_at_unix_ms: 1,
             request_id,
             token: "token".to_string(),
+            exe_path: "test-executable".to_string(),
+            config_dir: "test-config".to_string(),
             window: "main".to_string(),
             action: UiAutomationAction::Query,
             selector: selector.to_string(),
+            prefix: None,
+            role: None,
+            owner_window: None,
+            session: None,
             value: None,
             expires_at_unix_ms: Some(now_unix_ms() + 1_000),
         }
     }
 
+    fn terminal_request(request_id: String) -> UiAutomationRequest {
+        let mut request = sample_request(request_id, "terminal.snapshot");
+        request.window = BACKEND_AUTOMATION_WINDOW.to_string();
+        request.action = UiAutomationAction::Backend;
+        request.owner_window = Some("main".to_string());
+        request.session = Some(UiTerminalSessionSelector::Active);
+        request
+    }
+
     fn action_wire_name(action: UiAutomationAction) -> &'static str {
         match action {
             UiAutomationAction::Query => "query",
+            UiAutomationAction::List => "list",
             UiAutomationAction::Click => "click",
             UiAutomationAction::ContextClick => "contextClick",
             UiAutomationAction::Hover => "hover",
             UiAutomationAction::SetValue => "setValue",
             UiAutomationAction::TypeText => "typeText",
+            UiAutomationAction::Focus => "focus",
             UiAutomationAction::Backend => "backend",
         }
     }
@@ -2214,15 +5863,7 @@ mod tests {
         };
 
         for mode in ["sample", "warn", "killGroup", "tick", "quarantineRetry"] {
-            let request = UiAutomationRequest {
-                request_id: Uuid::new_v4().to_string(),
-                token: "token".to_string(),
-                window: BACKEND_AUTOMATION_WINDOW.to_string(),
-                action: UiAutomationAction::Backend,
-                selector: RESOURCE_WATCHDOG_BACKEND_SELECTOR.to_string(),
-                value: Some(mode.to_string()),
-                expires_at_unix_ms: Some(now_unix_ms() + 1_000),
-            };
+            let request = watchdog_backend_request(mode);
 
             let response =
                 handle_resource_watchdog_backend_request_with_config(app.handle(), &request, &cfg)
@@ -2670,7 +6311,7 @@ mod tests {
     #[test]
     fn complete_rejects_unknown_request_id() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         let response = UiAutomationResponse::minimal_error(
             &Uuid::new_v4().to_string(),
             "main",
@@ -2689,7 +6330,7 @@ mod tests {
     #[test]
     fn frontend_ready_registers_dynamic_caller_label() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         state.initialize_files().unwrap();
 
         state
@@ -2711,7 +6352,7 @@ mod tests {
     #[test]
     fn live_window_sync_prunes_closed_dynamic_windows() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         state.initialize_files().unwrap();
         state
             .mark_frontend_ready("resource-monitor", Some("resource-monitor"))
@@ -2730,7 +6371,7 @@ mod tests {
     #[test]
     fn complete_writes_completion_mismatch_response() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         fs::create_dir_all(state.requests_dir()).unwrap();
         fs::create_dir_all(state.responses_dir()).unwrap();
 
@@ -2762,6 +6403,16 @@ mod tests {
             available_windows: None,
             timeout_ms: None,
             phase: None,
+            active_test_id: Value::Null,
+            filters: None,
+            targets: None,
+            matched_count: None,
+            matched_count_exact: None,
+            returned_count: None,
+            limit: None,
+            truncated: None,
+            scan: None,
+            terminal_snapshot: None,
         };
 
         state.complete("main", result).unwrap();
@@ -2776,7 +6427,7 @@ mod tests {
     #[test]
     fn expire_pending_requests_writes_timeout_response() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         fs::create_dir_all(state.requests_dir()).unwrap();
         fs::create_dir_all(state.responses_dir()).unwrap();
 
@@ -2800,9 +6451,146 @@ mod tests {
         let raw = fs::read_to_string(response_path).unwrap();
         let written: UiAutomationResponse = serde_json::from_str(&raw).unwrap();
         assert!(!written.ok);
-        assert_eq!(written.error.as_deref(), Some("timeout"));
+        assert_eq!(written.error.as_deref(), Some("request_expired"));
         assert!(!inflight_path.exists());
         assert!(state.inner.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn expired_terminal_task_keeps_its_permit_and_handle_until_real_thread_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+        let request_id = Uuid::new_v4().to_string();
+        let mut request = terminal_request(request_id.clone());
+        request.expires_at_unix_ms = Some(now_unix_ms() - 1);
+        let response_path = state.response_path(&request_id);
+        let inflight_path = state.inflight_path(&request_id);
+        fs::write(&inflight_path, "{}").unwrap();
+
+        let permit = Arc::clone(&state.inner.terminal_task_permits)
+            .try_acquire_owned()
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _permit = permit;
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        started_rx.recv().unwrap();
+        state.inner.pending.lock().unwrap().insert(
+            request_id.clone(),
+            PendingRequest {
+                request,
+                response_path: response_path.clone(),
+                inflight_path: inflight_path.clone(),
+            },
+        );
+        state.inner.terminal_tasks.lock().unwrap().insert(
+            request_id.clone(),
+            TerminalTaskControl {
+                cancelled: Arc::clone(&cancelled),
+                phase: TerminalTaskPhase::Running,
+                handle: Some(handle),
+            },
+        );
+
+        state.expire_pending_requests();
+
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(state
+            .inner
+            .terminal_tasks
+            .lock()
+            .unwrap()
+            .contains_key(&request_id));
+        assert_eq!(state.inner.terminal_task_permits.available_permits(), 1);
+        assert!(!inflight_path.exists());
+        let response: UiAutomationResponse =
+            serde_json::from_str(&fs::read_to_string(response_path).unwrap()).unwrap();
+        assert_eq!(response.error.as_deref(), Some("request_expired"));
+
+        release_tx.send(()).unwrap();
+        while !state
+            .inner
+            .terminal_tasks
+            .lock()
+            .unwrap()
+            .get(&request_id)
+            .and_then(|control| control.handle.as_ref())
+            .is_some_and(JoinHandle::is_finished)
+        {
+            std::thread::yield_now();
+        }
+        state.reap_finished_terminal_tasks();
+        assert!(state.inner.terminal_tasks.lock().unwrap().is_empty());
+        assert_eq!(state.inner.terminal_task_permits.available_permits(), 2);
+    }
+
+    #[test]
+    fn terminal_shutdown_seals_admission_and_joins_before_registry_removal() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<UiAutomationState>();
+        assert_send_sync_static::<TerminalTaskControl>();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        let request_id = Uuid::new_v4().to_string();
+        let permit = Arc::clone(&state.inner.terminal_task_permits)
+            .try_acquire_owned()
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _permit = permit;
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        started_rx.recv().unwrap();
+        state.inner.terminal_tasks.lock().unwrap().insert(
+            request_id.clone(),
+            TerminalTaskControl {
+                cancelled: Arc::clone(&cancelled),
+                phase: TerminalTaskPhase::Running,
+                handle: Some(handle),
+            },
+        );
+
+        let closing_state = state.clone();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            closing_state.close_and_join_terminal_tasks();
+            closed_tx.send(()).unwrap();
+        });
+        while !cancelled.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        assert!(self::std_channel_is_empty(&closed_rx));
+        assert!(state
+            .inner
+            .terminal_task_admission_closed
+            .load(Ordering::SeqCst));
+        assert!(state
+            .inner
+            .terminal_tasks
+            .lock()
+            .unwrap()
+            .contains_key(&request_id));
+        assert_eq!(state.inner.terminal_task_permits.available_permits(), 1);
+
+        release_tx.send(()).unwrap();
+        closed_rx.recv().unwrap();
+        closer.join().unwrap();
+        assert!(state.inner.terminal_tasks.lock().unwrap().is_empty());
+        assert_eq!(state.inner.terminal_task_permits.available_permits(), 2);
+    }
+
+    fn std_channel_is_empty(receiver: &std::sync::mpsc::Receiver<()>) -> bool {
+        matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
     }
 
     #[test]
@@ -2823,7 +6611,7 @@ mod tests {
     #[test]
     fn initialization_failure_can_disable_state() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = UiAutomationState::new(true, tmp.path().to_path_buf());
+        let state = test_automation_state(tmp.path());
         fs::create_dir_all(&state.inner.automation_dir).unwrap();
         fs::write(state.requests_dir(), "not a directory").unwrap();
 
@@ -2852,13 +6640,16 @@ mod tests {
     #[test]
     fn timeout_phase_uses_ready_window_labels_for_inflight() {
         let tmp = tempfile::tempdir().unwrap();
+        let context = UiCliDispatchContext::new(Arc::new(TestAutomationConfigWitness {
+            canonical_path: fs::canonicalize(tmp.path()).unwrap(),
+        }));
         let request_path = tmp.path().join("request.json");
         let inflight_path = tmp.path().join("request.inflight.json");
         let session_path = tmp.path().join(SESSION_FILE);
         fs::write(&request_path, "{}").unwrap();
         assert_eq!(
-            timeout_phase(&request_path, &inflight_path, &session_path, "main"),
-            "awaiting_gui_poller"
+            timeout_phase(&context, &request_path, &inflight_path, &session_path, "main"),
+            Ok("awaiting_gui_poller".to_string())
         );
 
         fs::remove_file(&request_path).unwrap();
@@ -2866,10 +6657,17 @@ mod tests {
         fs::write(
             &session_path,
             serde_json::to_string(&UiAutomationSession {
+                schema_version: PROTOCOL_SCHEMA_VERSION,
+                instance_id: Uuid::new_v4().to_string(),
                 pid: std::process::id(),
                 token: "token".to_string(),
                 exe_path: current_exe_path_string(),
                 config_dir: tmp.path().to_string_lossy().into_owned(),
+                window_inventory: UiAutomationWindowInventory {
+                    status: WindowInventoryStatus::Ready,
+                    observed_count: 1,
+                    limit: MAX_REGISTERED_WINDOWS as u32,
+                },
                 window_labels: vec!["main".to_string()],
                 ready_window_labels: vec![],
                 started_at_unix_ms: 1,
@@ -2878,17 +6676,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            timeout_phase(&request_path, &inflight_path, &session_path, "main"),
-            "awaiting_frontend_ready"
+            timeout_phase(&context, &request_path, &inflight_path, &session_path, "main"),
+            Ok("awaiting_frontend_ready".to_string())
         );
 
         fs::write(
             &session_path,
             serde_json::to_string(&UiAutomationSession {
+                schema_version: PROTOCOL_SCHEMA_VERSION,
+                instance_id: Uuid::new_v4().to_string(),
                 pid: std::process::id(),
                 token: "token".to_string(),
                 exe_path: current_exe_path_string(),
                 config_dir: tmp.path().to_string_lossy().into_owned(),
+                window_inventory: UiAutomationWindowInventory {
+                    status: WindowInventoryStatus::Ready,
+                    observed_count: 1,
+                    limit: MAX_REGISTERED_WINDOWS as u32,
+                },
                 window_labels: vec!["main".to_string()],
                 ready_window_labels: vec!["main".to_string()],
                 started_at_unix_ms: 1,
@@ -2897,8 +6702,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            timeout_phase(&request_path, &inflight_path, &session_path, "main"),
-            "awaiting_frontend_response"
+            timeout_phase(&context, &request_path, &inflight_path, &session_path, "main"),
+            Ok("awaiting_frontend_response".to_string())
         );
     }
 }

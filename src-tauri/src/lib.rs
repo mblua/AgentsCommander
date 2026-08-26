@@ -6,7 +6,7 @@ pub mod errors;
 pub mod logging;
 pub mod loops;
 pub mod network;
-pub(crate) mod path_identity;
+pub mod path_identity;
 pub mod path_utils;
 pub mod phone;
 pub mod pty;
@@ -1818,11 +1818,44 @@ pub(crate) fn spawn_restore_startup(
     })
 }
 
+fn construct_ui_automation_state_before_writer<T>(
+    construct: impl FnOnce() -> Result<T, &'static str>,
+    before_config_writer: impl FnOnce(),
+) -> Result<T, &'static str> {
+    let state = construct()?;
+    before_config_writer();
+    Ok(state)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
-) {
+    config_witness: Option<Arc<dyn crate::testability::ui_automation::AutomationConfigWitness>>,
+    instance_isolation_hooks: Arc<
+        dyn crate::testability::ui_automation::InstanceIsolationTestHooks,
+    >,
+) -> Result<(), &'static str> {
+    let ui_config_dir = if ui_automation_enabled {
+        config_witness
+            .as_ref()
+            .ok_or("automation_config_identity_unavailable")?
+            .canonical_path()
+            .to_path_buf()
+    } else {
+        config::config_dir().unwrap_or_default()
+    };
+    let ui_automation_state = construct_ui_automation_state_before_writer(
+        || {
+            crate::testability::ui_automation::UiAutomationState::new(
+                ui_automation_enabled,
+                ui_config_dir,
+                config_witness,
+            )
+        },
+        || instance_isolation_hooks.before_config_writer(),
+    )?;
+
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
@@ -1867,11 +1900,6 @@ pub fn run(
     let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
-    let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
-        ui_automation_enabled,
-        config_dir.clone(),
-    );
-
     // Generate web access token — separate from master token for limited blast radius
     let web_access_token = Arc::new(WebAccessToken::new(uuid::Uuid::new_v4().to_string()));
 
@@ -1895,6 +1923,7 @@ pub fn run(
 
     // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
     config::daemon_pid::write_pid_file();
+    instance_isolation_hooks.after_owned_artifacts_published();
 
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
@@ -3418,11 +3447,13 @@ pub fn run(
                     // Still runs before process exit — subsequent CLI invocations
                     // see NoPidFile (not StalePidFile) once we return.
                     crate::config::daemon_pid::remove_pid_file();
+                    ui_automation_state_for_exit.close_and_join_terminal_tasks();
                     ui_automation_state_for_exit.cleanup_session_file();
                 }
                 _ => {}
             }
         });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3440,12 +3471,34 @@ mod tests {
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
     use std::net::SocketAddr;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
     fn api_test_addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    #[test]
+    fn ui_automation_constructor_failure_stops_before_every_writer_continuation() {
+        let temp = tempfile::tempdir().unwrap();
+        let sentinel = temp.path().join("sentinel.bin");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let writer_calls = AtomicUsize::new(0);
+
+        let result = super::construct_ui_automation_state_before_writer(
+            || Err::<(), _>("automation_session_stale"),
+            || {
+                writer_calls.fetch_add(1, Ordering::SeqCst);
+                std::fs::write(temp.path().join("app.log"), b"unexpected").unwrap();
+            },
+        );
+
+        assert_eq!(result, Err("automation_session_stale"));
+        assert_eq!(writer_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"unchanged");
+        assert!(!temp.path().join("app.log").exists());
+        assert!(!temp.path().join("ui-automation").exists());
     }
 
     // Stage E (#1064) shutdown-decision conformance (plan section 10.4 items

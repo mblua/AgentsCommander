@@ -986,8 +986,11 @@ agentscommander_lib::testability::ui_automation -> agentscommander_lib::config
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::daemon_pid
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::settings
+agentscommander_lib::testability::ui_automation -> agentscommander_lib::config::teams
+agentscommander_lib::testability::ui_automation -> agentscommander_lib::pty::manager
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::resource_monitor
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::resource_monitor::watchdog
+agentscommander_lib::testability::ui_automation -> agentscommander_lib::session::manager
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::session::selection
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::shutdown
 agentscommander_lib::testability::ui_automation -> agentscommander_lib::testability::window_placement
