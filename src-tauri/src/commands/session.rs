@@ -747,23 +747,6 @@ pub(crate) fn resolve_claude_projects_dir(
             .unwrap_or(false)
     }
 
-    fn resolve_token_to_file(token: &str) -> Option<PathBuf> {
-        let p = Path::new(token);
-        // Direct path (absolute, or relative with separator) — use as-is if
-        // it exists. Avoids consulting %PATH% when the user already gave us
-        // a full location.
-        let has_separator = token.contains('/') || token.contains('\\');
-        if has_separator || p.is_absolute() {
-            return if p.is_file() {
-                Some(p.to_path_buf())
-            } else {
-                None
-            };
-        }
-        // Bare basename — defer to %PATH% + PATHEXT (Windows) via `which`.
-        which::which(token).ok()
-    }
-
     // Find the first token whose basename starts with "claude" across
     // shell + shell_args, splitting each arg on whitespace so cmd-wrapped
     // strings ("git pull && claude-mb -x") are also covered.
@@ -789,7 +772,7 @@ pub(crate) fn resolve_claude_projects_dir(
 
     // Non-default name (e.g. `claude-mb`). Try to resolve to an actual file
     // and parse it for a CLAUDE_CONFIG_DIR override.
-    if let Some(file) = resolve_token_to_file(&claude_token) {
+    if let Some(file) = crate::config::agent_command::resolve_program(&claude_token) {
         if looks_like_wrapper_extension(&file) {
             if let Some(custom_base) = parse_config_dir_from_wrapper(&file) {
                 return Some(custom_base.join("projects").join(&mangled));
