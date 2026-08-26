@@ -142,7 +142,10 @@ fn strip_ansi_and_controls(line: &str) -> String {
                     break;
                 }
             }
-            // OSC: everything up to and including BEL or `ESC \`.
+            // OSC: everything up to and including BEL or the exact pair `ESC \`
+            // (ST). An `ESC` followed by anything else is OSC content, so the
+            // parser stays inside the sequence; it must not consume that next
+            // character either, or it would eat the `ESC` of a later ST pair.
             Some(']') => {
                 let mut terminated = false;
                 while let Some(c) = chars.next() {
@@ -150,10 +153,8 @@ fn strip_ansi_and_controls(line: &str) -> String {
                         terminated = true;
                         break;
                     }
-                    if c == '\u{1b}' {
-                        if chars.peek() == Some(&'\\') {
-                            chars.next();
-                        }
+                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
                         terminated = true;
                         break;
                     }
@@ -684,6 +685,38 @@ mod tests {
         assert_eq!(first_text_line("\r\n  x  \r\n").as_deref(), Some("x"));
         assert_eq!(first_text_line("\x1b[?25l\n"), None);
         assert_eq!(first_text_line(""), None);
+    }
+
+    /// #1551 - an OSC sequence ends ONLY at BEL or at the exact pair `ESC \` (ST).
+    /// An `ESC` followed by anything else is OSC content: the parser stays inside
+    /// the sequence and keeps discarding, so malformed or adversarial CLI output
+    /// cannot leak sequence bytes into the version token or the diagnostic.
+    #[test]
+    fn osc_ends_only_at_bel_or_st() {
+        // ESC ] foo ESC X bar BEL 1.2.3 -> the whole OSC is dropped.
+        let esc_not_st = "\x1b]foo\x1bXbar\x071.2.3";
+        assert_eq!(strip_ansi_and_controls(esc_not_st), "1.2.3");
+        assert_eq!(first_text_line(esc_not_st).as_deref(), Some("1.2.3"));
+        assert_eq!(parse_version_token(esc_not_st).as_deref(), Some("1.2.3"));
+        assert_eq!(sanitize_detail(esc_not_st.as_bytes()), "1.2.3");
+
+        // ST terminates it, and the text after ST survives.
+        let st = "\x1b]0;window title\x1b\\2.0.1";
+        assert_eq!(strip_ansi_and_controls(st), "2.0.1");
+        assert_eq!(parse_version_token(st).as_deref(), Some("2.0.1"));
+
+        // A non-ST ESC inside OSC never consumes the ESC of a later ST pair.
+        assert_eq!(strip_ansi_and_controls("\x1b]a\x1b\x1b\\3.1.4"), "3.1.4");
+
+        // BEL still terminates, as before.
+        assert_eq!(strip_ansi_and_controls("\x1b]0;title\x074.5.6"), "4.5.6");
+
+        // An OSC that never terminates still swallows the rest of the line.
+        let unterminated = "\x1b]never ends 9.9.9";
+        assert_eq!(strip_ansi_and_controls(unterminated), "");
+        assert_eq!(first_text_line(unterminated), None);
+        assert_eq!(parse_version_token(unterminated), None);
+        assert_eq!(sanitize_detail(unterminated.as_bytes()), "");
     }
 
     #[test]
