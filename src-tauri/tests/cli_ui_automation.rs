@@ -178,6 +178,55 @@ fn write_session(bin: &Path, pid: u32, ready_windows: &[&str]) {
     .unwrap();
 }
 
+fn spawn_fake_responder<F>(bin: &Path, make_response: F) -> thread::JoinHandle<()>
+where
+    F: Fn(&Value) -> Value + Send + 'static,
+{
+    let automation_dir = config_dir_for(bin).join("ui-automation");
+    let requests_dir = automation_dir.join("requests");
+    let responses_dir = automation_dir.join("responses");
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let entries: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| {
+                    path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                        && !path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.ends_with(".inflight.json"))
+                })
+                .collect();
+            if let Some(path) = entries.first() {
+                let request: Value =
+                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                let request_id = request["requestId"].as_str().unwrap();
+                let response = make_response(&request);
+                std::fs::write(
+                    responses_dir.join(format!("{request_id}.json")),
+                    serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for request");
+            thread::sleep(Duration::from_millis(10));
+        }
+    })
+}
+
+fn assert_bounded_terminal_output(stdout: &str, stderr: &str) -> Value {
+    assert_empty_output("stderr", stderr);
+    assert!(
+        stdout.len() < 4096,
+        "terminal stdout should stay below 4096 bytes, got {}",
+        stdout.len()
+    );
+    first_json(stdout)
+}
+
 fn write_daemon_pid(bin: &Path, pid: u32) {
     let config_dir = config_dir_for(bin);
     std::fs::create_dir_all(&config_dir).unwrap();
@@ -235,6 +284,252 @@ fn normal_binary_refuses_ui_context_click_with_json_only_stdout() {
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+#[test]
+fn normal_binary_refuses_ui_terminal_with_bounded_json_and_silent_stderr() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-terminal-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-terminal",
+            "--window",
+            "main",
+            "--session-id",
+            "session-a",
+            "query",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    let parsed = assert_bounded_terminal_output(&stdout, &stderr);
+    assert_eq!(parsed["ok"], false);
+    assert_eq!(parsed["error"], "refusing_non_testeable_binary");
+}
+
+#[test]
+fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-terminal-fake-response");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let expected_target = json!({
+        "sessionId": "session-a",
+        "baseY": 83,
+        "viewportY": 0,
+        "length": 122,
+        "cols": 122,
+        "rows": 39,
+        "type": "normal",
+        "atBottom": false,
+        "layoutPulse": {
+            "version": 1,
+            "requestId": 7,
+            "sessionId": "session-a",
+            "attachGeneration": 3,
+            "status": "completed",
+            "reason": "completed",
+            "original": {
+                "sidebarWidth": 440,
+                "hostWidth": 900,
+                "cols": 120,
+                "rows": 39,
+                "baselineObservedEpoch": null,
+                "completedObserverAck": null
+            },
+            "expanded": {
+                "sidebarWidth": 424,
+                "hostWidth": 916,
+                "cols": 122,
+                "rows": 39,
+                "baselineObservedEpoch": 10,
+                "completedObserverAck": {
+                    "epoch": 11,
+                    "first": { "hostWidth": 916, "cols": 122, "rows": 39 },
+                    "second": { "hostWidth": 916, "cols": 122, "rows": 39 }
+                }
+            },
+            "restored": {
+                "sidebarWidth": 440,
+                "hostWidth": 900,
+                "cols": 120,
+                "rows": 39,
+                "baselineObservedEpoch": 12,
+                "completedObserverAck": {
+                    "epoch": 13,
+                    "first": { "hostWidth": 900, "cols": 120, "rows": 39 },
+                    "second": { "hostWidth": 900, "cols": 120, "rows": 39 }
+                }
+            },
+            "dwellMs": 208,
+            "settingsWritesDelta": 0
+        }
+    });
+    let responder_target = expected_target.clone();
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        assert_eq!(request["action"], "terminal");
+        assert_eq!(request["selector"], "terminal.session.session-a");
+        assert_eq!(request["value"], "top");
+        assert!(request["expiresAtUnixMs"].as_i64().is_some());
+        json!({
+            "ok": true,
+            "requestId": request["requestId"],
+            "window": "main",
+            "action": "terminal",
+            "selector": "terminal.session.session-a",
+            "target": responder_target.clone()
+        })
+    });
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-terminal",
+            "--window",
+            "main",
+            "--session-id",
+            "session-a",
+            "--timeout-ms",
+            "3000",
+            "top",
+        ],
+    );
+    responder.join().unwrap();
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let parsed = assert_bounded_terminal_output(&stdout, &stderr);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["target"], expected_target);
+}
+
+#[test]
+fn ui_terminal_invalid_session_and_operation_create_no_request_file() {
+    let _guard = test_lock();
+    for (label, session_id, operation, expected) in [
+        ("session", "", "query", "invalid_terminal_session_id"),
+        (
+            "operation",
+            "session-a",
+            "line:01",
+            "invalid_terminal_operation",
+        ),
+    ] {
+        let tmp = Tmp::new(&format!("ui-terminal-invalid-{label}"));
+        let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+        let (code, stdout, stderr) = run(
+            &bin,
+            &[
+                "ui-terminal",
+                "--window",
+                "main",
+                "--session-id",
+                session_id,
+                operation,
+            ],
+        );
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        let parsed = assert_bounded_terminal_output(&stdout, &stderr);
+        assert_eq!(parsed["error"], expected);
+
+        let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
+        let request_count = std::fs::read_dir(&requests_dir)
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or(0);
+        assert_eq!(request_count, 0, "invalid {label} created a request file");
+    }
+}
+
+#[test]
+fn ui_terminal_passes_frontend_failures_through_as_bounded_json() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    for error in [
+        "target_hidden",
+        "terminal_target_mismatch",
+        "terminal_entry_stale",
+        "terminal_session_not_visible",
+        "terminal_controller_unavailable",
+    ] {
+        let tmp = Tmp::new(&format!("ui-terminal-{error}"));
+        let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+        write_session(&bin, pid, &["main"]);
+        let error_owned = error.to_string();
+        let responder = spawn_fake_responder(&bin, move |request| {
+            assert_eq!(request["action"], "terminal");
+            json!({
+                "ok": false,
+                "requestId": request["requestId"],
+                "window": "main",
+                "action": "terminal",
+                "selector": "terminal.session.session-a",
+                "error": error_owned,
+                "message": "terminal request failed"
+            })
+        });
+
+        let (code, stdout, stderr) = run(
+            &bin,
+            &[
+                "ui-terminal",
+                "--session-id",
+                "session-a",
+                "--timeout-ms",
+                "3000",
+                "query",
+            ],
+        );
+        responder.join().unwrap();
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        let parsed = assert_bounded_terminal_output(&stdout, &stderr);
+        assert_eq!(parsed["error"], error);
+        assert_eq!(parsed["action"], "terminal");
+        assert_eq!(parsed["selector"], "terminal.session.session-a");
+    }
+}
+
+#[test]
+fn ui_terminal_timeout_is_bounded_and_cleans_the_request() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new("ui-terminal-timeout");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
+
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-terminal",
+            "--session-id",
+            "session-a",
+            "--timeout-ms",
+            "100",
+            "query",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    let parsed = assert_bounded_terminal_output(&stdout, &stderr);
+    assert_eq!(parsed["error"], "timeout");
+    assert_eq!(parsed["phase"], "awaiting_gui_poller");
+    assert!(
+        std::fs::read_dir(requests_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .next()
+            .is_none(),
+        "terminal timeout should remove its request file"
+    );
 }
 
 #[test]

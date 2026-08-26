@@ -197,6 +197,9 @@ pub enum Commands {
     /// Query a WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
+    /// Query or scroll a visible xterm through the test-only automation bridge
+    #[command(hide = true)]
+    UiTerminal(crate::testability::ui_automation::UiTerminalArgs),
     /// Click a WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
@@ -358,6 +361,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::TestReset(args) => crate::testability::reset::execute(args),
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
+        Commands::UiTerminal(args) => crate::testability::ui_automation::execute_terminal(args),
         Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
         Commands::UiContextClick(args) => {
             crate::testability::ui_automation::execute_context_click(args)
@@ -450,6 +454,7 @@ mod tests {
             "test-reset",
             "window-info",
             "ui-query",
+            "ui-terminal",
             "ui-click",
             "ui-context-click",
             "ui-hover",
@@ -511,13 +516,26 @@ mod tests {
     }
 
     #[test]
-    fn hidden_internal_verb_still_parses_by_name() {
+    fn hidden_internal_verbs_still_parse_by_name() {
         use clap::Parser;
         let parsed = Cli::try_parse_from(["agentscommander", "window-info"])
             .expect("hidden `window-info` verb must still parse by name");
         assert!(
             matches!(parsed.command, Some(Commands::WindowInfo(_))),
             "expected WindowInfo subcommand"
+        );
+
+        let parsed = Cli::try_parse_from([
+            "agentscommander",
+            "ui-terminal",
+            "--session-id",
+            "session-a",
+            "top",
+        ])
+        .expect("hidden `ui-terminal` verb must still parse by name");
+        assert!(
+            matches!(parsed.command, Some(Commands::UiTerminal(_))),
+            "expected UiTerminal subcommand"
         );
     }
 
