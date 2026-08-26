@@ -2951,6 +2951,7 @@ pub fn run(
             commands::config::get_update_status,
             commands::config::get_agent_update_status,
             commands::config::agent_update_answer,
+            commands::config::get_agent_update_overview,
             commands::repos::search_repos,
             commands::repos::git_remote_url,
             commands::telegram::telegram_attach,

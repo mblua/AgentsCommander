@@ -122,7 +122,73 @@ pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Valu
     }
 }
 
+/// #1551 - agent-update surface parity. These arms read gate/catalog state or answer the
+/// startup prompt; none touches sessions or the selection coordinator, and the prompt
+/// phase runs WHILE restore is parked on the gate (`lib.rs`), so they must stay
+/// reachable while `RestoreInProgress` is set: otherwise a browser client can never answer
+/// the prompt and never observes the pass. Every other command keeps the guard.
+async fn dispatch_agent_update_command(
+    state: &WsState,
+    cmd: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    match cmd {
+        "get_agent_update_status" => Some(
+            crate::commands::config::agent_update_status_inner(&state.app_handle).and_then(
+                |status| {
+                    serde_json::to_value(status)
+                        .map_err(|e| format!("Failed to serialize agent update status: {e}"))
+                },
+            ),
+        ),
+        "agent_update_answer" => {
+            let parsed = require_str(args, "command").and_then(|command| {
+                require_json::<bool>(args, "enabled").map(|enabled| (command, enabled))
+            });
+            Some(match parsed {
+                Ok((command, enabled)) => crate::commands::config::agent_update_answer_inner(
+                    &state.app_handle,
+                    &state.settings,
+                    command,
+                    enabled,
+                )
+                .await
+                .map(|applied| json!(applied)),
+                Err(e) => Err(e),
+            })
+        }
+        "get_agent_update_overview" => Some(
+            match crate::commands::config::agent_update_overview_inner(
+                &state.app_handle,
+                &state.settings,
+            )
+            .await
+            {
+                Ok(rows) => serde_json::to_value(rows)
+                    .map_err(|e| format!("Failed to serialize agent update overview: {e}")),
+                Err(e) => Err(e),
+            },
+        ),
+        "get_coding_agent_catalog" => {
+            let catalog =
+                crate::commands::config::coding_agent_catalog_inner(&state.settings).await;
+            Some(
+                serde_json::to_value(catalog)
+                    .map_err(|e| format!("Failed to serialize coding agent catalog: {e}")),
+            )
+        }
+        "list_reseedable_agent_commands" => Some(
+            serde_json::to_value(crate::commands::config::list_reseedable_agent_commands())
+                .map_err(|e| format!("Failed to serialize reseedable commands: {e}")),
+        ),
+        _ => None,
+    }
+}
+
 async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Value, String> {
+    if let Some(result) = dispatch_agent_update_command(state, cmd, args).await {
+        return result;
+    }
     if state
         .app_handle
         .try_state::<Arc<crate::RestoreInProgress>>()
@@ -1687,5 +1753,246 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // #1551 - agent-update route parity
+    // ---------------------------------------------------------------------
+
+    /// Like `ws_state_for`, plus the managed state the agent-update arms read:
+    /// the restore flag, the startup gate (finished iff `pass_finished`) and the
+    /// install cache. Returns the gate so a test can seed prompts.
+    fn ws_state_with_agent_update(
+        settings: AppSettings,
+        restore_in_progress: bool,
+        pass_finished: bool,
+    ) -> (
+        WsState,
+        tokio::sync::mpsc::Receiver<WsOutMsg>,
+        Arc<crate::agent_update::AgentUpdateGate>,
+    ) {
+        let gate = Arc::new(crate::agent_update::AgentUpdateGate::new());
+        if pass_finished {
+            gate.mark_finished(vec![]);
+        }
+        let cache = Arc::new(crate::agent_version::AgentInstallCache::new());
+        let broadcaster = WsBroadcaster::new();
+        let receiver = broadcaster.subscribe();
+        let app = crate::test_support::test_builder()
+            .manage(crate::session::warnings::new_session_warning_state())
+            .manage(Arc::new(crate::RestoreInProgress(
+                std::sync::atomic::AtomicBool::new(restore_in_progress),
+            )))
+            .manage(Arc::clone(&gate))
+            .manage(cache)
+            // The SAME broadcaster the `WsState` carries (clones share senders),
+            // so `emit_all` reaches this test's receiver.
+            .manage(broadcaster.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app");
+        let app_handle = app.handle().clone();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
+        let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+            None,
+        )));
+        let state = WsState {
+            session_mgr,
+            pty_mgr,
+            settings: Arc::new(tokio::sync::RwLock::new(settings)),
+            broadcaster,
+            app_handle,
+        };
+        (state, receiver, gate)
+    }
+
+    #[tokio::test]
+    async fn agent_update_routes_bypass_restore_guard() {
+        let (state, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), true, false);
+
+        let busy = dispatch_inner(&state, "list_sessions", &json!({})).await;
+        assert_eq!(busy, Err("selectionCoordinatorBusy".to_string()));
+
+        let status = dispatch_inner(&state, "get_agent_update_status", &json!({}))
+            .await
+            .expect("status route");
+        assert_eq!(status["inProgress"], false);
+        assert_eq!(status["running"], json!([]));
+        assert_eq!(status["results"], json!([]));
+        assert_eq!(status["answered"], json!({}));
+        assert_eq!(status["nodes"], json!([]));
+
+        let catalog = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
+            .await
+            .expect("catalog route");
+        assert!(catalog.as_array().is_some_and(|rows| !rows.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn agent_update_answer_route_rejects_unprompted_command() {
+        let (state, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), false, false);
+        let error = dispatch_inner(
+            &state,
+            "agent_update_answer",
+            &json!({ "command": "claude", "enabled": true }),
+        )
+        .await
+        .expect_err("an unprompted command must be rejected");
+        assert!(error.contains("was not prompted"), "unexpected: {error}");
+    }
+
+    #[tokio::test]
+    async fn agent_update_answer_route_rejects_missing_args() {
+        let (state, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), false, false);
+        assert!(dispatch_inner(&state, "agent_update_answer", &json!({}))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_update_answer_route_returns_false_for_an_already_answered_prompt() {
+        let (state, _rx, gate) = ws_state_with_agent_update(AppSettings::default(), false, false);
+        let _rx_prompt = gate.register_prompt("claude", "Claude");
+        // The claim is dropped: the closure emission is not under test here.
+        let _claim = gate.claim_answer("claude", true);
+
+        let applied = dispatch_inner(
+            &state,
+            "agent_update_answer",
+            &json!({ "command": "claude", "enabled": false }),
+        )
+        .await
+        .expect("answer route");
+        assert_eq!(applied, json!(false));
+
+        let status = dispatch_inner(&state, "get_agent_update_status", &json!({}))
+            .await
+            .expect("status route");
+        assert_eq!(status["answered"], json!({ "claude": true }));
+        assert_eq!(status["prompt"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn get_coding_agent_catalog_route_returns_backfilled_catalog() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
+
+        let catalog = dispatch_inner(&state, "get_coding_agent_catalog", &json!({}))
+            .await
+            .expect("catalog route");
+        let rows = catalog.as_array().expect("catalog array");
+        assert_eq!(rows.len(), 7);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| !row["updateCommands"]
+                    .as_array()
+                    .expect("updateCommands")
+                    .is_empty())
+                .count(),
+            6
+        );
+        let cursor = rows
+            .iter()
+            .find(|row| row["command"] == "agent")
+            .expect("cursor row");
+        assert_eq!(cursor["updateCommands"], json!([]));
+
+        let reseedable = dispatch_inner(&state, "list_reseedable_agent_commands", &json!({}))
+            .await
+            .expect("reseedable route");
+        assert_eq!(
+            reseedable,
+            serde_json::to_value(crate::commands::config::list_reseedable_agent_commands())
+                .expect("reseedable json")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_agent_update_overview_route_is_instant_and_probes_in_background() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [
+                    {
+                        "key": "bob",
+                        "label": "Bob",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "bob-1551-missing",
+                        "updateCommands": ["bob up"]
+                    },
+                    {
+                        "key": "nob",
+                        "label": "Nob",
+                        "description": "",
+                        "color": "#000000",
+                        "command": "nob-1551-missing",
+                        "updateCommands": []
+                    }
+                ]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, mut rx, _gate) = ws_state_with_agent_update(settings, false, true);
+
+        let rows = dispatch_inner(&state, "get_agent_update_overview", &json!({}))
+            .await
+            .expect("overview route");
+        let rows = rows.as_array().expect("rows").clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["command"], "bob-1551-missing");
+        assert_eq!(rows[0]["install"]["status"], "checking");
+        assert_eq!(rows[0]["install"]["seq"], 0);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let rows = dispatch_inner(&state, "get_agent_update_overview", &json!({}))
+                .await
+                .expect("overview route");
+            let rows = rows.as_array().expect("rows").clone();
+            if rows[0]["install"]["status"] == "missing" {
+                assert_eq!(rows[0]["install"]["seq"], 1);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the background probe never committed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let install_frame = loop {
+            if let Ok(WsOutMsg::Text(text)) = rx.try_recv() {
+                let frame: Value = serde_json::from_str(&text).expect("json frame");
+                if frame["event"] == "agent_install_state_changed" {
+                    break frame;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no agent_install_state_changed frame arrived"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert_eq!(install_frame["payload"]["command"], "bob-1551-missing");
     }
 }
