@@ -18,6 +18,7 @@ pub mod telegram;
 pub mod test_support;
 pub mod testability;
 pub mod agent_update;
+pub mod agent_version;
 pub mod update_check;
 pub mod voice;
 pub mod web;
@@ -2041,6 +2042,11 @@ pub fn run(
     let agent_update_gate: Arc<agent_update::AgentUpdateGate> =
         Arc::new(agent_update::AgentUpdateGate::new());
     let agent_update_gate_for_setup = Arc::clone(&agent_update_gate);
+    // #1551 - process-lifetime install-state cache for the coding-agent version
+    // probes (Settings overview, the pass's pre-update probes and the post-pass
+    // re-probes all schedule through it).
+    let agent_install_cache: Arc<crate::agent_version::AgentInstallCache> =
+        Arc::new(crate::agent_version::AgentInstallCache::new());
 
     let shutdown_for_setup = shutdown_signal.clone();
     let shutdown_for_exit = shutdown_signal.clone();
@@ -2101,6 +2107,7 @@ pub fn run(
         .manage(config_seed_lock)
         .manage(update_check_state)
         .manage(agent_update_gate)
+        .manage(agent_install_cache)
         .manage(ui_automation_state)
         .manage(terminal_snapshot_state)
         .manage(shutdown_signal)
@@ -2944,6 +2951,7 @@ pub fn run(
             commands::config::get_update_status,
             commands::config::get_agent_update_status,
             commands::config::agent_update_answer,
+            commands::config::get_agent_update_overview,
             commands::repos::search_repos,
             commands::repos::git_remote_url,
             commands::telegram::telegram_attach,

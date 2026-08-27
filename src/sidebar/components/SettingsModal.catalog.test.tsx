@@ -120,4 +120,36 @@ describe("SettingsModal coding-agent quick-add row (#769)", () => {
       rendered.cleanup();
     }
   });
+
+  it("shows the Auto-update error note when the overview is rejected while the presets still fall back (#1551)", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", baseSettings());
+    fake.resolve("get_web_server_status", false);
+    fake.reject(CATALOG_CMD, "config-dir failure");
+    fake.reject("get_agent_update_overview", "overview failure");
+
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    try {
+      const errorNote = () =>
+        rendered.root.querySelector<HTMLElement>('[data-ac-testid="settings.autoUpdate.error"]');
+      await waitFor(() => expect(errorNote()).toBeTruthy());
+      expect(errorNote()!.textContent).toContain("Auto-update status unavailable: ");
+      expect(errorNote()!.textContent).toContain("overview failure");
+      // never an empty table, never the loading note
+      expect(rendered.root.querySelector('[data-ac-testid="settings.autoUpdate.list"]')).toBeNull();
+      expect(rendered.root.querySelector('[data-ac-testid="settings.autoUpdate.loading"]')).toBeNull();
+      // the two surfaces are independent: the preset row still falls back to the built-ins
+      await waitFor(() => expect(presetBtn(rendered.root, "opencode")).toBeTruthy());
+      for (const d of FALLBACK_CODING_AGENTS) {
+        expect(presetBtn(rendered.root, d.key)).toBeTruthy();
+      }
+      expect(fake.listensFor("agent_install_state_changed")).toHaveLength(1);
+      expect(fake.listensFor("agent_updates_finished")).toHaveLength(1);
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

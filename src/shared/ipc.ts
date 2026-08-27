@@ -30,6 +30,10 @@ import type {
   AgentUpdateResult,
   AgentUpdateStatus,
   AgentUpdatePrompt,
+  AgentUpdateCommandRef,
+  AgentUpdateNode,
+  AgentUpdateOverviewRow,
+  AgentInstallStateChanged,
   CodingAgentEnv,
   CodingAgentDefinition,
   ReseedResult,
@@ -416,6 +420,9 @@ export const AgentUpdateAPI = {
     transport.invoke<AgentUpdateStatus | null>("get_agent_update_status"),
   answer: (command: string, enabled: boolean) =>
     transport.invoke<boolean>("agent_update_answer", { command, enabled }),
+  /** #1551 - instant: the backend schedules the install probes in the background, only once the startup pass is finished. */
+  getOverview: () =>
+    transport.invoke<AgentUpdateOverviewRow[]>("get_agent_update_overview"),
 };
 
 export const ReposAPI = {
@@ -1211,9 +1218,14 @@ export function onNpmUpdateAvailable(
   );
 }
 
-export function onAgentUpdatesStarted(callback: () => void): Promise<UnlistenFn> {
-  // Rust emits a unit payload (serializes to null).
-  return transport.listen<null>("agent_updates_started", () => callback());
+/** #1551 round 5 - the pass started; the payload carries its nodes in pass order (`null` from an older backend's unit payload). */
+export function onAgentUpdatesStarted(
+  callback: (payload: { nodes: AgentUpdateNode[] } | null) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ nodes: AgentUpdateNode[] } | null>(
+    "agent_updates_started",
+    (payload) => callback(payload ?? null)
+  );
 }
 
 export function onAgentUpdatePrompt(
@@ -1224,9 +1236,16 @@ export function onAgentUpdatePrompt(
   );
 }
 
-/** The backend timed the prompt out (no answer within 60s): clear the modal. */
-export function onAgentUpdatePromptClosed(callback: () => void): Promise<UnlistenFn> {
-  return transport.listen<null>("agent_update_prompt_closed", () => callback());
+/** A prompt stopped being pending (answered on any surface, or timed out after 60s).
+ * #1551 - the payload names the closed prompt so a client clears only that one
+ * (`null` when an older backend still sends its unit payload). */
+export function onAgentUpdatePromptClosed(
+  callback: (closed: AgentUpdateCommandRef | null) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCommandRef | null>(
+    "agent_update_prompt_closed",
+    (payload) => callback(payload ?? null)
+  );
 }
 
 export function onAgentUpdatesFinished(
@@ -1234,6 +1253,43 @@ export function onAgentUpdatesFinished(
 ): Promise<UnlistenFn> {
   return transport.listen<{ results: AgentUpdateResult[] }>(
     "agent_updates_finished",
+    (payload) => callback(payload)
+  );
+}
+
+/** #1551 round 5 - a command's update sequence started; the payload is its pass node with `installBefore` filled. */
+export function onAgentUpdateCommandStarted(
+  callback: (node: AgentUpdateNode) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateNode>("agent_update_command_started", (node) =>
+    callback(node)
+  );
+}
+
+/** #1551 round 5 - a prompted target left the pass (its prompt was answered No, or expired). */
+export function onAgentUpdateCommandSkipped(
+  callback: (ref: AgentUpdateCommandRef) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateCommandRef>("agent_update_command_skipped", (ref) =>
+    callback(ref)
+  );
+}
+
+/** #1551 - a command's update sequence ended (ok, failed, or panicked). */
+export function onAgentUpdateCommandFinished(
+  callback: (result: AgentUpdateResult) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentUpdateResult>("agent_update_command_finished", (result) =>
+    callback(result)
+  );
+}
+
+/** #1551 - a probe result was committed to the backend's install cache; carries that state's `seq`. */
+export function onAgentInstallStateChanged(
+  callback: (payload: AgentInstallStateChanged) => void
+): Promise<UnlistenFn> {
+  return transport.listen<AgentInstallStateChanged>(
+    "agent_install_state_changed",
     (payload) => callback(payload)
   );
 }

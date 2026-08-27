@@ -77,7 +77,7 @@ A minimal `settings.json`:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agents` | `AgentConfig[]` | See example | The dropdown of available coding agents. |
-| `agentAutoUpdateByCommand` | object | `{}` | Per-coding-agent-command answer to the startup update prompt. Keys are coding-agent commands (for example `claude`, `codex`); `true` means AC updates that command at startup without asking again, `false` means it never asks again and never updates. An absent key means AC asks on the next startup. See [Coding agent auto-update](../features/agent-auto-update.md). |
+| `agentAutoUpdateByCommand` | object | `{}` | Per-coding-agent-command answer to the startup update prompt. Keys are coding-agent commands (for example `claude`, `codex`); `true` means AC updates that command at startup without asking again, `false` means it never asks again and never updates. An absent key means AC asks on the next startup. See [Coding agent auto-update](../features/agent-auto-update.md). Settings > Coding Agents shows the current value per update-capable agent in the read-only Auto-update table. The startup question writes this map once per coding agent per start: the first answer, from any window, is the one stored. |
 
 Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
 

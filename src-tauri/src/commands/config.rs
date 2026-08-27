@@ -506,8 +506,15 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
 pub async fn get_coding_agent_catalog(
     settings: State<'_, SettingsState>,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
+    Ok(coding_agent_catalog_inner(settings.inner()).await)
+}
+
+/// #1551 - shared by the Tauri command and the WebSocket router.
+pub async fn coding_agent_catalog_inner(
+    settings: &SettingsState,
+) -> Vec<crate::config::coding_agents_catalog::CodingAgentDefinition> {
     let settings = settings.read().await;
-    Ok(crate::config::coding_agents_catalog::load_catalog_for_settings(&settings))
+    crate::config::coding_agents_catalog::load_catalog_for_settings(&settings)
 }
 
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
@@ -2425,31 +2432,81 @@ pub async fn get_agent_update_status(
     Ok(gate.snapshot())
 }
 
-/// #1327 - the user answered the startup prompt for one command. Persists the
-/// answer FIRST (so it is never asked again even if resolution fails), then
-/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
-/// accepted the answer THIS boot (update will run now); Ok(false) when the
-/// prompt had already closed OR the receiver was dropped by the prompt timeout
-/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
-/// nothing this boot; the overlay shows the conditional info toast). Unknown
-/// commands are rejected.
+/// #1327/#1551 - the user answered the startup prompt for one command, from any
+/// surface. The gate's serial section classifies, persists, claims the pending
+/// prompt, announces `agent_update_prompt_closed` to every surface and only then
+/// releases the prompt loop. Returns Ok(true) ONLY when THIS call resolved the
+/// pending prompt (its choice was persisted and this boot acts on it); Ok(false)
+/// when the prompt had already expired (persisted for future boots, this boot
+/// unaffected) or an answer was already recorded this boot (nothing persisted,
+/// the earlier answer stands). Unknown commands are rejected.
 #[tauri::command]
 pub async fn agent_update_answer(
+    app: AppHandle,
     settings: State<'_, SettingsState>,
-    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
     command: String,
     enabled: bool,
 ) -> Result<bool, String> {
-    if !gate.was_prompted(&command) {
-        return Err(format!("agent_update_answer: '{command}' was not prompted this boot"));
-    }
-    persist_narrow_settings_update(settings.inner(), |candidate| {
-        candidate
-            .agent_auto_update_by_command
-            .insert(command.clone(), enabled);
+    agent_update_answer_inner(&app, settings.inner(), command, enabled).await
+}
+
+/// #1551 - the managed startup gate, or a plain error string when an unmanaged
+/// (test) app asks for it, so a missing state never panics a command.
+fn managed_agent_update_gate(
+    app: &AppHandle,
+) -> Result<State<'_, Arc<crate::agent_update::AgentUpdateGate>>, String> {
+    tauri::Manager::try_state::<Arc<crate::agent_update::AgentUpdateGate>>(app)
+        .ok_or_else(|| "agent update gate is not managed".to_string())
+}
+
+/// #1551 - shared by the Tauri command and the WebSocket router. `try_state` so an
+/// unmanaged test app errors instead of panicking.
+pub fn agent_update_status_inner(
+    app: &AppHandle,
+) -> Result<crate::agent_update::AgentUpdateStatus, String> {
+    Ok(managed_agent_update_gate(app)?.snapshot())
+}
+
+/// #1551 - the only answer path: `agent_update::answer_prompt` with the existing
+/// narrow persist injected. Classification, persist, and settlement all happen
+/// inside the gate's serial section.
+pub async fn agent_update_answer_inner(
+    app: &AppHandle,
+    settings: &SettingsState,
+    command: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    let gate = managed_agent_update_gate(app)?;
+    crate::agent_update::answer_prompt(app, &gate, &command, enabled, || {
+        persist_narrow_settings_update(settings, |candidate| {
+            candidate
+                .agent_auto_update_by_command
+                .insert(command.clone(), enabled);
+        })
     })
-    .await?;
-    Ok(gate.resolve_answer(&command, enabled))
+    .await
+}
+
+/// #1551 - instant read of the Settings "Auto-update" table. Never awaits a probe;
+/// probes are scheduled in the background only once the startup pass is finished.
+pub async fn agent_update_overview_inner(
+    app: &AppHandle,
+    settings: &SettingsState,
+) -> Result<Vec<crate::agent_update::AgentUpdateOverviewRow>, String> {
+    let gate = managed_agent_update_gate(app)?;
+    let cache = tauri::Manager::try_state::<Arc<crate::agent_version::AgentInstallCache>>(app)
+        .ok_or_else(|| "agent install cache is not managed".to_string())?;
+    Ok(crate::agent_update::update_overview(app, settings, &gate, &cache).await)
+}
+
+/// #1551 - one row per update-capable catalog entry with its configured policy,
+/// installed version, and this boot's live state.
+#[tauri::command]
+pub async fn get_agent_update_overview(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<crate::agent_update::AgentUpdateOverviewRow>, String> {
+    agent_update_overview_inner(&app, settings.inner()).await
 }
 
 /// Fetch the Home screen Markdown source from the public docs URL.

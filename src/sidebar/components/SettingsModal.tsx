@@ -29,6 +29,7 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
+import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
@@ -3666,6 +3667,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 </button>
               </div>
             </div>
+
+            <AgentAutoUpdateStatusList
+              autoUpdateByCommand={() => settings.data?.agentAutoUpdateByCommand ?? {}}
+              registeredCommands={() => (settings.data?.agents ?? []).map((agent) => agent.command)}
+            />
 
             {renderAgentPresets()}
           </div>
