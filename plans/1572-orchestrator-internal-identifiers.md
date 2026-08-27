@@ -4,7 +4,9 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 1.
+Author: ac-architect-v3. Consensus round 2. Supersedes the round-1 candidate
+`09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
+`CHANGES_REQUIRED`. Section 15 maps every round-1 finding to the section that closes it.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -77,26 +79,50 @@ Two concepts, kept apart on purpose:
 
 ## 3. Evidence, measured at `147ad4ef` / `5ec1ad27`
 
-### 3.1 Baseline, and four corrections to the numbers in the issues
+### 3.1 Baseline, the unit of measure, and four corrections to the numbers in the issues
 
 Every "contains the word coordinator" count in #1570 and #1572 counts prose, comments and string
 literals along with identifiers. This phase renames identifiers, so the identifier count is the one
 that predicts the diff. Both were measured; both are reported.
 
-| Measure | Word count (any context) | Identifier count (literals and comments stripped) |
-| --- | --- | --- |
-| `src-tauri/src` files with a hit | 66 | 56 |
-| `src-tauri/tests` files with a hit | 9 | 6 |
-| `crates/` files with a hit | 5 | **0** |
-| `src/` (TS/TSX) files with a hit | 89 | 73 |
-| distinct Rust identifiers | n/a | 224 |
-| distinct TypeScript identifiers | n/a | 60 |
+**The unit of measure is stated once, here, because round 1 produced three different file counts
+from three correct measurements.** A file is counted in the **word** column if the case-insensitive
+substring `coordinator` occurs anywhere in it, including prose and literals. A file is counted in
+the **identifier** column if `coordinator` survives after every string literal, every character
+literal and every line and block comment is blanked out, i.e. if the file carries a `coordinator`
+*token in code*. A frozen wire-key member (`isCoordinator: true` in a fixture) is a token in code
+and therefore counts in the identifier column even though Rule K leaves it alone; that is why the
+identifier column is much larger than the set of files this plan edits. The blanking uses the same
+left-to-right alternation as the criterion-6 comparator of section 9.3, so the two measurements
+cannot disagree with each other.
+
+| Measure | Word count (`coordinator`, ci) | Identifier count (token in code) | Files this plan edits |
+| --- | --- | --- | --- |
+| `src-tauri/src` | 66 | 55 | 55 (54 in 6.3 + the file R1 renames) |
+| `src-tauri/tests` | 9 | 6 | 6 |
+| `crates/` | 5 | **0** | **0** |
+| `src/` (TS/TSX) | 89 | 73 | 34 (28 in 6.5 + the 6 files R2-R7 rename) |
+| distinct Rust identifiers | n/a | 224 | |
+| distinct TypeScript identifiers | n/a | 60 | |
+
+Two derived facts, both of which are load bearing and both of which are asserted, not assumed:
+
+- **The Rust file set of section 6.3 is provably complete.** The 55 files carrying a `coordinator`
+  token in code under `src-tauri/src` are exactly the 54 rows of section 6.3 plus
+  `config/coordinator_clocks.rs`, which appears in 6.2/6.1 instead because it is renamed. Set
+  equality, not just cardinality.
+- **The TypeScript file set of section 6.5 is provably complete.** Of the 73 TS/TSX files carrying a
+  `coordinator` token in code, 34 are in the tables. In the other 39, **every** occurrence is
+  property-shaped (preceded by `.`, or followed by `:` or `?:`), i.e. a frozen wire key under Rule K.
+  The sweep that establishes this is in section 5.5.
 
 Corrections:
 
-1. **`crates/` is untouched by this phase.** All 5 hits are string literals: the two reason-detail
-   strings at `crates/session-bridge/src/bin/agentscommander-api-helper.rs:681,684` and four
+1. **`crates/` is untouched by this phase.** Every hit is a string literal, on **10 lines** (the
+   round-1 candidate said "5 hits", which counted files, not lines): the two reason-detail
+   strings at `crates/session-bridge/src/bin/agentscommander-api-helper.rs:681,684` and eight
    `"project:wg-1-team/coordinator"` test fixture FQNs in
+   `crates/session-bridge/src/bin/agentscommander-api-helper.rs:2230`,
    `crates/session-bridge/tests/docker_bridge_e2e.rs:294`,
    `crates/session-bridge/tests/terminal_snapshot_helper_process.rs:19`,
    `crates/terminal-snapshot-renderer/src/json.rs:1053,1262,1292,1322` and
@@ -115,6 +141,10 @@ Corrections:
    only hit, so the file does not change) and `src/screenshot-overlay/App.test.tsx`. The web repo's
    `CoordinationDemo` / `CoordinationProof` are in scope by the issue's explicit enumeration, not by
    this rule.
+   This rule is also what reconciles the two file counts a reviewer will get: **69** files under
+   `src-tauri/src` match `coordinat`, **66** match `coordinator`; the difference is the three files
+   whose only hit is the geometry word. Likewise **91** TS/TSX files match `coordinat` and **89**
+   match `coordinator`. Both numbers are right; only the substring differs.
 4. **The issue's `module-arcs.txt` line list is correct but incomplete as a description.** The 14
    lines are 9, 327, 337, 398, 420, 465, 579-584, 900, 1024. The file is fully sorted, so renaming
    the module does not edit 14 lines in place: it moves them. Section 3.6 gives the exact post-state.
@@ -155,38 +185,65 @@ is **derived from the Rust identifier**. Renaming any of these members without a
 silently changes a persisted JSON key, an IPC payload key or a stored enum value, which is exactly
 what the issue puts out of scope and routes to phase 3.
 
-Every serde-derived member whose name contains `coordinat`, with the wire key it produces today:
+Every serde-derived member whose name contains `coordinat`, with the wire key it produces today, the
+owning type's serde derives, and **the existing test that reddens if that member's pin is omitted**.
+The last column is the honest answer to "what regression does this leave untested"; it is why
+section 9.1 adds a second test, and it is measured, not estimated.
 
-| File:line | Type | Member | Wire key produced today |
-| --- | --- | --- | --- |
-| `src-tauri/src/cli/team.rs:104` | `TeamListItem` | `coordinator` | `"coordinator"` |
-| `src-tauri/src/cli/team.rs:115` | `TeamCreateResult` | `coordinator` | `"coordinator"` |
-| `src-tauri/src/cli/team.rs:127` | `AddMemberResult` | `coordinator` | `"coordinator"` |
-| `src-tauri/src/commands/ac_discovery.rs:84` | `AcTeam` | `coordinator` | `"coordinator"` |
-| `src-tauri/src/commands/ac_discovery.rs:112` | `AcAgentReplica` | `is_coordinator` | `"isCoordinator"` |
-| `src-tauri/src/commands/entity_creation.rs:59` | `TeamConfigResult` | `coordinator` | `"coordinator"` |
-| `src-tauri/src/commands/loops.rs:30` | `LoopCreateRequest` | `busy_coordinator` | `"busyCoordinator"` |
-| `src-tauri/src/commands/loops.rs:45` | `LoopUpdateRequest` | `busy_coordinator` | `"busyCoordinator"` |
-| `src-tauri/src/config/agent_config.rs:95` | `AgentDarkFactory` | `is_coordinator_of` | `"isCoordinatorOf"` |
-| `src-tauri/src/config/loops.rs:25` | `LoopTargetKind` | `WorkgroupCoordinator` | `"workgroupCoordinator"` |
-| `src-tauri/src/config/loops.rs:98` | `LoopPolicy` | `busy_coordinator` | `"busyCoordinator"` |
-| `src-tauri/src/config/loops.rs:153` | `LoopAuditEntry` | `busy_coordinator_policy` | `"busyCoordinatorPolicy"` |
-| `src-tauri/src/config/loops.rs:169` | `AcLoopSummary` | `busy_coordinator` | `"busyCoordinator"` |
-| `src-tauri/src/config/sessions_persistence.rs:377` | `PersistedSession` | `is_coordinator` | `"isCoordinator"` |
-| `src-tauri/src/config/settings.rs:294` | `AppSettings` | `restore_coordinator_wake_state` | `"restoreCoordinatorWakeState"` |
-| `src-tauri/src/config/settings.rs:310` | `AppSettings` | `legacy_start_only_coordinators` | `"startOnlyCoordinators"` (already pinned) |
-| `src-tauri/src/config/settings.rs:527` | `AppSettings` | `coordinator_idle_badge_yellow_minutes` | `"coordinatorIdleBadgeYellowMinutes"` |
-| `src-tauri/src/config/settings.rs:529` | `AppSettings` | `coordinator_idle_badge_red_minutes` | `"coordinatorIdleBadgeRedMinutes"` |
-| `src-tauri/src/config/settings.rs:532` | `AppSettings` | `coordinator_auto_close_enabled` | `"coordinatorAutoCloseEnabled"` |
-| `src-tauri/src/config/settings.rs:534` | `AppSettings` | `coordinator_auto_close_minutes` | `"coordinatorAutoCloseMinutes"` |
-| `src-tauri/src/config/settings.rs:538` | `AppSettings` | `coordinator_auto_close_skip_telegram_assigned` | `"coordinatorAutoCloseSkipTelegramAssigned"` |
-| `src-tauri/src/config/settings.rs:542` | `AppSettings` | `coordinator_cascade_close_enabled` | `"coordinatorCascadeCloseEnabled"` |
-| `src-tauri/src/phone/types.rs:82` | `PtyInputReasonCode` | `SenderNotCoordinator` | `"sender_not_coordinator"` |
-| `src-tauri/src/phone/types.rs:85` | `PtyInputReasonCode` | `TargetIsCoordinator` | `"target_is_coordinator"` |
-| `src-tauri/src/pty/git_watcher.rs:416` | `CoordinatorChangedPayload` | `is_coordinator` | `"isCoordinator"` |
-| `src-tauri/src/resource_monitor/watchdog.rs:35` | `QuarantineRetryPath` | `Coordinator` | `"coordinator"` |
-| `src-tauri/src/session/session.rs:122` | `Session` | `is_coordinator` | `"isCoordinator"` |
-| `src-tauri/src/session/session.rs:298` | `SessionInfo` | `is_coordinator` | `"isCoordinator"` |
+| # | File:line | Type | Member | Wire key produced today | Derives | Existing tripwire for a missing pin |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `src-tauri/src/cli/team.rs:104` | `TeamListItem` | `coordinator` | `"coordinator"` | Ser | **none** |
+| 2 | `src-tauri/src/cli/team.rs:115` | `TeamCreateResult` | `coordinator` | `"coordinator"` | Ser | **none** |
+| 3 | `src-tauri/src/cli/team.rs:127` | `AddMemberResult` | `coordinator` | `"coordinator"` | Ser | **none** |
+| 4 | `src-tauri/src/commands/ac_discovery.rs:84` | `AcTeam` | `coordinator` | `"coordinator"` | Ser | **none** |
+| 5 | `src-tauri/src/commands/ac_discovery.rs:112` | `AcAgentReplica` | `is_coordinator` | `"isCoordinator"` | Ser | **none** |
+| 6 | `src-tauri/src/commands/entity_creation.rs:59` | `TeamConfigResult` | `coordinator` | `"coordinator"` | Ser+De | `tests/cli_workgroup_team.rs:525`, `:1342` |
+| 7 | `src-tauri/src/commands/loops.rs:30` | `LoopCreateRequest` | `busy_coordinator` | `"busyCoordinator"` | **De only** | **none** |
+| 8 | `src-tauri/src/commands/loops.rs:45` | `LoopUpdateRequest` | `busy_coordinator` | `"busyCoordinator"` | **De only** | **none** |
+| 9 | `src-tauri/src/config/agent_config.rs:95` | `AgentDarkFactory` | `is_coordinator_of` | `"isCoordinatorOf"` | Ser+De+Default, `skip_serializing_if` | **none**: the key occurs nowhere else in either repo |
+| 10 | `src-tauri/src/config/loops.rs:25` | `LoopTargetKind` | `WorkgroupCoordinator` | `"workgroupCoordinator"` | Ser+De | **none** in Rust (the only occurrence is the TS type alias `types.ts:1320`) |
+| 11 | `src-tauri/src/config/loops.rs:98` | `LoopPolicy` | `busy_coordinator` | `"busyCoordinator"` | Ser+De+Default | `config/loops.rs:753`, `tests/cli_loop.rs:181`, `:208` |
+| 12 | `src-tauri/src/config/loops.rs:153` | `LoopAuditEntry` | `busy_coordinator_policy` | `"busyCoordinatorPolicy"` | Ser+De | **none**: the key occurs nowhere else in either repo |
+| 13 | `src-tauri/src/config/loops.rs:169` | `AcLoopSummary` | `busy_coordinator` | `"busyCoordinator"` | Ser | `tests/cli_loop.rs:234` |
+| 14 | `src-tauri/src/config/sessions_persistence.rs:377` | `PersistedSession` | `is_coordinator` | `"isCoordinator"` | Ser+De+Default | **none** (see the `#[serde(default)]` note below) |
+| 15 | `src-tauri/src/config/settings.rs:294` | `AppSettings` | `restore_coordinator_wake_state` | `"restoreCoordinatorWakeState"` | Ser+De | `config/settings.rs:5374`, `:8282` |
+| 16 | `src-tauri/src/config/settings.rs:310` | `AppSettings` | `legacy_start_only_coordinators` | `"startOnlyCoordinators"` (**already pinned**, no new pin) | Ser+De | `config/settings.rs:8281` |
+| 17 | `src-tauri/src/config/settings.rs:527` | `AppSettings` | `coordinator_idle_badge_yellow_minutes` | `"coordinatorIdleBadgeYellowMinutes"` | Ser+De | **none** (see below) |
+| 18 | `src-tauri/src/config/settings.rs:529` | `AppSettings` | `coordinator_idle_badge_red_minutes` | `"coordinatorIdleBadgeRedMinutes"` | Ser+De | **none** (see below) |
+| 19 | `src-tauri/src/config/settings.rs:532` | `AppSettings` | `coordinator_auto_close_enabled` | `"coordinatorAutoCloseEnabled"` | Ser+De | **none** (see below) |
+| 20 | `src-tauri/src/config/settings.rs:534` | `AppSettings` | `coordinator_auto_close_minutes` | `"coordinatorAutoCloseMinutes"` | Ser+De | **none** (see below) |
+| 21 | `src-tauri/src/config/settings.rs:538` | `AppSettings` | `coordinator_auto_close_skip_telegram_assigned` | `"coordinatorAutoCloseSkipTelegramAssigned"` | Ser+De | `config/settings.rs:7076` |
+| 22 | `src-tauri/src/config/settings.rs:542` | `AppSettings` | `coordinator_cascade_close_enabled` | `"coordinatorCascadeCloseEnabled"` | Ser+De | **none**: the key occurs in no Rust file |
+| 23 | `src-tauri/src/phone/types.rs:82` | `PtyInputReasonCode` | `SenderNotCoordinator` | `"sender_not_coordinator"` | Ser+De | **none**: the 4 occurrences are hand-written `match` arms that never reach serde |
+| 24 | `src-tauri/src/phone/types.rs:85` | `PtyInputReasonCode` | `TargetIsCoordinator` | `"target_is_coordinator"` | Ser+De | **none**: same, hand-written arms only |
+| 25 | `src-tauri/src/pty/git_watcher.rs:416` | `CoordinatorChangedPayload` | `is_coordinator` | `"isCoordinator"` | Ser, `pub(crate)` | **none** |
+| 26 | `src-tauri/src/resource_monitor/watchdog.rs:35` | `QuarantineRetryPath` | `Coordinator` | `"coordinator"` | Ser, `pub(crate)` | **none** |
+| 27 | `src-tauri/src/session/session.rs:122` | `Session` | `is_coordinator` | `"isCoordinator"` | Ser+De | **none** |
+| 28 | `src-tauri/src/session/session.rs:298` | `SessionInfo` | `is_coordinator` | `"isCoordinator"` | Ser+De | **none** |
+
+**6 of 28 members are covered; 22 are not.** Of the 27 members that need a new pin, 5 are covered
+and 22 are not. Two facts make the gap worse than a bare count suggests:
+
+1. **Every one of these members carries `#[serde(default)]` (or lives in a type whose fields all do).
+   A missing pin is therefore silent in both directions**: serialisation writes the new key,
+   deserialisation ignores the old one and takes the default. No panic, no compiler error, no
+   deserialisation failure. The user simply loses the setting on upgrade.
+2. **`coordinator_clock_settings_default_when_keys_absent` (`config/settings.rs:7044`) is not a
+   tripwire, although the round-1 candidate named it as the primary one.** The test serialises
+   `AppSettings::default()`, removes five `coordinator*` keys by literal, deserialises, and asserts
+   the five fields hold their defaults. If a pin is omitted, the serialised object carries the new
+   key, the `obj.remove(...)` calls silently match nothing, and deserialisation reads back **the
+   default value that was serialised in the first place**. Every assertion still passes. The test
+   cannot distinguish a present pin from an absent one for any of its five keys, whatever those
+   defaults are, because the value it reads back is by construction the value it asserts. Members
+   17 to 20 therefore have no tripwire at all, and member 21 is covered only by the separate
+   round-trip test at `:7068`, which asserts key **presence** (`json.get(...)`) and does redden.
+
+This is exactly the class of defect the compiler cannot see and criterion 6 cannot see (a missing
+pin moves no literal). Section 9.1 closes it with a wire-key stability test that covers all 28
+members, and section 9.5 criterion 8 replaces the round-1 claim with that test plus a diff-shape
+gate. The `Derives` column above is what tells the implementer which direction to assert; `rename`
+is bidirectional, so asserting one direction proves the pin is present and correct.
 
 The precedent for the fix already exists in the same file: `settings.rs:305-310` renames the Rust
 identifier `legacy_start_only_coordinators` while pinning its key with
@@ -213,32 +270,60 @@ in the payload.
 | `src-tauri/src/commands/ac_discovery.rs:1826`, `discover_project` arg `coordinator_clocks: State<..>` | State arg, not in the payload | Free to rename. |
 | `src-tauri/src/commands/session.rs:4582`, `get_active_session` arg `coordinator: State<'_, SelectionCoordinator>` | State arg, not in the payload | Free to rename (Concept B). |
 
-### 3.5 Source-text-coupled literals: the only Rust literals that change
+### 3.5 The literals the rename forces to change, and the sweeps that close the set
 
-Three tests read source text and pin it by literal. If the identifier moves and the literal does
-not, the tree does not build green. These are the complete set; every other Rust literal is frozen.
+A string literal changes in this phase **only** when it embeds source text that a renamed identifier
+owns. There are five such classes and no others. Round 1 enumerated three of them and missed two,
+so each class below carries the sweep that closes it, run at `147ad4ef` over
+`src-tauri/src`, `src-tauri/tests`, `crates` and `src`.
+
+| Class | What forces the change | Sweep | Result |
+| --- | --- | --- | --- |
+| A. ES module specifiers | the file they name is renamed | the two badge/close roots over the whole tracked tree | **10 sites, 6 distinct literals** (allowlist L1-L6). Zero references outside `src/`: not in `test-debt.allowlist.json`, `vitest.config.ts`, `dependency-cruiser.config.mjs`, `tsconfig.json` or any workflow, and no `vi.mock` names them |
+| B. Rust inline format captures | `format!("{ident}")` stops compiling when `ident` is renamed | `git grep -E '\{[A-Za-z0-9_]*[Cc]oordinat\|\{[A-Za-z0-9_]*COORDINAT'` | **exactly 2**: `config/instance_artifacts.rs:620`, `config/teams.rs:822` (allowlist L12, L14). All other hits are `use` import braces. `config/root_agent.rs:371` `{ROOT_COORDINATION_MESSAGING_PARAGRAPH}` is the near-miss: it is `COORDINATION`, excluded by correction 3, and **does not change** |
+| C. TS template interpolations | `` `${ident}` `` stops typechecking when `ident` is renamed | `git grep -E '\$\{[^}]*[Cc]oordinat'` over `src` | **exactly 1**: `src/sidebar/components/loop-modal-helpers.ts:23` (allowlist L13) |
+| D. Source-scanning tests | the test reads the tree back and pins the identifier as text | enumerate every cross-file `include_str!` / `normalized_production_source` | **exactly 2 coupled sites** (allowlist L7, L8), plus 5 verified-clean negative controls, listed below |
+| E. `Debug` labels and the assertions that read them | the label names a renamed field, variant or struct | `git grep -E '(\.field\|\.debug_struct\|\.debug_tuple)\("[^"]*[Cc]oordinat'` and `git grep -E '\.(contains\|starts_with\|ends_with)\("[^"]*[Cc]oordinat'` | **exactly 5 labels** (`config/teams.rs:583,584,603`; `session/manager.rs:63`; `api/identity.rs:107`) and **exactly 2 assertions on `Debug` output** (`config/teams.rs:2328,2360`): allowlist L9, L10, L11. `stringify!` and `concat!` produce zero hits |
+
+Classes B, C and E are what round 1 missed. B, C and the `"kind: Coordinator"` assertion in E are
+**forced**: omitting them is a compile error or a red test, not a style choice. Everything else in
+either repo is frozen by Rule P.
+
+The class-D detail, unchanged from round 1 and reverified:
 
 1. **`src-tauri/src/session/selection.rs`**, self-scanning sentinel over `include_str!("selection.rs")`
    at `:4034`. Coupled literals: `:3909` `"enum CoordinatorJob"`, `:3910` `"CoordinatorJob declaration"`,
    `:3912` `"CoordinatorJob opening brace"`, `:3926` `"CoordinatorJob closing brace"`,
    `:4049` `"enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}"` (the mutation the sentinel must
-   reject), `:4053` `"sentinel accepted forbidden CoordinatorJob field {forbidden}"`, and the message
+   reject), `:4053` `"sentinel accepted forbidden CoordinatorJob field {forbidden}"`, and `:4037`
    `"CoordinatorJob contains a managed handle or arbitrary executable field: {:?}"`.
+   Seven literals at six line numbers (`:3909`, `:3910`, `:3912`, `:3926`, `:4037`, `:4049`, `:4053`).
    `:3909` and `:4049` are functionally load bearing; the other five name the renamed type.
 2. **`src-tauri/tests/cli_workgroup_team.rs:1834-1843`**, which scrapes
    `src/commands/session.rs` through `normalized_production_source` and pins the call-site text
    `materialize_agent_context_file_with_filename_activated(&cwd,&target_filename,&managed_filenames,is_coordinator,auto_self_clear,container_repos.as_ref(),activation.as_ref()`.
    The argument name `is_coordinator` inside that literal is source text, not prose.
-3. **`src-tauri/src/config/teams.rs:2360`**, `assert!(diagnostic.contains("is_coordinator: true"))`,
-   which asserts on the output of the manual `Debug` impl at `teams.rs:603`
-   (`.field("is_coordinator", &self.is_coordinator)`). Its siblings are `teams.rs:583`
-   (`.field("sender_is_coordinator", ..)`) and `session/manager.rs:63`
-   (`.field("is_coordinator", ..)`). `api/identity.rs:107` `.debug_struct("VerifiedBoundContainerCoordinator")`
-   is the same class.
-
 Source scans verified **clean** of any `coordinat` pin, so they are negative controls:
 `src-tauri/src/agent_update.rs:2772`, `src-tauri/src/pty/watchers/mod.rs:2470`,
-`src-tauri/tests/cli_project_registration.rs:563` and `:602`.
+`src-tauri/tests/cli_project_registration.rs:563` and `:602`, plus the `entity_creation.rs` scrape at
+`src-tauri/tests/cli_workgroup_team.rs:1854`. **There is no fourth source scan**; the enumeration
+above is the complete cross-file set.
+
+The class-E detail, which round 1 covered only in part:
+
+- **The five manual `Debug` labels.** `config/teams.rs:583` `.field("sender_is_coordinator", ..)` and
+  `:584` `.field("target_is_coordinator", ..)` in the `Debug` impl of `VerifiedTerminalSnapshotRoute`
+  (`:578-587`); `:603` `.field("is_coordinator", ..)` in the `Debug` impl of
+  `TerminalSnapshotTargetIdentity` (`:599-606`); `session/manager.rs:63` `.field("is_coordinator", ..)`;
+  and `api/identity.rs:107` `.debug_struct("VerifiedBoundContainerCoordinator")`. Each names a field,
+  struct or variant that Rule A renames, so each label follows it. Round 1 listed `:583` and omitted
+  `:584`.
+- **The two assertions that read `Debug` output.** `config/teams.rs:2360`
+  `assert!(diagnostic.contains("is_coordinator: true"))` reads the `:603` label. `config/teams.rs:2328`
+  `assert!(diagnostic.contains("kind: Coordinator"))` reads the derived `Debug` of
+  `TerminalSnapshotAuthorityKind::Coordinator` (`teams.rs:565-569`), a variant Rule A renames to
+  `Orchestrator`. That assertion is **forced**: leaving it turns the test red. Round 1 missed it
+  entirely, and it is the only member of this class that no other rule would have caught.
 
 ### 3.6 `module-arcs.txt`: base state and the exact predicted post state
 
@@ -259,14 +344,16 @@ the worktree digest is reproducible on Windows with `core.autocrlf=true`.
 
 | Item | Measurement |
 | --- | --- |
-| `coordinat*` lines under `repo-agentscommander_webpage/src` | 31 |
+| `coordinat` lines under `repo-agentscommander_webpage/src` | **26 case-sensitive, 32 case-insensitive** (round 1 said 31, which is neither) |
 | of which carry the string `coordinator` | 8, all of them the i18n key `composer.coordinator` |
-| `composer.coordinator` sites | `src/i18n/landing.ts:71,176,278,381,486,585` (six locales: en, es, pt, fr, en-alt, zh) and `src/components/alternatives/TeamComposer.astro:24` (`data-i18n=`) and `:25` (`copy[...]`) |
+| `composer.coordinator` sites | `src/i18n/landing.ts:71,176,278,381,486,585` and `src/components/alternatives/TeamComposer.astro:24` (`data-i18n=`) and `:25` (`copy[...]`) |
+| the six locales | `en` (block starts `:1`), `es` (`:106`), `pt` (`:208`), `fr` (`:310`), **`de`** (`:414`), `zh-CN` (`:519`), per `LandingLanguage` at `:104`. Line 486 falls in the **German** block, not an "en-alt" one; German's value is also `"ORCHESTRATOR"`, which is what made round 1 mislabel it. The six line numbers are right; only the label was wrong |
 | `Coordination*` component files | `src/components/CoordinationDemo.tsx` (6796 B), `src/components/CoordinationDemo.css` (6452 B), `src/components/CoordinationProof.astro` (1434 B) |
 | import / reference sites | `CoordinationDemo.tsx:3` (`import './CoordinationDemo.css'`), `:74`, `:196`; `CoordinationProof.astro:2`, `:23`; `README.md:37` |
 | `CoordinationProof.astro` consumers | **none.** No page or layout imports it. |
-| i18n mechanism | a generic `document.querySelectorAll('[data-i18n]')` switcher at `src/layouts/BaseLayout.astro:160-161` and `src/pages/alternatives/attention.astro:310-311`, typed `MessageKey` / `LandingMessageKey`. A key rename that misses a site is a **type error**, caught by `npm run check`. |
-| CI | one workflow, `.github/workflows/deploy.yml`. Playwright specs live in `tests/`; only `tests/smoke.spec.ts:114` touches a `composer.*` key, and it is `composer.note`, not the renamed one. |
+| i18n mechanism | a generic `document.querySelectorAll('[data-i18n]')` switcher at `src/layouts/BaseLayout.astro:160-161` and `src/pages/alternatives/attention.astro:310-311`, typed `MessageKey` / `LandingMessageKey`. |
+| type-safety of the key rename | **covers 7 of the 8 sites, not 8.** `LandingMessageKey = keyof typeof en` (`:103`) and the five non-`en` locales typed `Record<LandingMessageKey, string>` make a missed locale a type error, and `copy["composer.coordinator"]` at `TeamComposer.astro:25` is a typed indexed access. **`TeamComposer.astro:24` is not covered**: `data-i18n="composer.coordinator"` is a plain HTML attribute that `astro check` never reads, consumed at runtime by the generic switcher. A forgotten `:24` passes both W3 gates green and leaves that span untranslated. Section 12.2 adds a grep gate for exactly this. |
+| CI | one workflow, `.github/workflows/deploy.yml`. Playwright specs live in `tests/`; only `tests/smoke.spec.ts:114` touches a `composer.*` key, and it is `composer.note`, not the renamed one. The repo's script is `npm run smoke` (`"smoke": "playwright test"`); `npm run check` is `astro check`. |
 
 The issue's table names only the `.tsx` and the `.astro`. `CoordinationDemo.css` is added to the
 rename set: it is imported by name at `CoordinationDemo.tsx:3`, so renaming the component without it
@@ -323,9 +410,17 @@ either file.
    content commit.
 4. **3 file renames** in `repo-agentscommander_webpage` plus their 6 reference sites.
 5. **The i18n key `composer.coordinator`** in `repo-agentscommander_webpage`, 8 lines.
-6. **One new test** for the sidebar filter token (issue item 3c, residual R11 of #1571).
+6. **Two new tests**: the sidebar filter token (issue item 3c, residual R11 of #1571) and the
+   wire-key stability test that makes Rule S1 auditable (section 9.1).
 7. **`src-tauri/module-arcs.txt` regenerated**, never hand-edited.
 8. **Doc comments and code comments that name a renamed symbol**, updated with the symbol they name.
+9. **The two `docs/` lines that name the file path R1 renames**: `docs/reference/architecture.md:777`
+   and `docs/reference/directory-layout.md:76`, both `config/coordinator_clocks.rs`. These are not
+   prose about the concept; they are a path that stops existing at C1. `docs/features/session-auto-close.md:151`
+   is deliberately **not** included: it names `coordinator_clocks.json`, the on-disk file, which is
+   frozen. This is the complete set: a sweep of the whole tracked tree for the seven renamed
+   basenames returns only these three doc lines, the 14 `module-arcs.txt` lines, and `plans/` plus
+   `CHANGELOG.md`, which epic decision 2 protects.
 
 ### Out of scope (binding)
 
@@ -333,26 +428,38 @@ Everything below stays byte-identical. Each has a named later owner.
 
 | Preserved | Sites | Owner |
 | --- | --- | --- |
-| Every string literal not listed in section 5.4 | 379 distinct `coordinat` literals across `src-tauri/src`, `src-tauri/tests`, `crates`, `src` | phases 3 and 4 |
-| Persisted and transported JSON keys | the 28 serde members of section 3.3, pinned by Rule S | phase 3 |
+| Every string literal not listed in section 5.4 | of the base tree's 28345 distinct literals, **379 match `coordinat` case-insensitively and 337 case-sensitively**; 23 of them change, the rest are frozen. The gate command uses PowerShell `-match`, which is case-insensitive, so 379 is the number a reviewer will see | phases 3 and 4 |
+| Persisted and transported JSON keys | the 28 serde members of section 3.3, pinned by Rule S1 | phase 3 |
 | The IPC command `close_coordinator` and the `coordinator` payload arg of `create_team` / `update_team` | section 3.4 | phase 3 |
 | Event names | `"session_coordinator_changed"`, `"coordinator_clock_updated"`, `"coordinator_auto_close_changed"`, `"coordinator_manual_close_changed"` | phase 3 |
 | `data-ac-testid` values | `ActionBar.tsx:301`; `ProjectPanel.tsx:4198,4213,4221`; `SettingsModal.tsx:1914,1932,1944,1963,1979,1998` (10 values) | phase 3 |
 | Machine-readable error codes | `"selectionCoordinatorUnavailable"`, `"selectionCoordinatorBusy"`, `"selectionCoordinatorRecursiveSubmission"` | phase 3 (stated by #1572 itself) |
 | On-disk file names | `"Context.coordinator.md"` (`session_context.rs:13`), `"coordinator_clocks.json"` and `"coordinator_clocks.json.*.tmp"` (`instance_artifacts.rs:129,134`), `"context:coordinator"` manifest scope | phase 3 |
-| CLI flag names | `--coordinator`, `--busy-coordinator` | phase 3 |
+| CLI flag names | `--coordinator`, `--busy-coordinator`. Two of the three `--coordinator` fields derive the flag from the identifier rather than from a literal, so Rule S2 pins them explicitly; see section 5.3 | phase 3 |
 | Frozen historical template **content** | `OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND`, `COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION`, `_BEFORE_CROSS_WORKGROUP_RULE`, `_BEFORE_ORCHESTRATOR_RENAME` and every other frozen snapshot | never; frozen by design |
 | Test-title strings, `expect()`/`panic!` prose, log format strings, comment prose that does not name a symbol | ~340 literals | phase 4 (residual elimination) |
 | CSS class and id names (`.coordination-proof`, `#coordination-proof-title`, `.cdemo-*`, `COORD_IDLE_CLASS`) and every `coordinate` / `coordination` word | | not in the epic's grep domain |
-| `CHANGELOG.md`, `plans/`, `docs/` | | epic decision 2 and phase 4 |
+| `CHANGELOG.md`, `plans/`, and all `docs/` **prose** | except the two `docs/` lines of in-scope item 9, which name a renamed file path rather than the concept | epic decision 2 and phase 4 |
 | Any behavior change | | separate issue, per epic non-goals |
 
 ---
 
 ## 5. Decided solution
 
-Five rules. They are total: every occurrence in the tree is decided by exactly one of them, and
-Rules S, K and P beat Rule A wherever they apply.
+Five rules. Rule A is the default; Rules S, K and P beat it wherever they apply; Rule B replaces it
+inside Concept B.
+
+**On totality.** Round 1 asserted totality and five occurrences disproved it. Totality is not
+something a plan can assert; it is something the closed enumerations have to earn. So each rule now
+carries the sweep that closes it, and the five occurrences that were undecided are decided by name:
+
+| Undecided in round 1 | Decided by |
+| --- | --- |
+| `coordinator_shutdown` (`commands/session.rs:1432`, used `:2573`), where Rule A would give it the wrong *concept* | the Concept B binding clause and the explicit row in 5.2 |
+| the three clap fields whose `--coordinator` flag is derived, not literal (`cli/team.rs:53`, `:85`, `cli/workgroup.rs:49`) | **Rule S2**, section 5.3 |
+| the object shorthand `src/shared/ipc.ts:1081`, where Rule K freezes a token Rule A deletes | the shorthand clause of Rule K, section 5.5 |
+| `src/sidebar/components/ProjectPanel.raise-hand.test.tsx`, a whole file with in-scope locals and no table row | added to 6.5; the sweep in 5.5 proves it is the only one |
+| `TeamConfigResult.coordinator` (`src/shared/types.ts:1505`), frozen by Rule K's text but named in neither operative list | named in the Rule K frozen enumeration and in the 6.5 row |
 
 ### 5.1 Rule A: Concept A substitution
 
@@ -401,9 +508,31 @@ release it froze.
 | `CoordinatorPhase` | `ArbiterPhase` |
 | `COORDINATOR_QUEUE_CAPACITY` | `ARBITER_QUEUE_CAPACITY` |
 | `COORDINATOR_ADMISSION_CAPACITY` | `ARBITER_ADMISSION_CAPACITY` |
-| `QuarantineRetryPath::Coordinator` | `QuarantineRetryPath::Arbiter` (+ Rule S pin) |
+| `QuarantineRetryPath::Coordinator` | `QuarantineRetryPath::Arbiter` (+ Rule S1 pin) |
 | local Rust bindings `coordinator`, `selection_coordinator`, `running_coordinator` in Concept B code | `arbiter`, `selection_arbiter`, `running_arbiter` |
+| `coordinator_shutdown` (`commands/session.rs:1432`, consumed at `:2573`) | `arbiter_shutdown` |
 | TypeScript `isSelectionCoordinatorBusyError` | `isSelectionArbiterBusyError` |
+
+**Concept B binding clause, which generalises the row above.** Any local binding whose *value* comes
+from a Concept B value (the `SelectionArbiter` handle, anything read off it, its error, its phase,
+its job, its envelope) takes the `arbiter` name, keeping whatever suffix it carries. Rule A never
+applies to such a binding, however it is spelled. `coordinator_shutdown` is the case that motivates
+the clause: it is `coordinator.shutdown_token()` where `coordinator` is
+`try_state::<SelectionCoordinator>()`, so a mechanical Rule A pass produces `orchestrator_shutdown`,
+which names the wrong concept, compiles, and passes every gate in section 9. The surrounding code
+confirms the concept: the `tokio::select!` arm it guards at `:2573-2575` returns the frozen error
+string `"selectionCoordinatorUnavailable"`.
+
+A sweep of every Rust `let` binding whose name contains `coordinator`
+(`git grep -E 'let (mut )?[a-z_]*coordinator[a-z_]*[ :=]'`) confirms `coordinator_shutdown` is the
+**only** compound Concept B binding in either repo: every other Concept B binding is a bare
+`coordinator`, `selection_coordinator`, or a `.clone()` of one. Every compound binding that sweep
+returns and that this clause does **not** claim (`coordinator_app` and `coordinator_session_mgr`
+(`commands/ac_discovery.rs:2208-2209`), `coordinator_blockers` (`commands/entity_creation.rs:2200`),
+`coordinator_matrix`, `coordinator_template`, `coordinator_bytes`, `coordinator_path`,
+`coordinator_content`, `coordinator_ref`, `coordinator_name`, `coordinator_binding`,
+`coordinator_id`, `coordinator_fqn`, `spawn_is_coordinator`, `host_coordinator`, `api_coordinator`)
+is Concept A and takes Rule A unchanged.
 
 The three error-code **strings** stay `selectionCoordinator*` (out of scope, phase 3). A function
 named `isSelectionArbiterBusyError` that compares against the literal `"selectionCoordinatorBusy"`
@@ -416,7 +545,14 @@ Concept B files, verified line by line: `session/selection.rs` (owner),
 `tests/wake_consumption_measure.rs`, `tests/pty_powershell_managed_native.rs`,
 `tests/pty_lifecycle_regression.rs`.
 
-### 5.3 Rule S: pin every serialised member
+### 5.3 Rule S: pin every external name that a derive macro spells from the identifier
+
+Rule S covers the whole hazard class, not just serde: **wherever a derive macro turns a Rust
+identifier into an external name, renaming the identifier silently changes that external name, and
+the compiler cannot see it.** There are exactly two such macros in this tree, so Rule S has two
+parts. Round 1 had only S1, which is why the three clap fields of S2 ended up undecided.
+
+#### 5.3 S1: pin every serialised member
 
 For each of the 28 members in section 3.3, rename the Rust identifier by Rule A or Rule B **and**
 add, on the same member, an explicit serde rename to the key it produces today. Where a `#[serde(..)]`
@@ -447,27 +583,98 @@ pub enum PtyInputReasonCode { .. #[serde(rename = "sender_not_coordinator")] Sen
 rename only, its existing `rename = "startOnlyCoordinators"` is untouched.
 
 Adding a pin is not a behavior change: it makes the wire format explicit at exactly the value it
-already had, and section 9 proves that by round-tripping the keys.
+already had, and section 9 proves that by round-tripping the keys. `rename` applies to both
+directions, so proving one direction per member proves the pin.
+
+**27 new pins**, at exactly the 27 sites of section 3.3 rows 1-15 and 17-28.
+`legacy_start_only_coordinators` (row 16) gains the identifier rename only; its existing
+`rename = "startOnlyCoordinators"` at `settings.rs:308` is untouched.
+
+#### 5.3 S2: pin every clap-derived flag name
+
+`#[arg(long)]` with no explicit `long = "..."` makes clap derive the flag from the **field
+identifier**. Section 4 freezes `--coordinator`, and three fields produce that flag by derivation,
+not from any literal. Rename the field by Rule A **and** add an explicit `long = "coordinator"`
+inside the existing `#[arg(..)]`, never as a second attribute:
+
+| File:line | Struct | Attribute today | Attribute after |
+| --- | --- | --- | --- |
+| `src-tauri/src/cli/team.rs:49-53` | `TeamCreateArgs` | `#[arg(long, help = "Existing agent matrix name or _agent_<name> reference. Automatically included in the roster")]` | `#[arg(long = "coordinator", help = <unchanged>)]` |
+| `src-tauri/src/cli/team.rs:84-85` | `TeamAddMemberArgs` | `#[arg(long)]` | `#[arg(long = "coordinator")]` |
+| `src-tauri/src/cli/workgroup.rs:48-49` | `WorkgroupAddArgs` | `#[arg(long, hide = true)]` | `#[arg(long = "coordinator", hide = true)]` |
+
+The precedent is in the same directory: `cli/loop_cmd.rs:82` and `:104` already write
+`#[arg(long = "busy-coordinator", value_enum)]`, which is why renaming *their* `busy_coordinator`
+field is safe with no S2 pin.
+
+Why this matters concretely, and why no gate would have caught it: without the pin, `--coordinator`
+becomes `--orchestrator`. For `team create` and `team add-member` that turns ~20 invocations in
+`src-tauri/tests/cli_workgroup_team.rs` red, so the run at least stops. For `workgroup add` the flag
+is `hide = true`, and its only test,
+`workgroup_add_help_hides_team_definition_flags` (`cli_workgroup_team.rs:391`), asserts
+`!help.contains("--coordinator")`, which passes whether the flag is `--coordinator` or
+`--orchestrator`. That one would change a public CLI flag **in silence**.
+
+A sweep of every `#[arg(..)]`, `#[value(..)]` and `#[command(..)]` attribute under `src-tauri/src/cli`
+within two lines of a `coordinat` identifier returns exactly these three fields plus the two
+already-explicit `busy-coordinator` fields. The S2 set is closed at three.
 
 ### 5.4 Rule P: literals are frozen, with an exact allowlist
 
-**No string literal changes anywhere in either repo, except these nine.** The allowlist is closed;
-anything else is a defect.
+**No string literal changes anywhere in either repo, except the 14 entries below, which are
+23 distinct literals.** The allowlist is closed; anything else is a defect. Section 3.5 gives the
+five sweeps that close it.
 
-| # | Literal today | Becomes | Site |
-| --- | --- | --- | --- |
-| L1 | `"./coordinator-badge"` | `"./orchestrator-badge"` | `src/shared/coordinator-badge.test.ts:2` |
-| L2 | `"../../shared/coordinator-badge"` | `"../../shared/orchestrator-badge"` | `src/sidebar/components/coordinator-badge-class.ts:1`, `coordinator-badge-class.test.ts:3`, `ProjectPanel.tsx:52` |
-| L3 | `"./coordinator-badge-class"` | `"./orchestrator-badge-class"` | `src/sidebar/components/coordinator-badge-class.test.ts:4`, `ProjectPanel.tsx:53` |
-| L4 | `"./coordinator-close"` | `"./orchestrator-close"` | `src/sidebar/stores/coordinator-close.test.ts:15` |
-| L5 | `"../stores/coordinator-close"` | `"../stores/orchestrator-close"` | `src/sidebar/components/ProjectPanel.tsx:12`, `SessionItem.tsx:9` |
-| L6 | `"../sidebar/stores/coordinator-close"` | `"../sidebar/stores/orchestrator-close"` | `src/shared/shortcuts.ts:3` |
-| L7 | the 7 `CoordinatorJob` literals of section 3.5 item 1 | `ArbiterJob` in each | `src-tauri/src/session/selection.rs:3909,3910,3912,3926,4049,4053` and the managed-handle message |
-| L8 | the pinned call-site text containing `,is_coordinator,` | `,is_orchestrator,` | `src-tauri/tests/cli_workgroup_team.rs:1836-1838` |
-| L9 | the `Debug` field labels `"is_coordinator"`, `"sender_is_coordinator"`, `"VerifiedBoundContainerCoordinator"` and the assertion `"is_coordinator: true"` | `"is_orchestrator"`, `"sender_is_orchestrator"`, `"VerifiedBoundContainerOrchestrator"`, `"is_orchestrator: true"` | `src-tauri/src/config/teams.rs:583,603,2360`; `src-tauri/src/session/manager.rs:63`; `src-tauri/src/api/identity.rs:107` |
+Count the unit carefully, because round 1 conflated three of them. An **entry** is a row here. A
+**distinct literal** is a record in the comparator's set. A **site** is a file:line. The criterion-6
+gate compares distinct-literal *sets*, so its unit is the middle one.
+
+| # | Entry | Distinct literals | Literal today → after | Sites | Forced? |
+| --- | --- | --- | --- | --- | --- |
+| L1 | badge module specifier | 1 | `"./coordinator-badge"` → `"./orchestrator-badge"` | `src/shared/coordinator-badge.test.ts:2` | yes |
+| L2 | badge module specifier | 1 | `"../../shared/coordinator-badge"` → `"../../shared/orchestrator-badge"` | `src/sidebar/components/coordinator-badge-class.ts:1`, `coordinator-badge-class.test.ts:3`, `ProjectPanel.tsx:52` | yes |
+| L3 | badge-class specifier | 1 | `"./coordinator-badge-class"` → `"./orchestrator-badge-class"` | `src/sidebar/components/coordinator-badge-class.test.ts:4`, `ProjectPanel.tsx:53` | yes |
+| L4 | close-store specifier | 1 | `"./coordinator-close"` → `"./orchestrator-close"` | `src/sidebar/stores/coordinator-close.test.ts:15` | yes |
+| L5 | close-store specifier | 1 | `"../stores/coordinator-close"` → `"../stores/orchestrator-close"` | `src/sidebar/components/ProjectPanel.tsx:12`, `SessionItem.tsx:9` | yes |
+| L6 | close-store specifier | 1 | `"../sidebar/stores/coordinator-close"` → `"../sidebar/stores/orchestrator-close"` | `src/shared/shortcuts.ts:3` | yes |
+| L7 | the sentinel's `CoordinatorJob` text | **7** | `CoordinatorJob` → `ArbiterJob` in each | `src-tauri/src/session/selection.rs:3909, 3910, 3912, 3926, 4037, 4049, 4053` | yes |
+| L8 | the scraped call-site text | 1 | `,is_coordinator,` → `,is_orchestrator,` inside it | `src-tauri/tests/cli_workgroup_team.rs:1836-1838` (one literal, written as a three-line continuation) | yes |
+| L9 | `Debug` labels and the assertion that reads one | **4** | `"is_coordinator"` → `"is_orchestrator"`; `"sender_is_coordinator"` → `"sender_is_orchestrator"`; `"VerifiedBoundContainerCoordinator"` → `"VerifiedBoundContainerOrchestrator"`; `"is_coordinator: true"` → `"is_orchestrator: true"` | `config/teams.rs:603` and `session/manager.rs:63`; `config/teams.rs:583`; `api/identity.rs:107`; `config/teams.rs:2360` | consistency |
+| **L10** | the fifth `Debug` label | 1 | `"target_is_coordinator"` → `"target_is_orchestrator"` | `src-tauri/src/config/teams.rs:584` | consistency |
+| **L11** | the assertion on a derived `Debug` | 1 | `"kind: Coordinator"` → `"kind: Orchestrator"` | `src-tauri/src/config/teams.rs:2328` | **yes, red test otherwise** |
+| **L12** | inline format capture | 1 | `"{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp"` → `"{ORCHESTRATOR_CLOCKS_FILE_NAME}.*.tmp"` | `src-tauri/src/config/instance_artifacts.rs:620` | **yes, compile error otherwise** |
+| **L13** | template interpolation | 1 | `` `${wg.name} - ${coordinator.name}` `` → `` `${wg.name} - ${orchestrator.name}` `` | `src/sidebar/components/loop-modal-helpers.ts:23` | **yes, typecheck error otherwise** |
+| **L14** | inline format capture | 1 | `"_agent_{coordinator}"` → `"_agent_{orchestrator}"` | `src-tauri/src/config/teams.rs:822` | **yes, compile error otherwise** |
 
 L1 to L6 are ES module specifiers: they are file paths, not data, and they must move with the file.
-L7 to L9 are source text that a test reads back out of the tree; they are the identifier, quoted.
+L7 and L8 are source text that a test reads back out of the tree. L9 to L11 are `Debug` rendering and
+the assertions that read it. L12 to L14 are the identifier itself, embedded in a format string;
+their **rendered value does not change** (`_agent_<name>` renders identically before and after),
+only the capture name does.
+
+**L10 to L14 are new in round 2.** L11, L12, L13 and L14 were each a guaranteed red build or red
+test on a correct implementation of round 1's plan.
+
+#### 5.4a Which allowlist entries actually appear as a gate row
+
+The comparator diffs **sets**, so a literal that this plan removes from one site but that survives at
+another, frozen site produces no row at all. Exactly one entry is in that position:
+
+- **L10 `"target_is_coordinator"` produces no `<=` row.** It occurs at six sites. Only
+  `config/teams.rs:584` changes; the other five are frozen reason-code text
+  (`api/handlers/pty_input.rs:292`, `cli/send.rs:755`, `config/teams.rs:1234`, `phone/types.rs:144`,
+  and `crates/session-bridge/src/bin/agentscommander-api-helper.rs:684`), and Rule S1 re-pins the
+  same spelling at `phone/types.rs:85`. The literal never leaves the set.
+
+Every other entry's literals occur only at sites this plan changes, verified one by one:
+`"is_coordinator"` occurs at exactly two sites (`config/teams.rs:603`, `session/manager.rs:63`) and
+both change; `"sender_is_coordinator"`, `"VerifiedBoundContainerCoordinator"`,
+`"is_coordinator: true"`, `"kind: Coordinator"`, the L12 and L14 format strings and the L13 template
+occur once each; the six module specifiers occur only at the ten sites listed, and nothing outside
+`src/` references those roots.
+
+**Therefore the expected `<=` set is 23 minus 1 = 22 distinct literals.** Section 9.3 states the gate
+in those terms.
 
 The website repo's allowlist is separate and equally closed: the i18n key `"composer.coordinator"`
 becomes `"composer.orchestrator"` at its 8 sites, and `'./CoordinationDemo.css'` becomes
@@ -483,11 +690,35 @@ section 3.3 or by a Tauri command argument of section 3.4. Everywhere else, Rule
 to local variables and functions that happen to be spelled like a wire key.
 
 Frozen by Rule K: `isCoordinator` as a member of `Session`, `SessionInfo`, `AcAgentReplica`,
-`PersistedSession` and their fixtures; `coordinator` as a member of `AcTeam` and of the
-`create_team` / `update_team` argument objects; `busyCoordinator`; `restoreCoordinatorWakeState`;
+`PersistedSession` and their fixtures; `coordinator` as a member of `AcTeam`, **as a member of
+`TeamConfigResult` (`src/shared/types.ts:1505`)**, and of the `create_team` / `update_team` argument
+objects; `busyCoordinator`; `restoreCoordinatorWakeState`;
 `coordinatorIdleBadgeYellowMinutes`; `coordinatorIdleBadgeRedMinutes`; `coordinatorAutoCloseEnabled`;
 `coordinatorAutoCloseMinutes`; `coordinatorAutoCloseSkipTelegramAssigned`;
 `coordinatorCascadeCloseEnabled`; the `LoopTargetKind` value `"workgroupCoordinator"`.
+
+`TeamConfigResult.coordinator` is called out explicitly because round 1 froze it by the rule's text
+and named it in neither operative list, while renaming two sibling members 300 lines away in the
+same file (`TeamSessionGroup.coordinator:1179`, `Team.coordinatorName:1193`). It is the TypeScript
+mirror of the serde struct at `src-tauri/src/commands/entity_creation.rs:55-59` (section 3.3 row 6),
+consumed by `normalizeTeamConfigResult` over `invoke("get_team_config")`. An implementer working
+from the table rather than the rule text would rename it, `get_team_config` would keep returning
+`coordinator`, the frontend would read `orchestrator`, and `EditTeamModal` would load with an empty
+orchestrator selection, with no TypeScript error anywhere.
+
+**Shorthand clause.** An object-literal shorthand `{ coordinator }` is two things at once: a property
+name, which Rule K may freeze, and a reference to a binding, which Rule A may rename. Where the
+property is frozen and the binding renames, **the shorthand is expanded** to
+`<frozenKey>: <renamedBinding>`. Without this clause the stated precedence ("Rules S, K and P beat
+Rule A") freezes a token that no longer exists and the tree does not typecheck.
+
+A sweep of every shorthand-shaped line
+(`git grep -E '^[ \t]*(is)?[Cc]oordinator[A-Za-z]*,[ \t]*$'` over `src`) returns 8 lines, of which
+exactly **two** are conflicting and are decided in the register below. The other six are not
+conflicts: `src/shared/ipc.ts:1122` and `:1142` reference the frozen `create_team` / `update_team`
+parameter, so both halves are frozen and the shorthand stays; `src/shared/ipc.ts:80`,
+`EditLoopModal.tsx:12`, `NewLoopModal.tsx:7` and `NewLoopModal.test.ts:9` are import-specifier list
+entries, not object shorthands, and rename with their declarations.
 
 **Ambiguity register.** These are the complete set of sites where a frozen name also occurs as an
 in-scope local. They are decided here so the implementer makes no judgment call.
@@ -495,6 +726,11 @@ in-scope local. They are decided here so the implementer makes no judgment call.
 | Site | What it is | Verdict |
 | --- | --- | --- |
 | `src/shared/ipc.ts:1037` | `const coordinator = value.coordinator;` | the `const` renames, `value.coordinator` does not |
+| **`src/shared/ipc.ts:1081`** | the `return { agents, coordinator, repos, contextAlertPercentages }` of `normalizeTeamConfigResult`: a shorthand whose property is the frozen wire key and whose binding is the `const` renamed one row above | **expand**: the line becomes `coordinator: orchestrator,` |
+| **`src/shared/types.ts:1505`** | `TeamConfigResult.coordinator: string` | wire key (mirrors `entity_creation.rs:59`), **frozen** |
+| **`src/sidebar/components/ProjectPanel.raise-hand.test.tsx:34`, `:47`** | the parameter `isCoordinator = true` of the `replica` and `workgroup` test helpers | local bindings, **rename** to `isOrchestrator`, consistent with `AcDiscoveryPanel.tsx:43`, `EditTeamModal.tsx:362` and `NewTeamModal.tsx:309` |
+| **`src/sidebar/components/ProjectPanel.raise-hand.test.tsx:39`** | shorthand `isCoordinator,` whose property is the frozen `AcAgentReplica.isCoordinator` | **expand**: `isCoordinator: isOrchestrator,` |
+| **`src/sidebar/components/ProjectPanel.raise-hand.test.tsx:54`** | `replica(wgName, replicaName, isCoordinator)` | argument use of the renamed local, **renames**. `:67` and `:191` `isCoordinator: true/false` are object properties and stay frozen; `:106`, `:186`, `:202` are test titles and stay frozen (phase 4) |
 | `src/shared/types.ts:1179` | `TeamSessionGroup.coordinator: Session \| null` | frontend-only aggregate, **renames** |
 | `src/shared/types.ts:1193` | `Team.coordinatorName?: string` | frontend-only, **renames** |
 | `src/shared/types.ts:1232` | `AcTeam.coordinator: string \| null` | wire key, frozen |
@@ -505,11 +741,26 @@ in-scope local. They are decided here so the implementer makes no judgment call.
 | `src/sidebar/components/loop-modal-helpers.ts:18`, `:22` | `const coordinator = ...`, `coordinatorName:` | **rename**; `agent.isCoordinator` frozen |
 | `src/sidebar/components/WorkgroupGroupRail.raise-hand.test.tsx:27,29,145` | test-helper option `coordinator?: boolean` | **renames**; `isCoordinator: coordinator` at `:40` becomes `isCoordinator: orchestrator` |
 | `src/sidebar/stores/sessions.ts:249`, `:279` | `let coordinator: Session \| null` and the `TeamSessionGroup` field | **rename** |
-| `src/sidebar/App.tsx:801` | `isCoordinator` bound by destructuring the `session_coordinator_changed` payload | frozen (a destructuring binding of a wire key); `setIsCoordinator` renames |
+| `src/sidebar/App.tsx:800` | `isCoordinator` bound by destructuring the `session_coordinator_changed` payload at `onSessionCoordinatorChanged(({ sessionId, isCoordinator }) => {` | frozen (a destructuring binding of a wire key); `setIsCoordinator` renames. The use is at `:801`; round 1 gave `:801` for the binding, one line off |
 | `src/shared/ipc.ts:754`, `:756` | `{ sessionId: string; isCoordinator: boolean }` payload type | frozen |
 
-`src/sidebar/styles/coord-quick-access-css.test.ts` and `COORD_IDLE_CLASS` contain no `coordinator`
-and are untouched.
+`COORD_IDLE_CLASS` contains no `coordinator`.
+`src/sidebar/styles/coord-quick-access-css.test.ts` **does** contain it, at `:4` (a comment) and
+`:63` (a `describe` title); round 1 said it did not. Neither is an identifier, so the file is still
+untouched, but by residual 10.2.4, not by the reason round 1 gave.
+
+**Completeness of the TypeScript side.** Rule K's frozen set and Rule A's in-scope set together have
+to cover every `coordinator` token in TypeScript code, and round 1's tables did not. The closing
+measurement: blank every string literal and comment (the section 9.3 alternation), then look at what
+survives. 73 TS/TSX files carry a `coordinator` token in code. 34 are in the tables of section 6.
+In the remaining 39, **every** occurrence is property-shaped (preceded by `.`, or followed by `:` or
+`?:`), with exactly four exceptions, and all four are the `ProjectPanel.raise-hand.test.tsx` sites
+now in the register. The nine non-test files among the 39 were also read individually and carry only
+frozen keys, a frozen `data-ac-testid`, a frozen collapse-key literal, or comment prose:
+`main/listeners-home.ts:22`, `shared/testing/ui-harness.tsx:120,169-174,231`,
+`sidebar/components/ActionBar.tsx:301`, `RaiseHandIcon.tsx:5`, `RootAgentBanner.tsx:403`,
+`workgroup-session.ts:47`, `sidebar/stores/clock.ts:3`, `project-collapse.ts:8`,
+`sessions-helpers.ts:82`.
 
 ### 5.6 The 7 file renames in `repo-AgentsCommander`
 
@@ -561,6 +812,77 @@ the existing paired-row test at `:493`:
 
 One assertion pair, no new fixture, no new helper.
 
+### 5.9 The wire-key stability test (the tripwire Rule S1 does not otherwise have)
+
+Section 3.3 measures that 22 of the 28 serialised members have **no** existing test that reddens when
+their pin is omitted, and that the test round 1 nominated as the primary tripwire cannot distinguish
+a present pin from an absent one. A missing pin compiles, moves no literal, passes criteria 6a and
+6b, passes the round trip (both sides change together), and passes the frontend suite (which mocks
+the boundary). It is silent user-data loss on upgrade. This test is what closes that.
+
+**What it asserts.** For each of the 28 members of section 3.3, that the member's wire key is exactly
+the key in that table's fourth column. `#[serde(rename)]` is bidirectional, so **one direction per
+member is sufficient** proof that the pin is present and spelled right.
+
+**Which direction, per member.** Read it off the `Derives` column of section 3.3; there is no
+judgment call:
+
+- **Owning type derives `Deserialize`** (20 members: rows 6-12, 14-24, 27, 28): assert
+  deserialisation. Feed the smallest JSON carrying the frozen key with a distinctive value, then
+  assert the renamed field or variant holds it. Every one of these types has `#[serde(default)]` on
+  its other fields or is an enum, so a minimal object is enough and no full construction is needed.
+- **Owning type derives `Serialize` only** (8 members: rows 1-5, 13, 25, 26): construct a value with
+  the field set to a distinctive value and assert the frozen key carries it.
+
+`AgentDarkFactory` (row 9) is the one member where the serialise direction would not work at all:
+`is_coordinator_of` carries `skip_serializing_if = "Vec::is_empty"`, so a default value emits no key.
+It is a `Deserialize` member and is asserted in that direction, which sidesteps this entirely.
+
+**Where it lives: two existing `#[cfg(test)]` modules, no new file, no new module.**
+
+| Site | Members | Why there |
+| --- | --- | --- |
+| `src-tauri/src/lib.rs`, inside the existing `#[cfg(test)]` module (first at `:76`), test named `wire_keys_are_stable_for_every_renamed_serialised_member` | 25 (rows 4-28) | every owning type is `pub` or `pub(crate)`, so all are reachable from the crate root by a fully-qualified `crate::` path |
+| `src-tauri/src/cli/team.rs`, inside the existing `#[cfg(test)]` module (`:403`), test named `team_cli_wire_keys_are_stable` | 3 (rows 1-3) | `TeamListItem`, `TeamCreateResult` and `AddMemberResult` are private to `cli::team` and are visible nowhere else |
+
+Two sites, not twelve, because splitting per owning module would force a new `#[cfg(test)]` module
+into `commands/loops.rs` and `config/agent_config.rs`, which have none today.
+
+**Constraints on the test, all binding.**
+
+1. Every key is typed as a **literal** in the assertion. Do not build one from a constant, a
+   `stringify!`, or the renamed identifier, or the test proves nothing about the wire.
+2. The test contains **no string literal matching `coordinat` other than the wire keys themselves**.
+   Those are 16 distinct literals (the fourth column of section 3.3, deduplicated); 14 already exist
+   in the base tree and 2 do not, which is exactly the pair criterion 6b expects. Any other
+   `coordinat` literal in this test would break 6b.
+3. Reference every type by its fully-qualified `crate::` path inside the `#[cfg(test)]` block. Do not
+   add a `use` at module scope. The levelization detector ignores `#[cfg(test)]`, so this adds no
+   module arc and cannot move `module-arcs.txt`; a module-scope `use` would be a different question
+   and is not needed.
+4. No production code changes for this test. If a member cannot be asserted without widening a
+   visibility or adding a `Default`, stop and report it rather than changing production code.
+
+Shape, for the two directions:
+
+```rust
+// Deserialize direction, e.g. section 3.3 row 22
+let v: crate::config::settings::AppSettings =
+    serde_json::from_value(serde_json::json!({ "coordinatorCascadeCloseEnabled": false }))
+        .expect("settings from wire");
+assert!(!v.orchestrator_cascade_close_enabled);
+
+// Serialize direction, e.g. section 3.3 row 26
+assert_eq!(
+    serde_json::to_value(crate::resource_monitor::watchdog::QuarantineRetryPath::Arbiter)
+        .expect("variant to wire"),
+    serde_json::json!("coordinator")
+);
+```
+
+**This test is the reason section 9.1 says two new tests, not one.** It adds no behavior and pins no
+new contract: it states, executably, the contract the tree already has.
+
 ---
 
 ## 6. Affected surfaces: ADDED, REMOVED, MODIFIED
@@ -597,7 +919,8 @@ No file is deleted outright.
 
 ### 6.3 `repo-AgentsCommander`: MODIFIED, Rust production (54)
 
-Rule A unless the row says otherwise. "S-pin" means Rule S applies in that file.
+Rule A unless the row says otherwise. "S1-pin" means a serde pin (5.3 S1) is added in that file;
+"S2-pin" means a clap `long = "coordinator"` pin (5.3 S2) is added.
 
 | Path completo archivo | Que se modifico |
 | --- | --- |
@@ -612,47 +935,47 @@ Rule A unless the row says otherwise. "S-pin" means Rule S applies in that file.
 | `src-tauri/src/cli/send.rs` | 10 identifiers around `is_coordinator*` and the send authorization path. |
 | `src-tauri/src/cli/task_append_body.rs` | `is_any_coordinator` and one test fn name. |
 | `src-tauri/src/cli/task_set_title.rs` | `is_any_coordinator` and one test fn name. |
-| `src-tauri/src/cli/team.rs` | **S-pin** on `TeamListItem::coordinator` (:104), `TeamCreateResult::coordinator` (:115), `AddMemberResult::coordinator` (:127); plus the test helper `make_coordinator`. |
+| `src-tauri/src/cli/team.rs` | **S1-pin** on `TeamListItem::coordinator` (:104), `TeamCreateResult::coordinator` (:115), `AddMemberResult::coordinator` (:127); **S2-pin** `long = "coordinator"` on `TeamCreateArgs::coordinator` (:49-53) and `TeamAddMemberArgs::coordinator` (:84-85); plus the test helper `make_coordinator`; plus the new `team_cli_wire_keys_are_stable` test of section 5.9 in the existing `#[cfg(test)]` module at :403. |
 | `src-tauri/src/cli/terminal_snapshot.rs` | `is_coordinator` read. |
-| `src-tauri/src/cli/workgroup.rs` | `coordinator` local and `config::coordinator_clocks` path. |
-| `src-tauri/src/commands/ac_discovery.rs` | **S-pin** on `AcTeam::coordinator` (:84) and `AcAgentReplica::is_coordinator` (:112); the `coordinator_clocks` State args at :1040 and :1826; 11 identifiers total. |
-| `src-tauri/src/commands/entity_creation.rs` | **S-pin** on `TeamConfigResult::coordinator` (:59); the `coordinator: String` value args of `create_team` (:2774) and `update_team` (:3348) stay frozen; `config::coordinator_clocks` paths; 12 identifiers total. |
-| `src-tauri/src/commands/loops.rs` | **S-pin** on `LoopCreateRequest::busy_coordinator` (:30) and `LoopUpdateRequest::busy_coordinator` (:45); `WorkgroupCoordinator` variant. |
+| `src-tauri/src/cli/workgroup.rs` | `coordinator` locals (:193, :370) and `config::coordinator_clocks` path; **S2-pin** `long = "coordinator"` on `WorkgroupAddArgs::coordinator` (:48-49), whose flag is `hide = true` and whose only test passes either way. |
+| `src-tauri/src/commands/ac_discovery.rs` | **S1-pin** on `AcTeam::coordinator` (:84) and `AcAgentReplica::is_coordinator` (:112); the `coordinator_clocks` State args at :1040 and :1826; 11 identifiers total. |
+| `src-tauri/src/commands/entity_creation.rs` | **S1-pin** on `TeamConfigResult::coordinator` (:59); the `coordinator: String` value args of `create_team` (:2774) and `update_team` (:3348) stay frozen; `config::coordinator_clocks` paths; 12 identifiers total. |
+| `src-tauri/src/commands/loops.rs` | **S1-pin** on `LoopCreateRequest::busy_coordinator` (:30) and `LoopUpdateRequest::busy_coordinator` (:45); `WorkgroupCoordinator` variant. |
 | `src-tauri/src/commands/pty.rs` | `CoordinatorClocks`, `CoordinatorClocksState`, `coordinator_clocks`, `coordinator_cwd`. The four `[coordinator-clocks]` log prefixes are literals: frozen. |
 | `src-tauri/src/commands/resource_monitor.rs` | Rule B: `SelectionCoordinator*` and `QuarantineRetryPath::Coordinator` at :1737 and :1827. |
-| `src-tauri/src/commands/session.rs` | 16 identifiers. Rule A on `coordinator_clocks`, `coordinator_id`, `coordinator_matrix`, `coordinator_cascade_close_enabled`, `execute_manual_coordinator_destroy`, `is_coordinator`, `is_coordinator_for_cwd`, `CoordinatorCloseOutcome`; Rule B on `SelectionCoordinator` and the `coordinator: State<..>` arg at :4582. **The `close_coordinator` fn name at :3406 does not change.** The `is_coordinator` argument at the `materialize_agent_context_file_with_filename_activated` call site changes and drags allowlist entry L8. |
+| `src-tauri/src/commands/session.rs` | 16 identifiers. Rule A on `coordinator_clocks`, `coordinator_id`, `coordinator_matrix`, `coordinator_cascade_close_enabled`, `execute_manual_coordinator_destroy`, `is_coordinator`, `is_coordinator_for_cwd`, `CoordinatorCloseOutcome`; Rule B on `SelectionCoordinator`, on the `coordinator: State<..>` arg at :4582, and on **`coordinator_shutdown` at :1432, consumed at :2573, which becomes `arbiter_shutdown` and NOT `orchestrator_shutdown`** (5.2 binding clause). **The `close_coordinator` fn name at :3406 does not change.** The `is_coordinator` argument at the `materialize_agent_context_file_with_filename_activated` call site changes and drags allowlist entry L8. |
 | `src-tauri/src/commands/window.rs` | Rule B: `SelectionCoordinator` and its local binding. |
 | `src-tauri/src/config/activity_log.rs` | `is_coordinator` read. |
-| `src-tauri/src/config/agent_config.rs` | **S-pin** on `AgentDarkFactory::is_coordinator_of` (:95). |
-| `src-tauri/src/config/instance_artifacts.rs` | `COORDINATOR_CLOCKS_FILE_NAME` (:129) and `COORDINATOR_CLOCKS_TMP_GLOB` (:134) identifiers; their **values** `"coordinator_clocks.json"` and `"coordinator_clocks.json.*.tmp"` are frozen. One test fn name. |
-| `src-tauri/src/config/loops.rs` | **S-pin** on `LoopTargetKind::WorkgroupCoordinator` (:25), `LoopPolicy::busy_coordinator` (:98), `LoopAuditEntry::busy_coordinator_policy` (:153), `AcLoopSummary::busy_coordinator` (:169); plus `BusyCoordinatorPolicy` (7 identifiers). |
+| `src-tauri/src/config/agent_config.rs` | **S1-pin** on `AgentDarkFactory::is_coordinator_of` (:95). |
+| `src-tauri/src/config/instance_artifacts.rs` | `COORDINATOR_CLOCKS_FILE_NAME` (:129) and `COORDINATOR_CLOCKS_TMP_GLOB` (:134) identifiers; their **values** `"coordinator_clocks.json"` and `"coordinator_clocks.json.*.tmp"` are frozen, and so is the doc comment's reference at :133 except for the symbol name it cites. The test fn name at :617 renames, and **allowlist L12 applies at :620**: `format!("{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp")` is an inline capture of the renamed const and does not compile unless the literal follows. |
+| `src-tauri/src/config/loops.rs` | **S1-pin** on `LoopTargetKind::WorkgroupCoordinator` (:25), `LoopPolicy::busy_coordinator` (:98), `LoopAuditEntry::busy_coordinator_policy` (:153), `AcLoopSummary::busy_coordinator` (:169); plus `BusyCoordinatorPolicy` (7 identifiers). |
 | `src-tauri/src/config/mod.rs` | `pub mod coordinator_clocks;` at :12 becomes `pub mod orchestrator_clocks;`. |
 | `src-tauri/src/config/projects.rs` | `COORDINATOR_CONTEXT_TEMPLATE_FILENAME` use, `coordinator_bytes`, `coordinator_template`. |
 | `src-tauri/src/config/root_agent.rs` | 5 identifiers. Every template string it holds is frozen. |
 | `src-tauri/src/config/seed_manifest.rs` | `V1CoverageBoundary::CoordinatorStatelessV2ToV4`, `::CoordinatorStatelessV3ToV4`, `::CoordinatorSeededV3ToV4` at :3279-3281 and :5913-5915. The enum is `pub(crate)` and not serde-derived. |
 | `src-tauri/src/config/seeded_context_templates.rs` | 22 identifiers, including the four frozen-snapshot constants (identifier only, bytes frozen) and `get_default_coordinator_template`, `is_known_generated_coordinator_template`, and the byte-exactness test fn names. |
 | `src-tauri/src/config/session_context.rs` | 21 identifiers, including `COORDINATOR_CONTEXT_TEMPLATE_FILENAME` at :13 (its value `"Context.coordinator.md"` is frozen), `coordinator_path`, `coordinator_content`, `coordinator_template_path`. |
-| `src-tauri/src/config/sessions_persistence.rs` | **S-pin** on `PersistedSession::is_coordinator` (:377); one test fn name. |
-| `src-tauri/src/config/settings.rs` | **S-pin** on the 7 members at :294, :527, :529, :532, :534, :538, :542; identifier-only change on `legacy_start_only_coordinators` at :310, whose existing `rename = "startOnlyCoordinators"` is untouched. All `"startOnlyCoordinators"` / `"restoreCoordinatorWakeState"` / `"coordinator*"` literals in the migration and its tests are frozen. |
-| `src-tauri/src/config/teams.rs` | The largest Rust file in the phase, 39 identifiers: `is_coordinator`, `is_coordinator_of` (:1619), `is_any_coordinator` (:1626), `is_coordinator_for_cwd` (:1636), `resolve_wg_coordinator_replica` (:442), `verified_wg_coordinator_target` (:493), `verify_pty_input_coordinator_root` (:1038), `DiscoveredTeam::coordinator_name` (:37) and `::coordinator_path` (:39) with **no pin** (not serde), `validate_coordinator_to_root_route`, and the test fn names. Allowlist L9 covers the `Debug` labels at :583 and :603 and the assertion at :2360. |
-| `src-tauri/src/lib.rs` | 11 identifiers: `CoordinatorClocksState`, `coordinator_clocks`, `coordinator_clocks_for_exit`, `is_any_coordinator`, `is_coordinator`, `restore_coordinator_wake_state`, and Rule B on `SelectionCoordinator`, `selection_coordinator`, `selection_coordinator_for_exit`, `selection_coordinator_for_setup`. **The `close_coordinator` entry in the `generate_handler!` list, `lib.rs:3370`, does not change.** |
+| `src-tauri/src/config/sessions_persistence.rs` | **S1-pin** on `PersistedSession::is_coordinator` (:377); one test fn name. |
+| `src-tauri/src/config/settings.rs` | **S1-pin** on the 7 members at :294, :527, :529, :532, :534, :538, :542; identifier-only change on `legacy_start_only_coordinators` at :310, whose existing `rename = "startOnlyCoordinators"` is untouched. All `"startOnlyCoordinators"` / `"restoreCoordinatorWakeState"` / `"coordinator*"` literals in the migration and its tests are frozen. |
+| `src-tauri/src/config/teams.rs` | The largest Rust file in the phase, 39 identifiers: `is_coordinator`, `is_coordinator_of` (:1619), `is_any_coordinator` (:1626), `is_coordinator_for_cwd` (:1636), `resolve_wg_coordinator_replica` (:442), `verified_wg_coordinator_target` (:493), `verify_pty_input_coordinator_root` (:1038), `DiscoveredTeam::coordinator_name` (:37) and `::coordinator_path` (:39) with **no pin** (not serde), `validate_coordinator_to_root_route`, `TerminalSnapshotAuthorityKind::Coordinator` (:567), `VerifiedPtyInputIdentity::is_coordinator` (:543, not serde, no pin), and the test fn names. Allowlist **L9** covers the `Debug` labels at :583 and :603 and the assertion at :2360; **L10** covers the `Debug` label at :584; **L11** covers the assertion at :2328, which reads the derived `Debug` of the renamed variant and goes red if left; **L14** covers `format!("_agent_{coordinator}")` at :822, an inline capture that does not compile unless the literal follows. The `format!("_agent_{member}")` at :809 is untouched. |
+| `src-tauri/src/lib.rs` | 11 identifiers: `CoordinatorClocksState`, `coordinator_clocks`, `coordinator_clocks_for_exit`, `is_any_coordinator`, `is_coordinator`, `restore_coordinator_wake_state`, and Rule B on `SelectionCoordinator`, `selection_coordinator`, `selection_coordinator_for_exit`, `selection_coordinator_for_setup`. **The `close_coordinator` entry in the `generate_handler!` list, `lib.rs:3370`, does not change.** Also gains the new `wire_keys_are_stable_for_every_renamed_serialised_member` test of section 5.9, inside the existing `#[cfg(test)]` module. |
 | `src-tauri/src/loops/delivery.rs` | 8 identifiers around the busy-orchestrator policy and target resolution. |
 | `src-tauri/src/loops/scheduler.rs` | `BusyCoordinatorPolicy`, `WorkgroupCoordinator`, `busy_coordinator`, `busy_coordinator_policy`. |
 | `src-tauri/src/phone/mailbox.rs` | 23 identifiers on the routing and authorization path. Every FQN fixture literal is frozen. |
-| `src-tauri/src/phone/types.rs` | **S-pin** on `PtyInputReasonCode::SenderNotCoordinator` (:82) and `::TargetIsCoordinator` (:85). |
+| `src-tauri/src/phone/types.rs` | **S1-pin** on `PtyInputReasonCode::SenderNotCoordinator` (:82) and `::TargetIsCoordinator` (:85). |
 | `src-tauri/src/pty/container_backend.rs` | One test fn name. |
 | `src-tauri/src/pty/container_tokens.rs` | `verify_pty_input_coordinator_root` call. |
-| `src-tauri/src/pty/git_watcher.rs` | `CoordinatorChangedPayload` (:414) type name renames freely (a struct type name is not serialised); **S-pin** on its `is_coordinator` field (:416). |
+| `src-tauri/src/pty/git_watcher.rs` | `CoordinatorChangedPayload` (:414) type name renames freely (a struct type name is not serialised); **S1-pin** on its `is_coordinator` field (:416). |
 | `src-tauri/src/pty/inject.rs` | `is_coordinator` read. |
 | `src-tauri/src/pty/terminal_snapshot.rs` | `augment_coordinator_project`, `is_coordinator`, `verify_pty_input_coordinator_root`. |
 | `src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs` | 6 identifiers; the FQN fixture literals are frozen. |
-| `src-tauri/src/resource_monitor/watchdog.rs` | Rule B: `SelectionCoordinator`, `running_coordinator`, and **S-pin** on `QuarantineRetryPath::Coordinator` (:35) which becomes `::Arbiter` with `#[serde(rename = "coordinator")]`. |
+| `src-tauri/src/resource_monitor/watchdog.rs` | Rule B: `SelectionCoordinator`, `running_coordinator`, and **S1-pin** on `QuarantineRetryPath::Coordinator` (:35) which becomes `::Arbiter` with `#[serde(rename = "coordinator")]`. |
 | `src-tauri/src/screenshot/windows.rs` | Rule B: one `SelectionCoordinator` reference. |
 | `src-tauri/src/session/auto_close.rs` | 17 identifiers, Rule A on the clock and cascade path, Rule B on the arbiter handle. The three event-name literals are frozen. |
 | `src-tauri/src/session/context_alerts.rs` | 6 identifiers. |
 | `src-tauri/src/session/manager.rs` | 16 identifiers, including `coordinator_refs_by_team`, `coordinator_ids_by_team`, `coordinator_cwd`; allowlist L9 covers the `Debug` label at :63. |
 | `src-tauri/src/session/selection.rs` | Concept B owner. All 8 Concept B symbols plus every local binding, and allowlist L7 for the 7 sentinel literals. The 6 Concept A lines the epic measured in this file take Rule A. |
-| `src-tauri/src/session/session.rs` | **S-pin** on `Session::is_coordinator` (:122) and `SessionInfo::is_coordinator` (:298). |
+| `src-tauri/src/session/session.rs` | **S1-pin** on `Session::is_coordinator` (:122) and `SessionInfo::is_coordinator` (:298). |
 | `src-tauri/src/testability/ui_automation.rs` | Rule B on `SelectionCoordinator`; Rule A on `automation_app_with_coordinator` and the local `coordinator`. |
 | `src-tauri/src/web/commands.rs` | `CoordinatorClocksState`, `coordinator_clocks`, Rule B on `SelectionCoordinator` and its local. |
 
@@ -670,14 +993,14 @@ Rule A unless the row says otherwise. "S-pin" means Rule S applies in that file.
 | `src-tauri/tests/pty_powershell_managed_native.rs` | Rule B: import at :50 and local. |
 | `src-tauri/tests/wake_consumption_measure.rs` | Rule B: import at :65 and local. |
 
-### 6.5 `repo-AgentsCommander`: MODIFIED, TypeScript (27)
+### 6.5 `repo-AgentsCommander`: MODIFIED, TypeScript (28)
 
 | Path completo archivo | Que se modifico |
 | --- | --- |
-| `src/shared/ipc.ts` | `CoordinatorCloseOutcome`, `closeCoordinator` (:213), `onSessionCoordinatorChanged` (:753), `onCoordinatorClockUpdated` (:779), `onCoordinatorAutoCloseChanged` (:788), `onCoordinatorManualCloseChanged` (:797), `isSelectionCoordinatorBusyError` (Rule B), and the local `const coordinator` at :1037. The `"close_coordinator"` invoke name at :214, the four event-name literals, the `{ isCoordinator: boolean }` payload types at :754/:756, `busyCoordinator` at :971/:985 and the `coordinator: string` command args at :1114/:1134 are all frozen. |
+| `src/shared/ipc.ts` | `CoordinatorCloseOutcome`, `closeCoordinator` (:213), `onSessionCoordinatorChanged` (:753), `onCoordinatorClockUpdated` (:779), `onCoordinatorAutoCloseChanged` (:788), `onCoordinatorManualCloseChanged` (:797), `isSelectionCoordinatorBusyError` (Rule B), and the local `const coordinator` at :1037. **The shorthand at :1081 expands to `coordinator: orchestrator,`** (Rule K shorthand clause): the property is the frozen wire key, the binding is the renamed `const`. The `"close_coordinator"` invoke name at :214, the four event-name literals, the `{ isCoordinator: boolean }` payload types at :754/:756, `busyCoordinator` at :971/:985, the `coordinator: string` command args at :1114/:1134 and the shorthands at :1122/:1142 that reference them are all frozen. |
 | `src/shared/ipc.transport.test.ts` | `isSelectionCoordinatorBusyError` call at :134. Every `"selectionCoordinator*"` string and every `coordinator:` team-config fixture key is frozen. |
 | `src/shared/shortcuts.ts` | `requestCoordinatorCloseById` import and call, plus allowlist L6 at :3. |
-| `src/shared/types.ts` | `BusyCoordinatorPolicy` (:1322, type alias name; its three string values are unchanged), `CoordinatorCloseOutcome`, `TeamSessionGroup.coordinator` (:1179), `Team.coordinatorName` (:1193). Frozen: `isCoordinator` at :40 and :1243, `AcTeam.coordinator` at :1232, the settings keys, `busyCoordinator` at :1338, `LoopTargetKind = "workgroupCoordinator"` at :1320. |
+| `src/shared/types.ts` | `BusyCoordinatorPolicy` (:1322, type alias name; its three string values are unchanged), `CoordinatorCloseOutcome`, `TeamSessionGroup.coordinator` (:1179), `Team.coordinatorName` (:1193). Frozen: `isCoordinator` at :40 and :1243, `AcTeam.coordinator` at :1232, **`TeamConfigResult.coordinator` at :1505**, the settings keys, `busyCoordinator` at :1338, `LoopTargetKind = "workgroupCoordinator"` at :1320. |
 | `src/sidebar/App.tsx` | `onSessionCoordinatorChanged`, `setIsCoordinator`, `isSelectionCoordinatorBusyError`. The destructured `isCoordinator` payload binding at :801 is frozen. |
 | `src/sidebar/components/AcDiscoveryPanel.tsx` | The local function `isCoordinator` at :43 and the comment at :42. `t.coordinator` at :44 frozen. |
 | `src/sidebar/components/EditLoopModal.tsx` | `coordinatorOptions` (:30), `coordinatorOptionsFromWorkgroups` import. `busyCoordinator` frozen. |
@@ -689,6 +1012,7 @@ Rule A unless the row says otherwise. "S-pin" means Rule S applies in that file.
 | `src/sidebar/components/ProjectPanel.context-menu-hover.test.tsx` | Local `openCoordinatorMenu` (:187). |
 | `src/sidebar/components/ProjectPanel.context-menu.test.tsx` | Local helper `projectDiscoveryWithCoordinatorRepos` (:81). |
 | `src/sidebar/components/ProjectPanel.groups-filter.test.tsx` | Local `openCoordinatorMenu`. |
+| `src/sidebar/components/ProjectPanel.raise-hand.test.tsx` | **New in round 2.** The helper parameters `isCoordinator` at :34 and :47 and the argument use at :54 rename to `isOrchestrator`; the shorthand at :39 expands to `isCoordinator: isOrchestrator,`. Frozen: the object properties at :67 and :191, and the three test titles at :106, :186, :202. This is the only TypeScript file outside the tables that carried an in-scope local; section 5.5 gives the sweep that proves it. |
 | `src/sidebar/components/ProjectPanel.regex-filter.test.tsx` | **One new `it(...)`** per section 5.8. No existing assertion changes; every `coordinator:` fixture key stays. |
 | `src/sidebar/components/ProjectPanel.repo-browse.automation.test.tsx` | Local helper `coordinatorAgent` (:144). |
 | `src/sidebar/components/ProjectPanel.repo-browse.test.tsx` | Local helper `coordinatorAgent`. |
@@ -697,16 +1021,23 @@ Rule A unless the row says otherwise. "S-pin" means Rule S applies in that file.
 | `src/sidebar/components/SessionItem.test.tsx` | Locals `nonCoordinator` (:343) and `noRepoCoordinator` (:367). |
 | `src/sidebar/components/SettingsModal.tsx` | Local `validateCoordinatorIdle` (:1652). All seven settings keys and the six `settings.general.coordinator*` testids are frozen. |
 | `src/sidebar/components/WorkgroupGroupRail.raise-hand.test.tsx` | Test-helper option `coordinator?: boolean` (:27, :29, :145) and its use at :40. |
-| `src/sidebar/components/loop-modal-helpers.ts` | `LoopCoordinatorOption` (:3), `coordinatorName` (:5, :22), `coordinatorOptionsFromWorkgroups`, the local `coordinator` (:18). `agent.isCoordinator` and `BusyCoordinatorPolicy`-typed members frozen except the type-alias name itself. |
+| `src/sidebar/components/loop-modal-helpers.ts` | `LoopCoordinatorOption` (:3), `coordinatorName` (:5, :22), `coordinatorOptionsFromWorkgroups` (:13), the local `coordinator` (:18, :19, :22, :23). **Allowlist L13 applies at :23**: the template literal `` `${wg.name} - ${coordinator.name}` `` interpolates the renamed local and does not typecheck unless it follows. `agent.isCoordinator` (:18) and `BusyCoordinatorPolicy`-typed members frozen except the type-alias name itself. |
 | `src/sidebar/stores/sessions.ts` | `lastCoordinatorVisibleOrderByProject` and its setter (:14), `frozenCoordinatorVisibleOrderByProject` and its setter (:15), `recordCoordinatorVisibleOrder`, `coordinatorVisibleOrder`, `setIsCoordinator`, the local `coordinator` (:249, :279) and `team.coordinatorName` (:255, :269). |
 | `src/sidebar/stores/sessions-helpers.test.ts` | `coordinatorVisibleOrder`, `recordCoordinatorVisibleOrder`. |
 | `src/terminal/App.tsx` | `isSelectionCoordinatorBusyError` (Rule B). |
 
-### 6.6 `repo-AgentsCommander`: MODIFIED, data (1)
+### 6.6 `repo-AgentsCommander`: MODIFIED, docs and data (3)
 
 | Path completo archivo | Que se modifico |
 | --- | --- |
 | `src-tauri/module-arcs.txt` | Regenerated by the two-step pipeline of section 9.4. 14 lines move; the arc set is unchanged under the renaming bijection. Expected post SHA-256 `2EF5875ADE100F71B52E1D552755F11091E92D1A7EDA3A9351F00DFA6D9E92E6`, 1037 lines, 82163 bytes. |
+| `docs/reference/architecture.md` | Line 777, one table cell: `config/coordinator_clocks.rs` becomes `config/orchestrator_clocks.rs`. The cell's description already says "Orchestrator idle clocks". Nothing else in the file changes. |
+| `docs/reference/directory-layout.md` | Line 76, one table cell: the third column `config/coordinator_clocks.rs` becomes `config/orchestrator_clocks.rs`. **The first column, `coordinator_clocks.json`, does not change**: that is the on-disk artifact name, frozen for phase 3. Nothing else in the file changes. |
+
+`docs/features/session-auto-close.md:151` is deliberately absent: it names `coordinator_clocks.json`,
+the frozen artifact, not the renamed source file. These three doc lines are the complete set of
+tracked-tree references to any of the seven renamed paths outside `src/`, `src-tauri/`,
+`module-arcs.txt`, `plans/` and `CHANGELOG.md`.
 
 ### 6.7 `repo-agentscommander_webpage`: ADDED (3)
 
@@ -744,7 +1075,7 @@ Playwright spec references the renamed key or the renamed components.
    which restates the key serde already derives.
 2. **On-disk compatibility is total in both directions.** A `settings.json`, `sessions.json`,
    `coordinator_clocks.json`, team config or loop config written by the previous release loads
-   unchanged, and a file written by this build loads in the previous release. Rule S is what makes
+   unchanged, and a file written by this build loads in the previous release. Rule S1 is what makes
    that true; section 9.2 proves it per key.
 3. **The IPC contract is unchanged.** Command names, payload keys, event names and error-code strings
    are byte-identical, so a frontend built from this branch and a backend built from `main` remain
@@ -807,29 +1138,53 @@ enhanced provenance control applies (section 13.2).
 
 ### 9.1 New tests
 
-Exactly one new test in the whole phase, the sidebar filter token test of section 5.8. This phase
-adds no behavior, so it adds no other test; what it must prove is that nothing moved, and that is
-proved by the negative controls in 9.2 and the two comparators in 9.3 and 9.4.
+**Two new tests, in three `it`/`fn` bodies.** Round 1 said "exactly one"; that was wrong, because the
+one gate the phase actually lacked had no test at all.
+
+| Test | Where | What it pins | Why it exists |
+| --- | --- | --- | --- |
+| `matches an orchestrator row by the synthetic filter token, ...` | `src/sidebar/components/ProjectPanel.regex-filter.test.tsx` (section 5.8) | the synthetic `"orchestrator"` filter token phase 1 introduced | issue item 3c, residual R11 of #1571 |
+| `wire_keys_are_stable_for_every_renamed_serialised_member` | `src-tauri/src/lib.rs` `#[cfg(test)]` (section 5.9) | the exact wire key of 25 of the 28 members of section 3.3 | 22 of those members have no existing tripwire (measured, section 3.3); a missing Rule S1 pin is otherwise completely silent |
+| `team_cli_wire_keys_are_stable` | `src-tauri/src/cli/team.rs` `#[cfg(test)]` (section 5.9) | the remaining 3 members, whose types are private to that module | same, plus module privacy |
+
+This phase adds no behavior, so it adds no behavioral test beyond the first row; what it must prove
+is that nothing moved. That is proved by the wire-key test above, the negative controls in 9.2, and
+the two comparators in 9.3 and 9.4.
 
 ### 9.2 Negative controls: existing tests that must stay green with their assertions untouched
 
-If any of these needs an assertion edited, the run has crossed a boundary and must stop.
+If any of these needs an assertion edited, the run has crossed a boundary and must stop, **with the
+three declared exceptions listed after the table**, where the plan itself mandates the edit.
 
 | Test | File | What it pins |
 | --- | --- | --- |
-| `coordinator_clock_settings_default_when_keys_absent` | `config/settings.rs:7044` | removes the five `coordinator*` JSON keys and asserts the defaults come back. Fails immediately if Rule S is skipped on any of them. |
+| `coordinator_clock_settings_default_when_keys_absent` | `config/settings.rs:7044` | removes five `coordinator*` JSON keys from a serialised default and asserts the defaults come back. It must stay green with its five `obj.remove("coordinator...")` literals **frozen**. Note what it does **not** do: it is not a tripwire for a missing pin, because the value it reads back is by construction the value it asserts (section 3.3). Round 1 claimed it was the primary Rule S tripwire; it is not, and section 5.9 supplies the real one. |
 | `coordinator_auto_close_skip_telegram_assigned_round_trips` | `config/settings.rs:7068` | asserts `json.get("coordinatorAutoCloseSkipTelegramAssigned")` is present after serialising. |
 | the four issue-#248 migration tests | `config/settings.rs:8255-8347` | assert `!out.contains("startOnlyCoordinators")` and `out.contains("\"restoreCoordinatorWakeState\":true")`. |
 | `exact_coordinator_error_strings_are_stable` | `session/selection.rs` | pins the three `selectionCoordinator*` error strings. Must stay green **unrenamed in its string content**. |
 | `source_ownership_sentinel_rejects_each_one_line_mutation` and the `ArbiterJob` sentinel | `session/selection.rs:3961-4053` | reads `selection.rs` back and pins the enum declaration. Green only if allowlist L7 is applied completely. |
 | `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1810` | pins the `is_coordinator` argument in the scraped call site. Green only if allowlist L8 is applied. |
 | `coordinator_pre_token_minimization_snapshot_is_byte_exact`, `coordinator_pre_cross_workgroup_snapshot_is_byte_exact`, `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact`, `old_coordinator_raise_hand_snapshot_is_byte_exact` | `config/seeded_context_templates.rs` | hash the frozen constants' bytes. Renaming the constants must not move a hash. |
-| `coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name` | `config/instance_artifacts.rs` | pins `"coordinator_clocks.json"` and its temp glob. |
+| `coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name` | `config/instance_artifacts.rs:617` | pins that `COORDINATOR_CLOCKS_TMP_GLOB` is derivable from `COORDINATOR_CLOCKS_FILE_NAME`. **Declared exception: this test's body must change.** Its `format!("{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp")` at `:620` is an inline capture of a renamed const and will not compile otherwise (allowlist L12), and its own fn name renames by Rule A. The two **values** it compares, `"coordinator_clocks.json"` and `"coordinator_clocks.json.*.tmp"`, stay byte-identical, so the property it asserts is unchanged. Round 1 listed this test as "assertions untouched", which contradicted its own section 6.3. |
 | `cli_workgroup_team.rs` `team_config["coordinator"]` assertions at :525 and :1342 | `tests/cli_workgroup_team.rs` | pin the team-config JSON key. |
 | `cli_loop.rs` `list["loops"][0]["busyCoordinator"]` at :234, `busyCoordinator = "waitUntilIdle"` at :181, `"forceInject"` at :208 | `tests/cli_loop.rs` | pin the loop config key and its values. |
 | `cli_project_registration.rs` `scope = "context:coordinator"` at :316, :489, :547 | `tests/cli_project_registration.rs` | pins the seed-manifest scope string. |
 | `terminal-snapshot-portable` (both commands, 4 OSes) | `crates/` | pure negative control: `crates/` has zero identifiers in this phase, so these must be green and unchanged. |
 | the 62 frontend test files' `isCoordinator` / `coordinator` / settings-key fixtures | `src/**/*.test.ts(x)` | pin every wire key on the TypeScript side. |
+
+**The four declared assertion-text exceptions.** Every test whose assertion *text* changes in this
+phase does so for a Rule P allowlist reason, and there are exactly four. Anything beyond this list is
+a defect and stops the run.
+
+| Test | File | Allowlist entry | Why the text must change |
+| --- | --- | --- | --- |
+| `coordinator_jobs_are_typed_data_without_managed_handles_or_futures` and `source_ownership_sentinel_rejects_each_one_line_mutation` | `session/selection.rs:3961-4056` | L7 | the sentinel reads `selection.rs` back and pins the enum by name |
+| `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1810` | L8 | it scrapes `commands/session.rs` and pins the argument name in the call-site text |
+| `terminal_snapshot_target_debug_omits_identity_and_path_text` (`teams.rs:2346`) and `terminal_snapshot_coordinator_policy_is_distinct_from_pty_input` (`teams.rs:2302`) | `config/teams.rs:2360`, `:2328` | L9, L11 | each asserts on `Debug` output whose text is a renamed field label or enum variant |
+| `coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name` | `config/instance_artifacts.rs:617` | L12 | inline format capture of a renamed const; a compile error otherwise |
+
+In all four, the **property** asserted is identical before and after. If any *other* test needs an
+assertion edited, the run has changed behavior and must stop.
 
 ### 9.3 Acceptance criterion 6: the exact literal-set extraction and comparison command
 
@@ -919,19 +1274,52 @@ worktree is CRLF under `core.autocrlf=true`. The comparator renders every newlin
 as the two characters `\n`, so the two sides are directly comparable and no line-ending
 normalisation step is needed.
 
-**Green iff both hold:**
+**Green iff both hold.** Round 1's formulation failed in both directions on a *correct*
+implementation: 6a's allowlist was missing five literals the rename forces, and 6b was
+unsatisfiable, because Rule S1 introduces key literals that did not exist before. Both halves below
+are now closed, positive, and reproducible from the base tree.
 
-- **6a.** Every `<=` row (present in `before`, absent in `after`) is one of the nine allowlist entries
-  of section 5.4: the six module specifiers L1 to L6, the seven `CoordinatorJob` literals of L7, the
-  one scraped call-site literal of L8, and the four `Debug`/assertion labels of L9. **No other
-  `coordinat` literal may disappear.**
-- **6b.** There is **no** `=>` row matching `coordinat`. No new literal containing `coordinator` may
-  appear anywhere. This is the half that proves nothing was accidentally rewritten into a new
-  serialised spelling.
+- **6a. Every `<=` row matching `coordinat` is one of the 22 expected disappearances.** These are the
+  23 distinct literals of the section 5.4 allowlist, minus L10 `"target_is_coordinator"`, which
+  survives at five frozen sites and therefore never leaves the set (section 5.4a). Concretely, the
+  22 are: the six module specifiers L1-L6; the seven `CoordinatorJob` literals of L7; the one
+  scraped call-site literal of L8; the four labels and assertion of L9; `"kind: Coordinator"` (L11);
+  `"{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp"` (L12); the L13 template; and `"_agent_{coordinator}"`
+  (L14). **No other `coordinat` literal may disappear.** Fewer than 22 rows is also a failure unless
+  the run can name which allowlist entry it did not need.
+
+- **6b. The `=>` rows matching `coordinat` are exactly two: `"isCoordinatorOf"` and
+  `"busyCoordinatorPolicy"`.** Not "none". Rule S1 writes 27 `#[serde(rename = "<key>")]` attributes,
+  whose keys are 16 distinct literals; 14 of them already exist in the base tree, so pinning them
+  adds no new set member, and **exactly two do not exist anywhere in either repo today**. Those two
+  are the keys of `AgentDarkFactory::is_coordinator_of` (`config/agent_config.rs:95`) and
+  `LoopAuditEntry::busy_coordinator_policy` (`config/loops.rs:153`), which, not coincidentally, are
+  two of the members section 3.3 shows have no other coverage of any kind. So this half is a
+  **positive** gate: if either row is missing, that pin was not written.
+
+  Reproduce the "exactly two" from the base set before trusting it:
+
+  ```powershell
+  $before = [System.Collections.Generic.HashSet[string]]::new()
+  foreach ($l in [System.IO.File]::ReadAllLines("$S\before.txt")) { [void]$before.Add($l) }
+  foreach ($k in @('coordinator','isCoordinator','busyCoordinator','isCoordinatorOf',
+                   'workgroupCoordinator','busyCoordinatorPolicy','restoreCoordinatorWakeState',
+                   'coordinatorIdleBadgeYellowMinutes','coordinatorIdleBadgeRedMinutes',
+                   'coordinatorAutoCloseEnabled','coordinatorAutoCloseMinutes',
+                   'coordinatorAutoCloseSkipTelegramAssigned','coordinatorCascadeCloseEnabled',
+                   'sender_not_coordinator','target_is_coordinator','startOnlyCoordinators')) {
+    '{0,-45} {1}' -f $k, $(if ($before.Contains('"' + $k + '"')) { 'PRESENT' } else { 'ABSENT' })
+  }
+  # exactly two ABSENT: isCoordinatorOf, busyCoordinatorPolicy
+  ```
+
+  Rule S2 adds three `long = "coordinator"` literals; `"coordinator"` is PRESENT, so S2 contributes
+  no row. The new tests of sections 5.8 and 5.9 contribute no row either: 5.8's only new literal is
+  `orchestrator`, and 5.9 is constrained to contain no `coordinat` literal beyond the 16 wire keys.
 
 Rows not matching `coordinat` are the renamed counterparts (`"./orchestrator-badge"`,
-`"enum ArbiterJob"`, `"is_orchestrator"`, ...) plus the literals introduced by the single new test of
-section 5.8. Inspect them, but they are not part of the gate: a serialised value containing the word
+`"enum ArbiterJob"`, `"is_orchestrator"`, `"kind: Orchestrator"`, `"_agent_{orchestrator}"`, ...).
+Inspect them, but they are not part of the gate: a serialised value containing the word
 `coordinator` cannot change without appearing in 6a or 6b.
 
 Website repo, same idea, one command, no tool needed because the surface is 8 lines:
@@ -1011,17 +1399,21 @@ outcome on this repository. Only exit 3 means no graph was written. Never confla
 | --- | --- | --- | --- | --- |
 | 1 | `cargo build` and `cargo test` pass with no new warning | `cargo check --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --lib --bins --tests`, cwd `src-tauri`, from PowerShell, stdout redirected to a file | exit 0 on all three; zero new warnings under `-D warnings` | implementer locally per content commit; CI job `rust-regression` on the exact PR head |
 | 2 | `vitest` passes across the 62 affected frontend test files | `npm run typecheck` then `npm test` | exit 0; the #480 known-debt set is unchanged | implementer locally; CI job `frontend-regression` on the exact PR head |
-| 3 | `npm run check:frontend-dependencies` reports no cycle regression | `npm run check:frontend-dependencies` | same module count and 0 errors as on the base (baseline recorded in the PR body before the first content commit) | **implementer locally. No CI job runs this** (section 3.8). Run once on the base and once on the tip; both outputs in the PR body |
+| 3 | `npm run check:frontend-dependencies` reports no cycle regression | `npm run check:frontend-dependencies` | **the measured triple is unchanged: `modules: 351, errors: 0, dependencies: 1535`.** Compare the triple, not the module list: the 6 TypeScript renames of R2-R7 change 6 node *names*, so an identical listing is the wrong expectation and "same module count" was the wrong phrasing. Baseline 351/0/1535 was run on the base tree with dependency-cruiser 18.0.0 | **implementer locally. No CI job runs this** (section 3.8). Run once on the base and once on the tip; both outputs in the PR body |
 | 4 | Levelization gate passes with a regenerated `module-arcs.txt` | section 9.4 | all five conditions of 9.4 | **implementer locally. No CI job runs this** (section 3.8). Digest pasted in the PR body |
 | 5 | `git log --follow` works on all 7 renamed files | `git log --follow --oneline -- <new path>` for each of the 7 | each listing reaches commits authored before C1, i.e. the file's pre-rename history | implementer at the branch tip, before opening the PR |
 | 6 | No diff touches a serialised literal | section 9.3 | 6a and 6b both hold | implementer at the branch tip; reviewer re-runs the same command |
-| 7 | The two concepts no longer share a word | `Select-String -Pattern 'Coordinator' src-tauri\src\session\selection.rs src-tauri\src\commands\resource_monitor.rs src-tauri\src\resource_monitor\watchdog.rs src-tauri\src\commands\window.rs` | the only remaining matches are the three phase-3 error-code strings `selectionCoordinatorUnavailable`, `selectionCoordinatorBusy`, `selectionCoordinatorRecursiveSubmission` and the test that pins them | implementer at the branch tip. See residual 10.2.1 |
+| 7 | The two concepts no longer share a word | `Select-String -Pattern 'Coordinator' src-tauri\src\session\selection.rs src-tauri\src\commands\resource_monitor.rs src-tauri\src\resource_monitor\watchdog.rs src-tauri\src\commands\window.rs` | the only remaining matches are the three phase-3 error-code strings `selectionCoordinatorUnavailable`, `selectionCoordinatorBusy`, `selectionCoordinatorRecursiveSubmission` and the test that pins them. Criterion 7 is certified in the form **"no identifier is shared between the two concepts"**, which is an accepted residual, not an open question: see 10.2.1 | implementer at the branch tip. See residual 10.2.1 |
 
-Additional gate, not in the issue but required by section 5.3:
+Additional gate, not in the issue but required by section 5.3. Round 1's criterion 8 named a
+tripwire that does not exist; this is its replacement, and it has three independent parts because a
+missing pin is invisible to the compiler, to criterion 6 and to the frontend suite alike.
 
 | # | Criterion | Command | Green means |
 | --- | --- | --- | --- |
-| 8 | Every serialised key is byte-identical | `cargo test --lib settings::` plus the round-trip and migration tests of section 9.2, with **no assertion edited** | Rule S was applied to all 28 members. A single missed pin reddens `coordinator_clock_settings_default_when_keys_absent` or one of the four #248 migration tests |
+| 8a | Every serialised key is proved at runtime | `cargo test --lib wire_keys_are_stable_for_every_renamed_serialised_member team_cli_wire_keys_are_stable`, cwd `src-tauri`, stdout redirected | both tests green, 28 members asserted. This is the only gate that actually reddens on a missing pin for the 22 members that have no other coverage |
+| 8b | The pin count and spelling match the plan | `git diff 147ad4ef..HEAD -- src-tauri/src \| Select-String -Pattern '^\+.*serde\(.*rename = '` | **exactly 27 added lines**, and their key strings are exactly the 27 of section 3.3 rows 1-15 and 17-28. Zero added lines that pin a key not in that table. This is section 14.1's manual count turned into a command |
+| 8c | The clap flags did not move | `git diff 147ad4ef..HEAD -- src-tauri/src/cli \| Select-String -Pattern '^\+.*arg\(long'` includes the three S2 pins, and `cargo test --tests cli_workgroup_team` is green with its ~20 `--coordinator` invocations and `workgroup_add_help_hides_team_definition_flags` **unedited** | Rule S2 was applied at all three sites. The `workgroup add` flag is `hide = true`, so its test passes either way; 8c's diff half is what catches it |
 
 ---
 
@@ -1048,20 +1440,47 @@ Additional gate, not in the issue but required by section 5.3:
 7. **One non-building commit per repo, containing only renames.** Section 7 item 6.
 8. **Two pull requests, one plan.** The repos have independent CI and independent merge policy. The
    app PR is the one that carries acceptance criteria 1 to 8; the website PR carries `npm run check`
-   and `npx playwright test`.
+   and `npm run smoke`.
 9. **The new test lives in `ProjectPanel.regex-filter.test.tsx`, not in a new file.** The behavior it
    pins is the regex filter's, its fixture already exists there, and a new file would need a new
    fixture for one assertion.
+10. **Rule S covers clap as well as serde (S2), rather than freezing the three fields.** Freezing
+    them would leave three Rust identifiers named `coordinator` after a phase whose whole purpose is
+    to remove them, and would contradict the register's already-closed verdicts on locals. Pinning
+    `long = "coordinator"` renames the identifier and keeps the public flag byte-identical, which is
+    what section 4 requires. The precedent is `cli/loop_cmd.rs:82`/`:104`, in the same directory.
+11. **The wire-key stability test is added, and 9.1 grows from one new test to two.** The alternative
+    considered and rejected was leaving Rule S1 verified by the manual count in 14.1. Measurement,
+    not preference, decided this: 22 of 28 members have no tripwire, and the test round 1 nominated
+    cannot fail. A missing pin is silent user-data loss on upgrade, which is the one enhanced control
+    section 13.1 declares applicable to this phase, so it needs executable evidence.
+12. **Criterion 6b whitelists the two genuinely new key literals rather than making the comparator
+    ignore `#[serde(..)]` strings.** Both would make 6b satisfiable. The whitelist was chosen because
+    it turns 6b from a negative gate into a positive one that proves the two least-covered pins were
+    written, and because it leaves the comparator a pure set-diff that a reviewer re-runs unmodified.
+    No third option stays open.
+13. **The two `docs/` path references are fixed in this phase (in-scope item 9), not deferred.** They
+    name `config/coordinator_clocks.rs`, a path that stops existing at commit C1. A stale path in a
+    reference table is a defect the rename creates, not the pre-existing prose that epic decision 2
+    protects. The neighbouring line that names `coordinator_clocks.json` is left alone, because that
+    artifact really does keep its name until phase 3.
 
 ### 10.2 Accepted residuals, each owned by a later phase
 
-1. **The three `selectionCoordinator*` error strings survive this phase.** Issue #1572 routes them to
-   phase 3 in as many words, because they cross into the frontend. The consequence is that criterion
-   7, read literally as "no shared word anywhere", cannot be fully true at the end of phase 2: the
-   two concepts still share the word inside those three string constants and inside
-   `exact_coordinator_error_strings_are_stable`. Criterion 7 is therefore certified in the form
-   stated in the 9.5 table: **no shared identifier**, with the three strings as the issue's own
-   declared exception. Owner: #1573.
+1. **The three `selectionCoordinator*` error strings survive this phase, and criterion 7 is certified
+   in a reformulated form that the tech lead has explicitly accepted.** Issue #1572 routes those
+   strings to phase 3 in as many words, because they cross into the frontend. Criterion 7 read
+   literally ("the two concepts no longer share a word") is therefore self-contradictory *inside the
+   issue*: the same issue that demands it also defers the three strings that violate it. The only
+   consistent reading is **"no identifier is shared between the two concepts"**, with the three
+   strings, and the test `exact_coordinator_error_strings_are_stable` that pins them, as the issue's
+   own declared exception.
+
+   **This is a settled decision, not an open question.** `ac-tech-lead-v3` accepted this
+   reformulation explicitly in the round-2 brief of 2026-08-27, on the record and by name, and will
+   surface it to the user at Step 7.5. It is recorded here as an accepted residual with owner
+   **#1573**, which is where the three strings are eliminated and criterion 7 becomes literally true.
+   No reviewer needs to re-open it, and no implementer needs to decide it.
 2. **A function named `isSelectionArbiterBusyError` compares against `"selectionCoordinatorBusy"`.**
    Direct consequence of residual 1. Owner: #1573.
 3. **Rust says `session.is_orchestrator` while TypeScript says `session.isCoordinator`.** Direct
@@ -1123,26 +1542,37 @@ isomorphic and the cycle count cannot change. Criterion 3 measures it anyway, ba
 Route: Full. The implementer owns every commit; the reviewer owns section 9's gates; the tech lead
 owns the merge.
 
-### 12.1 `repo-AgentsCommander`, 12 commits
+### 12.1 `repo-AgentsCommander`, 13 commits
 
 | # | Commit | Content | Gate before moving on |
 | --- | --- | --- | --- |
 | C0 | `docs(1572): plan for orchestrator internal identifiers` | this file only | none |
 | C1 | `refactor(1572): rename 7 coordinator files (pure git mv)` | the 7 `git mv` of section 5.6 and nothing else. **Does not build. This is the mandated split.** | `git show --stat C1` shows 7 renames, 0 insertions, 0 deletions |
-| C2 | `refactor(1572): orchestrator identifiers in config/` | `config/orchestrator_clocks.rs`, `config/mod.rs`, `teams.rs`, `settings.rs` (with Rule S), `session_context.rs`, `seeded_context_templates.rs`, `instance_artifacts.rs`, `projects.rs`, `seed_manifest.rs`, `root_agent.rs`, `loops.rs`, `agent_config.rs`, `sessions_persistence.rs`, `activity_log.rs` | `cargo check --all-targets` |
-| C3 | `refactor(1572): orchestrator identifiers in commands/, lib.rs, web/` | `commands/*.rs` (Rule S on `ac_discovery`, `entity_creation`, `loops`), `lib.rs`, `web/commands.rs` | `cargo check --all-targets` |
-| C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs` | `cargo check --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings` |
-| C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 12 production files plus allowlist L7, plus Rule S on `QuarantineRetryPath::Coordinator` | `cargo check --all-targets` |
+| C2 | `refactor(1572): orchestrator identifiers in config/` | `config/orchestrator_clocks.rs`, `config/mod.rs`, `teams.rs` (allowlist **L9, L10, L11, L14**), `settings.rs` (Rule S1), `session_context.rs`, `seeded_context_templates.rs`, `instance_artifacts.rs` (allowlist **L12**), `projects.rs`, `seed_manifest.rs`, `root_agent.rs`, `loops.rs` (Rule S1), `agent_config.rs` (Rule S1), `sessions_persistence.rs` (Rule S1), `activity_log.rs`, plus the two `docs/` path cells of section 6.6 | `cargo check --all-targets` |
+| C3 | `refactor(1572): orchestrator identifiers in commands/, lib.rs, web/` | `commands/*.rs` (Rule S1 on `ac_discovery`, `entity_creation`, `loops`), `lib.rs`, `web/commands.rs` | `cargo check --all-targets` |
+| C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S1 on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs`, and **Rule S2 on `cli/team.rs:49-53`, `:84-85` and `cli/workgroup.rs:48-49`** | `cargo check --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --tests cli_workgroup_team` green with its `--coordinator` invocations unedited (criterion 8c) |
+| C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 12 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | `cargo check --all-targets` |
 | C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | `cargo test --lib --bins --tests` (redirect stdout to a file), all green |
+| C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit | criterion 8a green; **and each test proved real**: see the note below |
 | C7 | `refactor(1572): rewrite the 7 renamed modules` | contents of the 7 ADDED files plus the 10 module specifiers L1 to L6 in their importers | `npm run typecheck` |
-| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining 21 files of section 6.5 | `npm run typecheck`, `npm test` |
+| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining 22 files of section 6.5, including `ProjectPanel.raise-hand.test.tsx` and the two shorthand expansions (`ipc.ts:1081`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts` | `npm run typecheck`, `npm test` |
 | C9 | `test(1572): pin the sidebar orchestrator filter token (R11)` | the one new `it(...)` of section 5.8 | `npm test -- ProjectPanel.regex-filter` green, and green only with the production token present |
 | C10 | `chore(1572): regenerate module-arcs.txt` | `src-tauri/module-arcs.txt` only | section 9.4, all five conditions |
 | C11 | `chore(1572): final gate evidence` | nothing, or the PR body only | sections 9.3, 9.5 criteria 1 to 8, in order |
 
-C9 must be proved to be a real test: run it once with the production token at `ProjectPanel.tsx:975`
-temporarily reverted to `"coordinator"` and confirm it goes red, then restore. Materialise-and-revert
-is the accepted technique; the revert must be verified by `git status --porcelain` before C10.
+**Both new tests must be proved to be real tests, by the same materialise-and-revert technique.**
+
+- **C9.** Run it once with the production token at `ProjectPanel.tsx:975` temporarily reverted to
+  `"coordinator"` and confirm it goes red, then restore.
+- **C6b.** Pick any **three** of the 27 pins, spanning both assertion directions and both test sites,
+  for example `AgentDarkFactory::is_coordinator_of` (deserialise, `lib.rs`),
+  `QuarantineRetryPath::Coordinator` (serialise, `lib.rs`) and `TeamListItem::coordinator`
+  (serialise, `cli/team.rs`). Temporarily delete each pin's `rename = "..."`, one at a time, and
+  confirm the test goes red each time, then restore. A wire-key test that passes with a pin removed
+  is worthless, and this is the only way to know it does not.
+
+In both cases the revert must be verified by `git status --porcelain` being empty before the next
+commit. Materialise-and-revert is the accepted technique for proving a gate discriminates.
 
 ### 12.2 `repo-agentscommander_webpage`, 4 commits
 
@@ -1150,8 +1580,23 @@ is the accepted technique; the revert must be verified by `git status --porcelai
 | --- | --- | --- | --- |
 | W1 | `refactor(1572): rename Coordination* components (pure git mv)` | the 3 `git mv` of section 5.7 and nothing else. Does not build. | `git show --stat W1` shows 3 renames, 0 insertions, 0 deletions |
 | W2 | `refactor(1572): OrchestrationDemo identifiers and import sites` | `OrchestrationDemo.tsx`, `OrchestrationProof.astro`, `README.md` | `npm run check` |
-| W3 | `refactor(1572): rename the composer.coordinator i18n key` | `src/i18n/landing.ts` (6 lines), `src/components/alternatives/TeamComposer.astro` (2 lines) | `npm run check` (the key is typed `LandingMessageKey`, so a missed site is a type error), `npx playwright test` |
+| W3 | `refactor(1572): rename the composer.coordinator i18n key` | `src/i18n/landing.ts` (6 lines: 71, 176, 278, 381, 486, 585), `src/components/alternatives/TeamComposer.astro` (2 lines: 24, 25) | `npm run check`, `npm run smoke` (the repo's script name; there is no `playwright` script), **and the grep gate below** |
 | W4 | `chore(1572): gate evidence` | PR body only | the diff command of section 9.3 |
+
+**W3's grep gate, and why the two typed gates are not enough.** Seven of the eight i18n sites are
+covered by TypeScript: the five non-`en` locales are `Record<LandingMessageKey, string>` and
+`copy["composer.coordinator"]` at `TeamComposer.astro:25` is a typed indexed access. The eighth,
+`data-i18n="composer.coordinator"` at `TeamComposer.astro:24`, is a plain HTML attribute that
+`astro check` never reads and that only the runtime `[data-i18n]` switcher consumes. No Playwright
+spec touches that key (`tests/smoke.spec.ts:114` uses `composer.note`), so a forgotten `:24` passes
+`npm run check` and `npm run smoke` green and silently leaves that span untranslated on every
+language switch. The gate that does catch it:
+
+```powershell
+cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-agentscommander_webpage
+git grep -c 'composer\.orchestrator' -- src   # must total 8
+git grep -c 'composer\.coordinator'  -- src   # must be 0 (no output)
+```
 
 ### 12.3 Delivery
 
@@ -1237,22 +1682,96 @@ pre-PR attestation that the target never moved is forbidden.
 
 In this order, because this is where the phase can actually break:
 
-1. **Rule S coverage.** Count the `#[serde(rename = "...")]` additions in the diff. It must be **27**
-   new pins (28 members minus `legacy_start_only_coordinators`, already pinned). A missing pin is a
-   silent data-loss bug on upgrade that no compiler catches. `coordinator_clock_settings_default_when_keys_absent`
-   and the four #248 migration tests are the tripwires; verify they were not edited.
-2. **Criterion 6, part 6b.** No new literal containing `coordinator` may appear. That is the half a
-   careless run fails, by rewriting a wire key into a "consistent" new spelling.
-3. **The three source-text-coupled literals** (section 3.5). Each one is a green test that a partial
-   rename turns red in a confusing way, and each one is a literal the reviewer would otherwise flag as
-   an out-of-scope change.
-4. **Concept A versus Concept B in `commands/session.rs`, `session/auto_close.rs`, `phone/mailbox.rs`,
+1. **Rule S1 coverage, and the test that proves it.** Count the `#[serde(rename = "...")]` additions
+   in the diff (criterion 8b): exactly **27** new pins, spelled exactly as section 3.3 column 5.
+   Then check that C6b's two tests exist and cover all 28 members, and that the implementer recorded
+   the three pin-removal experiments proving they discriminate. Do **not** accept
+   `coordinator_clock_settings_default_when_keys_absent` as evidence: section 3.3 shows it passes
+   whether the pin is there or not.
+2. **Rule S2, the three clap fields.** `cli/team.rs:49-53`, `:84-85`, `cli/workgroup.rs:48-49` must
+   each carry an explicit `long = "coordinator"`. The `workgroup add` one is the dangerous one: its
+   flag is hidden and its only test asserts the flag is *absent* from `--help`, so it passes whether
+   the flag is `--coordinator` or `--orchestrator`. Read the diff, not the test result.
+3. **Criterion 6, both halves.** 6a: exactly the 22 expected `<=` rows, no others. 6b: exactly two
+   `=>` rows, `"isCoordinatorOf"` and `"busyCoordinatorPolicy"`: **their absence is a failure**,
+   because each is written by one of the two least-covered pins in the phase. A run that reports
+   "no `=>` rows" did not apply those pins.
+4. **The 23 allowlist literals** (section 5.4), and above all the five that are forced: L11, L12, L13
+   and L14 are a red test or a compile error if skipped, and L10 changes a `Debug` label that no gate
+   row will ever show. Each is also a literal a reviewer would otherwise flag as out-of-scope.
+5. **Concept A versus Concept B in `commands/session.rs`, `session/auto_close.rs`, `phone/mailbox.rs`,
    `session/manager.rs`, `lib.rs` and `web/commands.rs`.** These are the six mixed files. A blind pass
-   over them produces a compiling tree with the wrong names.
-5. **`close_coordinator`.** Confirm the fn name at `commands/session.rs:3406`, its `generate_handler!`
+   over them produces a compiling tree with the wrong names. Check `coordinator_shutdown`
+   (`commands/session.rs:1432`, used `:2573`) by name: it must be `arbiter_shutdown`, and
+   `orchestrator_shutdown` compiles and passes every gate while naming the wrong concept.
+6. **The two shorthand expansions.** `src/shared/ipc.ts:1081` must read `coordinator: orchestrator,`
+   and `ProjectPanel.raise-hand.test.tsx:39` must read `isCoordinator: isOrchestrator,`. A frozen
+   shorthand left alone does not typecheck; a renamed one silently changes a wire key.
+7. **`close_coordinator`.** Confirm the fn name at `commands/session.rs:3406`, its `generate_handler!`
    entry at `lib.rs:3370` and the invoke string at `src/shared/ipc.ts:214` are all still
-   `close_coordinator`, while the return type became `OrchestratorCloseOutcome` on both sides.
-6. **The `module-arcs.txt` digest.** It is predicted exactly. A different digest means the diff
+   `close_coordinator`, while the return type became `OrchestratorCloseOutcome` on both sides. Then
+   confirm `TeamConfigResult.coordinator` at `src/shared/types.ts:1505` was **not** renamed: if it
+   was, `EditTeamModal` loads with an empty selection and TypeScript says nothing.
+8. **The `module-arcs.txt` digest.** It is predicted exactly. A different digest means the diff
    changed the arc set, which this plan asserts is impossible.
-7. **C1 and W1.** `git show --stat` must show renames only, zero insertions, zero deletions. If either
+9. **C1 and W1.** `git show --stat` must show renames only, zero insertions, zero deletions. If either
    carries a content hunk, `git log --follow` is at risk and criterion 5 is the test.
+
+---
+
+## 15. Round-1 findings, and where each one is closed
+
+Round 1 (`09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`) drew
+`CHANGES_REQUIRED` from `ac-dev-rust-v3`, `ac-dev-rust-grinch-v3` and `ac-dev-webpage-ui-v3`. This
+table is the closure record. Every row was re-measured independently at `147ad4ef` before being
+acted on; where a reviewer's number and the round-1 number differed, the disagreement is resolved by
+naming the unit rather than by picking a side.
+
+### Blockers
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| B1a | The Rule P allowlist was not closed: five literals the rename forces were missing (`teams.rs:584`, `teams.rs:2328`, `instance_artifacts.rs:620`, `loop-modal-helpers.ts:23`, `teams.rs:822`) | 5.4 entries **L10-L14**, plus the five sweeps in 3.5 that close each class. All five sites reverified in the source |
+| B1a' | The allowlist's unit was ambiguous ("9 entries" compared against a gate that diffs distinct literals) | 5.4 states all three units and gives the counts: **14 entries, 23 distinct literals, 22 expected `<=` rows** |
+| B1b | Criterion 6b was unsatisfiable: Rule S introduces key literals that do not exist in the before-set, so "no `=>` row" always reddens | 9.3 **6b** now expects **exactly two** rows, `"isCoordinatorOf"` and `"busyCoordinatorPolicy"`, and ships the command that re-derives that number from the base set. Decision 10.1.12 records why this option and not the comparator change |
+| B2 | Criterion 8 claimed coverage it did not have; the two Rust reviewers disagreed on the size of the gap (~10 vs ~18) | 3.3 now carries a **member-by-member tripwire column**. The measured answer is **6 covered, 22 not**, worse than either estimate, because `coordinator_clock_settings_default_when_keys_absent` cannot fail: it asserts the same defaults it serialised. 5.9 adds the wire-key test, 9.1 grows to two new tests, 9.2 corrects the negative-control claim, and criterion 8 becomes **8a/8b/8c** |
+| B3.1 | `coordinator_shutdown` undecided; Rule A would give it the wrong concept | 5.2 explicit row **and** a general Concept B binding clause, with the `let`-binding sweep proving it is the only compound case. 6.3 and C5 name it |
+| B3.2 | Three clap fields derive `--coordinator` from the identifier, so Rule A silently changes a public flag | **Rule S2**, 5.3. Rule S is now "pin every external name a derive macro spells from the identifier", with serde as S1 and clap as S2. Criterion 8c gates it. Decision 10.1.10 records why pinning beats freezing |
+| B3.3 | `src/shared/ipc.ts:1081`: a shorthand where Rule K and Rule A contradict, producing a tree that does not typecheck | Rule K **shorthand clause**, 5.5, plus register rows for both conflicting shorthands. The sweep shows the other six shorthand-shaped lines are not conflicts |
+| B3.4 | `ProjectPanel.raise-hand.test.tsx` absent from every table while holding in-scope locals | added to 6.5 (**27 → 28**), four register rows, C8 21 → 22 files. The property-shape sweep in 5.5 proves it is the **only** such file among the 39 untabled ones |
+| B3.5 | `TeamConfigResult.coordinator` (`types.ts:1505`) frozen by Rule K's text but named in neither operative list | named in the Rule K frozen enumeration, in the register, in the 6.5 `types.ts` row, and in the reviewer checklist 14.7 |
+
+### Factual corrections
+
+| # | Correction | Closed in |
+| --- | --- | --- |
+| 1 | `crates/`: 10 literal lines, not 5 hits | 3.1 correction 1, with all 10 sites |
+| 2 | File counts disagreed (66/69, 55/56, 73/80) | 3.1 **states the unit of measure once**, gives both columns, and adds the set-equality proofs for 6.3 and 6.5. Re-measured: 55 Rust identifier files (= 54 rows + the renamed file) and 73 TS, which reproduce the round-1 identifier numbers exactly; the reviewers' 69/80 are the `coordinat`-substring and comment-inclusive units |
+| 3 | "379 lines match `coordinat`" is case-insensitive only | 4 out-of-scope row: **379 ci, 337 cs**, and the gate command is ci |
+| 4 | Web repo `coordinat` line count | 3.7: **26 cs / 32 ci** (round 1 said 31, which is neither) |
+| 5 | `src/sidebar/App.tsx:801` was one line off | register row now reads **`:800`**, with the use at `:801` noted |
+| 6 | Rule K's closing sentence was false for `coord-quick-access-css.test.ts` | 5.5: the file **does** contain `coordinator` at `:4` and `:63`; it stays untouched by residual 10.2.4, not by the reason given |
+| 7 | The sixth locale is German, not "en-alt" | 3.7 locale row, with all six block start lines |
+| 8 | The i18n type-safety net covers 7 of 8 sites, not 8 | 3.7 has a dedicated row; 12.2 adds the `git grep -c` gate the reviewer proposed |
+| 9 | Two `docs/` lines name the renamed path and had no owner | **in-scope item 9** and table **6.6**, with `session-auto-close.md:151` explicitly excluded and decision 10.1.13 recording why |
+| 10 | `loop_cmd`'s `"busy-coordinator"` value does not exist | removed; the values are `wait-until-idle`, `force-inject`, `skip` |
+| 11 | The web repo's script is `smoke`, not `npx playwright test` | 12.2 W3 gate and 3.7 CI row |
+| 12 | Criterion 3 asked for "same module count" when 6 node names change | 9.5 criterion 3 compares the **triple 351 / 0 / 1535** |
+
+### Tech lead's ruling, recorded
+
+**Criterion 7** is certified as "no identifier is shared between the two concepts", with the three
+`selectionCoordinator*` strings as the issue's own declared exception. `ac-tech-lead-v3` accepted
+this reformulation explicitly in the round-2 brief of 2026-08-27 and will surface it to the user at
+Step 7.5. It is recorded as an accepted residual with owner **#1573** in 10.2.1, not as an open
+question.
+
+### Re-verified and deliberately unchanged
+
+The reviewers independently confirmed, and this round did not touch: the exhaustiveness of the 28
+serde members and the 27-pin count; the levelization prediction (1037 lines, 82163 bytes, digest
+`2EF5875A...`, reproduced by two reviewers); `litset.mjs` and its `files=550 distinct=28345`
+(reproduced again here); the absence of a fourth source scan; the IPC boundary; the Concept A/B
+classifications apart from `coordinator_shutdown`; the 10 TypeScript module specifiers; the web repo
+inventory; the feasibility of the 3c assertion; the commit order and the accepted non-building C1/W1;
+and the CI inventory.
