@@ -16,7 +16,7 @@ use super::task_ops::{self, EditOutcome, TaskOp};
 
 #[derive(Args)]
 #[command(after_help = "\
-AUTHORIZATION: Only coordinators of any team in the caller's project can edit TASK.md. \
+AUTHORIZATION: Only orchestrators of any team in the caller's project can edit TASK.md. \
 The master/root token bypasses this check. The verb writes ONLY to \
 <workgroup-root>/TASK.md and its *.bak.md siblings.\n\n\
 INVARIANTS: A timestamped backup is created on every successful write that had a \
@@ -94,8 +94,8 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
         let teams = crate::config::teams::discover_teams();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of any team. \
-                 Only coordinators can edit TASK.md.",
+                "Error: authorization denied — '{}' is not an orchestrator of any team. \
+                 Only orchestrators can edit TASK.md.",
                 sender
             );
             return 1;

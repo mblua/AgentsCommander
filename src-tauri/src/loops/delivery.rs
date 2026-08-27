@@ -126,7 +126,7 @@ pub async fn deliver_loop_prompt(
             BusyCoordinatorPolicy::WaitUntilIdle => {
                 return LoopDeliveryReport {
                     kind: LoopAuditKind::PendingBusy,
-                    message: "Coordinator is busy; delivery will run when idle".to_string(),
+                    message: "Orchestrator is busy; delivery will run when idle".to_string(),
                     target: Some(target_fqn),
                     session_id: Some(session_id),
                     error: None,
@@ -137,7 +137,7 @@ pub async fn deliver_loop_prompt(
             BusyCoordinatorPolicy::Skip => {
                 return LoopDeliveryReport {
                     kind: LoopAuditKind::SkippedBusy,
-                    message: "Coordinator is busy; delivery skipped".to_string(),
+                    message: "Orchestrator is busy; delivery skipped".to_string(),
                     target: Some(target_fqn),
                     session_id: Some(session_id),
                     error: None,
@@ -480,7 +480,7 @@ async fn resolve_loop_agent_command(
         return Ok(resolved_loop_command_from_spawn(spawn, &settings));
     }
 
-    Err("No coding agent is configured for Loop coordinator wake".to_string())
+    Err("No coding agent is configured for Loop orchestrator wake".to_string())
 }
 
 fn resolved_loop_command_from_spawn(

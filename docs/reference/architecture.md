@@ -307,7 +307,7 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | SessionAPI | `commands/session.rs` | `create_session`, `destroy_session`, `switch_session`, `rename_session`, `list_sessions`, `get_active_session` (selection hydration) |
 | PtyAPI | `commands/pty.rs` | `pty_write`, `pty_resize` |
 | SettingsAPI | `commands/config.rs` | `get_settings`, `update_settings`, `save_debug_logs` |
-| AgentUpdateAPI | `commands/config.rs` | `get_agent_update_status`, `agent_update_answer` |
+| AgentUpdateAPI | `commands/config.rs` | `get_agent_update_status`, `agent_update_answer`, `get_agent_update_overview` |
 | ReposAPI | `commands/repos.rs` | `search_repos` |
 | TelegramAPI | `commands/telegram.rs` | `attach_telegram`, `detach_telegram`, `list_bridges`, `send_test` |
 | WindowAPI | `commands/window.rs` | `detach_terminal`, `close_detached_terminal` |
@@ -725,6 +725,7 @@ graph TD
 | `logging.rs` | Logger setup, live log-level control |
 | `shutdown.rs` | Ordered daemon shutdown |
 | `update_check.rs` | npm publish version check |
+| `agent_update.rs`, `agent_version.rs` | Startup coding-agent update pass, gate and prompt answer flow; installed-version probe engine and cache (#1551) |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
 | `session/manager.rs` | `SessionManager`: records, stable order, pending creates, canonical selection state |
 | `session/selection.rs` | Selection contract, coordinator, eligibility policy, process epoch, revision, publication |
@@ -773,7 +774,7 @@ graph TD
 | `config/project_settings.rs`, `config/loops.rs` | Project settings, Loop config |
 | `config/injected_messages.rs` | Injected PTY message templates |
 | `config/activity_log.rs` | Activity log |
-| `config/coordinator_clocks.rs` | Coordinator idle clocks |
+| `config/coordinator_clocks.rs` | Orchestrator idle clocks |
 | `config/replica_identity.rs` | Replica identity verification |
 | `config/session_context.rs` | Session context reading |
 | `config/seeded_context_templates.rs` | Context template seeding |

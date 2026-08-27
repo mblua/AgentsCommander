@@ -136,7 +136,7 @@ describe("NewLoopModal", () => {
     );
 
     expect(document.querySelector<HTMLButtonElement>('[data-ac-testid="loop.new.create"]')?.disabled).toBe(true);
-    expect(document.body.textContent).toContain("verified coordinator");
+    expect(document.body.textContent).toContain("verified orchestrator");
 
     dispose();
   });

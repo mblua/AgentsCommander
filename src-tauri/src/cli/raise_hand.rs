@@ -9,7 +9,7 @@ use super::self_clear::resolve_self_clear_sender;
 #[derive(Args)]
 #[command(after_help = "\
 Raises this session's Sidebar communication indicator when the caller token belongs to a \
-live coordinator session with a visible TASK.md title slot. The indicator persists across \
+live orchestrator session with a visible TASK.md title slot. The indicator persists across \
 app restarts until cleared by real user input to the session.\n\n\
 OUTPUT: prints exactly true or false on stdout when the daemon processes the request. \
 Infrastructure failures, stale tokens, daemon rejection, delivery timeout, and malformed \

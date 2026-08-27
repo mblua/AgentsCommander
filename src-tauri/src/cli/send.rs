@@ -19,16 +19,16 @@ use crate::phone::types::OutboxMessage;
 DELIVERY MODES:\n  \
   wake            File messages inject into PTY and can spawn or respawn a persistent session. Logical PTY actions are capability- and idle-gated and can be terminally rejected before spawn.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
-membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
+membership and orchestrator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
 is the value to use.\n\n\
 FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For WG \
 replicas the file is resolved from <workgroup-root>/messaging/<filename>. \
 For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filename>. \
 `--send` is a filename only, never a path. Root Agent --to targets must be \
-verified WG coordinator replica names returned by list-peers-lean. \
-Coordinator --to targets may include the Root Agent canonical name \
-`agentscommander://root-agent`; only identity-verified WG coordinator \
+verified WG orchestrator replica names returned by list-peers-lean. \
+Orchestrator --to targets may include the Root Agent canonical name \
+`agentscommander://root-agent`; only identity-verified WG orchestrator \
 replicas may use it.\n\n\
 PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one authorized coding-agent PTY. This never directly executes a host or container OS shell command. The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin for multiline, leading-hyphen, clipboard, process-list-sensitive, or otherwise sensitive text. `Queued` is not `Injected`; after a confirmation timeout keep the reported operation ID and do not resubmit under a new ID.\n\n\
 DELIVERY CONFIRMATION: After queuing, send blocks up to --confirm-timeout seconds (default 90) \
@@ -140,7 +140,7 @@ fn validate_root_agent_delivery_kind(
     command: Option<&str>,
 ) -> Result<(), &'static str> {
     if root_is_root_agent && command.is_some() {
-        Err("Root Agent messaging is file-based; use --send with a root-to-coordinator Markdown file, not --command")
+        Err("Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown file, not --command")
     } else {
         Ok(())
     }
@@ -895,7 +895,7 @@ pub fn execute(args: SendArgs) -> i32 {
     if root_is_root_agent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
-                "Error: root-agent routing rejected — '{}' is not a verified WG coordinator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
+                "Error: root-agent routing rejected — '{}' is not a verified WG orchestrator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
                 resolved_to
             );
             return 1;
@@ -908,7 +908,7 @@ pub fn execute(args: SendArgs) -> i32 {
         // cheap.
         if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
             eprintln!(
-                "Error: routing rejected — '{}' is not a verified WG coordinator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG coordinators.",
+                "Error: routing rejected — '{}' is not a verified WG orchestrator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG orchestrators.",
                 sender,
                 crate::config::root_agent::ROOT_AGENT_SENDER
             );
@@ -921,7 +921,7 @@ pub fn execute(args: SendArgs) -> i32 {
         if !teams::can_communicate(&sender, &resolved_to, &discovered) {
             eprintln!(
                 "Error: routing rejected — '{}' cannot reach '{}'. \
-                 Check team membership and coordinator rules.",
+                 Check team membership and orchestrator rules.",
                 sender, resolved_to
             );
             return 1;
@@ -1275,7 +1275,7 @@ mod tests {
         for command in ["clear", "compact"] {
             assert_eq!(
                 validate_root_agent_delivery_kind(true, Some(command)),
-                Err("Root Agent messaging is file-based; use --send with a root-to-coordinator Markdown file, not --command")
+                Err("Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown file, not --command")
             );
         }
     }

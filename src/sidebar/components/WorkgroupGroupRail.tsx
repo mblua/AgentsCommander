@@ -251,8 +251,8 @@ const RailButton: Component<{
         <span
           class="workgroup-group-rail-raise-hand"
           data-ac-testid={props.testIds.raiseHand}
-          title="A coordinator raised its hand"
-          aria-label="A coordinator raised its hand"
+          title="An orchestrator raised its hand"
+          aria-label="An orchestrator raised its hand"
         >
           <RaiseHandIcon class="workgroup-group-rail-raise-hand-icon" />
         </span>

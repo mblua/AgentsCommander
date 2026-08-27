@@ -89,6 +89,8 @@ The default coding-agent catalog includes a Pi entry with command `pi` and instr
 
 Catalogs seeded before the update-command era (before #1325) carry no `updateCommands` for any entry. AC backfills them **in memory** at read time from the built-in default, matching by `command` and never rewriting the user-owned file: entries with an empty sequence get the default's sequence, and commands you author yourself always win. `cursor` intentionally ships no update command (its CLI self-updates with the desktop app).
 
+Entries with a non-empty `updateCommands` are the rows of the Settings > Coding Agents **Auto-update** table (see [Coding agent auto-update](../features/agent-auto-update.md)). There is no `versionCommand` field: AC detects installed versions with a built-in `--version` probe for the built-in commands (`claude`, `codex`, `hermes`, `pi`, `opencode`, `agy`), only for bare command names resolved through PATH; a custom entry or an explicit path shows `Installed` without a version.
+
 ## Switching the coding agent per session
 
 When you launch a session AC shows a dropdown listing every entry in `agents[]`. Pick one. The choice is remembered as the session's `lastCodingAgent` so subsequent wakeups use the same CLI without asking.
@@ -104,7 +106,7 @@ AC uses Pi's direct `--continue` option, not `--resume`, which opens Pi's intera
 - AC's final lifecycle decision requests known state rather than a fresh start.
 - Pi's first command segment is conversational and contains no lexical user-authored session control.
 
-Resume-intent launches include eligible restores, dormant or closed-session reopens, qualified mailbox wakes, and Loop deliveries. A Loop deliberately requests resume even on a cold spawn; Pi creates a new persisted session when no cwd match exists. Fresh creates, default or explicit fresh restarts, and a coordinator's final fresh override leave the configured command unchanged.
+Resume-intent launches include eligible restores, dormant or closed-session reopens, qualified mailbox wakes, and Loop deliveries. A Loop deliberately requests resume even on a cold spawn; Pi creates a new persisted session when no cwd match exists. Fresh creates, default or explicit fresh restarts, and an orchestrator's final fresh override leave the configured command unchanged.
 
 | Configured command | Eligible known-state runtime command |
 |---|---|

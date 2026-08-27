@@ -8,6 +8,8 @@ When AC starts, it can update the coding agents you use before you launch a sess
 
 At startup AC runs an update pass over your coding agents. While that pass is running, an overlay covers the sidebar and reads `Actualizando coding agents...`.
 
+While the pass runs, the overlay shows every coding agent of the pass as a step of a timeline: `Pendiente` until its update starts, `Actualizando...` with the exact update command while it runs, then `Listo` or `Falló` with the reason; a counter (`2 de 3 completados · 1 falló`) and a progress bar sit above the list. When AC could read the agent's version before and after the update, the finished step shows the transition (`2.1.34 → 2.1.35`; `2.1.34 → no instalada` when the update left the CLI broken). When everything finished the card stays on screen as a summary until you press `Cerrar` (or Enter/Escape); failures are also shown as notifications after you close it. The startup question is one question across every window: answering it on the desktop or in a browser remote tab closes it everywhere, the first answer wins, and a later answer from another window changes nothing.
+
 The pass is keyed by **command**, not by agent id. Several coding agent profiles can share one binary (a "max effort" `claude` and a "cheap" `claude`, for example), and the binary is what gets updated, so AC asks once for `claude` rather than once per profile.
 
 An agent AC has never asked about is not updated silently. It gets the prompt below, and the default answer is No.
@@ -42,7 +44,15 @@ To change your mind later, edit the entry in `settings.json`. Setting a command 
 
 See [Settings reference](../reference/settings.md#coding-agents) for the field's type and defaults.
 
+## The Auto-update list in Settings
+
+Settings > Coding Agents shows a read-only **Auto-update** table with one row per catalog entry that ships `updateCommands` (Cursor ships none, so it is not listed). Per row: **Auto-update** shows your remembered answer (`Yes`, `No`, or `Will ask at startup` when AC has never asked), **Installed** shows the detected version, `Installed` when the command resolves but AC does not run a version probe for it, `Not installed` when the command is not found or its version check fails (hover for the reason and the resolved path), and `Checking...` until the first check completes, and **Status** shows `Updating...` while the startup pass is updating that command and `Updated` or `Update failed` for the outcome of this AC start. Rows marked `(not registered)` are supported but not registered in `agents[]`, so they are never updated at startup. The table never changes settings: use the Auto-update dropdown of the corresponding agent to change an answer. Version checks run `<command> --version` for the built-in coding agents only, in the background, with a 15 second bound, and read the version from the first non-empty line of the output. AC asks again each time you open the Coding Agents screen: within 10 minutes of the last check it answers from its cache without running anything, after that it checks again. A version check never overlaps an update of the same agent: before each startup update AC reads that agent's current version (built-in agents only, 15 second bound), the update starts only after that reading, the Settings checks wait until the pass is over, and right after the pass AC re-checks the agents it updated; the reading before and the one after are the transition the overlay shows.
+
 ## Troubleshooting
+
+**"The list says `Not installed` but I can run the agent from my shell."** AC resolves the command with the PATH of the AC process (started from Explorer or the Start menu), which can differ from your shell's PATH; a CLI installed after AC started, or into a user-only directory, reads as not installed until AC restarts. Hover the cell: the reason says whether the command was not found or its `--version` failed.
+
+**"`Not installed` right after an update."** An interrupted update can leave a broken install (for example an npm shim whose package is gone); the version check then fails and the row reports `Not installed` with the exit code. Re-run the vendor's install command.
 
 **"I answered and got `Se actualizará en el próximo arranque.`"** Your answer arrived after the prompt had already closed on the backend, so nothing was updated this time. The answer is saved: the update runs at the next startup, and you are not asked again.
 

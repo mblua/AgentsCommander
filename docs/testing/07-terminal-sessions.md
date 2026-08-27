@@ -308,7 +308,7 @@ Verify that an authorized host requester receives one complete version-1 JSON mo
 Preconditions:
 
 - A disposable local-process or protocol-fake container target has one eligible persistent live session.
-- The requester is either a verified same-workgroup Coordinator or canonical host Root with a live session UUID-v4 token.
+- The requester is either a verified same-workgroup Orchestrator or canonical host Root with a live session UUID-v4 token.
 - `terminalSnapshotsEnabled` is explicitly enabled for this disposable run.
 - The target viewport contains only harmless deterministic markers and no account-backed or personal content.
 - The evidence directory is private and approved for terminal content.

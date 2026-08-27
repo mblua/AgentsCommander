@@ -18,7 +18,7 @@ function makeUpdate(
     workspacePath: "C:\\Project\\.ac",
     filePath: "C:\\Project\\.ac\\Context.coordinator.md",
     filename: "Context.coordinator.md",
-    label: "Coordinator context",
+    label: "Orchestrator context",
     currentFileSha256: "file-a",
     currentDefaultSha256: "default-2",
     currentDefaultVersion: 2,
@@ -63,12 +63,12 @@ describe("ContextTemplateUpdateModal (#695)", () => {
   it("renders the template label, file path, and both action buttons", () => {
     const { dispose } = renderModal({
       update: makeUpdate({
-        label: "Coordinator context",
+        label: "Orchestrator context",
         filePath: "C:\\P\\.ac\\Context.coordinator.md",
       }),
     });
     const body = target("contextTemplateUpdate.modal").textContent ?? "";
-    expect(body).toContain("Coordinator context");
+    expect(body).toContain("Orchestrator context");
     expect(body).toContain("C:\\P\\.ac\\Context.coordinator.md");
     expect(
       target<HTMLButtonElement>("contextTemplateUpdate.keep").textContent?.trim(),

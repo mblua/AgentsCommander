@@ -3,9 +3,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::ac_root::existing_ac_root;
 use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
-use crate::config::ac_root::existing_ac_root;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 #[derive(Args)]
@@ -38,9 +38,9 @@ PEER FILTER (--peer):\n  \
   (reachable=false) are still returned when their name matches —\n  \
   filtering is by name only.\n\n\
 NOTES:\n  \
-  - Canonical Root Agent roots return verified WG coordinator replicas only.\n    \
-    Origin coordinators and non-coordinator WG replicas are omitted for Root Agent discovery in #277.\n  \
-  - Identity-verified WG coordinator replicas additionally see a synthetic\n    \
+  - Canonical Root Agent roots return verified WG orchestrator replicas only.\n    \
+    Origin orchestrators and non-orchestrator WG replicas are omitted for Root Agent discovery in #277.\n  \
+  - Identity-verified WG orchestrator replicas additionally see a synthetic\n    \
     peer with `name=agentscommander://root-agent`, representing the Root\n    \
     Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
     to a root-originated message. Other replicas do not see this entry.\n    \
@@ -101,12 +101,12 @@ sessionId, exitCode, legacy status. Use `list-peers` if any of those are\n\
 needed.\n\n\
 PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
 share a single discovery function (see issue #252). For canonical Root Agent\n\
-roots this set contains verified WG coordinator replicas only; origin\n\
-coordinators and non-coordinator WG replicas are omitted in #277.\n\n\
+roots this set contains verified WG orchestrator replicas only; origin\n\
+orchestrators and non-orchestrator WG replicas are omitted in #277.\n\n\
 SNAPSHOT TARGETS: `--snapshot-targets` switches only this lean verb to the\n\
 identity-only terminal snapshot capability view. Canonical Root lists every\n\
-verified WG Coordinator and member in registered projectPaths. A verified WG\n\
-Coordinator lists non-Coordinator members of its own workgroup. Workers and\n\
+verified WG Orchestrator and member in registered projectPaths. A verified WG\n\
+Orchestrator lists non-Orchestrator members of its own workgroup. Workers and\n\
 origin agents receive `[]`. This view reads no sessions.json, creates no peer\n\
 directories, and grants no authority. Use the returned exact name with\n\
 `terminal-snapshot --to`.\n\n\
@@ -124,7 +124,7 @@ PEER FILTER (--peer):\n  \
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance that wrote\n    \
     sessions.json (same caveat as `list-peers`).\n  \
-  - Identity-verified WG coordinator replicas additionally see a synthetic\n    \
+  - Identity-verified WG orchestrator replicas additionally see a synthetic\n    \
     peer with `name=agentscommander://root-agent`, representing the Root\n    \
     Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
     to a root-originated message. Other replicas do not see this entry.\n    \
@@ -651,12 +651,12 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     if coordinator.is_none() {
         if std::env::var("AC_MACHINE_OUTPUT").is_err() {
             eprintln!(
-                "Warning: no coordinator found for WG '{}', showing all replicas",
+                "Warning: no orchestrator found for WG '{}', showing all replicas",
                 wg.my_wg_name
             );
         } else {
             log::warn!(
-                "Warning: no coordinator found for WG '{}', showing all replicas",
+                "Warning: no orchestrator found for WG '{}', showing all replicas",
                 wg.my_wg_name
             );
         }
@@ -708,8 +708,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
                     _ => continue,
                 };
 
-                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir)
-                {
+                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
                     let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
                     if !coord_dir.is_dir() {
                         continue;

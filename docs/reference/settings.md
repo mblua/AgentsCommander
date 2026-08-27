@@ -77,7 +77,7 @@ A minimal `settings.json`:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agents` | `AgentConfig[]` | See example | The dropdown of available coding agents. |
-| `agentAutoUpdateByCommand` | object | `{}` | Per-coding-agent-command answer to the startup update prompt. Keys are coding-agent commands (for example `claude`, `codex`); `true` means AC updates that command at startup without asking again, `false` means it never asks again and never updates. An absent key means AC asks on the next startup. See [Coding agent auto-update](../features/agent-auto-update.md). |
+| `agentAutoUpdateByCommand` | object | `{}` | Per-coding-agent-command answer to the startup update prompt. Keys are coding-agent commands (for example `claude`, `codex`); `true` means AC updates that command at startup without asking again, `false` means it never asks again and never updates. An absent key means AC asks on the next startup. See [Coding agent auto-update](../features/agent-auto-update.md). Settings > Coding Agents shows the current value per update-capable agent in the read-only Auto-update table. The startup question writes this map once per coding agent per start: the first answer, from any window, is the one stored. |
 
 Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
 
@@ -166,7 +166,7 @@ The copied file is a full-account credential (access token plus long-lived refre
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-workgroup Coordinators to read a live backend terminal viewport as JSON or PNG. |
+| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-workgroup Orchestrators to read a live backend terminal viewport as JSON or PNG. |
 
 This is a disclosure gate, not a display preference. Terminal screens can contain passwords, tokens, source code, prompts, and personal data. AgentsCommander performs no automatic redaction.
 
@@ -260,31 +260,31 @@ Both are manual-only (no UI) and are read from the in-memory settings, so an edi
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |
-| `coordSortByActivity` | bool | `false` | Sort the coordinator quick-access list by most-recent activity. |
+| `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows-only. See [Screenshot capture](../features/screenshot-capture.md). |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
 | `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected workgroup visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
 | `railFavoritesCollapsed` | bool | `false` | Collapsed state of the rail's cross-project Favorites section. Same protection as `railCollapsedProjects`. |
 
-### Coordinator wake state
+### Orchestrator wake state
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `restoreCoordinatorWakeState` | bool | `false` | On app start, wake coordinators whose PTY was awake at shutdown. Non-coordinators always stay asleep until clicked. |
+| `restoreCoordinatorWakeState` | bool | `false` | On app start, wake orchestrators whose PTY was awake at shutdown. Non-orchestrators always stay asleep until clicked. |
 
 ### Session auto-close
 
-Idle teams (coordinators plus agent-owned sessions) close themselves after a timeout. Ad-hoc shells are never auto-closed. See [Session auto-close](../features/session-auto-close.md).
+Idle teams (orchestrators plus agent-owned sessions) close themselves after a timeout. Ad-hoc shells are never auto-closed. See [Session auto-close](../features/session-auto-close.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `coordinatorAutoCloseEnabled` | bool | `true` | Master switch for auto-close. When false, idle teams are never closed (the idle badge still shows). |
 | `coordinatorAutoCloseMinutes` | u32 | `60` | Idle minutes before a team is auto-closed. `0` also disables auto-close. |
 | `coordinatorAutoCloseSkipTelegramAssigned` | bool | `false` | When true, auto-close skips sessions with Telegram assigned. Other sessions keep following the normal auto-close rules. |
-| `coordinatorCascadeCloseEnabled` | bool | `true` | When true, manually closing a coordinator also closes its team agents (cascade). When false, only the coordinator closes. |
-| `coordinatorIdleBadgeYellowMinutes` | u32 | `30` | Idle minutes at which the coordinator idle badge turns yellow. |
-| `coordinatorIdleBadgeRedMinutes` | u32 | `60` | Idle minutes at which the coordinator idle badge turns red. |
+| `coordinatorCascadeCloseEnabled` | bool | `true` | When true, manually closing an orchestrator also closes its team agents (cascade). When false, only the orchestrator closes. |
+| `coordinatorIdleBadgeYellowMinutes` | u32 | `30` | Idle minutes at which the orchestrator idle badge turns yellow. |
+| `coordinatorIdleBadgeRedMinutes` | u32 | `60` | Idle minutes at which the orchestrator idle badge turns red. |
 
 ### Voice-to-text
 
@@ -412,7 +412,7 @@ See [`api-client`](cli.md#api-client) for minting and revoking control-plane cli
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `autoGenerateTaskTitle` | bool | `true` | When a coordinator session spawns and the brief has no `title:`, AC injects a prompt asking the agent to add one. |
+| `autoGenerateTaskTitle` | bool | `true` | When an orchestrator session spawns and the brief has no `title:`, AC injects a prompt asking the agent to add one. |
 
 ### Templates
 
@@ -424,7 +424,7 @@ See [`api-client`](cli.md#api-client) for minting and revoking control-plane cli
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `autoSelfClearEnabled` | bool | `true` | Global master for auto self-handoff-and-clear. `false` turns it off for every agent. When `true`, the class-aware default applies (ON for coordinator/Root, OFF for specialists), subject to the per-agent override below. |
+| `autoSelfClearEnabled` | bool | `true` | Global master for auto self-handoff-and-clear. `false` turns it off for every agent. When `true`, the class-aware default applies (ON for orchestrator/Root, OFF for specialists), subject to the per-agent override below. |
 | `autoSelfClearByAgent` | `{ <agent-name>: bool }` | `{}` | Per-agent override of the class default, keyed by agent name (same key as `defaultProfileByAgent`). Applies only while the global master is on; absent = use the class default. |
 
 ### Watchers

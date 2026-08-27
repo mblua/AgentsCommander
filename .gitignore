@@ -31,3 +31,6 @@ npm-test-results.json
 
 artifacts/
 /graph.json
+
+# Portable zip staging output (#1589)
+dist-portable/
