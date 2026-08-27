@@ -125,7 +125,9 @@ fn main() {
                                 agentscommander_lib::cli::flush_outputs();
                                 std::process::exit(1);
                             }
-                            // Another GUI instance is already running; exit silently
+                            agentscommander_lib::cli::present_fatal_startup_message(
+                                "An AgentsCommander instance with this executable identity is already running.\n\nRename this executable to agentscommander_<name>.exe to start an independent instance with its own configuration directory and ports.",
+                            );
                             std::process::exit(0);
                         }
                         agentscommander_lib::run(placement, ui_automation_enabled);
