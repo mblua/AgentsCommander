@@ -3,9 +3,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::ac_root::existing_ac_root;
 use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
-use crate::config::ac_root::existing_ac_root;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 #[derive(Args)]
@@ -708,8 +708,7 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
                     _ => continue,
                 };
 
-                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir)
-                {
+                if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
                     let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
                     if !coord_dir.is_dir() {
                         continue;

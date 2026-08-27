@@ -497,7 +497,8 @@ mod tests {
         };
         write_session_request_result(&result).expect("write result");
 
-        let outcome = wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
+        let outcome =
+            wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
         assert_eq!(
             outcome,
             LaunchOutcome::Launched {
@@ -520,7 +521,8 @@ mod tests {
         };
         write_session_request_result(&result).expect("write result");
 
-        let outcome = wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
+        let outcome =
+            wait_for_session_request_result(&result.id, std::time::Duration::from_secs(1));
         assert_eq!(
             outcome,
             LaunchOutcome::Rejected {
