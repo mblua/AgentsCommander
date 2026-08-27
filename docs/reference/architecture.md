@@ -728,7 +728,7 @@ graph TD
 | `agent_update.rs`, `agent_version.rs` | Startup coding-agent update pass, gate and prompt answer flow; installed-version probe engine and cache (#1551) |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
 | `session/manager.rs` | `SessionManager`: records, stable order, pending creates, canonical selection state |
-| `session/selection.rs` | Selection contract, orchestrator, eligibility policy, process epoch, revision, publication |
+| `session/selection.rs` | Selection contract, coordinator, eligibility policy, process epoch, revision, publication |
 | `session/profile.rs` | Coding-agent profile resolution per session |
 | `session/auto_close.rs` | Idle auto-close clock |
 | `session/context_alerts.rs`, `session/warnings.rs` | Context alerts, session warnings |
