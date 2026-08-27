@@ -563,6 +563,7 @@ fn is_known_generated_coordinator_template(content: &str) -> bool {
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -2345,6 +2346,56 @@ mod tests {
             std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
+    }
+
+    /// #1571 T2, failing-first migration proof for the fifth recognizer arm: the
+    /// assert_ne fails while the live template still equals the frozen v4 bytes
+    /// (pre-rewrite), and the sync half proves a pristine v4 file on disk
+    /// auto-upgrades to the current default.
+    ///
+    /// The direct recognizer assertion is deliberately LAST, unlike the sibling
+    /// above. With the fifth arm deleted, a first-position direct assert panics
+    /// before the sync runs, so a mutation probe would only prove that a predicate
+    /// whose one matching arm was just removed returns false. Asserting the
+    /// behavior first makes the probe prove that the sync path actually consumes
+    /// the recognizer, which is the silent-half-migration risk it exists to close.
+    #[test]
+    fn read_sync_updates_pre_orchestrator_rename_coordinator_template() {
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+            get_default_coordinator_template(),
+            "the #1571 rename must actually change the template or the freeze is pointless"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+        )
+        .expect("write pristine v4 coordinator");
+
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &ac_root,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        let content =
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator");
+        assert_eq!(content, get_default_coordinator_template());
+
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+        ));
     }
 
     /// #1005 S6 / G3: the frozen v1 global snapshot must stay byte-identical to

@@ -2506,11 +2506,11 @@ Container session with `AGENTSCOMMANDER_TRANSPORT=api`:
 Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported operation ID and inspect its status; do not create a new operation to retry it."#;
 
 pub fn get_default_coordinator_template() -> &'static str {
-    "You are the coordinator for your team. You must:\n\
+    "You are the orchestrator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
      - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
-     - To reach another workgroup, message its coordinator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to a coordinator who messaged you first is always authorized.\n\
+     - To reach another workgroup, message its orchestrator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to an orchestrator who messaged you first is always authorized.\n\
      - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
      - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
      - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
@@ -2520,13 +2520,13 @@ pub fn get_default_coordinator_template() -> &'static str {
          telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
      --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
      **Screenshot Capture Paths:**\n\
-     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
-     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Interactive desktop orchestrator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness orchestrator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
      - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
      ## Raising Your Hand\n\
      When you are blocked, need a user decision, or are waiting for user attention, run:\n\
          \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
-     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n"
+     This shows the Sidebar raised-hand indicator for your orchestrator row; it clears when the user interacts with your session.\n"
 }
 
 fn render_agent_context_template(

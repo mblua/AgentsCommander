@@ -680,7 +680,7 @@ type: agent
 
 # Agents Commander
 
-You are the AgentsCommander Root Agent, the top-level coordinator for this AgentsCommander binary.
+You are the AgentsCommander Root Agent, the top-level orchestrator for this AgentsCommander binary.
 
 ## Responsibility
 
@@ -699,14 +699,14 @@ You are not a workgroup replica and you have no origin Agent Matrix; use the can
 
 ## Coordination
 
-Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team coordinators and synthesize their results for the user.
+Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
 
 ## Team and workgroup setup
 
 When asked to set up a new team for automation, use this order:
 
 1. Create any missing agents with `create-agent-matrix`.
-2. Create the team with `team create`, choosing one coordinator and the worker agents.
+2. Create the team with `team create`, choosing one orchestrator and the worker agents.
 3. Activate a workgroup with `workgroup add` using only `--project`, `--team`, and `--title`.
 
 Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
@@ -735,6 +735,7 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD),
         normalize_role_text(ROOT_ROLE_MD),
     ];
     old_generated.contains(&normalized)
@@ -1046,6 +1047,7 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
@@ -2469,6 +2471,56 @@ mod tests {
             parsed["templates"]["rootAgent"]["currentVersion"], 6,
             "root_spec current_version must be bumped to 6 by the #1370 workgroup-activation rewrite"
         );
+    }
+
+    /// #1571 T4: the same both-paths proof for the frozen pre-rename Root bytes.
+    /// ONE fixture drives `migrate_root_role` and the recognizer array, so wiring
+    /// one list and forgetting the other cannot pass silently.
+    ///
+    /// Two deliberate deviations from the `frozen_v5_...` model above. The direct
+    /// recognizer assertion is LAST rather than first: with either new entry
+    /// deleted, a first-position direct assert panics before
+    /// `ensure_root_agent_dir_at` runs, so a mutation probe would prove only that a
+    /// predicate whose one matching entry was just deleted returns false, not that
+    /// the migration path consumes it. And there is no `currentVersion` assertion:
+    /// the root bump is a later step, so a `== 7` assertion here would make this
+    /// step's gate unreachable by construction. The bump is pinned twice elsewhere.
+    ///
+    /// This test can only discriminate after the templates are rewritten: until
+    /// then the frozen constant is byte-identical to `ROOT_ROLE_MD` and the
+    /// pre-existing `ROOT_ROLE_MD` entries satisfy it on their own.
+    #[test]
+    fn frozen_v6_root_context_is_recognized_and_migrated_on_both_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            root.join("Role.md"),
+            ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD,
+        )
+        .expect("write pristine pre-rename role");
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
+            .expect("write pristine pre-rename template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD,
+            "pristine pre-rename Role.md must reduce to the minimal role (migrate_root_role list)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read template"),
+            default_root_context_template(),
+            "pristine pre-rename Context.root-agent.md must auto-upgrade (recognizer list)"
+        );
+
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD
+        ));
     }
 
     #[test]
