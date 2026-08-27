@@ -828,6 +828,7 @@ struct UiAutomationInner {
     automation_dir: PathBuf,
     session_path: PathBuf,
     window_inventory: Mutex<WindowInventory>,
+    session_snapshot_write: Mutex<()>,
     pending: Mutex<HashMap<String, PendingRequest>>,
     request_scan_cursor: Mutex<Option<RequestScanCursor>>,
     terminal_task_permits: Arc<tokio::sync::Semaphore>,
@@ -907,6 +908,7 @@ impl UiAutomationState {
                 automation_dir,
                 session_path,
                 window_inventory: Mutex::new(WindowInventory::initial()),
+                session_snapshot_write: Mutex::new(()),
                 pending: Mutex::new(HashMap::new()),
                 request_scan_cursor: Mutex::new(None),
                 terminal_task_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -1144,6 +1146,14 @@ impl UiAutomationState {
     }
 
     fn cleanup_owned_automation_files(&self) {
+        // The cursor owns non-delete-share directory handles on Windows. Drop
+        // them while the config witness is still live and before removing the
+        // mailbox tree they enumerate.
+        *self
+            .inner
+            .request_scan_cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         if !self.verify_config_ownership() {
             self.transition_config_identity_unavailable();
             return;
@@ -1276,6 +1286,29 @@ impl UiAutomationState {
     }
 
     fn write_session_snapshot(&self) -> io::Result<()> {
+        let committed = self.write_session_snapshot_with_commit_decision(|| Ok(true))?;
+        if committed {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "atomic publication cancelled",
+            ))
+        }
+    }
+
+    fn write_session_snapshot_with_commit_decision(
+        &self,
+        commit_decision: impl FnOnce() -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        // Serialize snapshot capture with publication. Taking this lock before
+        // reading the inventory prevents an older captured generation from
+        // resuming after a newer writer and replacing its session snapshot.
+        let _write = self
+            .inner
+            .session_snapshot_write
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let (status, window_labels, ready_window_labels, observed_count) = {
             let inventory = self
                 .inner
@@ -1301,7 +1334,9 @@ impl UiAutomationState {
             ready_window_labels,
             started_at_unix_ms: self.inner.started_at_unix_ms,
         };
-        self.with_owned_automation_fs(|| write_json_atomic_replace(&self.inner.session_path, &session))
+        self.with_owned_automation_fs(|| {
+            write_json_atomic(&self.inner.session_path, &session, true, commit_decision)
+        })
     }
 
     fn poll_once(&self, app: &AppHandle) {
@@ -4923,6 +4958,7 @@ fn write_json_atomic_new_with_precommit<T: Serialize>(
     write_json_atomic(path, value, false, before_commit)
 }
 
+#[cfg(test)]
 fn write_json_atomic_replace<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let committed = write_json_atomic(path, value, true, || Ok(true))?;
     if committed {
@@ -4971,6 +5007,12 @@ impl OpenedObjectIdentity {
     fn same_object(self, other: Self) -> bool {
         self.volume == other.volume && self.file == other.file
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AtomicCommitGenerations {
+    source: OpenedObjectIdentity,
+    destination: Option<OpenedObjectIdentity>,
 }
 
 struct RetainedAutomationDirectory {
@@ -5334,11 +5376,36 @@ where
         value,
         replace,
         tmp_path,
-        move |_temp_file, source, destination, should_replace| {
+        move |temp_file,
+              source,
+              destination,
+              should_replace,
+              directories,
+              generations,
+              commit_decision| {
             if should_replace {
-                replace_existing(source, destination)
+                verify_atomic_commit_paths(
+                    temp_file,
+                    source,
+                    destination,
+                    directories,
+                    generations,
+                )?;
+                if !commit_decision()? {
+                    return Ok(false);
+                }
+                replace_existing(source, destination)?;
+                Ok(true)
             } else {
-                atomic_commit_opened_temp(_temp_file, source, destination, false)
+                atomic_commit_opened_temp(
+                    temp_file,
+                    source,
+                    destination,
+                    false,
+                    directories,
+                    generations,
+                    commit_decision,
+                )
             }
         },
         || Ok(true),
@@ -5363,7 +5430,15 @@ fn write_json_atomic_with_temp_path_and_precommit<T, F, C>(
 ) -> io::Result<bool>
 where
     T: Serialize,
-    F: FnOnce(&File, &Path, &Path, bool) -> io::Result<()>,
+    F: FnOnce(
+        &File,
+        &Path,
+        &Path,
+        bool,
+        &AtomicWriteDirectories,
+        AtomicCommitGenerations,
+        &mut dyn FnMut() -> io::Result<bool>,
+    ) -> io::Result<bool>,
     C: FnOnce() -> io::Result<bool>,
 {
     let limit = if path.file_name().and_then(|name| name.to_str()) == Some(SESSION_FILE) {
@@ -5404,7 +5479,7 @@ where
     let temp_identity = opened_object_identity(&file)?;
     if temp_identity.links != 1 {
         drop(file);
-        let _ = retry_remove_file(tmp_path);
+        let _ = retry_remove_file_if_same_object(tmp_path, temp_identity);
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "unsafe_automation_file",
@@ -5417,7 +5492,7 @@ where
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
                 drop(file);
-                let _ = retry_remove_file(tmp_path);
+                let _ = retry_remove_file_if_same_object(tmp_path, temp_identity);
                 return Err(error);
             }
         }
@@ -5449,18 +5524,36 @@ where
         Ok(())
     };
 
+    let generations = AtomicCommitGenerations {
+        source: temp_identity,
+        destination: destination.as_ref().map(|(identity, _)| *identity),
+    };
+    let mut before_commit = Some(before_commit);
+    let mut commit_decision = || {
+        let decision = before_commit
+            .take()
+            .ok_or_else(|| io::Error::other("atomic commit decision already consumed"))?;
+        decision()
+    };
     let result = (|| {
+        // Re-prove every retained input, then transfer the final decision into
+        // the native commit closure. That closure performs its own last path
+        // generation check and invokes the decision only at the atomic boundary.
         verify_inputs()?;
-        if !before_commit()? {
+        if !commit(
+            &file,
+            tmp_path,
+            path,
+            replace,
+            &directories,
+            generations,
+            &mut commit_decision,
+        )? {
             return Ok(false);
         }
-        // The hook is the last user-controlled/staging boundary. Re-prove every
-        // retained input after it, then enter the native commit immediately.
-        verify_inputs()?;
-        commit(&file, tmp_path, path, replace)?;
         validate_opened_regular_file(&file)?;
         let published = open_regular_file_no_follow(path)?;
-        if opened_object_identity(&published)? != temp_identity {
+        if !opened_object_identity(&published)?.same_object(temp_identity) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "unsafe_automation_file",
@@ -5472,7 +5565,7 @@ where
     drop(destination);
     drop(file);
     if !matches!(result, Ok(true)) {
-        let _ = retry_remove_file(tmp_path);
+        let _ = retry_remove_file_if_same_object(tmp_path, temp_identity);
     }
     result
 }
@@ -5620,13 +5713,72 @@ fn validate_opened_regular_file(file: &File) -> io::Result<fs::Metadata> {
     Ok(metadata)
 }
 
+fn verify_atomic_commit_paths(
+    source: &File,
+    source_path: &Path,
+    destination: &Path,
+    directories: &AtomicWriteDirectories,
+    generations: AtomicCommitGenerations,
+) -> io::Result<()> {
+    directories.verify_current()?;
+    validate_opened_regular_file(source)?;
+    if !opened_object_identity(source)?.same_object(generations.source) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
+        ));
+    }
+    let current_source = open_regular_file_no_follow(source_path)?;
+    if !opened_object_identity(&current_source)?.same_object(generations.source) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
+        ));
+    }
+    match generations.destination {
+        Some(expected) => {
+            let current_destination = open_regular_file_no_follow(destination)?;
+            if !opened_object_identity(&current_destination)?.same_object(expected) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "unsafe_automation_file",
+                ));
+            }
+        }
+        None => ensure_path_absent_no_follow(destination)?,
+    }
+    directories.verify_current()
+}
+
+fn retry_remove_file_if_same_object(
+    path: &Path,
+    expected: OpenedObjectIdentity,
+) -> io::Result<()> {
+    let current = match open_regular_file_no_follow(path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !opened_object_identity(&current)?.same_object(expected) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
+        ));
+    }
+    drop(current);
+    retry_remove_file(path)
+}
+
 #[cfg(target_os = "windows")]
 fn atomic_commit_opened_temp(
     source: &File,
-    _source_path: &Path,
+    source_path: &Path,
     destination: &Path,
     replace: bool,
-) -> io::Result<()> {
+    directories: &AtomicWriteDirectories,
+    generations: AtomicCommitGenerations,
+    commit_decision: &mut dyn FnMut() -> io::Result<bool>,
+) -> io::Result<bool> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -5636,11 +5788,11 @@ fn atomic_commit_opened_temp(
     const FILE_RENAME_FLAG_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     const FILE_RENAME_FLAG_POSIX_SEMANTICS: u32 = 0x0000_0002;
 
-    let destination = destination.as_os_str().encode_wide().collect::<Vec<_>>();
+    let destination_wide = destination.as_os_str().encode_wide().collect::<Vec<_>>();
     let file_name_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
     let buffer_size = std::mem::size_of::<FILE_RENAME_INFO>()
         .checked_add(
-            destination
+            destination_wide
                 .len()
                 .saturating_sub(1)
                 .saturating_mul(std::mem::size_of::<u16>()),
@@ -5648,7 +5800,7 @@ fn atomic_commit_opened_temp(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination too long"))?;
     let buffer_size_u32 = u32::try_from(buffer_size)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination too long"))?;
-    let file_name_length = u32::try_from(destination.len().saturating_mul(2))
+    let file_name_length = u32::try_from(destination_wide.len().saturating_mul(2))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "destination too long"))?;
     let mut buffer = vec![0_u8; buffer_size];
     let (information_class, flags) = if replace {
@@ -5665,10 +5817,20 @@ fn atomic_commit_opened_temp(
         (*information).RootDirectory = std::ptr::null_mut();
         (*information).FileNameLength = file_name_length;
         std::ptr::copy_nonoverlapping(
-            destination.as_ptr(),
+            destination_wide.as_ptr(),
             buffer.as_mut_ptr().add(file_name_offset).cast::<u16>(),
-            destination.len(),
+            destination_wide.len(),
         );
+    }
+    verify_atomic_commit_paths(
+        source,
+        source_path,
+        destination,
+        directories,
+        generations,
+    )?;
+    if !commit_decision()? {
+        return Ok(false);
     }
     let renamed = unsafe {
         SetFileInformationByHandle(
@@ -5681,24 +5843,89 @@ fn atomic_commit_opened_temp(
     if renamed == 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(())
+        Ok(true)
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(unix)]
 fn atomic_commit_opened_temp(
-    _source: &File,
+    source: &File,
     source_path: &Path,
     destination: &Path,
     replace: bool,
-) -> io::Result<()> {
-    if replace {
-        fs::rename(source_path, destination)
-    } else {
-        fs::hard_link(source_path, destination)?;
-        let _ = retry_remove_file(source_path);
-        Ok(())
+    directories: &AtomicWriteDirectories,
+    generations: AtomicCommitGenerations,
+    commit_decision: &mut dyn FnMut() -> io::Result<bool>,
+) -> io::Result<bool> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent directory"))?;
+    let anchor = parent.join(format!(
+        "~ac-ui-commit-{}.tmp",
+        Uuid::new_v4().simple()
+    ));
+    // Link to an unpublished name, then prove that name is the retained source
+    // generation. A source rebind before this link fails the proof; a rebind
+    // afterward cannot change the inode pinned by the commit anchor.
+    fs::hard_link(source_path, &anchor)?;
+    let anchor_file = match open_regular_file_no_follow(&anchor) {
+        Ok(anchor_file) => anchor_file,
+        Err(error) => {
+            let _ = retry_remove_file(&anchor);
+            return Err(error);
+        }
+    };
+    if !opened_object_identity(&anchor_file)?.same_object(generations.source) {
+        drop(anchor_file);
+        let _ = retry_remove_file(&anchor);
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
+        ));
     }
+    drop(anchor_file);
+
+    let result = (|| {
+        verify_atomic_commit_paths(
+            source,
+            source_path,
+            destination,
+            directories,
+            generations,
+        )?;
+        if !commit_decision()? {
+            return Ok(false);
+        }
+        if replace {
+            fs::rename(&anchor, destination)?;
+        } else {
+            fs::hard_link(&anchor, destination)?;
+            let _ = retry_remove_file(&anchor);
+        }
+        Ok(true)
+    })();
+    if !matches!(result, Ok(true)) {
+        let _ = retry_remove_file(&anchor);
+    } else {
+        let _ = retry_remove_file_if_same_object(source_path, generations.source);
+    }
+    result
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn atomic_commit_opened_temp(
+    _source: &File,
+    _source_path: &Path,
+    _destination: &Path,
+    _replace: bool,
+    _directories: &AtomicWriteDirectories,
+    _generations: AtomicCommitGenerations,
+    _commit_decision: &mut dyn FnMut() -> io::Result<bool>,
+) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic opened-file commit is unavailable",
+    ))
 }
 
 fn retry_rename(from: &Path, to: &Path) -> io::Result<()> {
@@ -7362,7 +7589,7 @@ mod tests {
     }
 
     #[test]
-    fn webview_completion_loses_when_staging_crosses_the_deadline_at_commit() {
+    fn webview_completion_loses_when_clock_advances_inside_the_native_commit_closure() {
         let tmp = tempfile::tempdir().unwrap();
         let state = test_automation_state(tmp.path());
         fs::create_dir_all(state.requests_dir()).unwrap();
@@ -7417,6 +7644,7 @@ mod tests {
             state
                 .complete_with_now_and_precommit_hook("main", result, now, || {
                     assert_eq!(clock_calls.load(Ordering::SeqCst), 1);
+                    assert!(!response_path.exists());
                     clock.store(100, Ordering::SeqCst);
                 })
                 .unwrap_err(),
@@ -7465,7 +7693,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_completion_loses_when_staging_crosses_the_deadline_at_commit() {
+    fn terminal_completion_loses_when_clock_advances_inside_the_native_commit_closure() {
         let tmp = tempfile::tempdir().unwrap();
         let state = test_automation_state(tmp.path());
         fs::create_dir_all(state.requests_dir()).unwrap();
@@ -7511,6 +7739,7 @@ mod tests {
             now,
             || {
                 assert_eq!(clock_calls.load(Ordering::SeqCst), 1);
+                assert!(!response_path.exists());
                 clock.store(100, Ordering::SeqCst);
             },
         );
@@ -7809,6 +8038,59 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_cleanup_drops_an_exact_batch_live_scan_cursor_before_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        state.initialize_files().unwrap();
+        for index in 0..MAX_REQUEST_FILES_PER_SCAN {
+            fs::write(
+                state
+                    .requests_dir()
+                    .join(format!("0000-{index:04}.invalid")),
+                "delete-denied-during-scan",
+            )
+            .unwrap();
+        }
+        let denied_cleanup = |_path: &Path| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected delete denial",
+            ))
+        };
+
+        assert!(state
+            .request_scan_batch_with_cleanup(denied_cleanup)
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .inner
+            .request_scan_cursor
+            .lock()
+            .unwrap()
+            .is_some());
+        fs::write(state.responses_dir().join("owned-response.invalid"), "owned").unwrap();
+        assert!(state.inner.session_path.is_file());
+
+        state.cleanup_owned_automation_files();
+
+        assert!(state
+            .inner
+            .request_scan_cursor
+            .lock()
+            .unwrap()
+            .is_none());
+        assert!(!state.requests_dir().exists());
+        assert!(!state.responses_dir().exists());
+        assert!(!state.inner.session_path.exists());
+        assert_eq!(
+            fs::read_dir(&state.inner.automation_dir).unwrap().count(),
+            0,
+            "all owned artifacts must be removed while the state witness is live"
+        );
+        assert!(state.verify_config_ownership());
+    }
+
+    #[test]
     fn atomic_singleton_replacement_preserves_old_bytes_when_commit_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SESSION_FILE);
@@ -7840,6 +8122,58 @@ mod tests {
             serde_json::from_slice::<Value>(&fs::read(path).unwrap()).unwrap(),
             json!({"generation": "new"})
         );
+    }
+
+    #[test]
+    fn session_snapshot_serialization_spans_the_real_commit_closure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        state.initialize_files().unwrap();
+        let (at_commit_tx, at_commit_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_state = state.clone();
+        let first = std::thread::spawn(move || {
+            first_state
+                .write_session_snapshot_with_commit_decision(|| {
+                    at_commit_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(true)
+                })
+                .unwrap()
+        });
+        at_commit_rx.recv().unwrap();
+
+        {
+            let mut inventory = state.inner.window_inventory.lock().unwrap();
+            inventory.sync(vec!["main".to_string(), "newer".to_string()]);
+            inventory.mark_ready("newer");
+        }
+        let (second_started_tx, second_started_rx) = std::sync::mpsc::channel();
+        let (second_done_tx, second_done_rx) = std::sync::mpsc::channel();
+        let second_state = state.clone();
+        let second = std::thread::spawn(move || {
+            second_started_tx.send(()).unwrap();
+            second_state.write_session_snapshot().unwrap();
+            second_done_tx.send(()).unwrap();
+        });
+        second_started_rx.recv().unwrap();
+        assert!(matches!(
+            second_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).unwrap();
+        assert!(first.join().unwrap());
+        second_done_rx.recv().unwrap();
+        second.join().unwrap();
+
+        let session: UiAutomationSession =
+            serde_json::from_slice(&fs::read(&state.inner.session_path).unwrap()).unwrap();
+        assert!(session.window_labels.iter().any(|label| label == "newer"));
+        assert!(session
+            .ready_window_labels
+            .iter()
+            .any(|label| label == "newer"));
     }
 
     #[cfg(any(unix, target_os = "windows"))]
@@ -7904,7 +8238,7 @@ mod tests {
 
     #[cfg(any(unix, target_os = "windows"))]
     #[test]
-    fn atomic_commit_retains_the_validated_temp_generation_through_publication() {
+    fn atomic_commit_revalidates_a_rebound_source_inside_the_real_commit_closure() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SESSION_FILE);
         let temp_path = tmp.path().join("retained-temp.tmp");
@@ -7915,14 +8249,20 @@ mod tests {
         fs::write(&sentinel, "foreign-untouched").unwrap();
         fs::write(&path, br#"{"generation":"old"}"#).unwrap();
         let swap_was_denied = AtomicBool::new(false);
+        let commit_decision_reached = AtomicBool::new(false);
 
         let result = write_json_atomic_with_temp_path_and_precommit(
             &path,
             &json!({"generation": "safe-new"}),
             true,
             &temp_path,
-            atomic_commit_opened_temp,
-            || {
+            |source,
+             source_path,
+             destination,
+             replace,
+             directories,
+             generations,
+             commit_decision| {
                 let swap = fs::rename(&temp_path, &parked_path);
                 #[cfg(target_os = "windows")]
                 {
@@ -7934,6 +8274,18 @@ mod tests {
                     swap.unwrap();
                     create_test_reparse(&temp_path, &foreign);
                 }
+                atomic_commit_opened_temp(
+                    source,
+                    source_path,
+                    destination,
+                    replace,
+                    directories,
+                    generations,
+                    commit_decision,
+                )
+            },
+            || {
+                commit_decision_reached.store(true, Ordering::SeqCst);
                 Ok(true)
             },
         );
@@ -7942,6 +8294,7 @@ mod tests {
         {
             assert!(result.unwrap());
             assert!(swap_was_denied.load(Ordering::SeqCst));
+            assert!(commit_decision_reached.load(Ordering::SeqCst));
             assert_eq!(
                 serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
                 json!({"generation": "safe-new"})
@@ -7951,6 +8304,7 @@ mod tests {
         #[cfg(unix)]
         {
             assert!(result.is_err());
+            assert!(!commit_decision_reached.load(Ordering::SeqCst));
             assert_eq!(
                 fs::read_to_string(&path).unwrap(),
                 r#"{"generation":"old"}"#
@@ -7967,7 +8321,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_commit_rejects_a_post_open_destination_generation_swap() {
+    fn atomic_commit_never_overwrites_a_later_destination_generation_inside_commit_closure() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SESSION_FILE);
         let temp_path = tmp.path().join("retained-destination.tmp");
@@ -7975,21 +8329,40 @@ mod tests {
         let old = br#"{"generation":"old"}"#;
         let foreign = br#"{"generation":"foreign-untouched"}"#;
         fs::write(&path, old).unwrap();
+        let commit_decision_reached = AtomicBool::new(false);
 
         let result = write_json_atomic_with_temp_path_and_precommit(
             &path,
             &json!({"generation": "safe-new"}),
             true,
             &temp_path,
-            atomic_commit_opened_temp,
-            || {
+            |source,
+             source_path,
+             destination,
+             replace,
+             directories,
+             generations,
+             commit_decision| {
                 fs::rename(&path, &parked_path).unwrap();
                 fs::write(&path, foreign).unwrap();
+                atomic_commit_opened_temp(
+                    source,
+                    source_path,
+                    destination,
+                    replace,
+                    directories,
+                    generations,
+                    commit_decision,
+                )
+            },
+            || {
+                commit_decision_reached.store(true, Ordering::SeqCst);
                 Ok(true)
             },
         );
 
         assert!(result.is_err());
+        assert!(!commit_decision_reached.load(Ordering::SeqCst));
         assert_eq!(fs::read(&parked_path).unwrap(), old);
         assert_eq!(fs::read(&path).unwrap(), foreign);
         assert!(!temp_path.exists());
