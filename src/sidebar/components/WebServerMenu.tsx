@@ -102,6 +102,10 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   // #1453 - user override of the collapsed virtual group; null = untouched.
   const [virtualExpandedOverride, setVirtualExpandedOverride] =
     createSignal<boolean | null>(null);
+  let busyDepth = 0;
+  let webServerIntentRevision = 0;
+  let webSettingsWriteTail: Promise<void> = Promise.resolve();
+  const isCurrentWebServerIntent = (revision: number) => revision === webServerIntentRevision;
 
   const configuredPort = createMemo(() => settings()?.webServerPort ?? 0);
   const configuredBind = createMemo(() => settings()?.webServerBind || "127.0.0.1");
@@ -110,13 +114,17 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     () => `http://${browserUrlHost(configuredBind())}:${configuredPort()}`,
   );
   const running = createMemo(() => status()?.listening ?? false);
-  const ownedRunning = createMemo(() => status()?.owned ?? false);
+  const ownedActive = createMemo(() => status()?.owned ?? false);
+  const ownedRunning = createMemo(() => status()?.state === "ownedRunning");
+  const starting = createMemo(() => status()?.state === "starting");
+  const stopping = createMemo(() => status()?.state === "stopping");
   const ownershipAmbiguous = createMemo(() =>
     statusUnavailable() || status()?.externalListening === true
   );
   const canOpenBrowser = createMemo(() =>
     webServerEnabled() && status()?.openAllowed === true
   );
+  const replacementDisabled = createMemo(() => busy() || starting() || stopping());
 
   const bindFailure = createMemo(() => status()?.bindFailure ?? null);
   const physicalInterfaces = createMemo(() => (interfaces() ?? []).filter((i) => !i.isVirtual));
@@ -163,7 +171,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     );
   });
   const showBindAlert = createMemo(
-    () => bindFailure() !== null && !ownedRunning() && status()?.externalListening !== true
+    () => bindFailure() !== null && !ownedActive() && status()?.externalListening !== true
   );
   // #1453 - the IPV4_RE gate is mandatory. Without it every InvalidAddr failure
   // (whose bind, by construction, is not an address) would print the confident
@@ -182,6 +190,8 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   });
 
   const buttonTitle = createMemo(() => {
+    if (starting()) return `Web server starting on port ${configuredPort()}`;
+    if (stopping()) return `Web server stopping on port ${configuredPort()}`;
     if (ownedRunning()) return `Web server running on port ${configuredPort()}`;
     if (status()?.externalListening) return `Port ${configuredPort()} is in use`;
     if (statusUnavailable()) return "Web server status unavailable";
@@ -191,7 +201,9 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const buttonState = createMemo(() =>
     statusUnavailable()
       ? "unknown"
-      : ownedRunning()
+      : starting() || stopping()
+        ? "ambiguous"
+        : ownedRunning()
         ? "running"
         : status()?.externalListening
           ? "ambiguous"
@@ -200,6 +212,8 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
             : "stopped"
   );
   const statusLabel = createMemo(() => {
+    if (starting()) return "Starting";
+    if (stopping()) return "Stopping";
     if (ownedRunning()) return "Running";
     if (status()?.externalListening) return "Port in use";
     if (statusUnavailable()) return "Unknown";
@@ -215,13 +229,17 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     return value;
   };
 
-  const loadOwnedStatus = async (): Promise<WebServerOwnedStatus | null> => {
+  const loadOwnedStatus = async (
+    expectedRevision = webServerIntentRevision,
+  ): Promise<WebServerOwnedStatus | null> => {
     try {
       const nextStatus = await SettingsAPI.getWebServerOwnedStatus();
+      if (!isCurrentWebServerIntent(expectedRevision)) return null;
       setStatusUnavailable(false);
       setStatus(nextStatus);
       return nextStatus;
     } catch {
+      if (!isCurrentWebServerIntent(expectedRevision)) return null;
       setStatusUnavailable(true);
       setStatus(null);
       return null;
@@ -244,52 +262,101 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   // too. Neither path is anything a browser user can observe: there is no
   // chooser in a browser to degrade, and documenting it as one was the false
   // claim #1453 removed from docs/features/remote-web-ui.md.
-  const loadInterfaces = async () => {
+  const loadInterfaces = async (expectedRevision = webServerIntentRevision) => {
     try {
-      setInterfaces(await SettingsAPI.listWebServerInterfaces());
+      const nextInterfaces = await SettingsAPI.listWebServerInterfaces();
+      if (isCurrentWebServerIntent(expectedRevision)) setInterfaces(nextInterfaces);
     } catch {
-      setInterfaces(null);
+      if (isCurrentWebServerIntent(expectedRevision)) setInterfaces(null);
     }
   };
 
-  const refreshState = async () => {
+  const refreshState = async (expectedRevision = webServerIntentRevision): Promise<boolean> => {
     const [nextSettings] = await Promise.all([
       SettingsAPI.get(),
-      loadOwnedStatus(),
-      loadInterfaces(),
+      loadOwnedStatus(expectedRevision),
+      loadInterfaces(expectedRevision),
     ]);
+    if (!isCurrentWebServerIntent(expectedRevision)) return false;
     setSettings(nextSettings);
     setPortDraft(String(nextSettings.webServerPort));
+    return true;
   };
 
   const saveWebSettings = async (
-    patch: Partial<Pick<AppSettings, "webServerEnabled" | "webServerPort" | "webServerBind">>
-  ) => {
-    const latest = await SettingsAPI.get();
-    await SettingsAPI.saveDraft({ ...latest, ...patch });
-    void settingsStore.refresh();
+    patch: Partial<Pick<AppSettings, "webServerEnabled" | "webServerPort" | "webServerBind">>,
+    expectedRevision?: number,
+  ): Promise<boolean> => {
+    const write = webSettingsWriteTail.then(async () => {
+      if (
+        expectedRevision !== undefined &&
+        !isCurrentWebServerIntent(expectedRevision)
+      ) return false;
+      const latest = await SettingsAPI.get();
+      if (
+        expectedRevision !== undefined &&
+        !isCurrentWebServerIntent(expectedRevision)
+      ) return false;
+      await SettingsAPI.saveDraft({ ...latest, ...patch });
+      if (
+        expectedRevision !== undefined &&
+        !isCurrentWebServerIntent(expectedRevision)
+      ) return false;
+      await settingsStore.refresh();
+      return true;
+    });
+    webSettingsWriteTail = write.then(() => undefined, () => undefined);
+    return write;
   };
 
   const waitForOwnedStatus = async (
-    predicate: (nextStatus: WebServerOwnedStatus) => boolean
+    expectedRevision: number,
+    predicate: (nextStatus: WebServerOwnedStatus) => boolean,
   ): Promise<WebServerOwnedStatus | null> => {
     for (let i = 0; i < RESTART_POLL_ATTEMPTS; i += 1) {
-      const nextStatus = await loadOwnedStatus();
+      if (!isCurrentWebServerIntent(expectedRevision)) return null;
+      const nextStatus = await loadOwnedStatus(expectedRevision);
+      if (!isCurrentWebServerIntent(expectedRevision)) return null;
       if (nextStatus && predicate(nextStatus)) return nextStatus;
-      await sleep(RESTART_POLL_DELAY_MS);
+      if (i + 1 < RESTART_POLL_ATTEMPTS) {
+        await sleep(RESTART_POLL_DELAY_MS);
+        if (!isCurrentWebServerIntent(expectedRevision)) return null;
+      }
     }
-    return status();
+    return null;
   };
 
-  const startAndWaitForRunning = async (failureMessage: string): Promise<boolean> => {
-    const started = await SettingsAPI.startWebServer();
-    const observed = await waitForOwnedStatus((nextStatus) =>
-      nextStatus.owned || nextStatus.externalListening
+  const startAndWaitForRunning = async (
+    revision: number,
+    failureMessage: string,
+  ): Promise<boolean> => {
+    let invokeSettled = false;
+    const invokePromise = Promise.resolve()
+      .then(() => SettingsAPI.startWebServer())
+      .then(
+        (value) => {
+          invokeSettled = true;
+          return { ok: true as const, value };
+        },
+        (reason: unknown) => {
+          invokeSettled = true;
+          return { ok: false as const, reason };
+        },
+      );
+    const pollPromise = waitForOwnedStatus(revision, (nextStatus) =>
+      nextStatus.state === "ownedRunning" ||
+      nextStatus.state === "externalListening" ||
+      nextStatus.state === "stopping" ||
+      (nextStatus.state === "stopped" && invokeSettled)
     );
-
-    if (started && observed?.owned) return true;
-
-    if (observed?.externalListening) {
+    const [invokeResult, observed] = await Promise.all([invokePromise, pollPromise]);
+    if (!isCurrentWebServerIntent(revision)) return false;
+    if (!invokeResult.ok) {
+      if (errorMessage(invokeResult.reason) === "Web server start cancelled by stop") return false;
+      throw invokeResult.reason;
+    }
+    if (invokeResult.value && observed?.state === "ownedRunning") return true;
+    if (observed?.state === "externalListening") {
       setError("Port is already in use");
     } else {
       setError(failureMessage);
@@ -297,72 +364,87 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     return false;
   };
 
-  const stopAndWaitForStopped = async (): Promise<boolean> => {
-    await SettingsAPI.stopWebServer();
-    const observed = await waitForOwnedStatus((nextStatus) =>
-      !nextStatus.owned && !nextStatus.listening
+  const stopAndWaitForStopped = async (revision: number): Promise<boolean> => {
+    const invokePromise = Promise.resolve()
+      .then(() => SettingsAPI.stopWebServer())
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (reason: unknown) => ({ ok: false as const, reason }),
+      );
+    const pollPromise = waitForOwnedStatus(
+      revision,
+      (nextStatus) =>
+        nextStatus.state === "stopped" || nextStatus.state === "externalListening",
     );
-    if (observed && !observed.listening && !observed.owned) return true;
-
+    const [invokeResult, observed] = await Promise.all([invokePromise, pollPromise]);
+    if (!isCurrentWebServerIntent(revision)) return false;
+    if (!invokeResult.ok) throw invokeResult.reason;
+    if (observed?.state === "stopped" || observed?.state === "externalListening") return true;
     setError("Port is still in use");
     return false;
   };
 
-  const restartServer = async (failureMessage: string): Promise<boolean> => {
-    if (!(await stopAndWaitForStopped())) return false;
-    return startAndWaitForRunning(failureMessage);
+  const restartServer = async (revision: number, failureMessage: string): Promise<boolean> => {
+    if (!(await stopAndWaitForStopped(revision))) return false;
+    if (!isCurrentWebServerIntent(revision)) return false;
+    return startAndWaitForRunning(revision, failureMessage);
   };
 
-  const runExclusive = async (action: () => Promise<void>) => {
-    if (busy()) return;
-    setBusy(true);
+  const runExclusive = (
+    action: (revision: number) => Promise<void>,
+    allowWhileBusy = false,
+  ): void => {
+    if (busyDepth > 0 && !allowWhileBusy) return;
+    webServerIntentRevision += 1;
+    const revision = webServerIntentRevision;
+    busyDepth += 1;
+    setBusy(busyDepth > 0);
     setError("");
-    try {
-      await action();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
+    void action(revision)
+      .catch((err: unknown) => {
+        if (isCurrentWebServerIntent(revision)) setError(errorMessage(err));
+      })
+      .finally(() => {
+        busyDepth -= 1;
+        setBusy(busyDepth > 0);
+      });
   };
 
   const handleToggle = () => {
-    void runExclusive(async () => {
-      if (ownedRunning()) {
-        const stopped = await stopAndWaitForStopped();
-        await saveWebSettings({ webServerEnabled: false });
-        await refreshState();
-        if (!stopped) setError("Port is still in use");
+    const stopRequested = ownedActive();
+    runExclusive(async (revision) => {
+      if (stopRequested) {
+        if (!(await stopAndWaitForStopped(revision))) return;
+        if (!isCurrentWebServerIntent(revision)) return;
+        if (!(await saveWebSettings({ webServerEnabled: false }, revision))) return;
+        if (!isCurrentWebServerIntent(revision)) return;
+        await refreshState(revision);
         return;
       }
-
-      // #1453 - persist the intent only once a start actually converged, so a
-      // visibly failed click cannot leave the server enabled for every future
-      // launch. Safe because start_web_server reads only bind and port, never
-      // the enabled flag, so writing it afterwards cannot block the start.
-      const started = await startAndWaitForRunning("Server did not start");
-      if (started) await saveWebSettings({ webServerEnabled: true });
-      await refreshState();
-    });
+      if (!(await startAndWaitForRunning(revision, "Server did not start"))) return;
+      if (!isCurrentWebServerIntent(revision)) return;
+      if (!(await saveWebSettings({ webServerEnabled: true }, revision))) return;
+      if (!isCurrentWebServerIntent(revision)) return;
+      await refreshState(revision);
+    }, stopRequested);
   };
 
   // #1453 - the single path for presets, detected rows and manual entry.
   const applyBind = (nextBind: string) => {
-    void runExclusive(async () => {
-      const wasOwnedRunning = ownedRunning();
-      const shouldStart = !wasOwnedRunning && webServerEnabled();
+    const wasOwnedActive = ownedActive();
+    const shouldStart = !wasOwnedActive && webServerEnabled();
+    runExclusive(async (revision) => {
       await saveWebSettings({ webServerBind: nextBind });
-      // Collapse ONLY on convergence. The helpers do not throw on failure: they
-      // set error() and return false. Closing the chooser after a failure would
-      // take away the very screen the user needs to pick another address.
+      if (!isCurrentWebServerIntent(revision)) return;
       let converged = true;
-      if (wasOwnedRunning) {
-        converged = await restartServer("Server did not restart");
+      if (wasOwnedActive) {
+        converged = await restartServer(revision, "Server did not restart");
       } else if (shouldStart) {
-        converged = await startAndWaitForRunning("Server did not start");
+        converged = await startAndWaitForRunning(revision, "Server did not start");
       }
-      await refreshState();
-      if (converged) {
+      if (!isCurrentWebServerIntent(revision)) return;
+      await refreshState(revision);
+      if (converged && isCurrentWebServerIntent(revision)) {
         setEditingAddr(false);
         setAddrDraft("");
       }
@@ -371,9 +453,10 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
 
   const handleRestart = () => {
     if (busy() || !ownedRunning()) return;
-    void runExclusive(async () => {
-      await restartServer("Server did not restart");
-      await refreshState();
+    runExclusive(async (revision) => {
+      await restartServer(revision, "Server did not restart");
+      if (!isCurrentWebServerIntent(revision)) return;
+      await refreshState(revision);
     });
   };
 
@@ -384,18 +467,26 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
       return;
     }
 
-    const wasOwnedRunning = ownedRunning();
-    void runExclusive(async () => {
+    const wasOwnedActive = ownedActive();
+    const shouldStart = !wasOwnedActive && webServerEnabled();
+    runExclusive(async (revision) => {
       await saveWebSettings({ webServerPort: nextPort });
-      const saved = !wasOwnedRunning || (await restartServer("Server did not restart"));
-      await refreshState();
-      if (saved) setEditingPort(false);
+      if (!isCurrentWebServerIntent(revision)) return;
+      let converged = true;
+      if (wasOwnedActive) {
+        converged = await restartServer(revision, "Server did not restart");
+      } else if (shouldStart) {
+        converged = await startAndWaitForRunning(revision, "Server did not start");
+      }
+      if (!isCurrentWebServerIntent(revision)) return;
+      await refreshState(revision);
+      if (converged && isCurrentWebServerIntent(revision)) setEditingPort(false);
     });
   };
 
   const handleOpenBrowser = () => {
     if (busy() || !canOpenBrowser()) return;
-    void runExclusive(async () => {
+    runExclusive(async () => {
       if (!canOpenBrowser()) return;
       await SettingsAPI.openWebRemote();
     });
@@ -493,7 +584,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                     setEditingPort(false);
                     setEditingAddr(true);
                   }}
-                  disabled={busy()}
+                  disabled={replacementDisabled()}
                   data-ac-testid="titlebar.webserver.bindAlertAction"
                 >
                   Change address
@@ -521,7 +612,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                 if (nextEditing) setEditingPort(false);
                 setEditingAddr(nextEditing);
               }}
-              disabled={busy()}
+              disabled={replacementDisabled()}
               data-ac-testid="titlebar.webserver.editAddr"
             >
               {editingAddr() ? "Close" : "Edit"}
@@ -537,7 +628,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                 iface={LOCALHOST}
                 note="This machine only."
                 selected={configuredBind() === LOCALHOST}
-                disabled={busy()}
+                disabled={replacementDisabled()}
                 onSelect={applyBind}
               />
               <BindOption
@@ -547,7 +638,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                 note="Any device on your network can reach this server. Survives a DHCP address change."
                 noteClass="bad"
                 selected={configuredBind() === ALL_INTERFACES}
-                disabled={busy()}
+                disabled={replacementDisabled()}
                 onSelect={applyBind}
               />
 
@@ -560,7 +651,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                       label={iface.address}
                       iface={iface.interfaceName}
                       selected={configuredBind() === iface.address}
-                      disabled={busy()}
+                      disabled={replacementDisabled()}
                       onSelect={applyBind}
                     />
                   )}
@@ -590,7 +681,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                         iface={iface.interfaceName}
                         nested
                         selected={configuredBind() === iface.address}
-                        disabled={busy()}
+                        disabled={replacementDisabled()}
                         onSelect={applyBind}
                       />
                     )}
@@ -633,7 +724,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                 <button
                   class="webserver-inline-btn"
                   onClick={() => applyBind(addrDraft().trim())}
-                  disabled={busy() || !addrDraftValid()}
+                  disabled={replacementDisabled() || !addrDraftValid()}
                   data-ac-testid="titlebar.webserver.addrUse"
                 >
                   Use
@@ -671,7 +762,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
                 setEditingAddr(false);
                 setEditingPort(true);
               }}
-              disabled={busy()}
+              disabled={replacementDisabled()}
               hidden={editingPort()}
               data-ac-testid="titlebar.webserver.editPort"
             >
@@ -687,7 +778,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
             <button
               class="webserver-inline-btn"
               onClick={handleSavePort}
-              disabled={busy()}
+              disabled={replacementDisabled()}
               hidden={!editingPort()}
               data-ac-testid="titlebar.webserver.savePort"
             >
@@ -696,7 +787,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
           </div>
 
           <Show
-            when={ownedRunning()}
+            when={ownedActive()}
             fallback={
               <Show when={configuredBind() === LOCALHOST && !showBindAlert()}>
                 <div class="webserver-bind-hint">
@@ -725,13 +816,13 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
           <button
             class="layout-option"
             onClick={handleToggle}
-            disabled={busy()}
+            disabled={busy() && !ownedActive()}
             data-ac-testid="titlebar.webserver.toggle"
           >
             <span class="layout-option-icon">
-              {ownedRunning() ? "○" : "●"}
+              {ownedActive() ? "○" : "●"}
             </span>
-            {ownedRunning() ? "Stop Server" : "Start Server"}
+            {ownedActive() ? "Stop Server" : "Start Server"}
           </button>
           <button
             class="layout-option"
