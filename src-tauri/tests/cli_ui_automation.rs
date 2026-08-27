@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(feature = "testable-ui-automation")]
+const INSTANCE_ISOLATION_HOOKS_ENV: &str = "AC_UI_AUTOMATION_INSTANCE_ISOLATION_HOOKS";
+
 fn test_lock() -> MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -140,6 +143,25 @@ fn run_without_draining_output_until_exit(
     }
 }
 
+#[cfg(feature = "testable-ui-automation")]
+fn wait_for_file(path: &Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.try_exists().unwrap_or(false) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+#[cfg(feature = "testable-ui-automation")]
+fn counter_value(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|raw| raw.lines().count())
+        .unwrap_or(0)
+}
+
 fn first_json(stderr_or_stdout: &str) -> Value {
     let lines: Vec<&str> = stderr_or_stdout
         .lines()
@@ -239,8 +261,7 @@ fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
         if !ok {
             return None;
         }
-        let ticks = (u64::from(creation.dwHighDateTime) << 32)
-            | u64::from(creation.dwLowDateTime);
+        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
         let unix_ticks = ticks.checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)?;
         i64::try_from(unix_ticks / 10_000).ok()
     }
@@ -342,7 +363,11 @@ fn normal_binary_refuses_every_new_ui_automation_verb_before_config_access() {
     ];
     for args in cases {
         let (code, stdout, stderr) = run(&bin, args);
-        assert_eq!(code, Some(1), "args={args:?}\nstdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            code,
+            Some(1),
+            "args={args:?}\nstdout: {stdout}\nstderr: {stderr}"
+        );
         assert_empty_output("stderr", &stderr);
         assert_eq!(
             first_json(&stdout)["error"],
@@ -351,6 +376,182 @@ fn normal_binary_refuses_every_new_ui_automation_verb_before_config_access() {
         );
     }
     assert!(!config_dir_for(&bin).exists());
+}
+
+#[cfg(feature = "testable-ui-automation")]
+#[test]
+fn feature_wrong_name_does_not_recognize_instance_hook_configuration() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hook-wrong-name");
+    let bin = copy_binary_as(tmp.path(), "feature-wrong-name.exe");
+    let control = tmp.path().join("hook-control");
+    std::fs::create_dir(&control).unwrap();
+    let hook_config = json!({
+        "controlDir": control,
+        "processId": "wrong-name",
+        "pauseAfterUiCliContextAcquiredBeforeLogger": true
+    })
+    .to_string();
+
+    let (code, stdout, stderr) = run_with_env(
+        &bin,
+        INSTANCE_ISOLATION_HOOKS_ENV,
+        &hook_config,
+        &["ui-capabilities"],
+    );
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        first_json(&stdout)["error"],
+        "refusing_non_testeable_binary"
+    );
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(
+        std::fs::read_dir(tmp.path().join("hook-control"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[cfg(feature = "testable-ui-automation")]
+#[test]
+fn exact_artifact_cli_exercises_the_real_prelogger_barrier_and_counter() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hook-exact-cli");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    let config_dir = config_dir_for(&bin);
+    let control = tmp.path().join("hook-control");
+    std::fs::create_dir(&config_dir).unwrap();
+    std::fs::create_dir(&control).unwrap();
+    let hook_config = json!({
+        "controlDir": control,
+        "processId": "cli-c",
+        "pauseAfterUiCliContextAcquiredBeforeLogger": true,
+        "waitTimeoutMs": 30_000
+    })
+    .to_string();
+
+    let child = Command::new(&bin)
+        .env(INSTANCE_ISOLATION_HOOKS_ENV, hook_config)
+        .arg("ui-capabilities")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn exact testable CLI");
+    let ready = control.join("after-ui-cli-context-cli-c");
+    wait_for_file(&ready, Duration::from_secs(15));
+
+    assert_eq!(
+        counter_value(&control.join("before-ui-cli-logger-config-phase.count")),
+        0
+    );
+    assert_eq!(
+        counter_value(&control.join("before-config-writer.count")),
+        0
+    );
+    assert!(!config_dir.join("app.log").exists());
+    #[cfg(target_os = "windows")]
+    {
+        let rebound = tmp.path().join("rebound-config");
+        assert!(
+            std::fs::rename(&config_dir, &rebound).is_err(),
+            "retained CLI witness did not fence config rebinding"
+        );
+    }
+
+    std::fs::write(
+        control.join("release-after-ui-cli-context-cli-c"),
+        "release\n",
+    )
+    .unwrap();
+    let output = child.wait_with_output().expect("wait exact testable CLI");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(first_json(&stdout)["error"], "automation_session_missing");
+    assert_eq!(
+        counter_value(&control.join("before-ui-cli-logger-config-phase.count")),
+        1
+    );
+    assert_eq!(
+        counter_value(&control.join("before-config-writer.count")),
+        0
+    );
+    assert!(config_dir.join("app.log").exists());
+    assert!(!control.join("after-owned-artifacts-cli-c").exists());
+}
+
+#[cfg(all(feature = "testable-ui-automation", target_os = "windows"))]
+#[test]
+fn exact_artifact_gui_exercises_writer_and_owned_artifact_hooks() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-hook-exact-gui");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    let config_dir = config_dir_for(&bin);
+    let control = tmp.path().join("hook-control");
+    std::fs::create_dir(&config_dir).unwrap();
+    std::fs::create_dir(&control).unwrap();
+    std::fs::write(config_dir.join("hook-sentinel.txt"), "sentinel\n").unwrap();
+    let expected_paths = [
+        "daemon.pid",
+        "master-token.txt",
+        "sessions.json",
+        "ui-automation/session.json",
+        "hook-sentinel.txt",
+    ];
+    let hook_config = json!({
+        "controlDir": control,
+        "processId": "gui-a",
+        "pauseAfterOwnedArtifactsPublished": true,
+        "ownedArtifactRelativePaths": expected_paths,
+        "waitTimeoutMs": 60_000
+    })
+    .to_string();
+
+    let mut child = Command::new(&bin)
+        .env(INSTANCE_ISOLATION_HOOKS_ENV, hook_config)
+        .env("AC_UI_AUTOMATION", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn exact testable GUI");
+    let ready = control.join("after-owned-artifacts-gui-a");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while Instant::now() < deadline && !ready.try_exists().unwrap_or(false) {
+        if let Some(status) = child.try_wait().expect("poll exact testable GUI") {
+            panic!("exact testable GUI exited before ownership hook: {status}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready.exists(), "GUI ownership hook did not become ready");
+
+    assert_eq!(
+        counter_value(&control.join("before-config-writer.count")),
+        1
+    );
+    assert_eq!(
+        counter_value(&control.join("before-ui-cli-logger-config-phase.count")),
+        0
+    );
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(control.join("owned-artifacts-gui-a.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["relativePaths"], json!(expected_paths));
+    for relative in expected_paths {
+        assert!(
+            config_dir.join(relative).exists(),
+            "hook reported missing owned artifact {relative}"
+        );
+    }
+    assert!(!report.to_string().contains("app.log"));
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(feature = "testable-ui-automation")]

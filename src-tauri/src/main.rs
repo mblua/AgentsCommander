@@ -8,6 +8,192 @@ use agentscommander_lib::testability::ui_automation::{
     AutomationConfigWitness, InstanceIsolationTestHooks, UiCliDispatchContext,
 };
 
+#[cfg(feature = "testable-ui-automation")]
+const INSTANCE_ISOLATION_HOOKS_ENV: &str = "AC_UI_AUTOMATION_INSTANCE_ISOLATION_HOOKS";
+
+#[cfg(feature = "testable-ui-automation")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstanceIsolationHookConfig {
+    control_dir: PathBuf,
+    process_id: String,
+    #[serde(default)]
+    pause_after_owned_artifacts_published: bool,
+    #[serde(default)]
+    pause_after_ui_cli_context_acquired_before_logger: bool,
+    #[serde(default)]
+    owned_artifact_relative_paths: Vec<PathBuf>,
+    #[serde(default = "default_instance_isolation_hook_timeout_ms")]
+    wait_timeout_ms: u64,
+}
+
+#[cfg(feature = "testable-ui-automation")]
+const fn default_instance_isolation_hook_timeout_ms() -> u64 {
+    30_000
+}
+
+#[cfg(feature = "testable-ui-automation")]
+struct ConfiguredInstanceIsolationTestHooks {
+    config: InstanceIsolationHookConfig,
+}
+
+#[cfg(feature = "testable-ui-automation")]
+impl ConfiguredInstanceIsolationTestHooks {
+    fn from_json(raw: &str) -> Option<Self> {
+        let config: InstanceIsolationHookConfig = serde_json::from_str(raw).ok()?;
+        if !config.control_dir.is_absolute()
+            || config.process_id.is_empty()
+            || config.process_id.len() > 64
+            || !config
+                .process_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || !(1..=120_000).contains(&config.wait_timeout_ms)
+            || config
+                .owned_artifact_relative_paths
+                .iter()
+                .any(|path| !is_safe_hook_relative_path(path))
+        {
+            return None;
+        }
+        Some(Self { config })
+    }
+
+    fn usable_control_dir(&self) -> Option<PathBuf> {
+        let control_dir = std::fs::canonicalize(&self.config.control_dir).ok()?;
+        if !control_dir.is_dir() {
+            return None;
+        }
+        if let Some(config_dir) = agentscommander_lib::config::config_dir() {
+            let config_dir = std::fs::canonicalize(&config_dir).unwrap_or(config_dir);
+            if control_dir.starts_with(&config_dir) || config_dir.starts_with(&control_dir) {
+                return None;
+            }
+        }
+        Some(control_dir)
+    }
+
+    fn append_counter(&self, name: &str) {
+        use std::io::Write;
+
+        let Some(control_dir) = self.usable_control_dir() else {
+            return;
+        };
+        let path = control_dir.join(format!("{name}.count"));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = file.write_all(b"1\n");
+            let _ = file.sync_all();
+        }
+    }
+
+    fn write_process_marker(&self, name: &str) {
+        let Some(control_dir) = self.usable_control_dir() else {
+            return;
+        };
+        let _ = std::fs::write(
+            control_dir.join(format!("{name}-{}", self.config.process_id)),
+            b"ready\n",
+        );
+    }
+
+    fn wait_for_release(&self, name: &str) {
+        let Some(control_dir) = self.usable_control_dir() else {
+            return;
+        };
+        let release = control_dir.join(format!("release-{name}-{}", self.config.process_id));
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.config.wait_timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if release.try_exists().unwrap_or(false) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn report_owned_artifacts(&self) {
+        let Some(control_dir) = self.usable_control_dir() else {
+            return;
+        };
+        let Some(config_dir) = agentscommander_lib::config::config_dir() else {
+            return;
+        };
+        let relative_paths = self
+            .config
+            .owned_artifact_relative_paths
+            .iter()
+            .filter(|relative| config_dir.join(relative).try_exists().unwrap_or(false))
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .collect::<Vec<_>>();
+        let report = serde_json::json!({ "relativePaths": relative_paths });
+        if let Ok(bytes) = serde_json::to_vec(&report) {
+            let _ = std::fs::write(
+                control_dir.join(format!("owned-artifacts-{}.json", self.config.process_id)),
+                bytes,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "testable-ui-automation")]
+fn is_safe_hook_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+#[cfg(feature = "testable-ui-automation")]
+impl InstanceIsolationTestHooks for ConfiguredInstanceIsolationTestHooks {
+    fn after_ui_cli_context_acquired_before_logger(&self) {
+        self.write_process_marker("after-ui-cli-context");
+        if self
+            .config
+            .pause_after_ui_cli_context_acquired_before_logger
+        {
+            self.wait_for_release("after-ui-cli-context");
+        }
+    }
+
+    fn before_ui_cli_logger_config_phase(&self) {
+        self.append_counter("before-ui-cli-logger-config-phase");
+    }
+
+    fn before_config_writer(&self) {
+        self.append_counter("before-config-writer");
+    }
+
+    fn after_owned_artifacts_published(&self) {
+        self.report_owned_artifacts();
+        self.write_process_marker("after-owned-artifacts");
+        if self.config.pause_after_owned_artifacts_published {
+            self.wait_for_release("after-owned-artifacts");
+        }
+    }
+}
+
+fn configured_instance_isolation_hooks(
+    testable_artifact: bool,
+) -> Arc<dyn InstanceIsolationTestHooks> {
+    #[cfg(feature = "testable-ui-automation")]
+    if testable_artifact {
+        if let Some(raw) = std::env::var_os(INSTANCE_ISOLATION_HOOKS_ENV) {
+            if let Some(hooks) =
+                ConfiguredInstanceIsolationTestHooks::from_json(&raw.to_string_lossy())
+            {
+                return Arc::new(hooks);
+            }
+        }
+    }
+    let _ = testable_artifact;
+    Arc::new(agentscommander_lib::testability::ui_automation::NoopInstanceIsolationTestHooks)
+}
+
 struct RetainedAutomationConfigWitness {
     retained: agentscommander_lib::path_identity::RetainedDirectory,
     canonical_path: PathBuf,
@@ -162,9 +348,7 @@ fn main() {
 
     let testable_artifact =
         agentscommander_lib::testability::ui_automation::current_exe_is_testable();
-    let instance_isolation_hooks: Arc<
-        dyn agentscommander_lib::testability::ui_automation::InstanceIsolationTestHooks,
-    > = Arc::new(agentscommander_lib::testability::ui_automation::NoopInstanceIsolationTestHooks);
+    let instance_isolation_hooks = configured_instance_isolation_hooks(testable_artifact);
     let mut cmd = agentscommander_lib::cli::Cli::command().name(binary_name);
     if testable_artifact {
         for name in [
@@ -452,5 +636,27 @@ mod tests {
         });
 
         assert_eq!(*hooks.events.lock().unwrap(), ["logger"]);
+    }
+
+    #[cfg(feature = "testable-ui-automation")]
+    #[test]
+    fn configured_hook_rejects_non_absolute_control_and_unsafe_artifact_paths() {
+        let relative_control = serde_json::json!({
+            "controlDir": "relative-control",
+            "processId": "gui-a"
+        });
+        assert!(
+            ConfiguredInstanceIsolationTestHooks::from_json(&relative_control.to_string())
+                .is_none()
+        );
+
+        let unsafe_artifact = serde_json::json!({
+            "controlDir": std::env::temp_dir(),
+            "processId": "gui-a",
+            "ownedArtifactRelativePaths": ["../foreign"]
+        });
+        assert!(
+            ConfiguredInstanceIsolationTestHooks::from_json(&unsafe_artifact.to_string()).is_none()
+        );
     }
 }
