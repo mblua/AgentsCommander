@@ -490,7 +490,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Coordinator context",
-            current_version: 4,
+            current_version: 5,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -504,7 +504,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 6,
+        current_version: 7,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
         project_actionable: false,
@@ -2069,7 +2069,7 @@ mod tests {
         ));
 
         assert_eq!(coordinator.id, "coordinator");
-        assert_eq!(coordinator.current_version, 4);
+        assert_eq!(coordinator.current_version, 5);
         assert_eq!(
             (coordinator.current_content)(),
             get_default_coordinator_template()
@@ -3357,8 +3357,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["coordinator"]["currentVersion"], 4,
-            "coordinator current_version must be bumped to 4 by the v4 rewrite"
+            parsed["templates"]["coordinator"]["currentVersion"], 5,
+            "coordinator current_version must be bumped to 5 by the #1571 orchestrator rename"
         );
         assert_eq!(
             parsed["templates"]["coordinator"]["lastSeededSha256"]

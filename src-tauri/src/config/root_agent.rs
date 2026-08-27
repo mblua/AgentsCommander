@@ -2399,8 +2399,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 6,
-            "root_spec current_version must be bumped to 6 by the #1370 workgroup-activation rewrite"
+            parsed["templates"]["rootAgent"]["currentVersion"], 7,
+            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
         );
     }
 
@@ -2468,8 +2468,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 6,
-            "root_spec current_version must be bumped to 6 by the #1370 workgroup-activation rewrite"
+            parsed["templates"]["rootAgent"]["currentVersion"], 7,
+            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
         );
     }
 
