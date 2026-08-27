@@ -4,9 +4,11 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 2. Supersedes the round-1 candidate
+Author: ac-architect-v3. Consensus round 3. Supersedes the round-2 candidate
+`A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
+`CHANGES_REQUIRED`) and, before it, the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 finding to the section that closes it.
+`CHANGES_REQUIRED`. Section 15 maps every round-1 and round-2 finding to the section that closes it.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -24,6 +26,16 @@ Both working trees were clean (`git status --porcelain` empty) when every number
 measured. Every count, line number, path and digest in this plan is a measurement at those two
 SHAs, not an estimate. Where a number in issue #1572 or epic #1570 disagrees with a measurement
 here, the measurement is authoritative and section 3.1 says why.
+
+**`147ad4ef` is the base against which every coordinate in this plan is measured.** Every file:line
+citation, every count, every set and every digest below is read at `147ad4ef` (app) and `5ec1ad27`
+(web); a line number here is meaningless against any other tree, and a reviewer who checks one
+against a different tree is measuring something else. `origin/main` has since moved to `047248bc`
+(the merge of #1601, `fix/1596`). That drift was classified and is inert for this plan: zero added
+lines matching `coordinat` under `src-tauri/src` and `src`, zero changed paths under `src/`, and
+`src-tauri/module-arcs.txt` byte-identical. It is recorded, not absorbed: section 13.5 stays binding
+and the entry ritual of 1.2 re-runs the classification against the live target before the first
+mutation.
 
 Codebase Memory gate for `repo-AgentsCommander`: `status: ready`,
 project `D-0_repos-AgentsCommander_iac-.ac-wg-13-ac-dev-team-v3-repo-AgentsCommander`,
@@ -112,9 +124,16 @@ Two derived facts, both of which are load bearing and both of which are asserted
   `config/coordinator_clocks.rs`, which appears in 6.2/6.1 instead because it is renamed. Set
   equality, not just cardinality.
 - **The TypeScript file set of section 6.5 is provably complete.** Of the 73 TS/TSX files carrying a
-  `coordinator` token in code, 34 are in the tables. In the other 39, **every** occurrence is
-  property-shaped (preceded by `.`, or followed by `:` or `?:`), i.e. a frozen wire key under Rule K.
-  The sweep that establishes this is in section 5.5.
+  `coordinator` token in code, 34 are in the tables (the 28 rows of 6.5 plus the 6 files R2-R7
+  rename). In the other 39 files the 130 surviving occurrences use **exactly 10 distinct
+  identifiers, and all 10 are in Rule K's frozen enumeration**; none of the 130 stands in a
+  declaration context. Section 5.5 gives the per-identifier counts and the sweep.
+  Note the shape of that argument: what closes the 39 is the *identifier set*, not the occurrences'
+  property shape. Property shape alone proves nothing, and this plan is its own counterexample: it
+  renames `WorkgroupGroupRail.raise-hand.test.tsx:27` `coordinator?: boolean`, `sessions.ts:249`
+  `let coordinator: Session | null`, and `sessionsStore.recordCoordinatorVisibleOrder`
+  (`ProjectPanel.tsx:1911`, `sessions-helpers.test.ts:294`), all three of which are property-shaped.
+  The inference "property-shaped, therefore a frozen wire key" is unsound and is not used here.
 
 Corrections:
 
@@ -207,7 +226,7 @@ section 9.1 adds a second test, and it is measured, not estimated.
 | 13 | `src-tauri/src/config/loops.rs:169` | `AcLoopSummary` | `busy_coordinator` | `"busyCoordinator"` | Ser | `tests/cli_loop.rs:234` |
 | 14 | `src-tauri/src/config/sessions_persistence.rs:377` | `PersistedSession` | `is_coordinator` | `"isCoordinator"` | Ser+De+Default | **none** (see the `#[serde(default)]` note below) |
 | 15 | `src-tauri/src/config/settings.rs:294` | `AppSettings` | `restore_coordinator_wake_state` | `"restoreCoordinatorWakeState"` | Ser+De | `config/settings.rs:5374`, `:8282` |
-| 16 | `src-tauri/src/config/settings.rs:310` | `AppSettings` | `legacy_start_only_coordinators` | `"startOnlyCoordinators"` (**already pinned**, no new pin) | Ser+De | `config/settings.rs:8281` |
+| 16 | `src-tauri/src/config/settings.rs:310` | `AppSettings` | `legacy_start_only_coordinators` | `"startOnlyCoordinators"` (**already pinned**, no new pin) | Ser+De | `config/settings.rs:8281`, which **does not discriminate**: after `apply_issue_248_migration` the field is `None` and `skip_serializing_if = "Option::is_none"` elides it, so `!out.contains("startOnlyCoordinators")` passes with the pin present or absent. Inert here, because this row carries no new pin; criterion 8a covers the member regardless |
 | 17 | `src-tauri/src/config/settings.rs:527` | `AppSettings` | `coordinator_idle_badge_yellow_minutes` | `"coordinatorIdleBadgeYellowMinutes"` | Ser+De | **none** (see below) |
 | 18 | `src-tauri/src/config/settings.rs:529` | `AppSettings` | `coordinator_idle_badge_red_minutes` | `"coordinatorIdleBadgeRedMinutes"` | Ser+De | **none** (see below) |
 | 19 | `src-tauri/src/config/settings.rs:532` | `AppSettings` | `coordinator_auto_close_enabled` | `"coordinatorAutoCloseEnabled"` | Ser+De | **none** (see below) |
@@ -270,6 +289,13 @@ in the payload.
 | `src-tauri/src/commands/ac_discovery.rs:1826`, `discover_project` arg `coordinator_clocks: State<..>` | State arg, not in the payload | Free to rename. |
 | `src-tauri/src/commands/session.rs:4582`, `get_active_session` arg `coordinator: State<'_, SelectionCoordinator>` | State arg, not in the payload | Free to rename (Concept B). |
 
+**This table freezes Rust identifiers, not TypeScript ones.** The `coordinator` payload *key* of
+`create_team` and `update_team` is frozen on both sides of the boundary. The TypeScript
+**parameters** that carry the value into that payload, `src/shared/ipc.ts:1114` and `:1134`, are a
+different thing: they are arrow-function parameters, so they are neither a property name nor a
+member nor a destructuring binding, Rule K does not reach them, and Rule A renames them. Section 5.5
+decides both halves, with the shorthands at `:1122` and `:1142` expanding so the key does not move.
+
 ### 3.5 The literals the rename forces to change, and the sweeps that close the set
 
 A string literal changes in this phase **only** when it embeds source text that a renamed identifier
@@ -297,7 +323,7 @@ The class-D detail, unchanged from round 1 and reverified:
    `:4049` `"enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}"` (the mutation the sentinel must
    reject), `:4053` `"sentinel accepted forbidden CoordinatorJob field {forbidden}"`, and `:4037`
    `"CoordinatorJob contains a managed handle or arbitrary executable field: {:?}"`.
-   Seven literals at six line numbers (`:3909`, `:3910`, `:3912`, `:3926`, `:4037`, `:4049`, `:4053`).
+   Seven literals at seven line numbers (`:3909`, `:3910`, `:3912`, `:3926`, `:4037`, `:4049`, `:4053`).
    `:3909` and `:4049` are functionally load bearing; the other five name the renamed type.
 2. **`src-tauri/tests/cli_workgroup_team.rs:1834-1843`**, which scrapes
    `src/commands/session.rs` through `normalized_production_source` and pins the call-site text
@@ -549,8 +575,15 @@ Concept B files, verified line by line: `session/selection.rs` (owner),
 
 Rule S covers the whole hazard class, not just serde: **wherever a derive macro turns a Rust
 identifier into an external name, renaming the identifier silently changes that external name, and
-the compiler cannot see it.** There are exactly two such macros in this tree, so Rule S has two
-parts. Round 1 had only S1, which is why the three clap fields of S2 ended up undecided.
+the compiler cannot see it.** There are exactly **three** such macros in this tree: `serde` (S1
+below), clap's `#[arg(long)]` (S2 below), and `#[tauri::command]`, which spells both the IPC command
+name and the payload keys from identifiers. The third needs no rule of its own because section 3.4
+already enumerates its complete `coordinat` surface and **freezes** every site of it that reaches
+the wire: the one command name (`close_coordinator`) and the two value args (`create_team`,
+`update_team`) are not renamed at all, and the three remaining sites are `State<'_, T>` parameters,
+which are injected from managed state and never appear in a payload. Rule S therefore has two parts,
+one per macro this phase actually renames through. Round 1 had only S1, which is why the three clap
+fields of S2 ended up undecided.
 
 #### 5.3 S1: pin every serialised member
 
@@ -712,13 +745,29 @@ property is frozen and the binding renames, **the shorthand is expanded** to
 `<frozenKey>: <renamedBinding>`. Without this clause the stated precedence ("Rules S, K and P beat
 Rule A") freezes a token that no longer exists and the tree does not typecheck.
 
-A sweep of every shorthand-shaped line
-(`git grep -E '^[ \t]*(is)?[Cc]oordinator[A-Za-z]*,[ \t]*$'` over `src`) returns 8 lines, of which
-exactly **two** are conflicting and are decided in the register below. The other six are not
-conflicts: `src/shared/ipc.ts:1122` and `:1142` reference the frozen `create_team` / `update_team`
-parameter, so both halves are frozen and the shorthand stays; `src/shared/ipc.ts:80`,
-`EditLoopModal.tsx:12`, `NewLoopModal.tsx:7` and `NewLoopModal.test.ts:9` are import-specifier list
-entries, not object shorthands, and rename with their declarations.
+**The shorthand census, closed line-independently.** A line-anchored regex will not close this set,
+for two reasons: it misses a shorthand that shares its line with other properties, and on a Windows
+worktree with `core.autocrlf=true` a `$` anchor matches nothing at all, because every line ends
+`\r\n` (round 2 stated such a regex and it returns zero rows here). The sweep is therefore run over
+the blanked tree, in the same pass section 9.3 defines: blank every string literal and comment, then
+take every identifier containing `coordinator` that is preceded, skipping whitespace and newlines
+alike, by `{` or `,` and followed by `,` or `}`. Over the whole of `src` that returns **37
+shorthand-shaped occurrences**. 31 are import- or export-specifier list entries, which are not
+object shorthands and rename with their declarations. The remaining **6 are real object-literal or
+destructuring shorthands**, and each is decided here:
+
+| Shorthand | Property half | Binding half | Verdict |
+| --- | --- | --- | --- |
+| `src/shared/ipc.ts:1081` | frozen wire key `coordinator` | the `const` at `:1037`, renamed | **conflict, expand** to `coordinator: orchestrator,` |
+| `src/shared/ipc.ts:1122` | frozen `create_team` payload key `coordinator` | the parameter at `:1114`, renamed to `orchestrator` | **conflict, expand** to `coordinator: orchestrator,` |
+| `src/shared/ipc.ts:1142` | frozen `update_team` payload key `coordinator` | the parameter at `:1134`, renamed to `orchestrator` | **conflict, expand** to `coordinator: orchestrator,` |
+| `src/sidebar/components/ProjectPanel.raise-hand.test.tsx:39` | frozen `AcAgentReplica.isCoordinator` | the helper parameter at `:34`, renamed | **conflict, expand** to `isCoordinator: isOrchestrator,` |
+| `src/sidebar/App.tsx:800` | frozen wire key `isCoordinator` | the destructuring binding *is* that frozen name | no conflict, **stays**: Rule K freezes both halves |
+| `src/sidebar/stores/sessions.ts:279` `groups.push({ team, coordinator, members })` | `TeamSessionGroup.coordinator`, frontend-only, **renames** | the `let` at `:249`, **renames** | no conflict, **stays** a shorthand, as `{ team, orchestrator, members }` |
+
+**Four conflicting shorthands, not two.** Round 2 said two because it treated the `ipc.ts:1114` and
+`:1134` parameters as frozen. Rule K's "if and only if" does not reach a parameter; the register
+rows below and decision 10.1.14 settle them as ordinary locals, and Rule K's own text is unchanged.
 
 **Ambiguity register.** These are the complete set of sites where a frozen name also occurs as an
 in-scope local. They are decided here so the implementer makes no judgment call.
@@ -727,6 +776,8 @@ in-scope local. They are decided here so the implementer makes no judgment call.
 | --- | --- | --- |
 | `src/shared/ipc.ts:1037` | `const coordinator = value.coordinator;` | the `const` renames, `value.coordinator` does not |
 | **`src/shared/ipc.ts:1081`** | the `return { agents, coordinator, repos, contextAlertPercentages }` of `normalizeTeamConfigResult`: a shorthand whose property is the frozen wire key and whose binding is the `const` renamed one row above | **expand**: the line becomes `coordinator: orchestrator,` |
+| **`src/shared/ipc.ts:1114`, `:1134`** | the `coordinator: string` parameters of `EntityAPI.createTeam` and `EntityAPI.updateTeam` | arrow-function parameters: not a property name, not a member, not a destructuring binding, so Rule K does not reach them. Local bindings, **rename** to `orchestrator`. All six call sites pass positionally (`NewTeamModal.tsx:212`, `EditTeamModal.tsx:260`, `ipc.transport.test.ts:153`, `:161`, `:169`, `:177`), so no caller changes |
+| **`src/shared/ipc.ts:1122`, `:1142`** | the shorthands `coordinator,` inside the `create_team` / `update_team` payload objects | property frozen, binding renamed: **expand**, each becomes `coordinator: orchestrator,`. The emitted payload key does not move, so `ipc.transport.test.ts:196`, `:207`, `:220` and `:231` stay green with their `coordinator:` assertions **unedited** |
 | **`src/shared/types.ts:1505`** | `TeamConfigResult.coordinator: string` | wire key (mirrors `entity_creation.rs:59`), **frozen** |
 | **`src/sidebar/components/ProjectPanel.raise-hand.test.tsx:34`, `:47`** | the parameter `isCoordinator = true` of the `replica` and `workgroup` test helpers | local bindings, **rename** to `isOrchestrator`, consistent with `AcDiscoveryPanel.tsx:43`, `EditTeamModal.tsx:362` and `NewTeamModal.tsx:309` |
 | **`src/sidebar/components/ProjectPanel.raise-hand.test.tsx:39`** | shorthand `isCoordinator,` whose property is the frozen `AcAgentReplica.isCoordinator` | **expand**: `isCoordinator: isOrchestrator,` |
@@ -752,10 +803,34 @@ untouched, but by residual 10.2.4, not by the reason round 1 gave.
 **Completeness of the TypeScript side.** Rule K's frozen set and Rule A's in-scope set together have
 to cover every `coordinator` token in TypeScript code, and round 1's tables did not. The closing
 measurement: blank every string literal and comment (the section 9.3 alternation), then look at what
-survives. 73 TS/TSX files carry a `coordinator` token in code. 34 are in the tables of section 6.
-In the remaining 39, **every** occurrence is property-shaped (preceded by `.`, or followed by `:` or
-`?:`), with exactly four exceptions, and all four are the `ProjectPanel.raise-hand.test.tsx` sites
-now in the register. The nine non-test files among the 39 were also read individually and carry only
+survives. 73 TS/TSX files carry a `coordinator` token in code. 34 are in the tables of section 6
+(the 28 rows of 6.5 plus the 6 files R2-R7 rename). In the remaining **39 files there are 130
+occurrences, and they use exactly 10 distinct identifiers**:
+
+| Identifier | Occurrences | Frozen by Rule K as |
+| --- | --- | --- |
+| `isCoordinator` | 50 | member of `Session`, `SessionInfo`, `AcAgentReplica`, `PersistedSession` and their fixtures |
+| `coordinatorAutoCloseEnabled` | 15 | `AppSettings` key |
+| `coordinator` | 12 | member of `AcTeam` / `TeamConfigResult` / the `create_team`-`update_team` argument objects |
+| `busyCoordinator` | 9 | `LoopPolicy` and loop-request key |
+| `coordinatorAutoCloseSkipTelegramAssigned` | 8 | `AppSettings` key |
+| `coordinatorCascadeCloseEnabled` | 8 | `AppSettings` key |
+| `coordinatorAutoCloseMinutes` | 7 | `AppSettings` key |
+| `coordinatorIdleBadgeRedMinutes` | 7 | `AppSettings` key |
+| `coordinatorIdleBadgeYellowMinutes` | 7 | `AppSettings` key |
+| `restoreCoordinatorWakeState` | 7 | `AppSettings` key |
+
+**All 10 are in the Rule K frozen enumeration above, and not one of the 130 occurrences stands in a
+declaration context**: none is preceded by `const`, `let`, `var`, `function`, `class`, `interface`,
+`type` or `enum`, and none is a parameter. That is the whole argument for the 39, and it is a
+statement about a decidable identifier set rather than about occurrence shape. Round 2 argued this
+from property shape instead, with a "four exceptions" clause that had already stopped being
+arithmetically possible once `raise-hand.test.tsx` joined the tables: those four sites are among the
+34, so they cannot also be among the 39. The measurement above replaces both. **No row of section
+6.5 changes as a result**; the three reviewers' independent sweeps of these 39 files all returned
+zero non-frozen occurrences, and so does this one.
+
+The nine non-test files among the 39 were also read individually and carry only
 frozen keys, a frozen `data-ac-testid`, a frozen collapse-key literal, or comment prose:
 `main/listeners-home.ts:22`, `shared/testing/ui-harness.tsx:120,169-174,231`,
 `sidebar/components/ActionBar.tsx:301`, `RaiseHandIcon.tsx:5`, `RootAgentBanner.tsx:403`,
@@ -828,11 +903,36 @@ member is sufficient** proof that the pin is present and spelled right.
 judgment call:
 
 - **Owning type derives `Deserialize`** (20 members: rows 6-12, 14-24, 27, 28): assert
-  deserialisation. Feed the smallest JSON carrying the frozen key with a distinctive value, then
-  assert the renamed field or variant holds it. Every one of these types has `#[serde(default)]` on
-  its other fields or is an enum, so a minimal object is enough and no full construction is needed.
+  deserialisation. Feed a JSON object carrying the frozen key with a distinctive value, then assert
+  the renamed field or variant holds it.
 - **Owning type derives `Serialize` only** (8 members: rows 1-5, 13, 25, 26): construct a value with
   the field set to a distinctive value and assert the frozen key carries it.
+
+**"A minimal object is enough" is false, and the implementer must not be told it.** Serde requires
+every field that carries neither `#[serde(default)]` nor `#[serde(skip)]`, so
+`from_value(json!({ "<key>": .. }))` fails with `missing field` on 7 of the 12 owning types in the
+deserialise direction. Measured at `147ad4ef`, the fields each type requires **in addition to the
+key under test**, spelled as the wire key:
+
+| Owning type | Section 3.3 rows | Additional fields serde requires |
+| --- | --- | --- |
+| `TeamConfigResult` | 6 | none, every field has `#[serde(default)]` |
+| `AgentDarkFactory` | 9 | none |
+| `LoopPolicy` | 11 | none |
+| `LoopTargetKind`, `PtyInputReasonCode` | 10, 23, 24 | n/a: they are enums, and the value under test is the whole document |
+| `LoopCreateRequest` | 7 | `projectPath`, `id`, `name`, `expr`, `workgroup`, `promptBody` |
+| `LoopUpdateRequest` | 8 | `projectPath`, `id`, `name`, `expr`, `workgroup`, `promptBody` |
+| `LoopAuditEntry` | 12 | `runId`, `loopId`, `projectPath`, `kind`, `dueAt`, `startedAt`, `completedAt`, `target`, `sessionId`, `error`, `promptSnapshot` |
+| `PersistedSession` | 14 | `name`, `shell`, `shellArgs`, `workingDirectory` |
+| `AppSettings` | 15-22 | `defaultShell`, `defaultShellArgs`, `agents` |
+| `Session` | 27 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `lastPrompt`, `token` |
+| `SessionInfo` | 28 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `lastPrompt`, `token` |
+
+The recipe for the largest of these already exists in the tree: the issue-#248 migration tests at
+`config/settings.rs:8255-8312` carry exactly `defaultShell`, `defaultShellArgs` and `agents` plus the
+field under test, and the comment at `:8257-8259` says so. Follow that shape. Where a required
+field's value is awkward to spell (a `Uuid`, a `DateTime<Utc>`, a `SessionStatus`), copy it from the
+nearest existing fixture for that type rather than inventing one.
 
 `AgentDarkFactory` (row 9) is the one member where the serialise direction would not work at all:
 `is_coordinator_of` carries `skip_serializing_if = "Vec::is_empty"`, so a default value emits no key.
@@ -842,8 +942,8 @@ It is a `Deserialize` member and is asserted in that direction, which sidesteps 
 
 | Site | Members | Why there |
 | --- | --- | --- |
-| `src-tauri/src/lib.rs`, inside the existing `#[cfg(test)]` module (first at `:76`), test named `wire_keys_are_stable_for_every_renamed_serialised_member` | 25 (rows 4-28) | every owning type is `pub` or `pub(crate)`, so all are reachable from the crate root by a fully-qualified `crate::` path |
-| `src-tauri/src/cli/team.rs`, inside the existing `#[cfg(test)]` module (`:403`), test named `team_cli_wire_keys_are_stable` | 3 (rows 1-3) | `TeamListItem`, `TeamCreateResult` and `AddMemberResult` are private to `cli::team` and are visible nowhere else |
+| `src-tauri/src/lib.rs`, inside the existing `#[cfg(test)] mod tests` at `:3899-3900`, test named `wire_keys_are_stable_for_every_renamed_serialised_member` | 25 (rows 4-28) | every owning type is `pub` or `pub(crate)`, so all are reachable from the crate root by a fully-qualified `crate::` path |
+| `src-tauri/src/cli/team.rs`, inside the existing `#[cfg(test)] mod tests` at `:579-580` (which opens with `use super::*;`, so the three private types are already in scope), test named `team_cli_wire_keys_are_stable` | 3 (rows 1-3) | `TeamListItem`, `TeamCreateResult` and `AddMemberResult` are private to `cli::team` and are visible nowhere else |
 
 Two sites, not twelve, because splitting per owning module would force a new `#[cfg(test)]` module
 into `commands/loops.rs` and `config/agent_config.rs`, which have none today.
@@ -862,14 +962,37 @@ into `commands/loops.rs` and `config/agent_config.rs`, which have none today.
    and is not needed.
 4. No production code changes for this test. If a member cannot be asserted without widening a
    visibility or adding a `Default`, stop and report it rather than changing production code.
+5. **Every deserialise assertion feeds a value that differs from the member's serde default, and the
+   test states that default in a comment on the same assertion.** This is what stops an assertion
+   from being vacuous. If the fed value equals the default, the test passes with the pin removed:
+   deserialisation ignores the now-unknown frozen key and supplies exactly the value being asserted.
+   The distinctive value, per default kind: `bool` defaulting `false` → feed `true`; `bool`
+   defaulting `true` → feed `false`; `String` with `#[serde(default)]` → feed a non-empty
+   distinctive string, never `""`; `Vec<T>` with a default → feed a non-empty array, never `[]`;
+   `Option<T>` with `#[serde(default)]` → feed a present value, never `null`; an enum-valued field
+   with `#[serde(default)]` → feed a variant other than that type's `Default`; a numeric field with
+   `default = "<fn>"` → feed a value that function does not return. Two shapes cannot be vacuous
+   whatever value is chosen, and are exempt: a member the type **requires** (row 12,
+   `LoopAuditEntry::busy_coordinator_policy`, which carries no default) and an enum variant under
+   test (rows 10, 23, 24), because with the pin gone deserialisation fails outright rather than
+   defaulting. The serialise direction is likewise not vacuous, provided the assertion names the
+   frozen key on the produced JSON: with the pin gone that key is absent and the assertion fails.
+   Section 12.1 C6b samples this constraint, one experiment per default kind.
 
 Shape, for the two directions:
 
 ```rust
-// Deserialize direction, e.g. section 3.3 row 22
-let v: crate::config::settings::AppSettings =
-    serde_json::from_value(serde_json::json!({ "coordinatorCascadeCloseEnabled": false }))
-        .expect("settings from wire");
+// Deserialize direction, e.g. section 3.3 row 22. The three fields before the key under test are
+// the ones AppSettings requires (table above), lifted from the issue-#248 tests at settings.rs:8255.
+// coordinatorCascadeCloseEnabled defaults to true (default_true, settings.rs:541), so false is the
+// distinctive value required by constraint 5.
+let v: crate::config::settings::AppSettings = serde_json::from_value(serde_json::json!({
+    "defaultShell": "bash",
+    "defaultShellArgs": [],
+    "agents": [],
+    "coordinatorCascadeCloseEnabled": false
+}))
+.expect("settings from wire");
 assert!(!v.orchestrator_cascade_close_enabled);
 
 // Serialize direction, e.g. section 3.3 row 26
@@ -997,11 +1120,11 @@ Rule A unless the row says otherwise. "S1-pin" means a serde pin (5.3 S1) is add
 
 | Path completo archivo | Que se modifico |
 | --- | --- |
-| `src/shared/ipc.ts` | `CoordinatorCloseOutcome`, `closeCoordinator` (:213), `onSessionCoordinatorChanged` (:753), `onCoordinatorClockUpdated` (:779), `onCoordinatorAutoCloseChanged` (:788), `onCoordinatorManualCloseChanged` (:797), `isSelectionCoordinatorBusyError` (Rule B), and the local `const coordinator` at :1037. **The shorthand at :1081 expands to `coordinator: orchestrator,`** (Rule K shorthand clause): the property is the frozen wire key, the binding is the renamed `const`. The `"close_coordinator"` invoke name at :214, the four event-name literals, the `{ isCoordinator: boolean }` payload types at :754/:756, `busyCoordinator` at :971/:985, the `coordinator: string` command args at :1114/:1134 and the shorthands at :1122/:1142 that reference them are all frozen. |
+| `src/shared/ipc.ts` | `CoordinatorCloseOutcome`, `closeCoordinator` (:213), `onSessionCoordinatorChanged` (:753), `onCoordinatorClockUpdated` (:779), `onCoordinatorAutoCloseChanged` (:788), `onCoordinatorManualCloseChanged` (:797), `isSelectionCoordinatorBusyError` (Rule B), and the local `const coordinator` at :1037. **The shorthand at :1081 expands to `coordinator: orchestrator,`** (Rule K shorthand clause): the property is the frozen wire key, the binding is the renamed `const`. Frozen: the `"close_coordinator"` invoke name at :214, the four event-name literals, the `{ isCoordinator: boolean }` payload types at :754/:756, and `busyCoordinator` at :971/:985. **The `coordinator: string` parameters at :1114 and :1134 rename to `orchestrator`** (Rule K does not reach a parameter; see the register rows in 5.5 and decision 10.1.14), **and the shorthands at :1122 and :1142 each expand to `coordinator: orchestrator,`**, which keeps the payload key byte-identical. All six call sites pass positionally, so no caller changes. |
 | `src/shared/ipc.transport.test.ts` | `isSelectionCoordinatorBusyError` call at :134. Every `"selectionCoordinator*"` string and every `coordinator:` team-config fixture key is frozen. |
 | `src/shared/shortcuts.ts` | `requestCoordinatorCloseById` import and call, plus allowlist L6 at :3. |
 | `src/shared/types.ts` | `BusyCoordinatorPolicy` (:1322, type alias name; its three string values are unchanged), `CoordinatorCloseOutcome`, `TeamSessionGroup.coordinator` (:1179), `Team.coordinatorName` (:1193). Frozen: `isCoordinator` at :40 and :1243, `AcTeam.coordinator` at :1232, **`TeamConfigResult.coordinator` at :1505**, the settings keys, `busyCoordinator` at :1338, `LoopTargetKind = "workgroupCoordinator"` at :1320. |
-| `src/sidebar/App.tsx` | `onSessionCoordinatorChanged`, `setIsCoordinator`, `isSelectionCoordinatorBusyError`. The destructured `isCoordinator` payload binding at :801 is frozen. |
+| `src/sidebar/App.tsx` | `onSessionCoordinatorChanged`, `setIsCoordinator`, `isSelectionCoordinatorBusyError`. The destructured `isCoordinator` payload binding at **:800** is frozen; :801 is its use. |
 | `src/sidebar/components/AcDiscoveryPanel.tsx` | The local function `isCoordinator` at :43 and the comment at :42. `t.coordinator` at :44 frozen. |
 | `src/sidebar/components/EditLoopModal.tsx` | `coordinatorOptions` (:30), `coordinatorOptionsFromWorkgroups` import. `busyCoordinator` frozen. |
 | `src/sidebar/components/EditTeamModal.tsx` | Signal `coordinator`/`setCoordinator` (:32), `coordinatorEntry` (:140), `coordinatorRef` (:139), `nextCoordinator` (:137), local memo `isCoordinator` (:362). |
@@ -1160,7 +1283,7 @@ three declared exceptions listed after the table**, where the plan itself mandat
 | --- | --- | --- |
 | `coordinator_clock_settings_default_when_keys_absent` | `config/settings.rs:7044` | removes five `coordinator*` JSON keys from a serialised default and asserts the defaults come back. It must stay green with its five `obj.remove("coordinator...")` literals **frozen**. Note what it does **not** do: it is not a tripwire for a missing pin, because the value it reads back is by construction the value it asserts (section 3.3). Round 1 claimed it was the primary Rule S tripwire; it is not, and section 5.9 supplies the real one. |
 | `coordinator_auto_close_skip_telegram_assigned_round_trips` | `config/settings.rs:7068` | asserts `json.get("coordinatorAutoCloseSkipTelegramAssigned")` is present after serialising. |
-| the four issue-#248 migration tests | `config/settings.rs:8255-8347` | assert `!out.contains("startOnlyCoordinators")` and `out.contains("\"restoreCoordinatorWakeState\":true")`. |
+| the four issue-#248 migration tests | `config/settings.rs:8255-8347` | assert `!out.contains("startOnlyCoordinators")` and `out.contains("\"restoreCoordinatorWakeState\":true")`. The first of those is **not** a tripwire for row 16's existing pin: after the migration the field is `None` and `skip_serializing_if` elides it, so the negative assertion passes either way. They are also the plan's worked recipe for the required-field problem of section 5.9. |
 | `exact_coordinator_error_strings_are_stable` | `session/selection.rs` | pins the three `selectionCoordinator*` error strings. Must stay green **unrenamed in its string content**. |
 | `source_ownership_sentinel_rejects_each_one_line_mutation` and the `ArbiterJob` sentinel | `session/selection.rs:3961-4053` | reads `selection.rs` back and pins the enum declaration. Green only if allowlist L7 is applied completely. |
 | `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1810` | pins the `is_coordinator` argument in the scraped call site. Green only if allowlist L8 is applied. |
@@ -1464,6 +1587,33 @@ missing pin is invisible to the compiler, to criterion 6 and to the frontend sui
     reference table is a defect the rename creates, not the pre-existing prose that epic decision 2
     protects. The neighbouring line that names `coordinator_clocks.json` is left alone, because that
     artifact really does keep its name until phase 3.
+14. **The two `ipc.ts` command parameters rename, and Rule K's "if and only if" is left exactly as it
+    is.** `coordinator` at `src/shared/ipc.ts:1114` and `:1134` is an arrow-function parameter: not a
+    property name, not an interface or type member, not a destructuring binding. Rule K's
+    enumeration therefore does not reach it and Rule A applies, as it does to every other local in
+    the register. The alternative considered was to widen Rule K with a fourth category covering
+    "parameters whose value travels under a frozen key". It is rejected on three grounds. The
+    parameter name crosses no boundary: `transport.invoke` takes `Record<string, unknown>`, and the
+    payload key is fixed by the shorthand's property half, not by the parameter. All six call sites
+    pass positionally, so no caller is affected. And freezing them would leave two TypeScript
+    identifiers spelled `coordinator` alive after a phase whose stated purpose is to remove them,
+    which is the same argument decision 10.1.10 uses to reject freezing the three clap fields.
+    Widening the rule to protect a name that nothing reads would also make Rule K's boundary a
+    judgment call again, which round 1 already showed is the expensive failure mode. Consequences,
+    all written down: the shorthands at `:1122` and `:1142` expand, the conflicting-shorthand count
+    goes from 2 to 4, and `ipc.transport.test.ts:196`, `:207`, `:220`, `:231` stay green **unedited**,
+    because the emitted key does not move.
+15. **C6b's discrimination proof is expanded to one experiment per default kind, and the general case
+    is closed by a constraint rather than by more sampling.** The residual is real but narrow: only a
+    *deserialise* assertion can be vacuous, and only when the fed value equals the member's serde
+    default. Three experiments sampled the harness; they did not sample that hazard. The fix has two
+    halves. Constraint 5 of section 5.9 makes "different from the member's default" a binding
+    property of all 20 deserialise assertions and requires the default to be written beside each one,
+    so a reviewer checks it by reading rather than by running. C6b then samples one member per
+    default kind, which is exactly where an implementer's value choice can collide with a default,
+    plus one serialise experiment per test site. The alternative considered and rejected was one
+    experiment per pin: 27 pin-removal runs buy nothing over the constraint plus the per-kind sample,
+    because members that share a default kind fail and pass together.
 
 ### 10.2 Accepted residuals, each owned by a later phase
 
@@ -1554,8 +1704,8 @@ owns the merge.
 | C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 12 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | `cargo check --all-targets` |
 | C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | `cargo test --lib --bins --tests` (redirect stdout to a file), all green |
 | C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit | criterion 8a green; **and each test proved real**: see the note below |
-| C7 | `refactor(1572): rewrite the 7 renamed modules` | contents of the 7 ADDED files plus the 10 module specifiers L1 to L6 in their importers | `npm run typecheck` |
-| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining 22 files of section 6.5, including `ProjectPanel.raise-hand.test.tsx` and the two shorthand expansions (`ipc.ts:1081`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts` | `npm run typecheck`, `npm test` |
+| C7 | `refactor(1572): rewrite the 6 renamed TypeScript modules` | contents of the **6 TypeScript** files ADDED in 6.1 (**not** `config/orchestrator_clocks.rs`: that is the seventh renamed file, it is Rust, and 6.1 assigns its content commit to C2), plus the 10 module specifiers L1 to L6 in their importers and the renamed store and badge symbols at those importers' call sites. This closes `src/sidebar/components/SessionItem.tsx` and `src/shared/shortcuts.ts` **completely**, since the renamed-store import is their only in-scope content; `ProjectPanel.tsx` is only partly closed and returns in C8 | `npm run typecheck` |
+| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining **25** files of section 6.5, including `ProjectPanel.raise-hand.test.tsx`, the two `ipc.ts` parameter renames at `:1114`/`:1134`, and all four shorthand expansions (`ipc.ts:1081`, `:1122`, `:1142`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts`. **Derivation of the 25**, written out because gate 5 of 13.2 counts this commit's paths against it: section 6.5 has **28** rows; subtract `ProjectPanel.regex-filter.test.tsx` (**1**), whose only change is the new `it(...)` and which is therefore C9; subtract `SessionItem.tsx` and `shared/shortcuts.ts` (**2**), which C7 closes completely. 28 − 1 − 2 = **25**. The 6 renamed TypeScript files are **not** subtracted: they live in 6.1/6.2, not 6.5, per the section 6 header. `ProjectPanel.tsx` is touched by both C7 and C8 and is counted here | `npm run typecheck`, `npm test` |
 | C9 | `test(1572): pin the sidebar orchestrator filter token (R11)` | the one new `it(...)` of section 5.8 | `npm test -- ProjectPanel.regex-filter` green, and green only with the production token present |
 | C10 | `chore(1572): regenerate module-arcs.txt` | `src-tauri/module-arcs.txt` only | section 9.4, all five conditions |
 | C11 | `chore(1572): final gate evidence` | nothing, or the PR body only | sections 9.3, 9.5 criteria 1 to 8, in order |
@@ -1564,12 +1714,28 @@ owns the merge.
 
 - **C9.** Run it once with the production token at `ProjectPanel.tsx:975` temporarily reverted to
   `"coordinator"` and confirm it goes red, then restore.
-- **C6b.** Pick any **three** of the 27 pins, spanning both assertion directions and both test sites,
-  for example `AgentDarkFactory::is_coordinator_of` (deserialise, `lib.rs`),
-  `QuarantineRetryPath::Coordinator` (serialise, `lib.rs`) and `TeamListItem::coordinator`
-  (serialise, `cli/team.rs`). Temporarily delete each pin's `rename = "..."`, one at a time, and
-  confirm the test goes red each time, then restore. A wire-key test that passes with a pin removed
-  is worthless, and this is the only way to know it does not.
+- **C6b.** Nine experiments, **not** three, and they are named rather than left to a "pick any"
+  (decision 10.1.15). Round 2's three sampled the harness; they did not sample the one way an
+  assertion can be vacuous, which is feeding a deserialise member a value equal to its own serde
+  default. The set below covers every default kind present in the deserialise direction plus one
+  serialise experiment per test site. For each, temporarily delete that pin's `rename = "..."`,
+  **one at a time**, run criterion 8a, confirm it goes **red**, then restore:
+
+  | # | Member (section 3.3 row) | Direction, default kind | Distinctive value the test must feed | Test site |
+  | --- | --- | --- | --- | --- |
+  | 1 | `AppSettings::coordinator_auto_close_skip_telegram_assigned` (21) | De, `bool` defaulting **false** | `true` | `lib.rs` |
+  | 2 | `AppSettings::coordinator_cascade_close_enabled` (22) | De, `bool` defaulting **true** | `false` | `lib.rs` |
+  | 3 | `AppSettings::coordinator_idle_badge_yellow_minutes` (17) | De, numeric with `default = "<fn>"` | a value `default_coord_badge_yellow_minutes` does not return | `lib.rs` |
+  | 4 | `TeamConfigResult::coordinator` (6) | De, `String` defaulting `""` | a non-empty distinctive string | `lib.rs` |
+  | 5 | `LoopCreateRequest::busy_coordinator` (7) | De, `Option<T>` defaulting `None` | a present variant | `lib.rs` |
+  | 6 | `AgentDarkFactory::is_coordinator_of` (9) | De, `Vec<T>` defaulting empty | a non-empty array | `lib.rs` |
+  | 7 | `LoopPolicy::busy_coordinator` (11) | De, enum-valued field with `#[serde(default)]` | a variant other than that type's `Default` | `lib.rs` |
+  | 8 | `QuarantineRetryPath::Coordinator` (26) | Ser, unit variant | n/a | `lib.rs` |
+  | 9 | `TeamListItem::coordinator` (1) | Ser, plain field | a distinctive string | `cli/team.rs` |
+
+  A wire-key test that passes with its pin removed is worthless, and this is the only way to know it
+  does not. The 18 members not sampled here are covered by **constraint 5** of section 5.9, which is
+  read, not run: members that share a default kind with a sampled member fail and pass together.
 
 In both cases the revert must be verified by `git status --porcelain` being empty before the next
 commit. Materialise-and-revert is the accepted technique for proving a gate discriminates.
@@ -1704,9 +1870,13 @@ In this order, because this is where the phase can actually break:
    over them produces a compiling tree with the wrong names. Check `coordinator_shutdown`
    (`commands/session.rs:1432`, used `:2573`) by name: it must be `arbiter_shutdown`, and
    `orchestrator_shutdown` compiles and passes every gate while naming the wrong concept.
-6. **The two shorthand expansions.** `src/shared/ipc.ts:1081` must read `coordinator: orchestrator,`
-   and `ProjectPanel.raise-hand.test.tsx:39` must read `isCoordinator: isOrchestrator,`. A frozen
-   shorthand left alone does not typecheck; a renamed one silently changes a wire key.
+6. **The four shorthand expansions, and the two that must not move.** `src/shared/ipc.ts:1081`,
+   `:1122` and `:1142` must each read `coordinator: orchestrator,`, and
+   `ProjectPanel.raise-hand.test.tsx:39` must read `isCoordinator: isOrchestrator,`. A frozen
+   shorthand left alone does not typecheck; a renamed one silently changes a wire key. The two that
+   stay shorthands are `App.tsx:800` (both halves frozen) and `sessions.ts:279` (both halves rename).
+   Then confirm `ipc.transport.test.ts:196`, `:207`, `:220` and `:231` still assert the key
+   `coordinator`, **unedited**: that is the proof the expansions kept the payload key.
 7. **`close_coordinator`.** Confirm the fn name at `commands/session.rs:3406`, its `generate_handler!`
    entry at `lib.rs:3370` and the invoke string at `src/shared/ipc.ts:214` are all still
    `close_coordinator`, while the return type became `OrchestratorCloseOutcome` on both sides. Then
@@ -1737,8 +1907,8 @@ naming the unit rather than by picking a side.
 | B2 | Criterion 8 claimed coverage it did not have; the two Rust reviewers disagreed on the size of the gap (~10 vs ~18) | 3.3 now carries a **member-by-member tripwire column**. The measured answer is **6 covered, 22 not**, worse than either estimate, because `coordinator_clock_settings_default_when_keys_absent` cannot fail: it asserts the same defaults it serialised. 5.9 adds the wire-key test, 9.1 grows to two new tests, 9.2 corrects the negative-control claim, and criterion 8 becomes **8a/8b/8c** |
 | B3.1 | `coordinator_shutdown` undecided; Rule A would give it the wrong concept | 5.2 explicit row **and** a general Concept B binding clause, with the `let`-binding sweep proving it is the only compound case. 6.3 and C5 name it |
 | B3.2 | Three clap fields derive `--coordinator` from the identifier, so Rule A silently changes a public flag | **Rule S2**, 5.3. Rule S is now "pin every external name a derive macro spells from the identifier", with serde as S1 and clap as S2. Criterion 8c gates it. Decision 10.1.10 records why pinning beats freezing |
-| B3.3 | `src/shared/ipc.ts:1081`: a shorthand where Rule K and Rule A contradict, producing a tree that does not typecheck | Rule K **shorthand clause**, 5.5, plus register rows for both conflicting shorthands. The sweep shows the other six shorthand-shaped lines are not conflicts |
-| B3.4 | `ProjectPanel.raise-hand.test.tsx` absent from every table while holding in-scope locals | added to 6.5 (**27 → 28**), four register rows, C8 21 → 22 files. The property-shape sweep in 5.5 proves it is the **only** such file among the 39 untabled ones |
+| B3.3 | `src/shared/ipc.ts:1081`: a shorthand where Rule K and Rule A contradict, producing a tree that does not typecheck | Rule K **shorthand clause**, 5.5, plus a register row for it. Round 3 replaces round 2's line-anchored sweep with the shorthand census of 5.5, which raises the conflict count from 2 to 4 (finding BN1 below) |
+| B3.4 | `ProjectPanel.raise-hand.test.tsx` absent from every table while holding in-scope locals | added to 6.5 (**27 → 28**), four register rows. Round 2's "C8 21 → 22" was wrong and round 3 re-derives it as **25** (finding BN2 below). The property-shape argument that round 2 used here is replaced by the identifier-set measurement of 5.5; the conclusion, that this is the **only** such file among the 39 untabled ones, is unchanged and was reconfirmed |
 | B3.5 | `TeamConfigResult.coordinator` (`types.ts:1505`) frozen by Rule K's text but named in neither operative list | named in the Rule K frozen enumeration, in the register, in the 6.5 `types.ts` row, and in the reviewer checklist 14.7 |
 
 ### Factual corrections
@@ -1757,6 +1927,28 @@ naming the unit rather than by picking a side.
 | 10 | `loop_cmd`'s `"busy-coordinator"` value does not exist | removed; the values are `wait-until-idle`, `force-inject`, `skip` |
 | 11 | The web repo's script is `smoke`, not `npx playwright test` | 12.2 W3 gate and 3.7 CI row |
 | 12 | Criterion 3 asked for "same module count" when 6 node names change | 9.5 criterion 3 compares the **triple 351 / 0 / 1535** |
+
+### Round-2 findings, and where each one is closed
+
+Round 2 (`A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D`) drew `PLAN_APPROVED` from
+`ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`, and `CHANGES_REQUIRED` from `ac-dev-webpage-ui-v3`.
+Every finding below was re-measured at `147ad4ef` before being acted on. No row of section 6.5, no
+pin, no digest and no gate command changed.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| BN1 | Rule K opens with "if and only if" over three categories, and the `ipc.ts:1114`/`:1134` parameters are in none of them, so the rule renames them while 6.5 and the 5.5 shorthand count froze them: a rule-versus-table contradiction that left the implementer choosing | **Decided: the parameters rename.** Register rows for `:1114`/`:1134` and `:1122`/`:1142` in 5.5, the rewritten shorthand census (4 conflicts among 6 real shorthands, not 2 among 8), the 3.4 note, the 6.5 `ipc.ts` row, C8 in 12.1, checklist item 14.6, and decision **10.1.14**. Rule K's text is untouched |
+| BN2 | C8's "22 remaining files" is derivable from no reading of the plan: 6.5 has 28 rows, and only 3 are excludable. The likely origin, subtracting the 6 renamed TypeScript files, subtracts from the wrong section | 12.1 C8 reads **25**, with the subtraction written beside it, and 12.1 C7 is retitled to the **6** renamed TypeScript modules, the seventh being Rust with its content commit at C2 per 6.1. Section 15's B3.4 row is corrected |
+| O-A | 5.9's worked example fails on the first run: "a minimal object is enough" is false for 7 of the 12 owning types, and `AppSettings` rejects the example JSON with `missing field `defaultShell`` | 5.9 replaces the premise with a measured required-field table for all 12 types and rebuilds the example on the issue-#248 recipe at `settings.rs:8255` |
+| C-A | 5.5's "exactly four exceptions" stopped being arithmetically possible once `raise-hand.test.tsx` joined the 34, and the inference "property-shaped, therefore a frozen wire key" is unsound: this plan renames three property-shaped sites | 3.1 and 5.5 close the 39 on the **identifier set** instead: 130 occurrences, 10 distinct identifiers, all 10 in Rule K's frozen enumeration, zero in a declaration context, re-measured here. The conclusion and every 6.5 row are unchanged |
+| C-B | The shorthand sweep anchored to a whole line, so it missed the inline `sessions.ts:279`, and on a CRLF worktree its `$` anchor matches nothing at all | 5.5 replaces it with a line-independent census over the blanked tree: 37 shorthand-shaped occurrences, 31 specifier entries, 6 real shorthands, each with a verdict |
+| C-C | `App.tsx` reads `:800` in 5.5 and in section 15 but still `:801` in 6.5 | the 6.5 `App.tsx` row now reads `:800`, with `:801` named as the use |
+| O-B | 5.3 says "exactly two such macros"; `#[tauri::command]` is a third that also spells external names from identifiers | 5.3 names all three and routes the third to 3.4, which enumerates its complete surface and freezes every site of it that reaches the wire. No gap, only the sentence |
+| O-C | "Seven literals at six line numbers", followed by seven line numbers | 3.5 class-D item 1 reads **seven line numbers** |
+| O-D | The two `#[cfg(test)]` citations name a `#[cfg(test)] fn` (`lib.rs:76`) and a helper child module (`cli/team.rs:403`) rather than the `mod tests` the test goes in | 5.9's site table cites `lib.rs:3899-3900` and `cli/team.rs:579-580` |
+| O-E | The row-16 tripwire cannot detect a dropped pin: after the migration the field is `None` and is elided, so the negative assertion passes either way | 3.3 row 16 and the 9.2 issue-#248 row both say so |
+| O-F | C6b's three pin-removal experiments leave one residual path to a vacuous test: a deserialise assertion fed a value equal to the member's own default | **Decided: expand, and close the general case by constraint.** 5.9 gains binding **constraint 5**; 12.1 C6b names **9** experiments, one per default kind plus one serialise experiment per test site; decision **10.1.15** records why sampling by default kind beats one run per pin |
+| Base | The plan's coordinates needed to be pinned to a named base while `origin/main` moved to `047248bc` | 1.1 names `147ad4ef` as the coordinate base and records the drift with its classification (zero added `coordinat` lines, zero changed paths under `src/`, `module-arcs.txt` byte-identical). 13.5 stays binding and 1.2 re-runs the classification before the first mutation |
 
 ### Tech lead's ruling, recorded
 
