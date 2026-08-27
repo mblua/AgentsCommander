@@ -7589,6 +7589,138 @@ mod tests {
     }
 
     #[test]
+    fn complete_preserves_correlated_obscured_click_and_focus_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+
+        for action in [UiAutomationAction::Click, UiAutomationAction::Focus] {
+            let request_id = Uuid::new_v4().to_string();
+            let mut request = sample_request(request_id.clone(), "actionBar.resourceMonitor");
+            request.action = action;
+            request.expires_at_unix_ms = Some(now_unix_ms() + 10_000);
+            let response_path = state.response_path(&request_id);
+            let inflight_path = state.inflight_path(&request_id);
+            fs::write(&inflight_path, "{}").unwrap();
+            state.inner.pending.lock().unwrap().insert(
+                request_id.clone(),
+                PendingRequest {
+                    request: request.clone(),
+                    response_path: response_path.clone(),
+                    inflight_path: inflight_path.clone(),
+                },
+            );
+
+            let response = UiAutomationResponse::minimal_error(
+                &request_id,
+                "main",
+                action,
+                "actionBar.resourceMonitor",
+                "target_obscured",
+                "The requested automation target is obscured.",
+            );
+            state.complete("main", response).unwrap();
+
+            let written: UiAutomationResponse =
+                serde_json::from_slice(&fs::read(&response_path).unwrap()).unwrap();
+            let cli_response = sanitize_response_for_cli(written);
+            assert!(!cli_response.ok);
+            assert_eq!(cli_response.request_id, request_id);
+            assert_eq!(cli_response.window, "main");
+            assert_eq!(cli_response.action, action);
+            assert_eq!(cli_response.selector, "actionBar.resourceMonitor");
+            assert_eq!(cli_response.error.as_deref(), Some("target_obscured"));
+            assert_ne!(
+                cli_response.error.as_deref(),
+                Some("automation_protocol_mismatch")
+            );
+            assert!(cli_response.available.is_none());
+            assert!(cli_response.diagnostics.is_none());
+            assert!(!inflight_path.exists());
+
+            let encoded = serde_json::to_value(cli_response).unwrap();
+            assert!(encoded.get("available").is_none());
+            assert!(encoded.get("diagnostics").is_none());
+        }
+    }
+
+    #[test]
+    fn typed_webview_failures_respect_the_exact_available_allowlist() {
+        let typed_failures = [
+            (UiAutomationAction::Query, "target_hidden"),
+            (UiAutomationAction::Click, "target_obscured"),
+            (UiAutomationAction::Focus, "target_obscured"),
+            (UiAutomationAction::Click, "target_disabled"),
+            (UiAutomationAction::Focus, "target_stale"),
+            (UiAutomationAction::Focus, "target_not_focusable"),
+            (UiAutomationAction::Focus, "focus_failed"),
+            (UiAutomationAction::Click, "request_expired"),
+            (UiAutomationAction::Query, "timeout"),
+            (UiAutomationAction::Query, "unsupported_action"),
+            (UiAutomationAction::Hover, "value_not_supported"),
+            (UiAutomationAction::Query, "automation_bridge_exception"),
+        ];
+
+        for (action, error) in typed_failures {
+            let mut request = sample_request(Uuid::new_v4().to_string(), "fixture.target");
+            request.action = action;
+            let response = UiAutomationResponse::minimal_error(
+                &request.request_id,
+                "main",
+                action,
+                "fixture.target",
+                error,
+                "typed frontend failure",
+            );
+
+            validate_response_correlation(&request, &response)
+                .unwrap_or_else(|mismatch| panic!("{error} degraded to {mismatch}"));
+            let cli_response = sanitize_response_for_cli(response);
+            assert_eq!(cli_response.error.as_deref(), Some(error));
+            assert!(cli_response.available.is_none());
+        }
+
+        for error in ["missing_selector", "duplicate_selector"] {
+            let request = sample_request(Uuid::new_v4().to_string(), "fixture.target");
+            let mut response = UiAutomationResponse::minimal_error(
+                &request.request_id,
+                "main",
+                UiAutomationAction::Query,
+                "fixture.target",
+                error,
+                "public discovery failure",
+            );
+            response.available = Some(vec![json!({
+                "testId": "fixture.public",
+                "visible": true,
+                "disabled": false,
+            })]);
+
+            validate_response_correlation(&request, &response).unwrap();
+            let cli_response = sanitize_response_for_cli(response);
+            assert_eq!(cli_response.available.as_ref().map(Vec::len), Some(1));
+            assert_eq!(
+                cli_response.available.as_ref().unwrap()[0]["testId"],
+                json!("fixture.public")
+            );
+        }
+
+        let request = sample_request(Uuid::new_v4().to_string(), "fixture.target");
+        let mut leaked = UiAutomationResponse::minimal_error(
+            &request.request_id,
+            "main",
+            UiAutomationAction::Query,
+            "fixture.target",
+            "target_hidden",
+            "typed frontend failure",
+        );
+        leaked.available = Some(vec![json!({ "testId": "fixture.must-not-leak" })]);
+        let mismatch = validate_response_correlation(&request, &leaked).unwrap_err();
+        assert_eq!(mismatch["error"], "automation_protocol_mismatch");
+    }
+
+    #[test]
     fn webview_completion_loses_when_clock_advances_inside_the_native_commit_closure() {
         let tmp = tempfile::tempdir().unwrap();
         let state = test_automation_state(tmp.path());

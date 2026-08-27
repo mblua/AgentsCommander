@@ -394,6 +394,10 @@ function errorResponse(
   available?: UiAutomationTarget[],
   diagnostics?: UiAutomationDiagnostics,
 ): UiAutomationResponse {
+  const exposesAvailable = error === "missing_selector" || error === "duplicate_selector";
+  // Obscuration diagnostics contain a topmost target projection. The public failure
+  // contract deliberately exposes neither that projection nor general diagnostics.
+  const exposesDiagnostics = error !== "target_obscured";
   return {
     ok: false,
     requestId: request.requestId,
@@ -402,9 +406,9 @@ function errorResponse(
     selector: request.selector ?? "",
     error,
     message,
-    available,
+    ...(exposesAvailable && available ? { available } : {}),
     activeTestId: activeTestId(),
-    diagnostics,
+    ...(exposesDiagnostics && diagnostics ? { diagnostics } : {}),
   };
 }
 

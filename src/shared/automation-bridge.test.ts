@@ -447,7 +447,7 @@ describe("automation bridge", () => {
     if (response.ok) throw new Error("expected timeout");
     expect(response.error).toBe("request_expired");
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
-    expect(response.available?.map((target) => target.testId)).toContain("expired.click");
+    expect(response).not.toHaveProperty("available");
     expect(onClick).not.toHaveBeenCalled();
     expect(focus).not.toHaveBeenCalled();
   });
@@ -468,9 +468,7 @@ describe("automation bridge", () => {
     if (response.ok) throw new Error("expected timeout");
     expect(response.error).toBe("request_expired");
     expect(response.diagnostics?.expiresAtUnixMs).toBeLessThanOrEqual(Date.now());
-    expect(response.available?.map((availableTarget) => availableTarget.testId)).toContain(
-      "expired.context",
-    );
+    expect(response).not.toHaveProperty("available");
     expect(onContextMenu).not.toHaveBeenCalled();
     expect(focus).not.toHaveBeenCalled();
   });
@@ -548,6 +546,7 @@ describe("automation bridge", () => {
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected target_hidden");
     expect(response.error).toBe("target_hidden");
+    expect(response).not.toHaveProperty("available");
   });
 
   it("reports disabled action targets", async () => {
@@ -563,6 +562,7 @@ describe("automation bridge", () => {
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected target_disabled");
     expect(response.error).toBe("target_disabled");
+    expect(response).not.toHaveProperty("available");
   });
 
   it("reports data-ac-state disabled action targets", async () => {
@@ -578,23 +578,39 @@ describe("automation bridge", () => {
     expect(response.ok).toBe(false);
     if (response.ok) throw new Error("expected target_disabled");
     expect(response.error).toBe("target_disabled");
+    expect(response).not.toHaveProperty("available");
   });
 
-  it("reports obscured action targets", async () => {
-    addTarget("button", "covered.target", "Covered");
+  it("returns correlated obscured click and focus failures without mutation or diagnostics", async () => {
+    const covered = addTarget("button", "covered.target", "Covered");
     const blocker = addTarget("div", "dialog.blocker", "Modal");
     blocker.setAttribute("data-ac-role", "dialog");
     topmostElement = blocker;
+    const onClick = vi.fn();
+    const focus = vi.spyOn(covered, "focus");
+    covered.addEventListener("click", onClick);
 
-    const response = await executeAutomationRequest(
-      "main",
-      request("click", "covered.target"),
-    );
+    for (const action of ["click", "focus"] as const) {
+      const automationRequest = request(action, "covered.target");
+      const response = await executeAutomationRequest("main", automationRequest);
 
-    expect(response.ok).toBe(false);
-    if (response.ok) throw new Error("expected target_obscured");
-    expect(response.error).toBe("target_obscured");
-    expect(response.diagnostics?.topmost?.testId).toBe("dialog.blocker");
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected target_obscured");
+      expect(response).toMatchObject({
+        requestId: automationRequest.requestId,
+        window: "main",
+        action,
+        selector: "covered.target",
+        error: "target_obscured",
+      });
+      expect(response).not.toHaveProperty("available");
+      expect(response).not.toHaveProperty("diagnostics");
+      expect(JSON.stringify(response)).not.toContain("dialog.blocker");
+    }
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(covered);
   });
 
   it("finds targets outside #root for portal-rendered surfaces", async () => {
@@ -905,6 +921,7 @@ describe("automation bridge", () => {
       expect(hiddenResponse.ok).toBe(false);
       if (hiddenResponse.ok) throw new Error("expected target_hidden");
       expect(hiddenResponse.error).toBe("target_hidden");
+      expect(hiddenResponse).not.toHaveProperty("available");
 
       const covered = addTarget("button", "hover.covered", "Covered");
       recordOn(covered, log);
@@ -916,7 +933,9 @@ describe("automation bridge", () => {
       expect(obscured.ok).toBe(false);
       if (obscured.ok) throw new Error("expected target_obscured");
       expect(obscured.error).toBe("target_obscured");
-      expect(obscured.diagnostics?.topmost?.testId).toBe("hover.blocker");
+      expect(obscured).not.toHaveProperty("available");
+      expect(obscured).not.toHaveProperty("diagnostics");
+      expect(JSON.stringify(obscured)).not.toContain("hover.blocker");
       expect(log).toEqual([]);
     });
 
@@ -935,6 +954,7 @@ describe("automation bridge", () => {
       expect(response.ok).toBe(false);
       if (response.ok) throw new Error("expected timeout");
       expect(response.error).toBe("request_expired");
+      expect(response).not.toHaveProperty("available");
       expect(log).toEqual([]);
     });
 
@@ -1022,6 +1042,7 @@ describe("automation bridge", () => {
         expect(response.ok).toBe(false);
         if (response.ok) throw new Error("expected value_not_supported");
         expect(response.error).toBe("value_not_supported");
+        expect(response).not.toHaveProperty("available");
       }
       expect(log).toEqual([]);
     });
@@ -1436,7 +1457,10 @@ describe("automation bridge", () => {
       topmostElement = plain;
       const nonFocusable = await executeAutomationRequest("main", request("focus", "fixture.plain"));
       expect(nonFocusable.ok).toBe(false);
-      if (!nonFocusable.ok) expect(nonFocusable.error).toBe("target_not_focusable");
+      if (!nonFocusable.ok) {
+        expect(nonFocusable.error).toBe("target_not_focusable");
+        expect(nonFocusable).not.toHaveProperty("available");
+      }
 
       const button = addTarget("button", "fixture.replaced", "Replace");
       topmostElement = button;
@@ -1447,7 +1471,24 @@ describe("automation bridge", () => {
       };
       const stale = await executeAutomationRequest("main", request("focus", "fixture.replaced"));
       expect(stale.ok).toBe(false);
-      if (!stale.ok) expect(stale.error).toBe("target_stale");
+      if (!stale.ok) {
+        expect(stale.error).toBe("target_stale");
+        expect(stale).not.toHaveProperty("available");
+      }
+
+      const refused = addTarget("button", "fixture.focusRefused", "Refused");
+      topmostElement = refused;
+      const refusedFocus = vi.spyOn(refused, "focus").mockImplementation(() => {});
+      const focusFailed = await executeAutomationRequest(
+        "main",
+        request("focus", "fixture.focusRefused"),
+      );
+      expect(focusFailed.ok).toBe(false);
+      if (!focusFailed.ok) {
+        expect(focusFailed.error).toBe("focus_failed");
+        expect(focusFailed).not.toHaveProperty("available");
+      }
+      expect(refusedFocus).toHaveBeenCalledWith({ preventScroll: true });
     });
   });
 });
