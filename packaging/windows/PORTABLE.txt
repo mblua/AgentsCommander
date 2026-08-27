@@ -1,0 +1,84 @@
+AgentsCommander {{VERSION}}
+Portable build for Windows x86_64
+
+WHAT THIS IS
+
+  A standalone AgentsCommander. There is no installer and nothing is written
+  to the Windows registry. Unzip it anywhere you can write, including a USB
+  drive or a network share, and run agentscommander.exe.
+
+
+WHERE YOUR DATA LIVES
+
+  On first launch the app creates a folder named after itself, next to the
+  executable:
+
+      <this folder>\agentscommander.exe
+      <this folder>\.agentscommander\
+
+  That folder holds settings.json, sessions.json, the web token, logs, and
+  every other piece of per-instance state. Move the whole folder and the
+  instance moves with it.
+
+  Projects you register are also stored as a path relative to this folder, so
+  if you move the executable and your project folders together, they are
+  found again at their new location.
+
+
+RUNNING MORE THAN ONE INSTANCE
+
+  Rename the executable with an underscore suffix:
+
+      agentscommander_teamA.exe   ->   .agentscommander_teamA\
+
+  A renamed copy is a fully independent instance: its own settings, its own
+  sessions, its own ports, and its own single-instance lock. The suffix shows
+  as a badge in the title bar.
+
+  Two copies with the SAME file name are the same instance identity even in
+  different folders. Launching the second one does nothing, by design.
+
+
+REQUIREMENTS
+
+  Windows 10 version 1809 or newer, x86_64.
+
+  The Microsoft Edge WebView2 runtime must be installed. It is already
+  present on Windows 11 and on up-to-date Windows 10. If the app does not
+  open a window, install the Evergreen runtime from:
+
+      https://developer.microsoft.com/microsoft-edge/webview2/
+
+
+UPDATING
+
+  Replace agentscommander.exe with the newer one and keep the
+  .agentscommander\ folder next to it. Your settings, projects, and sessions
+  are preserved. Close the app before replacing the file.
+
+
+UNINSTALLING
+
+  Delete this folder. Nothing is left behind anywhere else on the machine.
+
+
+VERIFYING THIS DOWNLOAD
+
+  Windows code signing is not yet in place, so SmartScreen will warn on first
+  launch. Verify the download against SHASUMS256.txt on the release page
+  instead:
+
+      Get-FileHash .\agentscommander.exe -Algorithm SHA256
+
+  Compare the result with the entry for this zip in SHASUMS256.txt. Signing
+  is tracked in https://github.com/mblua/AgentsCommander/issues/717
+
+
+MORE
+
+  Portable instances : https://github.com/mblua/AgentsCommander/blob/main/docs/features/portable-instances.md
+  Quickstart         : https://github.com/mblua/AgentsCommander/blob/main/docs/quickstart.md
+  Privacy            : https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md
+  Issues             : https://github.com/mblua/AgentsCommander/issues
+
+  Licensed under the MIT License. See LICENSE and THIRD_PARTY_NOTICES.md.
