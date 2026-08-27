@@ -480,6 +480,76 @@ describe("Titlebar webserver menu", () => {
     });
   });
 
+  it("persists disabled after a successful Stop exceeds the old polling budget", async () => {
+    const stop = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: ownedStatus(),
+      stopWebServer: (control) => {
+        control.setStatus(stoppingStatus());
+        return stop.promise;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThanOrEqual(2);
+    });
+    mounted.fake.clearCalls();
+    vi.useFakeTimers();
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+
+    await vi.advanceTimersByTimeAsync(1_600);
+    expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThan(15);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    mounted.setStatus(stoppedStatus());
+    stop.resolve(true);
+    await vi.advanceTimersByTimeAsync(200);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(mounted.getSavedDrafts()).toHaveLength(1);
+    expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+    expect(mounted.getSettings().webServerEnabled).toBe(false);
+    expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+  });
+
+  it("persists enabled after a successful Start exceeds the old polling budget", async () => {
+    const start = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false },
+      status: stoppedStatus(),
+      startWebServer: async (control) => {
+        const result = await start.promise;
+        control.setStatus(ownedStatus());
+        return result;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThanOrEqual(2);
+    });
+    mounted.fake.clearCalls();
+    vi.useFakeTimers();
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+
+    await vi.advanceTimersByTimeAsync(1_600);
+    expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThan(15);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    start.resolve(true);
+    await vi.advanceTimersByTimeAsync(200);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(mounted.getSavedDrafts()).toHaveLength(1);
+    expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: true });
+    expect(mounted.getSettings().webServerEnabled).toBe(true);
+    expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+  });
+
   it("rejects invalid port drafts without saving", async () => {
     const mounted = await mountTitlebar();
     await openWebServerMenu(mounted);

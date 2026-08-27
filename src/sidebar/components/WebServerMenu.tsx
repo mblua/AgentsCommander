@@ -15,7 +15,7 @@ interface WebServerMenuProps {
 const PORT_MIN = 1;
 const PORT_MAX = 65535;
 const RESTART_POLL_DELAY_MS = 100;
-const RESTART_POLL_ATTEMPTS = 15;
+const POST_INVOKE_POLL_ATTEMPTS = 15;
 
 const ALL_INTERFACES = "0.0.0.0";
 const LOCALHOST = "127.0.0.1";
@@ -312,16 +312,20 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const waitForOwnedStatus = async (
     expectedRevision: number,
     predicate: (nextStatus: WebServerOwnedStatus) => boolean,
+    invokeSettled: () => boolean,
   ): Promise<WebServerOwnedStatus | null> => {
-    for (let i = 0; i < RESTART_POLL_ATTEMPTS; i += 1) {
+    let attemptsAfterInvoke = 0;
+    while (isCurrentWebServerIntent(expectedRevision)) {
       if (!isCurrentWebServerIntent(expectedRevision)) return null;
       const nextStatus = await loadOwnedStatus(expectedRevision);
       if (!isCurrentWebServerIntent(expectedRevision)) return null;
       if (nextStatus && predicate(nextStatus)) return nextStatus;
-      if (i + 1 < RESTART_POLL_ATTEMPTS) {
-        await sleep(RESTART_POLL_DELAY_MS);
-        if (!isCurrentWebServerIntent(expectedRevision)) return null;
+      if (invokeSettled()) {
+        attemptsAfterInvoke += 1;
+        if (attemptsAfterInvoke >= POST_INVOKE_POLL_ATTEMPTS) return null;
       }
+      await sleep(RESTART_POLL_DELAY_MS);
+      if (!isCurrentWebServerIntent(expectedRevision)) return null;
     }
     return null;
   };
@@ -343,11 +347,14 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
           return { ok: false as const, reason };
         },
       );
-    const pollPromise = waitForOwnedStatus(revision, (nextStatus) =>
-      nextStatus.state === "ownedRunning" ||
-      nextStatus.state === "externalListening" ||
-      nextStatus.state === "stopping" ||
-      (nextStatus.state === "stopped" && invokeSettled)
+    const pollPromise = waitForOwnedStatus(
+      revision,
+      (nextStatus) =>
+        nextStatus.state === "ownedRunning" ||
+        nextStatus.state === "externalListening" ||
+        nextStatus.state === "stopping" ||
+        (nextStatus.state === "stopped" && invokeSettled),
+      () => invokeSettled,
     );
     const [invokeResult, observed] = await Promise.all([invokePromise, pollPromise]);
     if (!isCurrentWebServerIntent(revision)) return false;
@@ -365,16 +372,24 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   };
 
   const stopAndWaitForStopped = async (revision: number): Promise<boolean> => {
+    let invokeSettled = false;
     const invokePromise = Promise.resolve()
       .then(() => SettingsAPI.stopWebServer())
       .then(
-        (value) => ({ ok: true as const, value }),
-        (reason: unknown) => ({ ok: false as const, reason }),
+        (value) => {
+          invokeSettled = true;
+          return { ok: true as const, value };
+        },
+        (reason: unknown) => {
+          invokeSettled = true;
+          return { ok: false as const, reason };
+        },
       );
     const pollPromise = waitForOwnedStatus(
       revision,
       (nextStatus) =>
         nextStatus.state === "stopped" || nextStatus.state === "externalListening",
+      () => invokeSettled,
     );
     const [invokeResult, observed] = await Promise.all([invokePromise, pollPromise]);
     if (!isCurrentWebServerIntent(revision)) return false;

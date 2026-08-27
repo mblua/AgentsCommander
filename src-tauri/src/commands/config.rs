@@ -2145,7 +2145,6 @@ pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bo
 }
 
 async fn stop_web_server_handle(ws_handle: &WebServerHandle) -> Result<bool, String> {
-    ws_handle.clear_bind_failure();
     let Some(waiter) = ws_handle.begin_stop() else {
         return Ok(false);
     };
@@ -3631,6 +3630,74 @@ mod tests {
             Ok(true)
         );
         assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn stop_web_server_clears_bind_failure_published_by_late_bind() {
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let failure_recorder = handle.clone();
+        let (output_reached, release_output) = handle.gate_next_start_output();
+        let (bind_pending_sender, bind_pending_receiver) = oneshot::channel();
+        let (release_bind_sender, release_bind_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, _generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    "127.0.0.1".to_string(),
+                    8753,
+                ));
+                bind_pending_sender
+                    .send(())
+                    .expect("report pending bind to the test");
+                release_bind_receiver
+                    .await
+                    .expect("release late bind failure");
+                failure_recorder.record_bind_failure(crate::web::StartServerError::BindFailed {
+                    bind: "127.0.0.1".to_string(),
+                    addr: SocketAddr::from(([127, 0, 0, 1], 8753)),
+                    detail: "late bind failure".to_string(),
+                });
+                Ok::<_, String>(None)
+            },
+        );
+        bind_pending_receiver.await.expect("bind became pending");
+
+        let handle_for_stop = handle.clone();
+        let stop = tokio::spawn(async move { stop_web_server_handle(&handle_for_stop).await });
+        wait_for_web_lifecycle(&handle, WebServerLifecycle::Stopping).await;
+        release_bind_sender
+            .send(())
+            .expect("release pending bind after Stop linealizes");
+        assert!(
+            !output_reached
+                .await
+                .expect("late bind output reaches the supervisor"),
+            "Stop must already own the lifecycle transition"
+        );
+        assert!(
+            handle.last_bind_failure().is_some(),
+            "the late bind must really publish before terminal cleanup"
+        );
+        release_output
+            .send(())
+            .expect("release late bind result processing");
+
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        assert_eq!(stop.await.expect("late-bind Stop task panicked"), Ok(true));
+        let status = resolve_web_server_owned_status(
+            &handle,
+            ("127.0.0.1".to_string(), 8753),
+            |_addr| async { false },
+        )
+        .await;
+        assert_eq!(status.state, WebServerOwnershipState::Stopped);
+        assert!(status.bind_failure.is_none());
+        assert!(handle.last_bind_failure().is_none());
     }
 
     #[tokio::test]

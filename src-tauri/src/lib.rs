@@ -259,6 +259,14 @@ pub struct WebServerHandle {
     /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
     /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
     bind_failure: Arc<std::sync::Mutex<Option<crate::web::StartServerError>>>,
+    #[cfg(test)]
+    start_output_gate: Arc<Mutex<Option<WebServerStartOutputGate>>>,
+}
+
+#[cfg(test)]
+struct WebServerStartOutputGate {
+    reached: tokio::sync::oneshot::Sender<bool>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl WebServerHandle {
@@ -371,7 +379,10 @@ impl WebServerHandle {
 
     fn begin_stop_with_timeout(&self, timeout: Duration) -> Option<WebServerStopWaiter> {
         let mut inner = self.inner.lock().unwrap();
-        let generation = inner.current.as_mut()?;
+        let Some(generation) = inner.current.as_mut() else {
+            self.clear_bind_failure();
+            return None;
+        };
         if matches!(
             generation.lifecycle,
             WebServerLifecycle::Starting | WebServerLifecycle::Running
@@ -497,11 +508,75 @@ impl WebServerHandle {
         true
     }
 
-    fn generation_is_starting(&self, generation: u64) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.current.as_ref().is_some_and(|current| {
-            current.generation == generation && current.lifecycle == WebServerLifecycle::Starting
-        })
+    fn transition_start_result_to_stopping(
+        &self,
+        generation: u64,
+        result_if_starting: Result<bool, String>,
+    ) -> Result<bool, String> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_mut() else {
+            return Err(WEB_SERVER_START_CANCELLED.to_string());
+        };
+        if current.generation != generation {
+            return Err(WEB_SERVER_START_CANCELLED.to_string());
+        }
+
+        let result = if current.lifecycle == WebServerLifecycle::Starting {
+            result_if_starting
+        } else {
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        };
+        if current.lifecycle != WebServerLifecycle::Stopping {
+            current.lifecycle = WebServerLifecycle::Stopping;
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+        }
+        current.admission.close();
+        current.generation_token.cancel();
+        result
+    }
+
+    #[cfg(test)]
+    fn gate_next_start_output(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<bool>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_sender, reached_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        let previous = self
+            .start_output_gate
+            .lock()
+            .unwrap()
+            .replace(WebServerStartOutputGate {
+                reached: reached_sender,
+                release: release_receiver,
+            });
+        assert!(
+            previous.is_none(),
+            "only one start-output gate may be installed"
+        );
+        (reached_receiver, release_sender)
+    }
+
+    #[cfg(test)]
+    async fn pause_after_start_output(&self, generation: u64) {
+        let gate = self.start_output_gate.lock().unwrap().take();
+        let Some(gate) = gate else {
+            return;
+        };
+        let was_starting = {
+            let inner = self.inner.lock().unwrap();
+            inner.current.as_ref().is_some_and(|current| {
+                current.generation == generation
+                    && current.lifecycle == WebServerLifecycle::Starting
+            })
+        };
+        let _ = gate.reached.send(was_starting);
+        let _ = gate.release.await;
     }
 
     fn finish_generation(&self, generation: u64) -> bool {
@@ -516,6 +591,9 @@ impl WebServerHandle {
             .revision
             .checked_add(1)
             .expect("web server lifecycle revision exhausted");
+        if current.stop_deadline.is_some() {
+            self.clear_bind_failure();
+        }
         inner.current = None;
         inner.last_generation = Some(generation);
         inner.stopped_revision = revision;
@@ -553,23 +631,29 @@ impl WebServerHandle {
         };
 
         let mut server = match start_output {
-            Ok(Ok(server)) => server,
+            Ok(Ok(Some(server))) => Some(server),
+            Ok(Ok(None)) => {
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(generation, Ok(false));
+                let _ = start_sender.send(Some(result));
+                None
+            }
             Ok(Err(error)) => {
-                let stop_won = !self.generation_is_starting(generation);
-                self.move_generation_to_stopping(generation);
-                let result = if stop_won {
-                    Err(WEB_SERVER_START_CANCELLED.to_string())
-                } else {
-                    Err(error)
-                };
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(generation, Err(error));
                 let _ = start_sender.send(Some(result));
                 None
             }
             Err(_) => {
-                self.move_generation_to_stopping(generation);
-                let _ = start_sender.send(Some(Err(
-                    "Web server start supervisor panicked".to_string()
-                )));
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(
+                    generation,
+                    Err("Web server start supervisor panicked".to_string()),
+                );
+                let _ = start_sender.send(Some(result));
                 None
             }
         };
@@ -584,15 +668,6 @@ impl WebServerHandle {
             if let Err(error) = join.await {
                 log::error!("[web-server] server task join failed: {}", error);
             }
-        } else if start_sender.borrow().is_none() {
-            let stop_won = !self.generation_is_starting(generation);
-            self.move_generation_to_stopping(generation);
-            let result = if stop_won {
-                Err(WEB_SERVER_START_CANCELLED.to_string())
-            } else {
-                Ok(false)
-            };
-            let _ = start_sender.send(Some(result));
         }
 
         self.move_generation_to_stopping(generation);
@@ -4251,6 +4326,44 @@ mod tests {
         assert_eq!(stop.wait().await, Ok(()));
         assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
         assert!(admission.is_empty());
+    }
+
+    async fn assert_stop_after_start_output_cancels_result(
+        factory_output: Result<Option<tauri::async_runtime::JoinHandle<()>>, String>,
+    ) {
+        let handle = WebServerHandle::default();
+        let (output_reached, release_output) = handle.gate_next_start_output();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |_generation, _admission, _generation_token| async move { factory_output },
+        );
+
+        assert!(
+            output_reached
+                .await
+                .expect("supervisor reports the observed lifecycle"),
+            "factory output must be complete while the generation is still Starting"
+        );
+        let stop = handle
+            .begin_stop()
+            .expect("Stop linealizes before start-result publication");
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        release_output
+            .send(())
+            .expect("release start-result publication");
+
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        assert_eq!(stop.wait().await, Ok(()));
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn web_server_stop_between_factory_output_and_start_result_publication_is_sticky() {
+        assert_stop_after_start_output_cancels_result(Err("late factory error".to_string())).await;
+        assert_stop_after_start_output_cancels_result(Ok(None)).await;
     }
 
     #[tokio::test]
