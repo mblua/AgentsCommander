@@ -232,7 +232,7 @@ fn add_member_to_team_config(
         config.coordinator = agent_ref.to_string();
     }
     if !config.coordinator.is_empty() && !config.agents.contains(&config.coordinator) {
-        return Err("Coordinator must be one of the selected agents".to_string());
+        return Err("Orchestrator must be one of the selected agents".to_string());
     }
     Ok((config, !was_present))
 }
@@ -243,7 +243,7 @@ fn remove_member_from_team_config(
 ) -> Result<(TeamConfigResult, bool), String> {
     if config.coordinator == agent_ref {
         return Err(
-            "Cannot remove the current coordinator without choosing a replacement".to_string(),
+            "Cannot remove the current orchestrator without choosing a replacement".to_string(),
         );
     }
     let before = config.agents.len();

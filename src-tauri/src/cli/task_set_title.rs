@@ -16,14 +16,14 @@ use super::task_ops::{self, EditOutcome, TaskOp};
 
 #[derive(Args)]
 #[command(after_help = "\
-AUTHORIZATION: Only coordinators of any team in the caller's project can edit TASK.md. \
+AUTHORIZATION: Only orchestrators of any team in the caller's project can edit TASK.md. \
 The master/root token bypasses this check. The verb writes ONLY to \
 <workgroup-root>/TASK.md and its *.bak.md siblings.\n\n\
 INVARIANTS: A timestamped backup is created on every successful write that had a \
 prior file. Concurrent writes are serialized via an advisory lockfile (5s timeout). \
 External edits between our read and our write are detected and the verb aborts.\n\n\
 TITLE INPUT: --title is a single-line string. Embedded \\n / \\r / NUL / other \
-control characters (except tab) are rejected. A coordinator --title also cannot \
+control characters (except tab) are rejected. An orchestrator --title also cannot \
 start with the reserved USER: prefix; that marker is reserved for human-set \
 titles applied through the in-app title editor.")]
 pub struct TaskSetTitleArgs {
@@ -91,8 +91,8 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         let teams = crate::config::teams::discover_teams();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of any team. \
-                 Only coordinators can edit TASK.md.",
+                "Error: authorization denied — '{}' is not an orchestrator of any team. \
+                 Only orchestrators can edit TASK.md.",
                 sender
             );
             return 1;
