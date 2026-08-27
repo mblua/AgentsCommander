@@ -4,7 +4,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::cli::workgroup::{resolve_cli_project, resolve_cli_ac_root, write_refresh};
+use crate::cli::workgroup::{resolve_cli_ac_root, resolve_cli_project, write_refresh};
 use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, discover_loops_in_project,
     loop_dir, read_loop_config, read_loop_state, sanitize_loop_id, validate_loop_config,

@@ -1739,8 +1739,7 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
     errors.extend(source_metadata_errors);
 
     if source_metadata_valid {
-        let source_matrix =
-            source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
+        let source_matrix = source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
         let source_role = source_matrix.join("Role.md");
         if !source_matrix.is_dir() {
             errors.push(err(
@@ -1789,9 +1788,7 @@ fn collect_experiment_validation(loaded: &LoadedExperiment) -> ExperimentValidat
             Ok(meta) => {
                 errors.extend(validate_variant_metadata_paths(loaded, variant, &meta));
                 validate_variant_files(loaded, &meta, &mut errors);
-                for blocker in
-                    find_live_sessions_for_variant(&loaded.ac_root, &meta.agent_name)
-                {
+                for blocker in find_live_sessions_for_variant(&loaded.ac_root, &meta.agent_name) {
                     errors.push(err(
                         "active_variant_session",
                         format!(
@@ -2257,8 +2254,8 @@ fn create_run_workgroup_dirs(
                 )]
             })?;
         }
-        let role_path = variant_matrix_path(ac_root, &variant.source_agent, &variant.name)
-            .join("Role.md");
+        let role_path =
+            variant_matrix_path(ac_root, &variant.source_agent, &variant.name).join("Role.md");
         let role_text = fs::read_to_string(&role_path).map_err(|e| {
             vec![err_at_path(
                 "variant_role_missing",
@@ -2527,8 +2524,7 @@ fn load_and_validate_resume_artifacts(
             None,
         ));
     }
-    if let Err(mut workgroup_errors) =
-        validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
+    if let Err(mut workgroup_errors) = validate_workgroup_under_ac_root(&loaded.ac_root, &workgroup)
     {
         errors.append(&mut workgroup_errors);
     }
@@ -3179,8 +3175,7 @@ fn find_live_sessions_for_variant(
     ac_root: &Path,
     variant_agent_name: &str,
 ) -> Vec<LiveSessionBlocker> {
-    let mut out =
-        find_live_sessions_under(&ac_root.join(format!("_agent_{}", variant_agent_name)));
+    let mut out = find_live_sessions_under(&ac_root.join(format!("_agent_{}", variant_agent_name)));
     if let Ok(entries) = std::fs::read_dir(ac_root) {
         for entry in entries.flatten() {
             let path = entry.path();
