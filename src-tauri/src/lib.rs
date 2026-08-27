@@ -1075,6 +1075,9 @@ pub(crate) fn spawn_restore_startup(
     loop_scheduler: Arc<loops::scheduler::LoopScheduler>,
     non_stop_state: crate::loops::non_stop_watchdog::NonStopWatchdogState,
     ui_automation_state: crate::testability::ui_automation::UiAutomationState,
+    instance_isolation_hooks: Arc<
+        dyn crate::testability::ui_automation::InstanceIsolationTestHooks,
+    >,
     shutdown: ShutdownSignal,
 ) -> tauri::async_runtime::JoinHandle<()> {
     use futures::FutureExt;
@@ -1762,6 +1765,12 @@ pub(crate) fn spawn_restore_startup(
         // barrier already released (complete() ran), with services after the
         // panic point not started - a documented, VISIBLE degradation (14.3).
         let tail = std::panic::AssertUnwindSafe(async move {
+            ui_automation_state.start(
+                app.app_handle().clone(),
+                shutdown.clone(),
+                move || instance_isolation_hooks.after_owned_artifacts_published(),
+            );
+
             // These observers mutate session metadata or persistence directly.
             // Start them only after restore has completed, which is stricter than
             // merely placing restore first and prevents an intermediate snapshot.
@@ -1807,7 +1816,6 @@ pub(crate) fn spawn_restore_startup(
                 non_stop_state.clone(),
                 shutdown.clone(),
             );
-            ui_automation_state.start(app.app_handle().clone(), shutdown.clone());
         });
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
@@ -1923,7 +1931,6 @@ pub fn run(
 
     // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
     config::daemon_pid::write_pid_file();
-    instance_isolation_hooks.after_owned_artifacts_published();
 
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
@@ -2080,6 +2087,7 @@ pub fn run(
     let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
     let ui_automation_state_for_setup = ui_automation_state.clone();
     let ui_automation_state_for_exit = ui_automation_state.clone();
+    let instance_isolation_hooks_for_setup = Arc::clone(&instance_isolation_hooks);
 
     // One recovered operation store is shared by the filesystem poller and
     // both API start paths. A failure disables only privileged PTY input.
@@ -2917,6 +2925,7 @@ pub fn run(
                     loop_scheduler_for_setup,
                     non_stop_state_for_setup,
                     ui_automation_state_for_setup,
+                    instance_isolation_hooks_for_setup,
                     shutdown_for_setup,
                 );
             }
@@ -3727,6 +3736,42 @@ mod tests {
         assert!(
             hoist < loop_start,
             "startup restore must normalize archived roots once before the session loop"
+        );
+    }
+
+    #[test]
+    fn ownership_barrier_runs_from_the_post_restore_automation_publish_seam() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("read lib.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production lib source");
+        let persisted = production
+            .find("sessions_persistence::persist_merging_failed")
+            .expect("persisted session publication");
+        let automation_start = production
+            .find("ui_automation_state.start(")
+            .expect("automation startup call");
+        let ownership_hook = production
+            .find("instance_isolation_hooks.after_owned_artifacts_published()")
+            .expect("closed ownership barrier");
+        let first_observer = production
+            .find("restore_observer_barrier.start(\"idle\"")
+            .expect("first post-restore background observer");
+
+        assert!(
+            persisted < automation_start
+                && automation_start < ownership_hook
+                && ownership_hook < first_observer,
+            "the closed-set hook must be owned by automation publication before background observers"
+        );
+        assert_eq!(
+            production
+                .matches("instance_isolation_hooks.after_owned_artifacts_published()")
+                .count(),
+            1,
+            "the earlier daemon-pid-only barrier must not remain"
         );
     }
 

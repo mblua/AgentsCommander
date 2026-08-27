@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agentscommander_lib::testability::ui_automation::{
-    AutomationConfigWitness, UiCliDispatchContext,
+    AutomationConfigWitness, InstanceIsolationTestHooks, UiCliDispatchContext,
 };
 
 struct RetainedAutomationConfigWitness {
@@ -104,9 +104,18 @@ fn existing_ui_cli_dispatch_context(
     Ok(UiCliDispatchContext::new(witness))
 }
 
-fn single_instance_scope(
-    testable_artifact: bool,
-) -> Result<SingleInstanceScope, &'static str> {
+fn initialize_cli_logger(
+    is_ui_automation: bool,
+    instance_isolation_hooks: &dyn InstanceIsolationTestHooks,
+    initialize: impl FnOnce(),
+) {
+    if is_ui_automation {
+        instance_isolation_hooks.before_ui_cli_logger_config_phase();
+    }
+    initialize();
+}
+
+fn single_instance_scope(testable_artifact: bool) -> Result<SingleInstanceScope, &'static str> {
     if !testable_artifact {
         return Ok(SingleInstanceScope {
             mutex_name: agentscommander_lib::config::profile::mutex_name().to_string(),
@@ -247,7 +256,11 @@ fn main() {
                         // mitigation) reaches stderr + <config_dir>/app.log.
                         // GATED on `cli.command.is_some()` so the GUI branch
                         // below initializes via `lib::run()` exactly once.
-                        agentscommander_lib::logging::init_logger();
+                        initialize_cli_logger(
+                            is_ui_automation,
+                            instance_isolation_hooks.as_ref(),
+                            agentscommander_lib::logging::init_logger,
+                        );
 
                         if let Some(context) = ui_context.as_ref() {
                             if !context.verify_current() {
@@ -395,4 +408,49 @@ fn try_acquire_single_instance(mutex_name: &str) -> Result<bool, u32> {
 #[cfg(not(target_os = "windows"))]
 fn try_acquire_single_instance(_mutex_name: &str) -> Result<bool, u32> {
     Ok(true) // No single-instance enforcement on non-Windows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingHooks {
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    impl InstanceIsolationTestHooks for RecordingHooks {
+        fn after_ui_cli_context_acquired_before_logger(&self) {
+            self.events.lock().unwrap().push("context-acquired");
+        }
+
+        fn before_ui_cli_logger_config_phase(&self) {
+            self.events.lock().unwrap().push("logger-phase");
+        }
+    }
+
+    #[test]
+    fn ui_cli_logger_phase_has_a_distinct_hook_immediately_before_initialization() {
+        let hooks = RecordingHooks::default();
+        hooks.after_ui_cli_context_acquired_before_logger();
+        initialize_cli_logger(true, &hooks, || {
+            hooks.events.lock().unwrap().push("logger");
+        });
+
+        assert_eq!(
+            *hooks.events.lock().unwrap(),
+            ["context-acquired", "logger-phase", "logger"]
+        );
+    }
+
+    #[test]
+    fn non_ui_cli_logger_does_not_fire_the_ui_logger_phase_hook() {
+        let hooks = RecordingHooks::default();
+        initialize_cli_logger(false, &hooks, || {
+            hooks.events.lock().unwrap().push("logger");
+        });
+
+        assert_eq!(*hooks.events.lock().unwrap(), ["logger"]);
+    }
 }

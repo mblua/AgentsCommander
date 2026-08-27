@@ -1370,6 +1370,25 @@ describe("automation bridge", () => {
       expect(JSON.stringify(missing)).not.toContain("private-canary");
     });
 
+    it("serializes nullable activeTestId explicitly on query, action-error, and list responses", async () => {
+      const target = addTarget("button", "fixture.nullActive", "No focus");
+      topmostElement = target;
+      const responses = [
+        await executeAutomationRequest("main", request("query", "fixture.nullActive")),
+        await executeAutomationRequest("main", request("query", "fixture.missing")),
+        await executeAutomationRequest("main", {
+          ...request("list", ""),
+          selector: undefined,
+        }),
+      ];
+
+      for (const response of responses) {
+        expect(Object.prototype.hasOwnProperty.call(response, "activeTestId")).toBe(true);
+        expect(response.activeTestId).toBeNull();
+        expect(JSON.parse(JSON.stringify(response))).toHaveProperty("activeTestId", null);
+      }
+    });
+
     it("focuses only the exact focusable node and reports deepest public focus", async () => {
       const button = addTarget("button", "fixture.focus", "Focus");
       topmostElement = button;

@@ -2,8 +2,8 @@ use clap::Args;
 use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -158,6 +158,7 @@ pub trait AutomationConfigWitness: Send + Sync + 'static {
 
 pub trait InstanceIsolationTestHooks: Send + Sync + 'static {
     fn after_ui_cli_context_acquired_before_logger(&self) {}
+    fn before_ui_cli_logger_config_phase(&self) {}
     fn before_config_writer(&self) {}
     fn after_owned_artifacts_published(&self) {}
 }
@@ -515,7 +516,7 @@ pub struct UiAutomationResponse {
     pub timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[serde(default)]
     pub active_test_id: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filters: Option<UiListFilters>,
@@ -917,18 +918,24 @@ impl UiAutomationState {
         self.inner.enabled && self.inner.available.load(Ordering::SeqCst)
     }
 
-    pub fn start(&self, app: AppHandle, shutdown: ShutdownSignal) {
-        if !self.inner.enabled {
-            return;
+    pub fn start(
+        &self,
+        app: AppHandle,
+        shutdown: ShutdownSignal,
+        after_owned_artifacts_published: impl FnOnce(),
+    ) {
+        if self.inner.enabled {
+            *self
+                .inner
+                .app_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(app.clone());
         }
 
-        *self
-            .inner
-            .app_handle
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(app.clone());
-
-        if self.initialize_files().is_err() {
+        if self
+            .publish_owned_artifacts(after_owned_artifacts_published)
+            .is_err()
+        {
             self.mark_unavailable();
             log::error!(
                 target: UI_AUTOMATION_LOG_TARGET,
@@ -941,7 +948,9 @@ impl UiAutomationState {
             );
             return;
         }
-        self.inner.available.store(true, Ordering::SeqCst);
+        if !self.inner.enabled {
+            return;
+        }
 
         let state = self.clone();
         let shutdown = shutdown.token().clone();
@@ -954,6 +963,18 @@ impl UiAutomationState {
                 }
             }
         });
+    }
+
+    fn publish_owned_artifacts(
+        &self,
+        after_owned_artifacts_published: impl FnOnce(),
+    ) -> io::Result<()> {
+        if self.inner.enabled {
+            self.initialize_files()?;
+            self.inner.available.store(true, Ordering::SeqCst);
+        }
+        after_owned_artifacts_published();
+        Ok(())
     }
 
     pub fn cleanup_session_file(&self) {
@@ -1147,13 +1168,25 @@ impl UiAutomationState {
     }
 
     pub fn complete(&self, caller_label: &str, result: UiAutomationResponse) -> Result<(), String> {
+        self.complete_with_now(caller_label, result, now_unix_ms)
+    }
+
+    fn complete_with_now(
+        &self,
+        caller_label: &str,
+        result: UiAutomationResponse,
+        now: impl Fn() -> i64,
+    ) -> Result<(), String> {
         if !self.enabled() {
             return Err("automation_not_enabled".to_string());
         }
 
-        let pending = {
+        let (pending, expired_when_removed) = {
             let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending.remove(&result.request_id)
+            let expired = pending
+                .get(&result.request_id)
+                .is_some_and(|entry| request_expired(&entry.request, now()));
+            (pending.remove(&result.request_id), expired)
         };
         let Some(pending) = pending else {
             return Err("unknown_request_id".to_string());
@@ -1173,10 +1206,24 @@ impl UiAutomationState {
             result
         };
 
-        self.with_owned_automation_fs(|| write_json_atomic_new(&pending.response_path, &response))
+        let expired_at_publish = self
+            .with_owned_automation_fs(|| {
+                let expired = expired_when_removed || request_expired(&pending.request, now());
+                let response = if expired {
+                    expired_response_for_request(&pending.request)
+                } else {
+                    response
+                };
+                write_json_atomic_new(&pending.response_path, &response)?;
+                Ok(expired)
+            })
             .map_err(|error| error.to_string())?;
         let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
-        Ok(())
+        if expired_at_publish {
+            Err("request_expired".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn initialize_files(&self) -> io::Result<()> {
@@ -1238,25 +1285,13 @@ impl UiAutomationState {
         self.sync_live_window_labels(available_window_labels(app))?;
         self.expire_pending_requests();
 
-        let requests_dir = self.requests_dir();
-        let entries = match self.with_owned_automation_fs(|| {
-            let mut paths = fs::read_dir(&requests_dir)?
-                .flatten()
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>();
-            paths.sort();
-            paths.truncate(MAX_REQUEST_FILES_PER_SCAN);
-            Ok(paths)
-        }) {
+        let entries = match self.request_scan_batch() {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
 
-        for path in entries {
-            let Some(request_file) = RequestFile::from_path(&path) else {
-                continue;
-            };
+        for request_file in entries {
             if self.is_pending(&request_file.request_id) {
                 continue;
             }
@@ -1264,6 +1299,24 @@ impl UiAutomationState {
         }
 
         Ok(())
+    }
+
+    fn request_scan_batch(&self) -> io::Result<Vec<RequestFile>> {
+        let requests_dir = self.requests_dir();
+        let paths = self.with_owned_automation_fs(|| {
+            bounded_sorted_request_paths(
+                fs::read_dir(&requests_dir)?.map(|entry| entry.map(|entry| entry.path())),
+            )
+        })?;
+        let mut requests = Vec::with_capacity(paths.len());
+        for path in paths {
+            if let Some(request) = RequestFile::from_path(&path) {
+                requests.push(request);
+            } else {
+                self.with_owned_automation_fs(|| remove_invalid_request_entry(&path))?;
+            }
+        }
+        Ok(requests)
     }
 
     fn sync_live_window_labels(&self, live_labels: Vec<String>) -> io::Result<()> {
@@ -1812,7 +1865,22 @@ impl UiAutomationState {
         cancelled: &AtomicBool,
         response: UiAutomationResponse,
     ) {
-        let pending = {
+        self.publish_terminal_task_response_with_now(
+            request_id,
+            cancelled,
+            response,
+            now_unix_ms,
+        );
+    }
+
+    fn publish_terminal_task_response_with_now(
+        &self,
+        request_id: &str,
+        cancelled: &AtomicBool,
+        response: UiAutomationResponse,
+        now: impl Fn() -> i64,
+    ) {
+        let (pending, expired_when_removed) = {
             let tasks = self
                 .inner
                 .terminal_tasks
@@ -1826,25 +1894,36 @@ impl UiAutomationState {
                 .pending
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if pending
+            let expired = pending
                 .get(request_id)
-                .is_some_and(|entry| request_expired(&entry.request, now_unix_ms()))
-            {
+                .is_some_and(|entry| request_expired(&entry.request, now()));
+            if expired {
                 cancelled.store(true, Ordering::SeqCst);
-                return;
             }
-            pending.remove(request_id)
+            (pending.remove(request_id), expired)
         };
         let Some(pending) = pending else {
             return;
         };
-        if cancelled.load(Ordering::SeqCst) {
+        if cancelled.load(Ordering::SeqCst) && !expired_when_removed {
             return;
         }
-        if self
-            .with_owned_automation_fs(|| write_json_atomic_new(&pending.response_path, &response))
-            .is_err()
-        {
+        let wrote = self.with_owned_automation_fs(|| {
+            let cancelled_before_publish = cancelled.load(Ordering::SeqCst);
+            let expired = expired_when_removed || request_expired(&pending.request, now());
+            if cancelled_before_publish && !expired {
+                return Ok(false);
+            }
+            let response = if expired {
+                cancelled.store(true, Ordering::SeqCst);
+                expired_response_for_request(&pending.request)
+            } else {
+                response
+            };
+            write_json_atomic_new(&pending.response_path, &response)?;
+            Ok(true)
+        });
+        if wrote.is_err() {
             log::warn!(
                 target: UI_AUTOMATION_LOG_TARGET,
                 "{}",
@@ -1855,7 +1934,9 @@ impl UiAutomationState {
                 )
             );
         }
-        let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
+        if matches!(wrote, Ok(true)) {
+            let _ = self.with_owned_automation_fs(|| retry_remove_file(&pending.inflight_path));
+        }
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
@@ -4719,6 +4800,30 @@ fn write_json_atomic_replace<T: Serialize>(path: &Path, value: &T) -> io::Result
     write_json_atomic(path, value, true)
 }
 
+fn bounded_sorted_request_paths<I>(entries: I) -> io::Result<Vec<PathBuf>>
+where
+    I: Iterator<Item = io::Result<PathBuf>>,
+{
+    let mut paths = entries
+        .take(MAX_REQUEST_FILES_PER_SCAN)
+        .collect::<io::Result<Vec<_>>>()?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn remove_invalid_request_entry(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_dir() {
+        retry_fs(|| fs::remove_dir(path))
+    } else {
+        retry_remove_file(path)
+    }
+}
+
 fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
     let mut last_not_found = None;
     for attempt in 0..SESSION_READ_RETRY_COUNT {
@@ -4743,6 +4848,14 @@ fn read_session_file_with_retry(path: &Path) -> io::Result<String> {
 }
 
 fn read_bounded_regular_file(path: &Path, limit: usize) -> io::Result<String> {
+    read_bounded_regular_file_with_hook(path, limit, || {})
+}
+
+fn read_bounded_regular_file_with_hook(
+    path: &Path,
+    limit: usize,
+    after_open: impl FnOnce(),
+) -> io::Result<String> {
     let limit_code = if limit == MAX_SESSION_FILE_BYTES {
         "session_file_too_large"
     } else if limit == MAX_REQUEST_FILE_BYTES {
@@ -4750,40 +4863,52 @@ fn read_bounded_regular_file(path: &Path, limit: usize) -> io::Result<String> {
     } else {
         "response_too_large"
     };
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "unsafe_automation_file",
-        ));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "unsafe_automation_file",
-            ));
-        }
-    }
+    let mut file = open_regular_file_no_follow(path)?;
+    let metadata = validate_opened_regular_file(&file)?;
     let length = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
     if length > limit {
         return Err(io::Error::new(io::ErrorKind::InvalidData, limit_code));
     }
-    let bytes = fs::read(path)?;
+    after_open();
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024).saturating_add(1));
+    Read::by_ref(&mut file)
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             limit_code,
         ));
     }
+    validate_opened_regular_file(&file)?;
+    let reopened = open_regular_file_no_follow(path)?;
+    validate_opened_regular_file(&reopened)?;
     String::from_utf8(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid_utf8"))
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T, replace: bool) -> io::Result<()> {
+    let tmp_path = atomic_write_temp_path(path);
+    write_json_atomic_with_temp_path(
+        path,
+        value,
+        replace,
+        &tmp_path,
+        atomic_replace_existing,
+    )
+}
+
+fn write_json_atomic_with_temp_path<T, F>(
+    path: &Path,
+    value: &T,
+    replace: bool,
+    tmp_path: &Path,
+    replace_existing: F,
+) -> io::Result<()>
+where
+    T: Serialize,
+    F: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     let limit = if path.file_name().and_then(|name| name.to_str()) == Some(SESSION_FILE) {
         MAX_SESSION_FILE_BYTES
     } else if path
@@ -4813,40 +4938,162 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T, replace: bool) -> io:
         fs::create_dir_all(parent)?;
     }
 
-    if !replace && path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("destination already exists: {}", path.display()),
-        ));
+    if !replace {
+        ensure_path_absent_no_follow(path)?;
     }
 
-    let tmp_path = path.with_extension("tmp");
-    let mut file = if replace {
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?
-    } else {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)?
-    };
+    let mut file = open_new_regular_file_no_follow(tmp_path)?;
     file.write_all(&encoded)?;
-    file.flush()?;
+    file.sync_all()?;
+    validate_opened_regular_file(&file)?;
     drop(file);
+    let verified_temp = open_regular_file_no_follow(tmp_path)?;
+    validate_opened_regular_file(&verified_temp)?;
+    drop(verified_temp);
 
-    if replace {
-        let _ = retry_remove_file(path);
-    } else if path.exists() {
-        let _ = retry_remove_file(&tmp_path);
-        return Err(io::Error::new(
+    let result = if replace {
+        match open_regular_file_no_follow(path) {
+            Ok(_destination) => replace_existing(tmp_path, path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                retry_rename(tmp_path, path)
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        ensure_path_absent_no_follow(path).and_then(|()| retry_rename(tmp_path, path))
+    };
+    if result.is_err() {
+        let _ = retry_remove_file(tmp_path);
+    }
+    result
+}
+
+fn atomic_write_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let staging_parent = match parent.file_name().and_then(|name| name.to_str()) {
+        Some(REQUESTS_DIR | RESPONSES_DIR) => parent.parent().unwrap_or(parent),
+        _ => parent,
+    };
+    staging_parent.join(format!(
+        "~ac-ui-{file_name}-{}.tmp",
+        Uuid::new_v4().simple()
+    ))
+}
+
+fn ensure_path_absent_no_follow(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("destination already exists: {}", path.display()),
+        )),
+    }
+}
+
+fn apply_no_follow_open_flags(options: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+}
+
+fn open_regular_file_no_follow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    apply_no_follow_open_flags(&mut options);
+    let file = options.open(path)?;
+    validate_opened_regular_file(&file)?;
+    Ok(file)
+}
+
+fn open_new_regular_file_no_follow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    apply_no_follow_open_flags(&mut options);
+    let file = options.open(path)?;
+    validate_opened_regular_file(&file)?;
+    Ok(file)
+}
+
+fn validate_opened_regular_file(file: &File) -> io::Result<fs::Metadata> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe_automation_file",
         ));
     }
-    retry_rename(&tmp_path, path)
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe_automation_file",
+            ));
+        }
+    }
+    Ok(metadata)
+}
+
+#[cfg(target_os = "windows")]
+fn atomic_replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    let replaced: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let replacement: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replaced_ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced_ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn atomic_replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
 }
 
 fn retry_rename(from: &Path, to: &Path) -> io::Result<()> {
@@ -4854,8 +5101,10 @@ fn retry_rename(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn retry_remove_file(path: &Path) -> io::Result<()> {
-    if !path.exists() {
-        return Ok(());
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(_) => {}
     }
     retry_fs(|| fs::remove_file(path))
 }
@@ -5216,6 +5465,36 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(target_os = "windows")]
+    fn create_test_reparse(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "create junction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    fn create_test_reparse(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create symlink");
+    }
+
+    #[cfg(target_os = "windows")]
+    fn remove_test_reparse(link: &Path) {
+        fs::remove_dir(link).expect("remove junction");
+    }
+
+    #[cfg(unix)]
+    fn remove_test_reparse(link: &Path) {
+        fs::remove_file(link).expect("remove symlink");
+    }
+
     #[test]
     fn enabled_state_process_probe_failure_is_filesystem_silent_and_stale() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5233,6 +5512,26 @@ mod tests {
 
         assert!(matches!(result, Err("automation_session_stale")));
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ownership_barrier_observes_the_published_automation_singleton() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        let hook_fired = AtomicBool::new(false);
+
+        state
+            .publish_owned_artifacts(|| {
+                let raw = fs::read_to_string(&state.inner.session_path)
+                    .expect("session must exist before the ownership barrier");
+                let session: UiAutomationSession =
+                    serde_json::from_str(&raw).expect("published session schema");
+                assert_eq!(session.instance_id, state.inner.instance_id);
+                hook_fired.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+
+        assert!(hook_fired.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -6213,6 +6512,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_webview_response_serializes_nullable_active_test_id_explicitly() {
+        for action in UiAutomationAction::all()
+            .filter(|action| *action != UiAutomationAction::Backend)
+        {
+            let response = UiAutomationResponse::minimal_error(
+                "00000000-0000-4000-8000-000000000159",
+                "main",
+                action,
+                if action == UiAutomationAction::List {
+                    ""
+                } else {
+                    "fixture.target"
+                },
+                "missing_selector",
+                "fixture",
+            );
+            let encoded = serde_json::to_value(response).unwrap();
+            assert_eq!(
+                encoded.get("activeTestId"),
+                Some(&Value::Null),
+                "{action:?} omitted its required nullable activeTestId"
+            );
+        }
+    }
+
     /// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`
     /// are two closed lists that MUST agree. They are not generated from one another
     /// (no ts-rs / typeshare / specta in this crate), so nothing but this test stops
@@ -6277,6 +6602,12 @@ mod tests {
         assert_eq!(
             members, rust,
             "UiAutomationAction is out of sync between src/shared/types.ts and ui_automation.rs"
+        );
+
+        assert_eq!(
+            types_ts.matches("activeTestId: string | null;").count(),
+            3,
+            "every TypeScript UiAutomationResponse union arm must require nullable activeTestId"
         );
     }
 
@@ -6425,6 +6756,66 @@ mod tests {
     }
 
     #[test]
+    fn webview_completion_loses_when_the_deadline_crosses_after_pending_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+        let request_id = Uuid::new_v4().to_string();
+        let mut request = sample_request(request_id.clone(), "expected");
+        request.expires_at_unix_ms = Some(100);
+        let response_path = state.response_path(&request_id);
+        let inflight_path = state.inflight_path(&request_id);
+        fs::write(&inflight_path, "{}").unwrap();
+        state.inner.pending.lock().unwrap().insert(
+            request_id.clone(),
+            PendingRequest {
+                request,
+                response_path: response_path.clone(),
+                inflight_path: inflight_path.clone(),
+            },
+        );
+        let result = UiAutomationResponse {
+            ok: true,
+            request_id,
+            window: "main".to_string(),
+            action: UiAutomationAction::Query,
+            selector: "expected".to_string(),
+            target: Some(json!({"testId": "expected"})),
+            error: None,
+            message: None,
+            available: None,
+            diagnostics: None,
+            available_windows: None,
+            timeout_ms: None,
+            phase: None,
+            active_test_id: Value::Null,
+            filters: None,
+            targets: None,
+            matched_count: None,
+            matched_count_exact: None,
+            returned_count: None,
+            limit: None,
+            truncated: None,
+            scan: None,
+            terminal_snapshot: None,
+        };
+        let clock_calls = AtomicUsize::new(0);
+        let now = || [99, 100][clock_calls.fetch_add(1, Ordering::SeqCst).min(1)];
+
+        assert_eq!(
+            state.complete_with_now("main", result, now).unwrap_err(),
+            "request_expired"
+        );
+
+        let written: UiAutomationResponse =
+            serde_json::from_str(&fs::read_to_string(response_path).unwrap()).unwrap();
+        assert_eq!(written.error.as_deref(), Some("request_expired"));
+        assert!(written.target.is_none());
+        assert!(!inflight_path.exists());
+    }
+
+    #[test]
     fn expire_pending_requests_writes_timeout_response() {
         let tmp = tempfile::tempdir().unwrap();
         let state = test_automation_state(tmp.path());
@@ -6454,6 +6845,58 @@ mod tests {
         assert_eq!(written.error.as_deref(), Some("request_expired"));
         assert!(!inflight_path.exists());
         assert!(state.inner.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn terminal_completion_loses_when_the_deadline_crosses_before_publication() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        fs::create_dir_all(state.responses_dir()).unwrap();
+        let request_id = Uuid::new_v4().to_string();
+        let mut request = terminal_request(request_id.clone());
+        request.expires_at_unix_ms = Some(100);
+        let response = UiAutomationResponse::terminal_success(
+            &request,
+            json!({"mustNotPublish": "captured terminal"}),
+        );
+        let response_path = state.response_path(&request_id);
+        let inflight_path = state.inflight_path(&request_id);
+        fs::write(&inflight_path, "{}").unwrap();
+        state.inner.pending.lock().unwrap().insert(
+            request_id.clone(),
+            PendingRequest {
+                request,
+                response_path: response_path.clone(),
+                inflight_path: inflight_path.clone(),
+            },
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state.inner.terminal_tasks.lock().unwrap().insert(
+            request_id.clone(),
+            TerminalTaskControl {
+                cancelled: Arc::clone(&cancelled),
+                phase: TerminalTaskPhase::Running,
+                handle: None,
+            },
+        );
+        let clock_calls = AtomicUsize::new(0);
+        let now = || [99, 100][clock_calls.fetch_add(1, Ordering::SeqCst).min(1)];
+
+        state.publish_terminal_task_response_with_now(
+            &request_id,
+            cancelled.as_ref(),
+            response,
+            now,
+        );
+
+        let written: UiAutomationResponse =
+            serde_json::from_str(&fs::read_to_string(response_path).unwrap()).unwrap();
+        assert_eq!(written.error.as_deref(), Some("request_expired"));
+        assert!(written.terminal_snapshot.is_none());
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(!inflight_path.exists());
+        state.inner.terminal_tasks.lock().unwrap().remove(&request_id);
     }
 
     #[test]
@@ -6591,6 +7034,165 @@ mod tests {
 
     fn std_channel_is_empty(receiver: &std::sync::mpsc::Receiver<()>) -> bool {
         matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
+    }
+
+    #[test]
+    fn request_scan_collection_does_no_more_than_sixty_four_units_of_work() {
+        let visited = AtomicUsize::new(0);
+        let entries = (0..1_000).map(|index| {
+            visited.fetch_add(1, Ordering::SeqCst);
+            Ok(PathBuf::from(format!("{index:04}.invalid")))
+        });
+
+        let paths = bounded_sorted_request_paths(entries).unwrap();
+
+        assert_eq!(paths.len(), MAX_REQUEST_FILES_PER_SCAN);
+        assert_eq!(visited.load(Ordering::SeqCst), MAX_REQUEST_FILES_PER_SCAN);
+    }
+
+    #[test]
+    fn request_atomic_temp_is_staged_outside_the_scanned_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let requests = tmp.path().join(REQUESTS_DIR);
+        let request_path = requests.join(format!("{}.json", Uuid::new_v4()));
+
+        let temp_path = atomic_write_temp_path(&request_path);
+
+        assert_eq!(temp_path.parent(), Some(tmp.path()));
+        assert_ne!(temp_path.parent(), Some(requests.as_path()));
+    }
+
+    #[test]
+    fn invalid_scan_batch_cannot_permanently_starve_a_later_valid_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = test_automation_state(tmp.path());
+        fs::create_dir_all(state.requests_dir()).unwrap();
+        for index in 0..MAX_REQUEST_FILES_PER_SCAN {
+            fs::write(
+                state.requests_dir().join(format!("0000-{index:04}.invalid")),
+                "invalid",
+            )
+            .unwrap();
+        }
+        let request_id = Uuid::new_v4().to_string();
+        fs::write(
+            state.requests_dir().join(format!("{request_id}.json")),
+            "{}",
+        )
+        .unwrap();
+
+        let mut observed = false;
+        for _ in 0..=2 {
+            let batch = state.request_scan_batch().unwrap();
+            if batch.iter().any(|request| request.request_id == request_id) {
+                observed = true;
+                break;
+            }
+        }
+
+        assert!(observed, "valid request remained starved after invalid cleanup");
+        assert_eq!(
+            fs::read_dir(state.requests_dir())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".invalid"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn atomic_singleton_replacement_preserves_old_bytes_when_commit_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        let temp_path = tmp.path().join("forced-session.tmp");
+        let old = br#"{"generation":"old"}"#;
+        fs::write(&path, old).unwrap();
+
+        let result = write_json_atomic_with_temp_path(
+            &path,
+            &json!({"generation": "new"}),
+            true,
+            &temp_path,
+            |_, _| Err(io::Error::other("forced atomic replacement failure")),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn atomic_singleton_replacement_commits_one_complete_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        write_json_atomic_replace(&path, &json!({"generation": "old"})).unwrap();
+        write_json_atomic_replace(&path, &json!({"generation": "new"})).unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(path).unwrap()).unwrap(),
+            json!({"generation": "new"})
+        );
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn bounded_read_rejects_precreated_and_swapped_reparse_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let foreign = tmp.path().join("foreign");
+        fs::create_dir(&foreign).unwrap();
+        let sentinel = foreign.join("sentinel.txt");
+        fs::write(&sentinel, "untouched").unwrap();
+
+        let precreated = tmp.path().join("precreated.json");
+        create_test_reparse(&precreated, &foreign);
+        assert!(read_bounded_regular_file(&precreated, 1_024).is_err());
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
+        remove_test_reparse(&precreated);
+
+        let swapped = tmp.path().join("swapped.json");
+        let opened_generation = tmp.path().join("opened-generation.json");
+        fs::write(&swapped, "safe").unwrap();
+        let result = read_bounded_regular_file_with_hook(&swapped, 1_024, || {
+            fs::rename(&swapped, &opened_generation).unwrap();
+            create_test_reparse(&swapped, &foreign);
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&opened_generation).unwrap(), "safe");
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
+        remove_test_reparse(&swapped);
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn atomic_temp_creation_rejects_a_precreated_reparse_without_touching_either_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SESSION_FILE);
+        let foreign = tmp.path().join("foreign-temp-target");
+        fs::create_dir(&foreign).unwrap();
+        let sentinel = foreign.join("sentinel.txt");
+        fs::write(&sentinel, "untouched").unwrap();
+        fs::write(&path, br#"{"generation":"old"}"#).unwrap();
+        let temp_path = tmp.path().join("precreated.tmp");
+        create_test_reparse(&temp_path, &foreign);
+        let replacement_called = AtomicBool::new(false);
+
+        let result = write_json_atomic_with_temp_path(
+            &path,
+            &json!({"generation": "new"}),
+            true,
+            &temp_path,
+            |_, _| {
+                replacement_called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!replacement_called.load(Ordering::SeqCst));
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"generation":"old"}"#);
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
+        remove_test_reparse(&temp_path);
     }
 
     #[test]
