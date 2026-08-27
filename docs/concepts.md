@@ -38,16 +38,16 @@ You can detach a session into its own window, attach a Telegram bot to it, or ta
 
 ## Team
 
-A coordinator agent plus one or more worker agents working toward a shared goal. Teams are defined in a JSON config under `.ac/_team_<name>/` and discovered automatically.
+An orchestrator agent plus one or more worker agents working toward a shared goal. Teams are defined in a JSON config under `.ac/_team_<name>/` and discovered automatically.
 
-The **coordinator** is the only member that can:
-- send messages to any team member (members can only send to the coordinator and to peers they share a team with),
+The **orchestrator** is the only member that can:
+- send messages to any team member (members can only send to the orchestrator and to peers they share a team with),
 - edit the workgroup `TASK.md` brief through the CLI,
 - close other members' sessions.
 
 ## Workgroup
 
-A workgroup is a Team **in action** on a specific task. When the coordinator decides "we are working on task X," AC creates `.ac/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
+A workgroup is a Team **in action** on a specific task. When the orchestrator decides "we are working on task X," AC creates `.ac/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
 
 You can run multiple workgroups for the same team in parallel.
 
@@ -57,7 +57,7 @@ A per-project group of workgroups AC watches for you. While the group has at lea
 
 ## Project Loop
 
-A scheduled prompt. A Loop belongs to one project, targets one workgroup, and carries a cron expression and the text to send. When it comes due, AC delivers that text to the workgroup's coordinator, waking or respawning the session if it is not running. See [Project Loops](features/project-loops.md).
+A scheduled prompt. A Loop belongs to one project, targets one workgroup, and carries a cron expression and the text to send. When it comes due, AC delivers that text to the workgroup's orchestrator, waking or respawning the session if it is not running. See [Project Loops](features/project-loops.md).
 
 ## Watcher
 
@@ -71,7 +71,7 @@ A separate window holding one Mermaid file: the source on one side, the rendered
 
 The plain-language description of the workgroup's goal. Lives at `.ac/wg-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
 
-The coordinator is the only agent that should be writing to the brief directly. Workers reference it and update their own outboxes.
+The orchestrator is the only agent that should be writing to the brief directly. Workers reference it and update their own outboxes.
 
 ## Messaging
 

@@ -2,8 +2,8 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::cli::workgroup::{
-    build_new_team_config, clone_missing_for_config, push_unique, resolve_cli_project,
-    resolve_cli_ac_root, write_refresh,
+    build_new_team_config, clone_missing_for_config, push_unique, resolve_cli_ac_root,
+    resolve_cli_project, write_refresh,
 };
 use crate::commands::entity_creation::{
     acquire_lifecycle_project_gate, agent_ref_bare_name, create_new_team_config_on_disk,
@@ -232,7 +232,7 @@ fn add_member_to_team_config(
         config.coordinator = agent_ref.to_string();
     }
     if !config.coordinator.is_empty() && !config.agents.contains(&config.coordinator) {
-        return Err("Coordinator must be one of the selected agents".to_string());
+        return Err("Orchestrator must be one of the selected agents".to_string());
     }
     Ok((config, !was_present))
 }
@@ -243,7 +243,7 @@ fn remove_member_from_team_config(
 ) -> Result<(TeamConfigResult, bool), String> {
     if config.coordinator == agent_ref {
         return Err(
-            "Cannot remove the current coordinator without choosing a replacement".to_string(),
+            "Cannot remove the current orchestrator without choosing a replacement".to_string(),
         );
     }
     let before = config.agents.len();
@@ -265,10 +265,7 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
         return Err(format!("Workgroup '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
-    let config = normalize_team_config_for_project(
-        &ac_root,
-        &read_team_config(&ac_root, &team)?,
-    )?;
+    let config = normalize_team_config_for_project(&ac_root, &read_team_config(&ac_root, &team)?)?;
     let agent_ref = resolve_agent_ref(&ac_root, &args.agent)?;
     let (config, added) = add_member_to_team_config(config, &agent_ref, args.coordinator)?;
     write_team_config_guarded(&ac_root, &team, &config, &guard)?;
@@ -346,10 +343,7 @@ fn remove_member_hooked(
 
     // Re-read and revalidate the current team config under both guards, then
     // recompute the mutation from that current value.
-    let config = normalize_team_config_for_project(
-        &ac_root,
-        &read_team_config(&ac_root, &team)?,
-    )?;
+    let config = normalize_team_config_for_project(&ac_root, &read_team_config(&ac_root, &team)?)?;
     let (config, removed) = remove_member_from_team_config(config, &agent_ref)?;
     write_team_config_guarded(&ac_root, &team, &config, &guard)?;
 

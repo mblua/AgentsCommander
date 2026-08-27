@@ -473,7 +473,7 @@ pub fn resolve_loop_target(
     let resolved = crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
         .ok_or_else(|| {
             format!(
-                "Workgroup '{}' has no identity-verified coordinator",
+                "Workgroup '{}' has no identity-verified orchestrator",
                 config.target.workgroup
             )
         })?;

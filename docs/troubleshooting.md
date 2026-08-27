@@ -65,7 +65,7 @@ Pi is intentionally stricter. Use an exact executable leaf named `pi`, `pi.exe`,
 
 ### Pi starts but does not continue a conversation
 
-First determine whether the launch should be fresh. AC adds `--continue` only when its final lifecycle decision requests known state, such as an eligible restore or reopen. A fresh create, fresh restart, or final coordinator fresh override deliberately launches without an AC-authored selector.
+First determine whether the launch should be fresh. AC adds `--continue` only when its final lifecycle decision requests known state, such as an eligible restore or reopen. A fresh create, fresh restart, or final orchestrator fresh override deliberately launches without an AC-authored selector.
 
 For an expected known-state launch, set `logLevel` to `info` and look for:
 
@@ -108,7 +108,7 @@ agentscommander send --send "20260527-150000-wg1-foo-to-wg1-bar-hello.md" ...
 
 ### `routing rejected`
 
-The sender does not share a team with the recipient, or the sender is not a coordinator. Run `list-peers-lean` from the sender's directory to see who is reachable:
+The sender does not share a team with the recipient, or the sender is not an orchestrator. Run `list-peers-lean` from the sender's directory to see who is reachable:
 
 ```bash
 agentscommander list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"

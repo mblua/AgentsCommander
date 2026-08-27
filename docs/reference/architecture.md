@@ -774,7 +774,7 @@ graph TD
 | `config/project_settings.rs`, `config/loops.rs` | Project settings, Loop config |
 | `config/injected_messages.rs` | Injected PTY message templates |
 | `config/activity_log.rs` | Activity log |
-| `config/coordinator_clocks.rs` | Coordinator idle clocks |
+| `config/coordinator_clocks.rs` | Orchestrator idle clocks |
 | `config/replica_identity.rs` | Replica identity verification |
 | `config/session_context.rs` | Session context reading |
 | `config/seeded_context_templates.rs` | Context template seeding |

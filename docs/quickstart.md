@@ -2,7 +2,7 @@
 
 For developers who want to get a team of coding agents running on a real repo in under 10 minutes.
 
-By the end of this guide you will have AgentsCommander installed, an AC project pointing at one of your repos, a Team with two agents, and a coordinator that delegates a task to a worker through a markdown message.
+By the end of this guide you will have AgentsCommander installed, an AC project pointing at one of your repos, a Team with two agents, and an orchestrator that delegates a task to a worker through a markdown message.
 
 ## Prerequisites
 
@@ -55,35 +55,35 @@ In the sidebar, click **New Project** and point at any folder, empty or an exist
 
 ## 3. Create your first Team
 
-Open the Teams pane. A **Team** is one coordinator plus one or more worker agents working toward a shared goal. The agents are created first, then the team definition links those existing agents together.
+Open the Teams pane. A **Team** is one orchestrator plus one or more worker agents working toward a shared goal. The agents are created first, then the team definition links those existing agents together.
 
 1. Click **+ Team** and give it a name (for example `feature-x`).
-2. Add the **coordinator** — give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
+2. Add the **orchestrator** — give the agent a directory name (for example `tech-lead`), pick a role template from the [Agents Agency picker](integrations/coding-agents.md#role-template-picker), and finish.
 3. Add one **worker** the same way (for example `dev-rust` with the *Rust developer* template).
-4. Mark the first agent as **coordinator**.
+4. Mark the first agent as **orchestrator**.
 
 Behind the scenes AC creates agent matrices under `.ac/_agent_tech-lead/` and `.ac/_agent_dev-rust/`, then saves the team definition under `.ac/_team_<team-name>/`.
 
-## 4. Write a brief and launch the coordinator
+## 4. Write a brief and launch the orchestrator
 
-Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the coordinator will expand it.
+Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the orchestrator will expand it.
 
-Click the coordinator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, Antigravity, or Pi). Pick one. AC launches the agent in the coordinator's directory with the role and brief already loaded.
+Click the orchestrator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, Antigravity, or Pi). Pick one. AC launches the agent in the orchestrator's directory with the role and brief already loaded.
 
 ## 5. Watch the agents exchange a message
 
-Ask the coordinator something like:
+Ask the orchestrator something like:
 
 > "Send a hello message to `<project>:wg-1-feature-x/dev-rust` and ask them to confirm the role they have."
 
-The coordinator will write a markdown file to `.ac/wg-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
+The orchestrator will write a markdown file to `.ac/wg-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
 
 That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 
 ## Next steps
 
-- [Concepts](concepts.md) — the vocabulary (agent, team, workgroup, coordinator, brief).
-- [Teams and workgroups](agents/teams-and-workgroups.md) — coordinator authority, brief writing, recovery.
+- [Concepts](concepts.md) — the vocabulary (agent, team, workgroup, orchestrator, brief).
+- [Teams and workgroups](agents/teams-and-workgroups.md) — orchestrator authority, brief writing, recovery.
 - [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
 - [Feature index](features/README.md): every feature page, grouped by what it does.
 - [Use cases](use-cases.md) — recipes other people are running.

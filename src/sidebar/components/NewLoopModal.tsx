@@ -168,7 +168,7 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Workgroup Coordinator</label>
+            <label class="new-agent-label">Workgroup Orchestrator</label>
             <select
               class="entity-select"
               value={selectedWorkgroup()}
@@ -176,13 +176,13 @@ const NewLoopModal: Component<{
               disabled={coordinatorOptions().length === 0}
               data-ac-testid="loop.new.workgroup"
             >
-              <option value="" disabled>Select a coordinator...</option>
+              <option value="" disabled>Select an orchestrator...</option>
               <For each={coordinatorOptions()}>
                 {(option) => <option value={option.workgroup}>{option.label}</option>}
               </For>
             </select>
             <Show when={coordinatorOptions().length === 0}>
-              <div class="new-agent-error">A workgroup with a verified coordinator is required.</div>
+              <div class="new-agent-error">A workgroup with a verified orchestrator is required.</div>
             </Show>
           </div>
 
@@ -192,7 +192,7 @@ const NewLoopModal: Component<{
               class="entity-textarea loop-prompt-textarea"
               value={promptBody()}
               onInput={(e) => setPromptBody(e.currentTarget.value)}
-              placeholder="Prompt to inject into the coordinator"
+              placeholder="Prompt to inject into the orchestrator"
               data-ac-testid="loop.new.prompt"
             />
             <div class="entity-textarea-meta">
@@ -217,7 +217,7 @@ const NewLoopModal: Component<{
               onChange={(e) => setForceInject(e.currentTarget.checked)}
               data-ac-testid="loop.new.forceInject"
             />
-            Force inject even if coordinator is busy
+            Force inject even if orchestrator is busy
           </label>
 
           <Show when={creating()}>

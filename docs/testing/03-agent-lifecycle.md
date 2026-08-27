@@ -17,7 +17,7 @@ Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-t
 Result summary:
 
 - Invalid-name checks for space and slash did not create bad `_agent_*` directories.
-- A coordinator agent and worker agent were created through the GUI.
+- An orchestrator agent and worker agent were created through the GUI.
 - One worker attempt produced focus-contaminated screenshots and was retried after reacquiring the intended target.
 - Agent creation is useful baseline evidence, but AGT-003 restart persistence is not passed because the longer run later returned to onboarding and final target state could not verify persisted project/agent UI.
 
@@ -109,7 +109,7 @@ Verify that a user can create a blank Agent Matrix entry from the GUI.
 Preconditions:
 
 - Depends on AGT-001.
-- Unique test agent name is available, for example `regression-coordinator-<timestamp>`.
+- Unique test agent name is available, for example `regression-orchestrator-<timestamp>`.
 
 Steps:
 

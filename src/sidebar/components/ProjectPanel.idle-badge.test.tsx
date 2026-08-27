@@ -29,7 +29,7 @@ const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const coordPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 
 const IDLE_TOOLTIP_BASE =
-  "Time this team has been idle. Resets when you message the coordinator or any member is active (persists across restarts).";
+  "Time this team has been idle. Resets when you message the orchestrator or any member is active (persists across restarts).";
 const IDLE_TOOLTIP_AUTOCLOSE = "The team auto-closes at the configured limit.";
 
 /** An RFC3339 anchor `minutes` before the badge clock's "now". Anchored to

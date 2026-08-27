@@ -612,7 +612,17 @@ The audit is a review lens: produce a structured recommendation before any refac
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
 
-const ROOT_ROLE_MD: &str = r#"---
+/// #1571: `ROOT_ROLE_MD` exactly as it shipped through base commit ecc6527b,
+/// frozen as the sixth legacy Root snapshot so a pristine pre-rename
+/// `Context.root-agent.md` keeps auto-upgrading and a pristine pre-rename
+/// `Role.md` keeps reducing to `MINIMAL_ROOT_ROLE_MD` after the
+/// Coordinator-to-Orchestrator rename.
+/// Never edit. Provenance (plan #1571 3.6): the shipped constant measured at
+/// base commit ecc6527b printed len 2464, sha256
+/// e244249ccd2fa832918d1f830939ca4dae37a3594461334fa6d7004ba430e74f; pinned by
+/// `root_context_pre_orchestrator_rename_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD: &str = r#"---
 name: 'agents-commander'
 description: 'Static supplemental root context for AgentsCommander.'
 type: agent
@@ -662,6 +672,56 @@ The audit is a review lens: produce a structured recommendation before any refac
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
 
+const ROOT_ROLE_MD: &str = r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent, the top-level orchestrator for this AgentsCommander binary.
+
+## Responsibility
+
+Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a workgroup replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
+
+## Coordination
+
+Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
+
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one orchestrator and the worker agents.
+3. Activate a workgroup with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+
+## Governance Boundary Audits
+
+Load and apply `skills/role-skill-boundary-audit/SKILL.md` before finalizing any work that creates, modifies, approves, or audits agents, `Role.md` files, skills, role templates, workflow instructions, or Agent Matrix structure, and when a role grows unusually large, a role contains repeatable operational procedure, a skill contains authority or ownership language, similar instructions appear in multiple roles, someone proposes another agent for a bounded capability, or periodic matrix hygiene is requested.
+
+The audit is a review lens: produce a structured recommendation before any refactor, never silently rewrite roles, skills, or agent boundaries.
+
+## Agency Agents Roles
+
+Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
+"#;
+
 pub(crate) fn default_root_context_template() -> &'static str {
     ROOT_ROLE_MD
 }
@@ -675,6 +735,7 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD),
         normalize_role_text(ROOT_ROLE_MD),
     ];
     old_generated.contains(&normalized)
@@ -986,6 +1047,7 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
@@ -2337,8 +2399,29 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 6,
-            "root_spec current_version must be bumped to 6 by the #1370 workgroup-activation rewrite"
+            parsed["templates"]["rootAgent"]["currentVersion"], 7,
+            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
+        );
+    }
+
+    /// #1571 T3: the frozen pre-rename Root snapshot must stay byte-identical to
+    /// what shipped at base commit ecc6527b. Expected values captured by a one-off
+    /// run of the shipped constant AT ecc6527b (plan 3.6), never from this const.
+    #[test]
+    fn root_context_pre_orchestrator_rename_snapshot_is_byte_exact() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD.len(),
+            2464,
+            "frozen pre-rename root snapshot must be the ecc6527b bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD.as_bytes())
+            ),
+            "e244249ccd2fa832918d1f830939ca4dae37a3594461334fa6d7004ba430e74f",
+            "frozen pre-rename root snapshot changed; it must stay byte-identical to what shipped"
         );
     }
 
@@ -2385,9 +2468,59 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 6,
-            "root_spec current_version must be bumped to 6 by the #1370 workgroup-activation rewrite"
+            parsed["templates"]["rootAgent"]["currentVersion"], 7,
+            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
         );
+    }
+
+    /// #1571 T4: the same both-paths proof for the frozen pre-rename Root bytes.
+    /// ONE fixture drives `migrate_root_role` and the recognizer array, so wiring
+    /// one list and forgetting the other cannot pass silently.
+    ///
+    /// Two deliberate deviations from the `frozen_v5_...` model above. The direct
+    /// recognizer assertion is LAST rather than first: with either new entry
+    /// deleted, a first-position direct assert panics before
+    /// `ensure_root_agent_dir_at` runs, so a mutation probe would prove only that a
+    /// predicate whose one matching entry was just deleted returns false, not that
+    /// the migration path consumes it. And there is no `currentVersion` assertion:
+    /// the root bump is a later step, so a `== 7` assertion here would make this
+    /// step's gate unreachable by construction. The bump is pinned twice elsewhere.
+    ///
+    /// This test can only discriminate after the templates are rewritten: until
+    /// then the frozen constant is byte-identical to `ROOT_ROLE_MD` and the
+    /// pre-existing `ROOT_ROLE_MD` entries satisfy it on their own.
+    #[test]
+    fn frozen_v6_root_context_is_recognized_and_migrated_on_both_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(
+            root.join("Role.md"),
+            ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD,
+        )
+        .expect("write pristine pre-rename role");
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
+            .expect("write pristine pre-rename template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD,
+            "pristine pre-rename Role.md must reduce to the minimal role (migrate_root_role list)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read template"),
+            default_root_context_template(),
+            "pristine pre-rename Context.root-agent.md must auto-upgrade (recognizer list)"
+        );
+
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD
+        ));
     }
 
     #[test]
