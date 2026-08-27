@@ -117,7 +117,7 @@ type SessionSelectionData =
  */
 export type SessionSelection = SessionSelectionBase & SessionSelectionData;
 
-export type CodingAgentKind = "claude" | "codex" | "gemini" | "pi";
+export type CodingAgentKind = "claude" | "codex" | "pi" | "antigravity";
 
 export interface SessionContextPayload {
   sessionId: string;
@@ -394,10 +394,11 @@ export interface CodingAgentDefinition {
   /** #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
    * array of COMPLETE command strings, each executed sequentially (e.g.
    * ["claude --update"] or ["claude --update", "npm i -g @scope/cli"]).
-   * NOT argv tokens. Empty = no update command. Inert until the follow-up
-   * update-check feature reads it. */
+   * NOT argv tokens. Empty = no update command. Consumed by the #1327 startup
+   * update pass (`build_update_plan`) and listed by the #1551 Settings
+   * Auto-update table. */
   updateCommands: string[];
-  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert until the follow-up feature reads it. */
+  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
   autoUpdate: boolean;
 }
 
@@ -547,7 +548,9 @@ export type MainSidebarSide = "left" | "right";
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export type WebServerOwnershipState =
+  | "starting"
   | "ownedRunning"
+  | "stopping"
   | "externalListening"
   | "stopped";
 
@@ -816,12 +819,60 @@ export interface AgentUpdatePrompt {
   label: string;
 }
 
+/** #1551 - a command in the startup update pass (start order); also the payload of `agent_update_prompt_closed`. */
+export interface AgentUpdateCommandRef {
+  command: string;
+  label: string;
+}
+
+export type InstallStatus = "checking" | "missing" | "installed" | "probeFailed" | "unprobed";
+
+/** #1551 - resolved install state of one catalog command; `path`/`detail` absent when the backend has none.
+ *  `seq` is the backend cache's commit counter (0 = `checking`); a higher `seq` is always the newer state. */
+export interface InstallState {
+  status: InstallStatus;
+  version?: string | null;
+  path?: string | null;
+  detail?: string | null;
+  seq: number;
+}
+
+/** #1551 - one update-capable catalog entry (catalog order, duplicates kept). Configured/registered/live facts are FE-derived. */
+export interface AgentUpdateOverviewRow {
+  key: string;
+  label: string;
+  command: string;
+  color: string;
+  updateCommands: string[];
+  install: InstallState;
+}
+
+export interface AgentInstallStateChanged {
+  command: string;
+  install: InstallState;
+}
+
+/** #1551 round 5 - one agent of this boot's startup pass, in pass (catalog) order; also the payload of `agent_update_command_started`.
+ *  `installBefore` is the pre-update probe result (absent until that probe ran; `seq` 0, never cached). */
+export interface AgentUpdateNode {
+  command: string;
+  label: string;
+  updateCommands: string[];
+  installBefore?: InstallState | null;
+}
+
 export interface AgentUpdateStatus {
   inProgress: boolean;
   /** The currently displayed prompt (sequential phase: at most one);
    * restored from the snapshot by a late-mounting sidebar. */
   prompt: AgentUpdatePrompt | null;
   results: AgentUpdateResult[];
+  /** #1551 - commands whose update sequence is running, in start order. */
+  running: AgentUpdateCommandRef[];
+  /** #1551 - policy recorded by the winning answer per prompted command this boot; absent on an older backend. */
+  answered?: Record<string, boolean>;
+  /** #1551 - the pass nodes in pass order; absent on an older backend. */
+  nodes?: AgentUpdateNode[];
 }
 
 export type ResourceWatchdogAction = "warn" | "killGroup";
@@ -928,7 +979,8 @@ export type UiAutomationAction =
   | "setValue"
   | "typeText"
   | "focus"
-  | "backend";
+  | "backend"
+  | "terminal";
 
 export type UiAutomationRole =
   | "agent-preset"
@@ -941,6 +993,7 @@ export type UiAutomationRole =
   | "group"
   | "input"
   | "list"
+  | "listitem"
   | "menu"
   | "menuitem"
   | "metric"
@@ -953,11 +1006,14 @@ export type UiAutomationRole =
   | "status"
   | "surface"
   | "tab"
+  | "table"
   | "text"
   | "textbox"
   | "toolbar";
 
-export interface UiAutomationRequest {
+export interface UiAutomationRequest<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> {
   schemaVersion?: number;
   instanceId?: string;
   pid?: number;
@@ -967,7 +1023,7 @@ export interface UiAutomationRequest {
   exePath?: string;
   configDir?: string;
   window: string;
-  action: UiAutomationAction;
+  action: A;
   selector?: string;
   prefix?: string | null;
   role?: string | null;
@@ -1012,6 +1068,99 @@ export interface UiAutomationListTarget {
   focused: boolean;
 }
 
+export const MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT =
+  "main-terminal-layout-pulse-request";
+
+export type MainTerminalLayoutGeometry = {
+  hostWidth: number;
+  cols: number;
+  rows: number;
+};
+
+export type MainTerminalLayoutObserverAck = {
+  epoch: number;
+  first: MainTerminalLayoutGeometry;
+  second: MainTerminalLayoutGeometry;
+};
+
+export type MainTerminalLayoutPulseSample = MainTerminalLayoutGeometry & {
+  observedObserverEpoch: number;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseStatus =
+  | "completed"
+  | "skipped"
+  | "cancelled"
+  | "failed";
+
+export type MainTerminalLayoutPulseReason =
+  | "completed"
+  | "unhandled"
+  | "busy"
+  | "dragging"
+  | "persistence_owned"
+  | "invalid_sample"
+  | "clamped"
+  | "stale"
+  | "width_changed"
+  | "teardown"
+  | "initialization_timeout"
+  | "request_timeout"
+  | "expanded_timeout"
+  | "restore_timeout"
+  | "exception";
+
+export type MainTerminalLayoutPulsePhaseTrace = {
+  sidebarWidth: number | null;
+  hostWidth: number | null;
+  cols: number | null;
+  rows: number | null;
+  baselineObservedEpoch: number | null;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+export type MainTerminalLayoutPulseTrace = {
+  version: 1;
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  original: MainTerminalLayoutPulsePhaseTrace;
+  expanded: MainTerminalLayoutPulsePhaseTrace;
+  restored: MainTerminalLayoutPulsePhaseTrace;
+  dwellMs: number;
+  settingsWritesDelta: number;
+};
+
+export type MainTerminalLayoutPulseResult = {
+  status: MainTerminalLayoutPulseStatus;
+  reason: MainTerminalLayoutPulseReason;
+  trace: MainTerminalLayoutPulseTrace;
+};
+
+export type MainTerminalLayoutPulseRequest = {
+  requestId: number;
+  sessionId: string;
+  attachGeneration: number;
+  accepted: boolean;
+  sample: () => MainTerminalLayoutPulseSample | null;
+  complete: (result: MainTerminalLayoutPulseResult) => void;
+};
+
+export interface UiTerminalAutomationTarget {
+  sessionId: string;
+  baseY: number;
+  viewportY: number;
+  length: number;
+  cols: number;
+  rows: number;
+  type: "normal" | "alternate";
+  atBottom: boolean;
+  layoutPulse?: MainTerminalLayoutPulseTrace | null;
+}
+
 export interface UiAutomationDiagnostics {
   devicePixelRatio: number;
   viewport: { width: number; height: number };
@@ -1028,49 +1177,66 @@ export interface UiAutomationDiagnostics {
   };
 }
 
-export type UiAutomationResponse =
-  | {
-      ok: true;
-      requestId: string;
-      window: string;
-      action: Exclude<UiAutomationAction, "list">;
-      selector: string;
-      target: UiAutomationTarget;
-      activeTestId: string | null;
-      diagnostics?: UiAutomationDiagnostics;
-    }
-  | {
-      ok: true;
-      requestId: string;
-      window: string;
-      action: "list";
-      /** Runtime-absent compatibility keys keep legacy callers source-compatible. */
-      selector: never;
-      target: never;
-      diagnostics: never;
-      filters: { prefix: string | null; role: UiAutomationRole | null };
-      targets: UiAutomationListTarget[];
-      matchedCount: number;
-      matchedCountExact: boolean;
-      returnedCount: number;
-      limit: number;
-      truncated: boolean;
-      scan: {
-        elements: number;
-        elementLimit: number;
-        targets: number;
-        targetLimit: number;
-        openRoots: number;
-        openRootLimit: number;
-        truncated: boolean;
+type UiAutomationSuccessResponse<A extends UiAutomationAction> =
+  A extends "terminal"
+    ? {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: "terminal";
+        selector: string;
+        target: UiTerminalAutomationTarget;
+        activeTestId: string | null;
+        diagnostics?: UiAutomationDiagnostics;
+      }
+    : A extends "list"
+      ? {
+          ok: true;
+          requestId: string;
+          window: string;
+          action: "list";
+          /** Runtime-absent compatibility keys keep legacy callers source-compatible. */
+          selector: never;
+          target: never;
+          diagnostics: never;
+          filters: { prefix: string | null; role: UiAutomationRole | null };
+          targets: UiAutomationListTarget[];
+          matchedCount: number;
+          matchedCountExact: boolean;
+          returnedCount: number;
+          limit: number;
+          truncated: boolean;
+          scan: {
+            elements: number;
+            elementLimit: number;
+            targets: number;
+            targetLimit: number;
+            openRoots: number;
+            openRootLimit: number;
+            truncated: boolean;
+          };
+          activeTestId: string | null;
+        }
+    : {
+        ok: true;
+        requestId: string;
+        window: string;
+        action: A;
+        selector: string;
+        target: UiAutomationTarget;
+        activeTestId: string | null;
+        diagnostics?: UiAutomationDiagnostics;
       };
-      activeTestId: string | null;
-    }
+
+export type UiAutomationResponse<
+  A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
+> =
+  | UiAutomationSuccessResponse<A>
   | {
       ok: false;
       requestId: string;
       window: string;
-      action: UiAutomationAction;
+      action: A;
       selector: string;
       error:
         | "missing_selector"
@@ -1085,6 +1251,10 @@ export type UiAutomationResponse =
         | "timeout"
         | "unsupported_action"
         | "value_not_supported"
+        | "terminal_controller_unavailable"
+        | "terminal_target_mismatch"
+        | "terminal_entry_stale"
+        | "terminal_session_not_visible"
         | "automation_bridge_exception";
       message: string;
       available?: UiAutomationTarget[];

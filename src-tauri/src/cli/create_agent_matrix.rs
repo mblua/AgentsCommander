@@ -198,10 +198,7 @@ pub(crate) fn execute_matrix_project_create(
                                 create_agent::LaunchOutcome::Rejected { error } => {
                                     launch_status = LaunchStatus::Rejected;
                                     launch_error = Some(error.clone());
-                                    eprintln!(
-                                        "Warning: session launch rejected: {}",
-                                        error
-                                    );
+                                    eprintln!("Warning: session launch rejected: {}", error);
                                 }
                                 create_agent::LaunchOutcome::Pending => {
                                     launch_status = LaunchStatus::Pending;

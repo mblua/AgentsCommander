@@ -7,7 +7,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 ## Shipped (highlights)
 
 - Multi-agent workgroups with file-based inter-agent messaging
-- Cross-coding-agent profiles: Claude Code · Codex · Gemini · Pi
+- Cross-coding-agent profiles: Claude Code · Codex · Pi · Antigravity
 - OpenCode usable today via the custom coding-agent path (provider-agnostic: point it at any provider or model, including OpenRouter Fusion)
 - Agents Agency role-template picker (explicit downloaded cache from [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
 - Telegram bridge (PTY mode for every session, provider-specific JSONL readers where available, plus photo/image sends for screenshots and artifacts)
@@ -20,7 +20,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Coding-agent integrations
 
-- **OpenCode first-class profile** - OpenCode already runs via the custom coding-agent path (provider-agnostic). Remaining work: a tuned `CodingAgentKind` profile with resume tokens and idle tuning, alongside Claude Code, Codex, Gemini, and Pi. ([#315](https://github.com/mblua/AgentsCommander/issues/315))
+- **OpenCode first-class profile** - OpenCode already runs via the custom coding-agent path (provider-agnostic). Remaining work: a tuned `CodingAgentKind` profile with resume tokens and idle tuning, alongside Claude Code, Codex, Antigravity, and Pi. ([#315](https://github.com/mblua/AgentsCommander/issues/315))
 - **NVIDIA OpenShell** - sandbox-runtime integration (not a coding-agent profile; OpenShell hosts other coding agents inside a policy-driven sandbox). ([#316](https://github.com/mblua/AgentsCommander/issues/316))
 
 ### Per-agent configuration
@@ -29,10 +29,10 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Organigram & scaling
 
-- **Build the company - multi-level coordinator hierarchies** - A workgroup today is one layer. The next step layers them: level-A coordinator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
-- **Curated role-team library** - ship a base catalog of task-ready teams, not just isolated roles. Each template defines the coordinator, specialist roles, task decomposition pattern, role boundaries, quality gates, and handoff contracts so a user can delegate a goal to a pre-curated team that can execute end to end with predictable accountability.
-- **Coordinator auto-handoff for context management** - when a coordinator reaches a configurable context threshold, it can write a compact handoff of active continuity state and continue fresh. Forgettable or exclude-from-handoff details stay out. ([#349](https://github.com/mblua/AgentsCommander/issues/349))
-- **Telegram conversation routing between coordinators** - transfer a Telegram conversation from one coordinator/workgroup to another without manual bot or channel reconfiguration. ([#350](https://github.com/mblua/AgentsCommander/issues/350))
+- **Build the company - multi-level orchestrator hierarchies** - A workgroup today is one layer. The next step layers them: level-A orchestrator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
+- **Curated role-team library** - ship a base catalog of task-ready teams, not just isolated roles. Each template defines the orchestrator, specialist roles, task decomposition pattern, role boundaries, quality gates, and handoff contracts so a user can delegate a goal to a pre-curated team that can execute end to end with predictable accountability.
+- **Orchestrator auto-handoff for context management** - when an orchestrator reaches a configurable context threshold, it can write a compact handoff of active continuity state and continue fresh. Forgettable or exclude-from-handoff details stay out. ([#349](https://github.com/mblua/AgentsCommander/issues/349))
+- **Telegram conversation routing between orchestrators** - transfer a Telegram conversation from one orchestrator/workgroup to another without manual bot or channel reconfiguration. ([#350](https://github.com/mblua/AgentsCommander/issues/350))
 
 ### CLI capabilities
 
@@ -40,11 +40,11 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Automation
 
-- **Cron-based scheduled executions** - define explicit, inspectable, and auditable cron schedules that regularly trigger events for a coordinator, workgroup, agent, or workflow target, supporting recurring status checks, reports, maintenance tasks, and scheduled workgroup runs. ([#354](https://github.com/mblua/AgentsCommander/issues/354))
+- **Cron-based scheduled executions** - define explicit, inspectable, and auditable cron schedules that regularly trigger events for an orchestrator, workgroup, agent, or workflow target, supporting recurring status checks, reports, maintenance tasks, and scheduled workgroup runs. ([#354](https://github.com/mblua/AgentsCommander/issues/354))
 
 ### Execution determinism
 
-- **AC Harness** - deterministic command-execution layer for coding-agent tool calls, extending beyond Claude to Codex, Gemini, and future agents (today only Claude's `.claude/settings.local.json` hook is wired). ([#318](https://github.com/mblua/AgentsCommander/issues/318))
+- **AC Harness** - deterministic command-execution layer for coding-agent tool calls, extending beyond Claude to Codex, and future agents (today only Claude's `.claude/settings.local.json` hook is wired). ([#318](https://github.com/mblua/AgentsCommander/issues/318))
 
 ### Interoperability
 

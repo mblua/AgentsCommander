@@ -243,7 +243,7 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
    *  unfalsifiable AND look tested; it is pinned at the unit level instead
    *  (automation-bridge.test.ts, A10). */
   const act = async (
-    action: UiAutomationAction,
+    action: Exclude<UiAutomationAction, "terminal">,
     selector: string,
     value?: string,
   ): Promise<UiAutomationResponse> =>
@@ -340,8 +340,10 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
     await openMenuWithArrow(rowA, arrow0);
     const hovered = ok(await act("hover", entry0));
 
-    expect(hovered.diagnostics?.hover).toMatchObject({ from: null, to: entry0, changed: true });
-    expect(ok(await act("query", flyout0)).target.testId).toBe(flyout0);
+    // Repo-derived selectors are addressable but private under #1539, so the
+    // response must prove the transition without projecting either identifier.
+    expect(hovered.diagnostics?.hover).toMatchObject({ from: null, to: null, changed: true });
+    expect(ok(await act("query", flyout0)).target.testId).toBeNull();
     expect(ok(await act("query", browseMain0)).target.text).toBe("Browse Main");
     expect(ok(await act("query", browseBranch0)).target.text).toBe("Browse Branch");
   });
@@ -394,9 +396,7 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
 
     ok(await act("hover", "replica.wg-2-dev-team.groups.trigger"));
 
-    expect(ok(await act("query", "replica.wg-2-dev-team.groups.flyout")).target.testId).toBe(
-      "replica.wg-2-dev-team.groups.flyout",
-    );
+    expect(ok(await act("query", "replica.wg-2-dev-team.groups.flyout")).target.testId).toBeNull();
   });
 
   // B6
@@ -424,7 +424,7 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
     // cancel, so the flyout dies here - 180 ms after a `waitFor` would have passed.
     await sleepPastFlyoutClose();
 
-    expect(ok(await act("query", flyout1)).target.testId).toBe(flyout1);
+    expect(ok(await act("query", flyout1)).target.testId).toBeNull();
   });
 
   // B7
@@ -436,7 +436,7 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
     expect(flyoutNode()).not.toBeNull();
 
     const left = ok(await leave());
-    expect(left.diagnostics?.hover).toMatchObject({ from: entry0, to: null, changed: true });
+    expect(left.diagnostics?.hover).toMatchObject({ from: null, to: null, changed: true });
 
     // Nothing re-opened it, so the 180 ms timer runs to completion.
     await waitFor(() => expect(flyoutNode()).toBeNull());
@@ -485,7 +485,7 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
     ok(await act("hover", browseMain0));
     await sleepPastFlyoutClose();
 
-    expect(ok(await act("query", browseMain0)).target.testId).toBe(browseMain0);
+    expect(ok(await act("query", browseMain0)).target.testId).toBeNull();
 
     ok(await act("click", browseMain0));
 

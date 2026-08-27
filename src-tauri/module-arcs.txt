@@ -1,4 +1,5 @@
 agentscommander_lib -> agentscommander_lib::agent_update
+agentscommander_lib -> agentscommander_lib::agent_version
 agentscommander_lib -> agentscommander_lib::api::message_store
 agentscommander_lib -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib -> agentscommander_lib::commands::role_templates
@@ -44,10 +45,15 @@ agentscommander_lib -> agentscommander_lib::voice::tracker
 agentscommander_lib -> agentscommander_lib::web
 agentscommander_lib -> agentscommander_lib::web::auth
 agentscommander_lib -> agentscommander_lib::web::broadcast
+agentscommander_lib::agent_update -> agentscommander_lib::agent_version
 agentscommander_lib::agent_update -> agentscommander_lib::config
+agentscommander_lib::agent_update -> agentscommander_lib::config::agent_command
 agentscommander_lib::agent_update -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::agent_update -> agentscommander_lib::config::settings
 agentscommander_lib::agent_update -> agentscommander_lib::pty::job
+agentscommander_lib::agent_update -> agentscommander_lib::web::broadcast
+agentscommander_lib::agent_update -> agentscommander_lib::web::event_broadcast
+agentscommander_lib::agent_version -> agentscommander_lib::pty::job
 agentscommander_lib::api -> agentscommander_lib::config::settings
 agentscommander_lib::api -> agentscommander_lib::phone::types
 agentscommander_lib::api -> agentscommander_lib::pty::manager
@@ -353,6 +359,7 @@ agentscommander_lib::commands::agent_creator -> agentscommander_lib::config::age
 agentscommander_lib::commands::codex_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::config -> agentscommander_lib
 agentscommander_lib::commands::config -> agentscommander_lib::agent_update
+agentscommander_lib::commands::config -> agentscommander_lib::agent_version
 agentscommander_lib::commands::config -> agentscommander_lib::api
 agentscommander_lib::commands::config -> agentscommander_lib::api::audit
 agentscommander_lib::commands::config -> agentscommander_lib::api::auth
@@ -400,7 +407,6 @@ agentscommander_lib::commands::entity_creation -> agentscommander_lib::pty::cred
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::pty::git_watcher
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::session::manager
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::session::session
-agentscommander_lib::commands::gemini_resolver -> agentscommander_lib::path_utils
 agentscommander_lib::commands::loops -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::commands::loops -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::loops -> agentscommander_lib::config::loops
@@ -494,7 +500,6 @@ agentscommander_lib::commands::task -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::session::manager
 agentscommander_lib::commands::task -> agentscommander_lib::session::session
 agentscommander_lib::commands::telegram -> agentscommander_lib::commands::codex_resolver
-agentscommander_lib::commands::telegram -> agentscommander_lib::commands::gemini_resolver
 agentscommander_lib::commands::telegram -> agentscommander_lib::commands::session
 agentscommander_lib::commands::telegram -> agentscommander_lib::config::sessions_persistence
 agentscommander_lib::commands::telegram -> agentscommander_lib::config::settings
@@ -714,6 +719,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::consumption
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::messaging
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::terminal_snapshot
 agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::types
+agentscommander_lib::phone::mailbox -> agentscommander_lib::phone::wake_lanes
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::inject
@@ -949,10 +955,10 @@ agentscommander_lib::telegram::bridge -> agentscommander_lib::network
 agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::inject
 agentscommander_lib::telegram::bridge -> agentscommander_lib::pty::manager
 agentscommander_lib::telegram::bridge -> agentscommander_lib::session::manager
+agentscommander_lib::telegram::bridge -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::api
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::claude_watcher
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::codex_watcher
-agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::gemini_watcher
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::output
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::redact
 agentscommander_lib::telegram::bridge -> agentscommander_lib::telegram::types
@@ -963,13 +969,10 @@ agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::commands::c
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::network
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::jsonl_kernel
 agentscommander_lib::telegram::codex_watcher -> agentscommander_lib::telegram::output
-agentscommander_lib::telegram::gemini_watcher -> agentscommander_lib::commands::gemini_resolver
-agentscommander_lib::telegram::gemini_watcher -> agentscommander_lib::network
-agentscommander_lib::telegram::gemini_watcher -> agentscommander_lib::telegram::jsonl_kernel
-agentscommander_lib::telegram::gemini_watcher -> agentscommander_lib::telegram::output
 agentscommander_lib::telegram::manager -> agentscommander_lib::errors
 agentscommander_lib::telegram::manager -> agentscommander_lib::network
 agentscommander_lib::telegram::manager -> agentscommander_lib::pty::manager
+agentscommander_lib::telegram::manager -> agentscommander_lib::session::profile
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::bridge
 agentscommander_lib::telegram::manager -> agentscommander_lib::telegram::types
 agentscommander_lib::telegram::output -> agentscommander_lib::config

@@ -55,10 +55,10 @@ describe("rootAgentCodingAgentAction", () => {
   });
 
   it("restarts an idle root without skipAutoResume", () => {
-    expect(rootAgentCodingAgentAction(mkRoot("idle"), "gemini")).toEqual({
+    expect(rootAgentCodingAgentAction(mkRoot("idle"), "antigravity")).toEqual({
       kind: "restart",
       id: "root-id",
-      agentId: "gemini",
+      agentId: "antigravity",
     });
   });
 

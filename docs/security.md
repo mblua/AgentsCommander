@@ -9,7 +9,7 @@ For privacy and data-flow questions (what leaves the machine and when), see [`PR
 AgentsCommander is a **local desktop application** that spawns coding-agent CLIs and routes messages between them. The trust boundaries are:
 
 1. **The user.** Operates the GUI, picks coding agents, accepts the actions agents propose. Fully trusted.
-2. **The coding agents.** Claude Code, Codex, Gemini, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
+2. **The coding agents.** Claude Code, Codex, Antigravity, and Pi. They run in real PTYs as full user-level processes and are trusted with the user's local file system to the same degree the user trusts them when launched directly.
 3. **The optional network endpoints.** Telegram Bot API and the Google Gemini API for voice-to-text. Only contacted when the user explicitly enables those features.
 4. **The disk.** AC keeps its state in files, on this machine by default. Under the per-instance config directory next to the binary (`.agentscommander*`, with a legacy `$HOME` fallback; see [Portable instances](features/portable-instances.md)) you will find configuration, persisted sessions, the Root Agent directory `ac-root-agent/` including its `messaging/` Markdown message files, and the running instance's delivery queue at `instances/<instance-id>/outbox/`. In your Project AC Root you will find team configuration under `_team_<name>/`, each workgroup's `messaging/` Markdown message files, and each agent replica's delivery queue at `<replica>/<instance-dir>/outbox/`, where `<instance-dir>` is that replica's dot-prefixed per-instance directory. **Message data is written under both roots**, optional features and per-call overrides can put it outside either root and need not keep it on this machine, and neither list is exhaustive, so treat this as where to start looking rather than as an inventory of everything AC writes.
 
@@ -37,11 +37,11 @@ If you need stricter isolation, run AC inside a virtualized environment (WSL2, L
 
 ## Inter-agent routing
 
-The `send` CLI enforces team-membership and coordinator-only routing at the daemon mailbox boundary. Highlights:
+The `send` CLI enforces team-membership and orchestrator-only routing at the daemon mailbox boundary. Highlights:
 
-- A worker can only message peers it shares a team with, plus its coordinator.
-- A coordinator can message any of its team members.
-- Cross-team coordination requires the Root Agent (Project AC Root-level coordinator).
+- A worker can only message peers it shares a team with, plus its orchestrator.
+- An orchestrator can message any of its team members.
+- Cross-team coordination requires the Root Agent (Project AC Root-level orchestrator).
 
 Token validation:
 
@@ -57,11 +57,11 @@ PTY input is a dedicated actuation contract, not an ordinary message or shell-ex
 
 Authority is based on live physical identity:
 
-- A live identity-verified workgroup coordinator may target one verified non-coordinator member in the same exact project and workgroup.
-- A live canonical local Root Agent may target one verified workgroup coordinator. Root PTY authority is host-only.
-- A container coordinator requires a fresh automatically minted `pty-input` API scope bound to the exact live container session, credential generation, root filesystem object, transport route, and runtime-held credential hash.
+- A live identity-verified workgroup orchestrator may target one verified non-orchestrator member in the same exact project and workgroup.
+- A live canonical local Root Agent may target one verified workgroup orchestrator. Root PTY authority is host-only.
+- A container orchestrator requires a fresh automatically minted `pty-input` API scope bound to the exact live container session, credential generation, root filesystem object, transport route, and runtime-held credential hash.
 
-Caller `from`, outbox location by itself, broad ordinary `can_communicate` results, a master credential, a manual API scope, cached registry state, role prose, and target spelling are not authority. Workers, origin coordinators, cross-workgroup or cross-project routes, coordinator-to-coordinator routes, Root-to-worker routes, aliases, wildcards, stale sessions, and handcrafted bindings fail before target lifecycle mutation or PTY input.
+Caller `from`, outbox location by itself, broad ordinary `can_communicate` results, a master credential, a manual API scope, cached registry state, role prose, and target spelling are not authority. Workers, origin orchestrators, cross-workgroup or cross-project routes, orchestrator-to-orchestrator routes, Root-to-worker routes, aliases, wildcards, stale sessions, and handcrafted bindings fail before target lifecycle mutation or PTY input.
 
 Security-bearing directories and files are read with bounded no-follow checks. AC rejects symlinks, Windows reparse points, hard-linked mutable files, directory-entry replacement, duplicate JSON keys, hierarchy ambiguity, and object-identity changes. Route entries retain a canonical CWD object identity and, for workgroup replicas, a replica-anchor fingerprint. Authority and target identity are checked at ingress, dispatch start, after long awaits, and again inside the final SessionManager and IdleDetector boundary immediately before the first backend write.
 
@@ -81,12 +81,12 @@ Terminal snapshots are a distinct read capability. They do not reuse ordinary me
 
 The allowed matrix is intentionally narrow:
 
-- A live, physically verified canonical Root Agent may read a verified workgroup Coordinator or member in an active registered project. Root uses the host mailbox only.
-- A live, physically verified workgroup Coordinator may read one verified non-Coordinator member in the same exact project and workgroup.
-- An automatically bound live container Coordinator requires the separate `terminal-snapshot` API scope and may read the same same-workgroup member set through HTTP.
-- Workers, origin agents, origin Coordinators, manual API clients, stale sessions, static Root or master credentials, and cross-scope routes have no snapshot authority.
+- A live, physically verified canonical Root Agent may read a verified workgroup Orchestrator or member in an active registered project. Root uses the host mailbox only.
+- A live, physically verified workgroup Orchestrator may read one verified non-Orchestrator member in the same exact project and workgroup.
+- An automatically bound live container Orchestrator requires the separate `terminal-snapshot` API scope and may read the same same-workgroup member set through HTTP.
+- Workers, origin agents, origin Orchestrators, manual API clients, stale sessions, static Root or master credentials, and cross-scope routes have no snapshot authority.
 
-Target names must be exact canonical FQNs. Aliases, wildcards, filesystem directory names, Root and origin targets, self, session IDs, Coordinator-to-Coordinator, cross-workgroup, and cross-project routes fail. `list-peers-lean --snapshot-targets` is identity-only discovery and grants no authority.
+Target names must be exact canonical FQNs. Aliases, wildcards, filesystem directory names, Root and origin targets, self, session IDs, Orchestrator-to-Orchestrator, cross-workgroup, and cross-project routes fail. `list-peers-lean --snapshot-targets` is identity-only discovery and grants no authority.
 
 ### No-liveness ordering
 
@@ -120,7 +120,7 @@ Snapshot audit is metadata-only and fail-soft. It is operational diagnostics, no
 
 **Status: in progress. On by default** (`containerCredentialsFromHost`). The full feature and its limitations are in [Container coding agents](features/container-coding-agents.md).
 
-When Claude Code runs under the Container runtime, AC copies the executing host user's `~/.claude/.credentials.json` into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops. Claude Code is the only provider with a credential descriptor today. AC copies no Codex, Gemini, or Pi credential or state.
+When Claude Code runs under the Container runtime, AC copies the executing host user's `~/.claude/.credentials.json` into the replica config dir, which the container reads at `/workspace/.claude`, and deletes it when the session stops. Claude Code is the only provider with a credential descriptor today. AC copies no Codex, Antigravity, or Pi credential or state.
 
 What you accept when you leave this on:
 

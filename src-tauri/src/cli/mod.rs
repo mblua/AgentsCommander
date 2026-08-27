@@ -137,7 +137,7 @@ pub enum Commands {
     /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
     #[command(name = "self-handoff-and-switch")]
     SelfSwitch(self_switch::SelfSwitchArgs),
-    /// Show this session's raised-hand communication indicator in the Sidebar coordinator row
+    /// Show this session's raised-hand communication indicator in the Sidebar orchestrator row
     #[command(name = "raise-hand")]
     RaiseHand(raise_hand::RaiseHandArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
@@ -155,14 +155,14 @@ pub enum Commands {
     /// Manage Role.md variant experiments
     #[command(hide = true)]
     RoleExperiment(role_experiment::RoleExperimentArgs),
-    /// Close all sessions for a target agent (coordinator authorization required)
+    /// Close all sessions for a target agent (orchestrator authorization required)
     CloseSession(close_session::CloseSessionArgs),
-    /// Purge every agent in the caller's own workgroup (coordinator-only, fail-closed busy gate)
+    /// Purge every agent in the caller's own workgroup (orchestrator-only, fail-closed busy gate)
     #[command(name = "purge-wg")]
     PurgeWg(purge_wg::PurgeWgArgs),
-    /// Set the title field in the workgroup TASK.md frontmatter (coordinator-only)
+    /// Set the title field in the workgroup TASK.md frontmatter (orchestrator-only)
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
-    /// Append text to the body of the workgroup TASK.md (coordinator-only)
+    /// Append text to the body of the workgroup TASK.md (orchestrator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
@@ -197,6 +197,9 @@ pub enum Commands {
     /// Query a WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
+    /// Query or scroll a visible xterm through the test-only automation bridge
+    #[command(hide = true)]
+    UiTerminal(crate::testability::ui_automation::UiTerminalArgs),
     /// Click a WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
@@ -240,6 +243,7 @@ impl Commands {
         matches!(
             self,
             Self::UiQuery(_)
+                | Self::UiTerminal(_)
                 | Self::UiClick(_)
                 | Self::UiContextClick(_)
                 | Self::UiHover(_)
@@ -270,22 +274,13 @@ impl Commands {
 #[cfg(target_os = "windows")]
 #[allow(clippy::collapsible_if)]
 pub fn attach_parent_console() {
-    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_UNKNOWN};
-    use windows_sys::Win32::System::Console::{
-        AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
-        STD_OUTPUT_HANDLE,
-    };
+    use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
 
-    unsafe {
-        let out = GetStdHandle(STD_OUTPUT_HANDLE);
-        let err = GetStdHandle(STD_ERROR_HANDLE);
-
-        // GetFileType returns FILE_TYPE_UNKNOWN for null/invalid handles. Short-
-        // circuit the null check first so GetFileType is never called on null.
-        let out_invalid = out.is_null() || GetFileType(out) == FILE_TYPE_UNKNOWN;
-        let err_invalid = err.is_null() || GetFileType(err) == FILE_TYPE_UNKNOWN;
-
-        if out_invalid && err_invalid {
+    let (stdout_invalid, stderr_invalid) = standard_handle_state();
+    if startup_message_destination(stdout_invalid, stderr_invalid)
+        == StartupMessageDestination::NativeDialog
+    {
+        unsafe {
             if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
                 AllocConsole();
             }
@@ -296,6 +291,94 @@ pub fn attach_parent_console() {
 #[cfg(not(target_os = "windows"))]
 pub fn attach_parent_console() {
     // No-op on non-Windows
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupMessageDestination {
+    NativeDialog,
+    Stderr,
+    Stdout,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn startup_message_destination(
+    stdout_invalid: bool,
+    stderr_invalid: bool,
+) -> StartupMessageDestination {
+    match (stdout_invalid, stderr_invalid) {
+        (true, true) => StartupMessageDestination::NativeDialog,
+        (_, false) => StartupMessageDestination::Stderr,
+        (false, true) => StartupMessageDestination::Stdout,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn standard_handle_is_invalid(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_UNKNOWN};
+
+    // GetFileType returns FILE_TYPE_UNKNOWN for null/invalid handles. Short-
+    // circuit the null check first so GetFileType is never called on null.
+    handle.is_null() || unsafe { GetFileType(handle) == FILE_TYPE_UNKNOWN }
+}
+
+#[cfg(target_os = "windows")]
+fn standard_handle_state() -> (bool, bool) {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+
+    unsafe {
+        let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+        let stderr = GetStdHandle(STD_ERROR_HANDLE);
+
+        (
+            standard_handle_is_invalid(stdout),
+            standard_handle_is_invalid(stderr),
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_native_startup_message(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    };
+
+    let message: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = "AgentsCommander startup blocked"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn present_fatal_startup_message(message: &str) {
+    let (stdout_invalid, stderr_invalid) = standard_handle_state();
+    match startup_message_destination(stdout_invalid, stderr_invalid) {
+        StartupMessageDestination::NativeDialog => show_native_startup_message(message),
+        StartupMessageDestination::Stderr => {
+            eprintln!("{message}");
+            flush_outputs();
+        }
+        StartupMessageDestination::Stdout => {
+            println!("{message}");
+            flush_outputs();
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn present_fatal_startup_message(message: &str) {
+    eprintln!("{message}");
+    flush_outputs();
 }
 
 /// CLI-side SHAPE validation for a session token. Returns `Ok((token_string, is_root))`
@@ -393,6 +476,9 @@ pub fn handle_cli(
         Commands::UiQuery(args) => ui_context.map_or_else(missing_ui_context, |context| {
             crate::testability::ui_automation::execute_query(context, args)
         }),
+        Commands::UiTerminal(args) => ui_context.map_or_else(missing_ui_context, |context| {
+            crate::testability::ui_automation::execute_terminal(context, args)
+        }),
         Commands::UiClick(args) => ui_context.map_or_else(missing_ui_context, |context| {
             crate::testability::ui_automation::execute_click(context, args)
         }),
@@ -448,6 +534,59 @@ pub fn flush_outputs() {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
+}
+
+#[cfg(test)]
+mod startup_message_tests {
+    use super::*;
+
+    #[test]
+    fn startup_message_destination_covers_all_handle_states() {
+        assert_eq!(
+            startup_message_destination(true, true),
+            StartupMessageDestination::NativeDialog
+        );
+        assert_eq!(
+            startup_message_destination(false, true),
+            StartupMessageDestination::Stdout
+        );
+        assert_eq!(
+            startup_message_destination(true, false),
+            StartupMessageDestination::Stderr
+        );
+        assert_eq!(
+            startup_message_destination(false, false),
+            StartupMessageDestination::Stderr
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn null_and_unknown_standard_handles_are_invalid() {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+
+        assert!(standard_handle_is_invalid(std::ptr::null_mut()));
+        assert!(standard_handle_is_invalid(INVALID_HANDLE_VALUE));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pipe_and_file_standard_handles_are_valid() {
+        use std::os::windows::io::AsRawHandle;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "exit 0"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn child with piped stdout");
+        let pipe = child.stdout.as_ref().expect("piped child stdout");
+        assert!(!standard_handle_is_invalid(pipe.as_raw_handle()));
+        child.wait().expect("wait for piped child");
+
+        let file = tempfile::tempfile().expect("create temporary file");
+        assert!(!standard_handle_is_invalid(file.as_raw_handle()));
+    }
 }
 
 #[cfg(test)]
@@ -510,6 +649,7 @@ mod tests {
             "test-reset",
             "window-info",
             "ui-query",
+            "ui-terminal",
             "ui-click",
             "ui-context-click",
             "ui-hover",
@@ -571,13 +711,26 @@ mod tests {
     }
 
     #[test]
-    fn hidden_internal_verb_still_parses_by_name() {
+    fn hidden_internal_verbs_still_parse_by_name() {
         use clap::Parser;
         let parsed = Cli::try_parse_from(["agentscommander", "window-info"])
             .expect("hidden `window-info` verb must still parse by name");
         assert!(
             matches!(parsed.command, Some(Commands::WindowInfo(_))),
             "expected WindowInfo subcommand"
+        );
+
+        let parsed = Cli::try_parse_from([
+            "agentscommander",
+            "ui-terminal",
+            "--session-id",
+            "session-a",
+            "top",
+        ])
+        .expect("hidden `ui-terminal` verb must still parse by name");
+        assert!(
+            matches!(parsed.command, Some(Commands::UiTerminal(_))),
+            "expected UiTerminal subcommand"
         );
     }
 

@@ -36,7 +36,8 @@
       "instructionsFilename": "AGENTS.md",
       "envs": [],
       "isolatedHome": false,
-      "removable": true
+      "removable": true,
+      "updateCommands": ["hermes update --yes"]
     },
     {
       "key": "cursor",
@@ -71,7 +72,20 @@
       "envs": [],
       "isolatedHome": false,
       "configSeed": { "enabled": true, "dest": ".opencode" },
-      "removable": true
+      "removable": true,
+      "updateCommands": ["opencode upgrade"]
+    },
+    {
+      "key": "antigravity",
+      "label": "Antigravity",
+      "description": "Coding Agent by Google",
+      "color": "#4285F4",
+      "command": "agy",
+      "instructionsFilename": "AGENTS.md",
+      "envs": [],
+      "isolatedHome": false,
+      "removable": true,
+      "updateCommands": ["agy update"]
     }
   ]
 }

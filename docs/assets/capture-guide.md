@@ -70,7 +70,7 @@ Reproducible setup:
    - architect       (Claude Code profile)
    - dev-rust        (Codex profile)
    - reviewer        (Claude Code profile)
-3. In a second project, add one more session running Gemini.
+3. In a second project, add one more session running Antigravity.
 4. Open settings → Telegram → wire one bot to one session (the "monitored" one)
    if you want telegram-bridge.png to be authentic.
 ```
@@ -96,7 +96,7 @@ English project, team, workgroup, and agent names across clips.
 - [ ] Create a team.
 - [ ] Create a workgroup from a team.
 - [ ] Create multiple workgroups from the same team.
-- [ ] Launch a coordinator.
+- [ ] Launch an orchestrator.
 - [ ] Send the first task.
 - [ ] Observe inter-agent messaging.
 - [ ] Inspect agent output.
@@ -107,7 +107,7 @@ English project, team, workgroup, and agent names across clips.
 | Priority | Sequence | Capture notes |
 |---|---|---|
 | 1 | Role customization inheritance | Edit one canonical role with a short instruction, then show active and new workgroup instances using that role pick up the change. This is the most specific product story. |
-| 2 | Project to first task | Create or open a project, create a team, create a workgroup, launch a coordinator, send the first task, and hold on the first useful output. |
+| 2 | Project to first task | Create or open a project, create a team, create a workgroup, launch an orchestrator, send the first task, and hold on the first useful output. |
 | 3 | One team, many workgroups | Create a team, create two workgroups from it, and show the shared roster with different tasks or outputs. |
 
 ### Later and deeper clips
@@ -275,7 +275,7 @@ story.
   - 1 amber (pending)
   - 1 red (exited)
 - Agent names span coding-agent products: at least one Claude Code,
-  one Codex, one Gemini. This is the "no vendor lock-in" beat.
+  one Codex, one Antigravity. This is the "no vendor lock-in" beat.
 - Bridge indicator (telegram icon, voice icon) visible on at least one
   row if implemented in the current build.
 

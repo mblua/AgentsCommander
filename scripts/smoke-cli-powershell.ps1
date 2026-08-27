@@ -107,6 +107,104 @@ function Invoke-PSNonInteractiveDirect {
     }
 }
 
+# #1596: Git Bash is the required AC CLI carrier on Windows. bash.exe is
+# console-subsystem, so the outer PowerShell waits for it, captures its stdout,
+# AND propagates its exit code ($LASTEXITCODE) — which the GUI-subsystem AC
+# binary cannot provide through a bare PS `&` (see Invoke-BinaryDirect and the
+# Invoke-PSNonInteractiveDirect comment above). Skipped (not a failure) when
+# bash.exe is not on PATH.
+function Invoke-BashRouted {
+    param(
+        [Parameter(Mandatory=$true)] [string]$ShellPath,
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe,
+        [Parameter(Mandatory=$true)] [string[]]$ExeArgs
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+
+    if ($null -eq (Get-Command 'bash.exe' -ErrorAction SilentlyContinue)) {
+        Write-CaseLogs -Paths $paths -Command 'bash.exe not found on PATH' -Stdout '' -Stderr ''
+        $skipped = [pscustomobject]@{
+            name = $CaseName
+            shellPath = $ShellPath
+            binaryPath = $Exe
+            commandPath = $paths.CommandPath
+            stdoutPath = $paths.StdoutPath
+            stderrPath = $paths.StderrPath
+            exitCode = $null
+            skipped = $true
+        }
+        $summary.Add($skipped) | Out-Null
+        Write-Host "SKIP: bash.exe not found (case $CaseName)" -ForegroundColor Yellow
+        return [pscustomobject]@{
+            CaseName = $CaseName
+            Stdout = ''
+            Stderr = ''
+            ExitCode = $null
+            Skipped = $true
+            StdoutPath = $paths.StdoutPath
+            StderrPath = $paths.StderrPath
+            CommandPath = $paths.CommandPath
+        }
+    }
+
+    # Bash-level quoting: single quotes around the exe and each arg (backslashes
+    # and spaces stay literal inside bash single quotes).
+    $bashParts = New-Object System.Collections.Generic.List[string]
+    $bashParts.Add("'" + ($Exe -replace "'", "'\''") + "'")
+    foreach ($a in $ExeArgs) {
+        $bashParts.Add("'" + ($a -replace "'", "'\''") + "'")
+    }
+    $bashInner = $bashParts -join ' '
+    # Embed the whole bash command as ONE PS single-quoted literal: wrap in
+    # quotes and double every inner quote for PS, so bash.exe -lc receives the
+    # backslashes and spaces verbatim.
+    $psLiteral = "'" + ($bashInner -replace "'", "''") + "'"
+    $inner = "& bash.exe -lc $psLiteral; exit `$LASTEXITCODE"
+    $arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $ShellPath
+    $psi.Arguments = $arguments
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+    $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    $commandText = "$ShellPath $arguments"
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $ShellPath
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $proc.ExitCode
+        skipped = $false
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $proc.ExitCode
+        Skipped = $false
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
 # Start the binary with no shell in between, so the exit code read here is the binary's own.
 #
 # Why this exists separately from Invoke-PSNonInteractiveDirect: release builds carry
@@ -172,6 +270,181 @@ function Invoke-BinaryDirect {
         StderrPath = $paths.StderrPath
         CommandPath = $paths.CommandPath
     }
+}
+
+function Set-StartupMessageChildEnvironment {
+    param(
+        [Parameter(Mandatory=$true)] [System.Diagnostics.ProcessStartInfo]$StartInfo
+    )
+    $StartInfo.EnvironmentVariables['AC_UI_AUTOMATION'] = '0'
+    [void]$StartInfo.EnvironmentVariables.Remove('AC_TEST_WINDOW_PLACEMENT')
+}
+
+function Stop-TimedOutProcessTree {
+    param(
+        [Parameter(Mandatory=$true)] [System.Diagnostics.Process]$Process
+    )
+    $processId = $Process.Id
+    & taskkill.exe /PID $processId /T /F 2>&1 | Out-Null
+    $taskkillExitCode = $LASTEXITCODE
+    [void]$Process.WaitForExit(5000)
+    $taskkillExitCode
+}
+
+function Invoke-StartupMessagePiped {
+    param(
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+    $commandText = "AC_UI_AUTOMATION=0; remove AC_TEST_WINDOW_PLACEMENT; $Exe"
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    Set-StartupMessageChildEnvironment -StartInfo $psi
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $timedOut = -not $proc.WaitForExit(15000)
+    $taskkillExitCode = if ($timedOut) {
+        Stop-TimedOutProcessTree -Process $proc
+    } else {
+        $null
+    }
+    $hasExited = $proc.HasExited
+    if ($hasExited) {
+        $proc.WaitForExit()
+        $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+        $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    } else {
+        $stdout = ''
+        $stderr = '<capture unavailable; process tree did not exit after taskkill>'
+    }
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $exitCode = if ($hasExited) { $proc.ExitCode } else { $null }
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $null
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $exitCode
+        timedOut = $timedOut
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        StdoutByteCount = [System.Text.Encoding]::UTF8.GetByteCount($stdout)
+        ExitCode = $exitCode
+        TimedOut = $timedOut
+        TaskkillExitCode = $taskkillExitCode
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
+function Invoke-StartupMessageRedirectedFiles {
+    param(
+        [Parameter(Mandatory=$true)] [string]$ShellPath,
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+    [System.IO.File]::WriteAllBytes($paths.StdoutPath, [byte[]]@())
+    [System.IO.File]::WriteAllBytes($paths.StderrPath, [byte[]]@())
+
+    $escapedExe = $Exe -replace "'", "''"
+    $escapedStdout = $paths.StdoutPath -replace "'", "''"
+    $escapedStderr = $paths.StderrPath -replace "'", "''"
+    $inner = "`$child = Start-Process -FilePath '$escapedExe' -NoNewWindow -RedirectStandardOutput '$escapedStdout' -RedirectStandardError '$escapedStderr' -PassThru -Wait; exit `$child.ExitCode"
+    $arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+    $commandText = "$ShellPath $arguments"
+    Set-Content -LiteralPath $paths.CommandPath -Value $commandText -Encoding UTF8
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $ShellPath
+    $psi.Arguments = $arguments
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    Set-StartupMessageChildEnvironment -StartInfo $psi
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $shellStdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $shellStderrTask = $proc.StandardError.ReadToEndAsync()
+    $timedOut = -not $proc.WaitForExit(15000)
+    $taskkillExitCode = if ($timedOut) {
+        Stop-TimedOutProcessTree -Process $proc
+    } else {
+        $null
+    }
+    $hasExited = $proc.HasExited
+    if ($hasExited) {
+        $proc.WaitForExit()
+        $shellStdout = if ($null -eq $shellStdoutTask.Result) { '' } else { $shellStdoutTask.Result }
+        $shellStderr = if ($null -eq $shellStderrTask.Result) { '' } else { $shellStderrTask.Result }
+    } else {
+        $shellStdout = ''
+        $shellStderr = '<capture unavailable; process tree did not exit after taskkill>'
+    }
+    if (-not [string]::IsNullOrEmpty($shellStdout) -or -not [string]::IsNullOrEmpty($shellStderr)) {
+        Add-Content -LiteralPath $paths.CommandPath -Value "`n--- child shell stdout ---`n$shellStdout`n--- child shell stderr ---`n$shellStderr" -Encoding UTF8
+    }
+
+    $stdoutBytes = [System.IO.File]::ReadAllBytes($paths.StdoutPath)
+    $stderrBytes = [System.IO.File]::ReadAllBytes($paths.StderrPath)
+    $stdout = [System.Text.Encoding]::UTF8.GetString($stdoutBytes)
+    $stderr = [System.Text.Encoding]::UTF8.GetString($stderrBytes)
+    $exitCode = if ($hasExited) { $proc.ExitCode } else { $null }
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $ShellPath
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $exitCode
+        timedOut = $timedOut
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        StdoutByteCount = $stdoutBytes.Length
+        ExitCode = $exitCode
+        TimedOut = $timedOut
+        TaskkillExitCode = $taskkillExitCode
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
+function Assert-StartupMessageResult {
+    param(
+        [Parameter(Mandatory=$true)] [object]$Result
+    )
+    $expectedStderr = "An AgentsCommander instance with this executable identity is already running.`n`nRename this executable to agentscommander_<name>.exe to start an independent instance with its own configuration directory and ports.`n"
+    $normalizedStderr = $Result.Stderr.Replace("`r`n", "`n").Replace("`r", "`n")
+
+    Assert-True "$($Result.CaseName) completes within 15 seconds" (-not $Result.TimedOut) "process timed out; taskkill exit code=$($Result.TaskkillExitCode)" $Result.CaseName $Result
+    Assert-True "$($Result.CaseName) exits 0" ($Result.ExitCode -eq 0) "exit=$($Result.ExitCode)" $Result.CaseName $Result
+    Assert-True "$($Result.CaseName) stdout byte-empty" ($Result.StdoutByteCount -eq 0) "stdout byte count=$($Result.StdoutByteCount)" $Result.CaseName $Result
+    Assert-True "$($Result.CaseName) exact normalized stderr" ($normalizedStderr -ceq $expectedStderr) "stderr did not match the exact startup message" $Result.CaseName $Result
 }
 
 function New-FailureDetail {
@@ -255,6 +528,33 @@ if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
     }
 }
 
+# Test 1b (#1596): same list-peers through the Git Bash carrier. Here the exit
+# code IS observable — bash.exe is console-subsystem, so $LASTEXITCODE
+# propagates out of the outer PowerShell — which the direct GUI-child case
+# above intentionally cannot assert. Missing bash.exe is an accepted SKIP.
+$r1b = Invoke-BashRouted -ShellPath $ShellPath -CaseName "01-list-peers-via-git-bash" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
+if (-not $r1b.Skipped) {
+    Assert-True "list-peers via Git Bash stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1b.Stdout)) "stdout was empty via the Git Bash carrier (#1596)" $r1b.CaseName $r1b
+    Assert-True "list-peers via Git Bash stderr empty" ([string]::IsNullOrWhiteSpace($r1b.Stderr)) "stderr leaked content; inspect stderr log" $r1b.CaseName $r1b
+    if (-not [string]::IsNullOrWhiteSpace($r1b.Stdout)) {
+        try {
+            $parsed = $r1b.Stdout | ConvertFrom-Json -ErrorAction Stop
+            $trimmedJson = $r1b.Stdout.Trim()
+            # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+            if ($null -eq $parsed -and $trimmedJson -ne '[]') {
+                Write-Host "FAIL: list-peers via Git Bash ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1b.CaseName -Detail 'non-empty non-array stdout parsed to null' -Result $r1b)" -ForegroundColor Red
+                $failed++
+            } else {
+                Write-Host "PASS: list-peers via Git Bash stdout parses as JSON" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "FAIL: list-peers via Git Bash stdout not valid JSON -- $(New-FailureDetail -CaseName $r1b.CaseName -Detail $_.Exception.Message -Result $r1b)" -ForegroundColor Red
+            $failed++
+        }
+    }
+    Assert-True "list-peers via Git Bash exits zero" ($r1b.ExitCode -eq 0) "exit code was $($r1b.ExitCode), expected 0 (bash.exe propagates the AC binary's exit code)" $r1b.CaseName $r1b
+}
+
 # Test 2: send --help stdout must contain clap-rendered help text.
 $r2 = Invoke-PSNonInteractiveDirect -ShellPath $ShellPath -CaseName "02-send-help-direct" -Exe $BinaryPath -ExeArgs @('send', '--help')
 Assert-True "send --help stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r2.Stdout)) "stdout was empty (issue #129 not fixed for help path)" $r2.CaseName $r2
@@ -321,6 +621,29 @@ if ([string]::IsNullOrWhiteSpace($mergedOut)) {
     } catch {
         Write-Host "FAIL: 2>&1 | ConvertFrom-Json broken -- $(New-FailureDetail -CaseName $r4.CaseName -Detail $_.Exception.Message -Result $r4)" -ForegroundColor Red
         $failed++
+    }
+}
+
+if ([System.IO.Path]::GetFileName($BinaryPath) -ieq 'agentscommander.exe') {
+    $createdNew = $false
+    $instanceMutex = New-Object System.Threading.Mutex($true, 'Local\AgentsCommander_SingleInstance', [ref]$createdNew)
+    try {
+        if (-not $createdNew) {
+            throw "Startup-message smoke did not create Local\AgentsCommander_SingleInstance"
+        }
+
+        $r5 = Invoke-StartupMessagePiped -CaseName '05-single-instance-piped' -Exe $BinaryPath
+        Assert-StartupMessageResult -Result $r5
+
+        $r6 = Invoke-StartupMessageRedirectedFiles -ShellPath $ShellPath -CaseName '06-single-instance-redirected-files' -Exe $BinaryPath
+        Assert-StartupMessageResult -Result $r6
+    } finally {
+        if ($null -ne $instanceMutex) {
+            if ($createdNew) {
+                $instanceMutex.ReleaseMutex()
+            }
+            $instanceMutex.Dispose()
+        }
     }
 }
 

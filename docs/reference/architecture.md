@@ -35,7 +35,7 @@ graph TB
         CMD["commands/<br/>IPC handlers"]
         SESS["session/<br/>SessionManager + selection"]
         PTY["pty/<br/>PtyManager, local + container backends"]
-        TG["telegram/<br/>Bridge + Claude/Codex/Gemini watchers"]
+        TG["telegram/<br/>Bridge + Claude/Codex watchers"]
         PH["phone/<br/>Mailbox, inter-agent messaging"]
         CFG["config/<br/>Settings, teams, projects, seeds"]
         LOOPS["loops/<br/>Project Loops scheduler"]
@@ -140,7 +140,7 @@ graph LR
         T_MGR["manager.rs<br/>TelegramBridgeManager"]
         T_BRIDGE["bridge.rs<br/>output_task (vt100 pipeline)<br/>poll_task (getUpdates)"]
         T_API["api.rs<br/>send_message, get_updates"]
-        T_WATCH["claude_watcher.rs, codex_watcher.rs,<br/>gemini_watcher.rs"]
+        T_WATCH["claude_watcher.rs, codex_watcher.rs"]
         T_REDACT["redact.rs<br/>secret redaction"]
     end
 
@@ -307,7 +307,7 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | SessionAPI | `commands/session.rs` | `create_session`, `destroy_session`, `switch_session`, `rename_session`, `list_sessions`, `get_active_session` (selection hydration) |
 | PtyAPI | `commands/pty.rs` | `pty_write`, `pty_resize` |
 | SettingsAPI | `commands/config.rs` | `get_settings`, `update_settings`, `save_debug_logs` |
-| AgentUpdateAPI | `commands/config.rs` | `get_agent_update_status`, `agent_update_answer` |
+| AgentUpdateAPI | `commands/config.rs` | `get_agent_update_status`, `agent_update_answer`, `get_agent_update_overview` |
 | ReposAPI | `commands/repos.rs` | `search_repos` |
 | TelegramAPI | `commands/telegram.rs` | `attach_telegram`, `detach_telegram`, `list_bridges`, `send_test` |
 | WindowAPI | `commands/window.rs` | `detach_terminal`, `close_detached_terminal` |
@@ -532,7 +532,7 @@ sequenceDiagram
     participant CH as mpsc channel
     participant VT as vt100 Parser
     participant RT as RowTracker
-    participant CF as AgentFilter (Claude/Codex/Gemini)
+    participant CF as AgentFilter (Claude/Codex)
     participant TG as Telegram API
 
     PTY->>CH: try_send(data)
@@ -546,7 +546,7 @@ sequenceDiagram
     Note over TG: Chunk at 4000 chars<br/>rate-limited
 ```
 
-Claude, Codex, and Gemini each have a dedicated watcher (`telegram/claude_watcher.rs`, `codex_watcher.rs`, `gemini_watcher.rs`) that filters screen rows for that agent's terminal chrome.
+Claude and Codex each have a dedicated watcher (`telegram/claude_watcher.rs`, `codex_watcher.rs`) that filters screen rows for that agent's terminal chrome. Antigravity and Pi use the generic PTY path.
 
 ### 6.4 Voice-to-Text
 
@@ -725,6 +725,7 @@ graph TD
 | `logging.rs` | Logger setup, live log-level control |
 | `shutdown.rs` | Ordered daemon shutdown |
 | `update_check.rs` | npm publish version check |
+| `agent_update.rs`, `agent_version.rs` | Startup coding-agent update pass, gate and prompt answer flow; installed-version probe engine and cache (#1551) |
 | `session/session.rs` | `Session`, `SessionInfo`, `SessionStatus` structs |
 | `session/manager.rs` | `SessionManager`: records, stable order, pending creates, canonical selection state |
 | `session/selection.rs` | Selection contract, coordinator, eligibility policy, process epoch, revision, publication |
@@ -751,7 +752,7 @@ graph TD
 | `telegram/manager.rs` | `TelegramBridgeManager`, `OutputSenderMap` |
 | `telegram/bridge.rs` | vt100 pipeline, `RowTracker`, agent filters, output/poll tasks |
 | `telegram/redact.rs` | Secret redaction for bridge output |
-| `telegram/claude_watcher.rs`, `codex_watcher.rs`, `gemini_watcher.rs` | Per-agent screen watchers |
+| `telegram/claude_watcher.rs`, `codex_watcher.rs` | Per-agent screen watchers |
 | `telegram/jsonl_kernel.rs` | JSONL-based watcher kernel |
 | `phone/types.rs` | `OutboxMessage`, PTY-input protocol types |
 | `phone/mailbox.rs` | Per-session token authorization, action dispatch |
@@ -773,7 +774,7 @@ graph TD
 | `config/project_settings.rs`, `config/loops.rs` | Project settings, Loop config |
 | `config/injected_messages.rs` | Injected PTY message templates |
 | `config/activity_log.rs` | Activity log |
-| `config/coordinator_clocks.rs` | Coordinator idle clocks |
+| `config/coordinator_clocks.rs` | Orchestrator idle clocks |
 | `config/replica_identity.rs` | Replica identity verification |
 | `config/session_context.rs` | Session context reading |
 | `config/seeded_context_templates.rs` | Context template seeding |

@@ -353,6 +353,7 @@ fn main() {
     if testable_artifact {
         for name in [
             "ui-query",
+            "ui-terminal",
             "ui-click",
             "ui-context-click",
             "ui-hover",
@@ -389,6 +390,7 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::ListSessions(_)
                                 | agentscommander_lib::cli::Commands::AgencyTemplates(_)
                                 | agentscommander_lib::cli::Commands::UiQuery(_)
+                                | agentscommander_lib::cli::Commands::UiTerminal(_)
                                 | agentscommander_lib::cli::Commands::UiClick(_)
                                 | agentscommander_lib::cli::Commands::UiContextClick(_)
                                 | agentscommander_lib::cli::Commands::UiHover(_)
@@ -521,7 +523,12 @@ fn main() {
                             Ok(false) if testable_artifact => write_stderr_error_and_exit(
                                 "{\"ok\":false,\"error\":\"automation_config_in_use\",\"message\":\"Another testable AgentsCommander process already owns this configuration.\"}",
                             ),
-                            Ok(false) => std::process::exit(0),
+                            Ok(false) => {
+                                agentscommander_lib::cli::present_fatal_startup_message(
+                                    "An AgentsCommander instance with this executable identity is already running.\n\nRename this executable to agentscommander_<name>.exe to start an independent instance with its own configuration directory and ports.",
+                                );
+                                std::process::exit(0);
+                            }
                             Err(_) if testable_artifact => write_stderr_error_and_exit(
                                 "{\"ok\":false,\"error\":\"automation_single_instance_unavailable\",\"message\":\"Could not acquire the testable configuration instance lock.\"}",
                             ),

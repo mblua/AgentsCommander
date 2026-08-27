@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -27,7 +28,10 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::web::auth::WebAccessToken;
 use crate::web::broadcast::WsBroadcaster;
-use crate::{ApiServerHandle, ApiServerTask, WebServerHandle};
+use crate::{
+    ApiServerHandle, ApiServerTask, WebServerHandle, WebServerLifecycle,
+    WebServerLifecycleSnapshot, WebServerStartWaiter, WEB_SERVER_START_CANCELLED,
+};
 
 const HOME_MARKDOWN_URL: &str =
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/docs/home-en.md";
@@ -506,8 +510,15 @@ pub async fn get_settings(settings: State<'_, SettingsState>) -> Result<Settings
 pub async fn get_coding_agent_catalog(
     settings: State<'_, SettingsState>,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>, String> {
+    Ok(coding_agent_catalog_inner(settings.inner()).await)
+}
+
+/// #1551 - shared by the Tauri command and the WebSocket router.
+pub async fn coding_agent_catalog_inner(
+    settings: &SettingsState,
+) -> Vec<crate::config::coding_agents_catalog::CodingAgentDefinition> {
     let settings = settings.read().await;
-    Ok(crate::config::coding_agents_catalog::load_catalog_for_settings(&settings))
+    crate::config::coding_agents_catalog::load_catalog_for_settings(&settings)
 }
 
 /// #769 Phase 2 - the coding-agent command executable basenames that ship a
@@ -1629,7 +1640,9 @@ fn profile_assignment_fingerprint(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WebServerOwnershipState {
+    Starting,
     OwnedRunning,
+    Stopping,
     ExternalListening,
     Stopped,
 }
@@ -1690,16 +1703,20 @@ pub struct WebServerOwnedStatus {
 fn ensure_web_remote_open_allowed(
     settings: &AppSettings,
     ws_handle: &WebServerHandle,
-) -> Result<(), String> {
+) -> Result<WebServerLifecycleSnapshot, String> {
     if !settings.web_server_enabled {
         return Err("Web server is not enabled".into());
     }
 
-    if !ws_handle.is_owned_running(&settings.web_server_bind, settings.web_server_port) {
+    let snapshot = ws_handle.snapshot();
+    if snapshot.lifecycle != WebServerLifecycle::Running
+        || snapshot.endpoint.as_ref()
+            != Some(&(settings.web_server_bind.clone(), settings.web_server_port))
+    {
         return Err("Web server is not owned by this app process".into());
     }
 
-    Ok(())
+    Ok(snapshot)
 }
 
 /// §1453 D2: el status solo carga el fallo si describe el target configurado
@@ -1730,24 +1747,28 @@ fn select_current_bind_failure(
 fn build_web_server_owned_status(
     bind: String,
     port: u16,
-    owned: bool,
+    lifecycle: WebServerLifecycle,
     listening: bool,
     bind_failure: Option<WebServerBindFailure>,
 ) -> WebServerOwnedStatus {
-    let external_listening = listening && !owned;
-    let state = if owned {
-        WebServerOwnershipState::OwnedRunning
-    } else if external_listening {
-        WebServerOwnershipState::ExternalListening
-    } else {
-        WebServerOwnershipState::Stopped
+    let (state, owned, external_listening, open_allowed) = match lifecycle {
+        WebServerLifecycle::Starting => (WebServerOwnershipState::Starting, true, false, false),
+        WebServerLifecycle::Running => (WebServerOwnershipState::OwnedRunning, true, false, true),
+        WebServerLifecycle::Stopping => (WebServerOwnershipState::Stopping, true, false, false),
+        WebServerLifecycle::Stopped if listening => (
+            WebServerOwnershipState::ExternalListening,
+            false,
+            true,
+            false,
+        ),
+        WebServerLifecycle::Stopped => (WebServerOwnershipState::Stopped, false, false, false),
     };
 
     WebServerOwnedStatus {
         listening,
         owned,
         external_listening,
-        open_allowed: owned,
+        open_allowed,
         bind,
         port,
         state,
@@ -1774,7 +1795,7 @@ fn web_remote_url(bind: &str, port: u16, token: &str) -> Result<String, String> 
 #[tauri::command]
 pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<(), String> {
     let settings = load_settings();
-    ensure_web_remote_open_allowed(&settings, &ws_handle)?;
+    let authorized = ensure_web_remote_open_allowed(&settings, &ws_handle)?;
 
     let token_path = crate::config::config_dir()
         .ok_or("No config dir")?
@@ -1783,11 +1804,17 @@ pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<()
     let token = std::fs::read_to_string(&token_path)
         .map_err(|e| format!("Cannot read web token: {}", e))?;
 
-    let url = web_remote_url(
-        &settings.web_server_bind,
-        settings.web_server_port,
-        token.trim(),
-    )?;
+    let (bind, port) = authorized
+        .endpoint
+        .as_ref()
+        .ok_or("Web server is not owned by this app process")?;
+    let url = web_remote_url(bind, *port, token.trim())?;
+
+    let current_settings = load_settings();
+    let revalidated = ensure_web_remote_open_allowed(&current_settings, &ws_handle)?;
+    if revalidated != authorized {
+        return Err("Web server is not owned by this app process".into());
+    }
 
     open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))?;
     Ok(())
@@ -2018,6 +2045,77 @@ fn bounded_mint_api_client_expiry(
     Ok(expires_at.to_rfc3339())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn begin_web_server_start(
+    ws_handle: WebServerHandle,
+    settings: SettingsState,
+    web_token: Arc<WebAccessToken>,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: Arc<std::sync::Mutex<PtyManager>>,
+    broadcaster: WsBroadcaster,
+    app_handle: tauri::AppHandle,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> WebServerStartWaiter {
+    let lifecycle = ws_handle.clone();
+    let factory_shutdown = shutdown.clone();
+    ws_handle.begin_start(
+        shutdown,
+        move |generation, admission, generation_token| async move {
+            let s = settings.read().await;
+            let bind = s.web_server_bind.clone();
+            let port = s.web_server_port;
+            drop(s);
+
+            if !lifecycle.publish_effective_endpoint(generation, bind.clone(), port) {
+                return Err(WEB_SERVER_START_CANCELLED.to_string());
+            }
+
+            let probe_addr = match web_server_probe_addr(&bind, port) {
+                Ok(addr) => addr,
+                Err(detail) => {
+                    let error = crate::web::StartServerError::InvalidAddr { bind, port, detail };
+                    log::warn!("[web-server] start failed: {}", error);
+                    lifecycle.record_bind_failure(error);
+                    return Ok(None);
+                }
+            };
+
+            if is_tcp_listening(probe_addr).await {
+                return Ok(None);
+            }
+            if generation_token.is_cancelled() || factory_shutdown.is_cancelled() {
+                return Err(WEB_SERVER_START_CANCELLED.to_string());
+            }
+
+            match crate::web::start_server(
+                bind,
+                port,
+                web_token,
+                session_mgr,
+                pty_mgr,
+                settings,
+                broadcaster,
+                app_handle,
+                admission,
+                generation_token,
+                factory_shutdown,
+            )
+            .await
+            {
+                Ok(join_handle) => {
+                    lifecycle.clear_bind_failure();
+                    Ok(Some(join_handle))
+                }
+                Err(error) => {
+                    log::warn!("[web-server] start failed: {}", error);
+                    lifecycle.record_bind_failure(error);
+                    Ok(None)
+                }
+            }
+        },
+    )
+}
+
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -2031,65 +2129,46 @@ pub async fn start_web_server(
     broadcaster: State<'_, WsBroadcaster>,
     shutdown: State<'_, crate::shutdown::ShutdownSignal>,
 ) -> Result<bool, String> {
-    let s = settings.read().await;
-    let bind = s.web_server_bind.clone();
-    let port = s.web_server_port;
-    drop(s);
-
-    if ws_handle.is_owned_running(&bind, port) {
-        return Ok(true);
-    }
-
-    let addr = format!("{}:{}", bind, port);
-    if is_tcp_listening(&addr).await {
-        return Ok(false);
-    }
-
-    let start_result = crate::web::start_server(
-        bind.clone(),
-        port,
+    let waiter = begin_web_server_start(
+        ws_handle.inner().clone(),
+        Arc::clone(&settings),
         Arc::clone(&web_token),
         Arc::clone(&session_mgr),
         Arc::clone(&pty_mgr),
-        Arc::clone(&settings),
         (*broadcaster).clone(),
         app_handle,
         shutdown.inner().clone(),
-    )
-    .await;
-
-    match start_result {
-        Ok(join_handle) => {
-            ws_handle.clear_bind_failure();
-            ws_handle.store_owned(bind, port, join_handle);
-            log::info!("[web-server] Started via command");
-            Ok(true)
-        }
-        Err(err) => {
-            log::warn!("[web-server] start failed: {}", err);
-            ws_handle.record_bind_failure(err);
-            Ok(false)
-        }
+    );
+    let started = waiter.wait().await?;
+    if started {
+        log::info!("[web-server] Started via command");
     }
+    Ok(started)
 }
 
 #[tauri::command]
 pub async fn stop_web_server(ws_handle: State<'_, WebServerHandle>) -> Result<bool, String> {
-    ws_handle.clear_bind_failure();
-    if ws_handle.abort_running() {
-        log::info!("[web-server] Stopped via command");
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    stop_web_server_handle(&ws_handle).await
+}
+
+async fn stop_web_server_handle(ws_handle: &WebServerHandle) -> Result<bool, String> {
+    let Some(waiter) = ws_handle.begin_stop() else {
+        return Ok(false);
+    };
+    waiter.wait().await?;
+    log::info!("[web-server] Stopped via command");
+    Ok(true)
 }
 
 #[tauri::command]
 pub async fn get_web_server_status(settings: State<'_, SettingsState>) -> Result<bool, String> {
     let s = settings.read().await;
-    let addr = format!("{}:{}", s.web_server_bind, s.web_server_port);
+    let addr = web_server_probe_addr(&s.web_server_bind, s.web_server_port).ok();
     drop(s);
-    Ok(is_tcp_listening(&addr).await)
+    Ok(match addr {
+        Some(addr) => is_tcp_listening(addr).await,
+        None => false,
+    })
 }
 
 #[tauri::command]
@@ -2102,23 +2181,7 @@ pub async fn get_web_server_owned_status(
     let port = s.web_server_port;
     drop(s);
 
-    let owned = ws_handle.is_owned_running(&bind, port);
-    let addr = format!("{}:{}", bind, port);
-    let listening = if owned {
-        true
-    } else {
-        is_tcp_listening(&addr).await
-    };
-
-    let bind_failure =
-        select_current_bind_failure(ws_handle.last_bind_failure(), &bind, port, listening);
-    Ok(build_web_server_owned_status(
-        bind,
-        port,
-        owned,
-        listening,
-        bind_failure,
-    ))
+    Ok(resolve_web_server_owned_status(&ws_handle, (bind, port), is_tcp_listening).await)
 }
 
 /// §1453 D3: heuristica por nombre para separar adaptadores virtuales/tunel
@@ -2217,6 +2280,57 @@ fn api_server_probe_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
     Ok(SocketAddr::new(probe_ip, configured.port()))
 }
 
+fn web_server_probe_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
+    let configured = format!("{}:{}", bind, port)
+        .parse::<SocketAddr>()
+        .map_err(|error| error.to_string())?;
+    let probe_ip = match configured.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    Ok(SocketAddr::new(probe_ip, configured.port()))
+}
+
+async fn resolve_web_server_owned_status<F, Fut>(
+    ws_handle: &WebServerHandle,
+    configured_fallback: (String, u16),
+    mut probe: F,
+) -> WebServerOwnedStatus
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    loop {
+        let snapshot = ws_handle.snapshot();
+        let (bind, port) = match (&snapshot.lifecycle, snapshot.endpoint.as_ref()) {
+            (WebServerLifecycle::Stopped, _) => configured_fallback.clone(),
+            (_, Some(endpoint)) => endpoint.clone(),
+            (WebServerLifecycle::Starting | WebServerLifecycle::Stopping, None) => {
+                configured_fallback.clone()
+            }
+            (WebServerLifecycle::Running, None) => configured_fallback.clone(),
+        };
+        let listening = match web_server_probe_addr(&bind, port) {
+            Ok(addr) => probe(addr).await,
+            Err(_) => false,
+        };
+        if !ws_handle.snapshot_is_current(&snapshot) {
+            continue;
+        }
+
+        let bind_failure =
+            select_current_bind_failure(ws_handle.last_bind_failure(), &bind, port, listening);
+        return build_web_server_owned_status(
+            bind,
+            port,
+            snapshot.lifecycle,
+            listening,
+            bind_failure,
+        );
+    }
+}
+
 async fn is_tcp_socket_listening(addr: SocketAddr) -> bool {
     matches!(
         tokio::time::timeout(
@@ -2228,15 +2342,8 @@ async fn is_tcp_socket_listening(addr: SocketAddr) -> bool {
     )
 }
 
-async fn is_tcp_listening(addr: &str) -> bool {
-    matches!(
-        tokio::time::timeout(
-            Duration::from_millis(WEB_STATUS_CONNECT_TIMEOUT_MS),
-            tokio::net::TcpStream::connect(addr),
-        )
-        .await,
-        Ok(Ok(_))
-    )
+async fn is_tcp_listening(addr: SocketAddr) -> bool {
+    is_tcp_socket_listening(addr).await
 }
 
 /// Returns the runtime instance label for the titlebar badge.
@@ -2425,31 +2532,81 @@ pub async fn get_agent_update_status(
     Ok(gate.snapshot())
 }
 
-/// #1327 - the user answered the startup prompt for one command. Persists the
-/// answer FIRST (so it is never asked again even if resolution fails), then
-/// resolves the pending prompt. Returns Ok(true) ONLY when a live receiver
-/// accepted the answer THIS boot (update will run now); Ok(false) when the
-/// prompt had already closed OR the receiver was dropped by the prompt timeout
-/// (late answer / timeout race; round-3 F1: persisted for next boot, updates
-/// nothing this boot; the overlay shows the conditional info toast). Unknown
-/// commands are rejected.
+/// #1327/#1551 - the user answered the startup prompt for one command, from any
+/// surface. The gate's serial section classifies, persists, claims the pending
+/// prompt, announces `agent_update_prompt_closed` to every surface and only then
+/// releases the prompt loop. Returns Ok(true) ONLY when THIS call resolved the
+/// pending prompt (its choice was persisted and this boot acts on it); Ok(false)
+/// when the prompt had already expired (persisted for future boots, this boot
+/// unaffected) or an answer was already recorded this boot (nothing persisted,
+/// the earlier answer stands). Unknown commands are rejected.
 #[tauri::command]
 pub async fn agent_update_answer(
+    app: AppHandle,
     settings: State<'_, SettingsState>,
-    gate: State<'_, Arc<crate::agent_update::AgentUpdateGate>>,
     command: String,
     enabled: bool,
 ) -> Result<bool, String> {
-    if !gate.was_prompted(&command) {
-        return Err(format!("agent_update_answer: '{command}' was not prompted this boot"));
-    }
-    persist_narrow_settings_update(settings.inner(), |candidate| {
-        candidate
-            .agent_auto_update_by_command
-            .insert(command.clone(), enabled);
+    agent_update_answer_inner(&app, settings.inner(), command, enabled).await
+}
+
+/// #1551 - the managed startup gate, or a plain error string when an unmanaged
+/// (test) app asks for it, so a missing state never panics a command.
+fn managed_agent_update_gate(
+    app: &AppHandle,
+) -> Result<State<'_, Arc<crate::agent_update::AgentUpdateGate>>, String> {
+    tauri::Manager::try_state::<Arc<crate::agent_update::AgentUpdateGate>>(app)
+        .ok_or_else(|| "agent update gate is not managed".to_string())
+}
+
+/// #1551 - shared by the Tauri command and the WebSocket router. `try_state` so an
+/// unmanaged test app errors instead of panicking.
+pub fn agent_update_status_inner(
+    app: &AppHandle,
+) -> Result<crate::agent_update::AgentUpdateStatus, String> {
+    Ok(managed_agent_update_gate(app)?.snapshot())
+}
+
+/// #1551 - the only answer path: `agent_update::answer_prompt` with the existing
+/// narrow persist injected. Classification, persist, and settlement all happen
+/// inside the gate's serial section.
+pub async fn agent_update_answer_inner(
+    app: &AppHandle,
+    settings: &SettingsState,
+    command: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    let gate = managed_agent_update_gate(app)?;
+    crate::agent_update::answer_prompt(app, &gate, &command, enabled, || {
+        persist_narrow_settings_update(settings, |candidate| {
+            candidate
+                .agent_auto_update_by_command
+                .insert(command.clone(), enabled);
+        })
     })
-    .await?;
-    Ok(gate.resolve_answer(&command, enabled))
+    .await
+}
+
+/// #1551 - instant read of the Settings "Auto-update" table. Never awaits a probe;
+/// probes are scheduled in the background only once the startup pass is finished.
+pub async fn agent_update_overview_inner(
+    app: &AppHandle,
+    settings: &SettingsState,
+) -> Result<Vec<crate::agent_update::AgentUpdateOverviewRow>, String> {
+    let gate = managed_agent_update_gate(app)?;
+    let cache = tauri::Manager::try_state::<Arc<crate::agent_version::AgentInstallCache>>(app)
+        .ok_or_else(|| "agent install cache is not managed".to_string())?;
+    Ok(crate::agent_update::update_overview(app, settings, &gate, &cache).await)
+}
+
+/// #1551 - one row per update-capable catalog entry with its configured policy,
+/// installed version, and this boot's live state.
+#[tauri::command]
+pub async fn get_agent_update_overview(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<crate::agent_update::AgentUpdateOverviewRow>, String> {
+    agent_update_overview_inner(&app, settings.inner()).await
 }
 
 /// Fetch the Home screen Markdown source from the public docs URL.
@@ -2507,9 +2664,10 @@ mod tests {
         persist_coding_agent_env_settings_update, persist_coding_agent_profiles_update,
         persist_narrow_settings_update_with_saver, persist_protected_settings_update_with_saver,
         persist_settings_draft_update_with_saver, purge_sessions_after_settings_update_in_dir,
-        select_current_bind_failure, set_rail_collapse_inner_with_saver, start_api_server,
-        web_remote_url, WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS,
-        MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
+        resolve_web_server_owned_status, select_current_bind_failure,
+        set_rail_collapse_inner_with_saver, start_api_server, stop_web_server_handle,
+        web_remote_url, web_server_probe_addr, WebServerOwnershipState,
+        MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
     };
     #[cfg(windows)]
     use super::{build_profile_assignment_target, canonical_compare_key};
@@ -2520,14 +2678,17 @@ mod tests {
         SettingsState,
     };
     use crate::session::manager::SessionManager;
-    use crate::{ApiServerHandle, ApiServerTask, WebServerHandle};
-    use std::collections::{BTreeMap, HashMap};
-    use std::net::{IpAddr, Ipv4Addr};
+    use crate::{
+        ApiServerHandle, ApiServerTask, WebServerHandle, WebServerLifecycle,
+        WEB_SERVER_START_CANCELLED,
+    };
+    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tauri::Manager;
-    use tokio::sync::RwLock;
+    use tokio::sync::{mpsc, oneshot, RwLock};
     use tokio_util::sync::CancellationToken;
 
     // ── #1077 SettingsSnapshot / resolution report ───────────────────────
@@ -2983,6 +3144,38 @@ mod tests {
         assert!(is_tcp_socket_listening(probe_addr).await);
     }
 
+    #[test]
+    fn web_server_probe_addr_maps_wildcards_to_loopback() {
+        assert_eq!(
+            web_server_probe_addr("0.0.0.0", 8765).unwrap(),
+            "127.0.0.1:8765".parse().unwrap()
+        );
+        assert_eq!(
+            web_server_probe_addr("[::]", 8766).unwrap(),
+            "[::1]:8766".parse().unwrap()
+        );
+        assert_eq!(
+            web_server_probe_addr("192.168.1.50", 8767).unwrap(),
+            "192.168.1.50:8767".parse().unwrap()
+        );
+        assert_eq!(
+            web_server_probe_addr("[2001:db8::25]", 8768).unwrap(),
+            "[2001:db8::25]:8768".parse().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn web_server_probe_addr_detects_wildcard_listener_via_loopback() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .await
+            .expect("bind wildcard web listener");
+        let port = listener.local_addr().expect("wildcard address").port();
+        let probe_addr = web_server_probe_addr("0.0.0.0", port).expect("web probe addr");
+
+        assert_eq!(probe_addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(is_tcp_socket_listening(probe_addr).await);
+    }
+
     #[tokio::test]
     async fn api_server_status_reports_running_for_managed_wildcard_server() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
@@ -3205,9 +3398,15 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_owned_running() {
-        let status = build_web_server_owned_status("127.0.0.1".to_string(), 8765, true, true, None);
+        let status = build_web_server_owned_status(
+            "127.0.0.1".to_string(),
+            8765,
+            WebServerLifecycle::Running,
+            false,
+            None,
+        );
 
-        assert!(status.listening);
+        assert!(!status.listening, "listening comes from the probe");
         assert!(status.owned);
         assert!(!status.external_listening);
         assert!(status.open_allowed);
@@ -3218,8 +3417,13 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_external_listener() {
-        let status =
-            build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, true, None);
+        let status = build_web_server_owned_status(
+            "127.0.0.1".to_string(),
+            8765,
+            WebServerLifecycle::Stopped,
+            true,
+            None,
+        );
 
         assert!(status.listening);
         assert!(!status.owned);
@@ -3230,14 +3434,48 @@ mod tests {
 
     #[test]
     fn web_server_owned_status_maps_stopped() {
-        let status =
-            build_web_server_owned_status("127.0.0.1".to_string(), 8765, false, false, None);
+        let status = build_web_server_owned_status(
+            "127.0.0.1".to_string(),
+            8765,
+            WebServerLifecycle::Stopped,
+            false,
+            None,
+        );
 
         assert!(!status.listening);
         assert!(!status.owned);
         assert!(!status.external_listening);
         assert!(!status.open_allowed);
         assert_eq!(status.state, WebServerOwnershipState::Stopped);
+    }
+
+    #[test]
+    fn web_server_owned_status_maps_starting_and_stopping() {
+        for (lifecycle, state, listening) in [
+            (
+                WebServerLifecycle::Starting,
+                WebServerOwnershipState::Starting,
+                true,
+            ),
+            (
+                WebServerLifecycle::Stopping,
+                WebServerOwnershipState::Stopping,
+                false,
+            ),
+        ] {
+            let status = build_web_server_owned_status(
+                "0.0.0.0".to_string(),
+                8765,
+                lifecycle,
+                listening,
+                None,
+            );
+            assert_eq!(status.state, state);
+            assert_eq!(status.listening, listening);
+            assert!(status.owned);
+            assert!(!status.external_listening);
+            assert!(!status.open_allowed);
+        }
     }
 
     // §1453 D2: el fallo viaja en el status solo si describe el target actual.
@@ -3257,7 +3495,7 @@ mod tests {
         let status = build_web_server_owned_status(
             "192.168.1.12".to_string(),
             8888,
-            false,
+            WebServerLifecycle::Stopped,
             false,
             Some(failure),
         );
@@ -3378,8 +3616,171 @@ mod tests {
         assert!(mapped.is_empty());
     }
 
-    #[test]
-    fn ensure_web_remote_open_allowed_rejects_enabled_settings_without_owned_handle() {
+    async fn wait_for_web_lifecycle(
+        handle: &WebServerHandle,
+        expected: WebServerLifecycle,
+    ) -> crate::WebServerLifecycleSnapshot {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.snapshot();
+                if snapshot.lifecycle == expected {
+                    return snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("web lifecycle did not converge")
+    }
+
+    async fn start_running_web_handle(
+        handle: &WebServerHandle,
+        bind: &str,
+        port: u16,
+    ) -> Arc<crate::web::WebSocketAdmission> {
+        let lifecycle = handle.clone();
+        let bind = bind.to_string();
+        let (admission_sender, admission_receiver) = oneshot::channel();
+        let waiter = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, admission, generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(generation, bind, port));
+                assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
+                Ok::<_, String>(Some(tauri::async_runtime::spawn(async move {
+                    generation_token.cancelled().await;
+                })))
+            },
+        );
+        let admission = admission_receiver.await.expect("admission exposed");
+        assert_eq!(waiter.wait().await, Ok(true));
+        wait_for_web_lifecycle(handle, WebServerLifecycle::Running).await;
+        admission
+    }
+
+    #[tokio::test]
+    async fn stop_web_server_reports_stopped_and_waits_for_active_terminal() {
+        let stopped = WebServerHandle::default();
+        assert_eq!(stop_web_server_handle(&stopped).await, Ok(false));
+
+        let handle = WebServerHandle::default();
+        let admission = start_running_web_handle(&handle, "127.0.0.1", 8751).await;
+        let retained = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let handle_for_stop = handle.clone();
+        let mut stop_task =
+            tokio::spawn(async move { stop_web_server_handle(&handle_for_stop).await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut stop_task)
+                .await
+                .is_err(),
+            "Stop cannot report true while admitted work is retained"
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        drop(retained);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), stop_task)
+                .await
+                .expect("active Stop did not reach terminal")
+                .expect("active Stop task panicked"),
+            Ok(true)
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn stop_web_server_clears_bind_failure_published_by_late_bind() {
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let failure_recorder = handle.clone();
+        let (output_reached, release_output) = handle.gate_next_start_output();
+        let (bind_pending_sender, bind_pending_receiver) = oneshot::channel();
+        let (release_bind_sender, release_bind_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, _generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    "127.0.0.1".to_string(),
+                    8753,
+                ));
+                bind_pending_sender
+                    .send(())
+                    .expect("report pending bind to the test");
+                release_bind_receiver
+                    .await
+                    .expect("release late bind failure");
+                failure_recorder.record_bind_failure(crate::web::StartServerError::BindFailed {
+                    bind: "127.0.0.1".to_string(),
+                    addr: SocketAddr::from(([127, 0, 0, 1], 8753)),
+                    detail: "late bind failure".to_string(),
+                });
+                Ok::<_, String>(None)
+            },
+        );
+        bind_pending_receiver.await.expect("bind became pending");
+
+        let handle_for_stop = handle.clone();
+        let stop = tokio::spawn(async move { stop_web_server_handle(&handle_for_stop).await });
+        wait_for_web_lifecycle(&handle, WebServerLifecycle::Stopping).await;
+        release_bind_sender
+            .send(())
+            .expect("release pending bind after Stop linealizes");
+        assert!(
+            !output_reached
+                .await
+                .expect("late bind output reaches the supervisor"),
+            "Stop must already own the lifecycle transition"
+        );
+        assert!(
+            handle.last_bind_failure().is_some(),
+            "the late bind must really publish before terminal cleanup"
+        );
+        release_output
+            .send(())
+            .expect("release late bind result processing");
+
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        assert_eq!(stop.await.expect("late-bind Stop task panicked"), Ok(true));
+        let status = resolve_web_server_owned_status(
+            &handle,
+            ("127.0.0.1".to_string(), 8753),
+            |_addr| async { false },
+        )
+        .await;
+        assert_eq!(status.state, WebServerOwnershipState::Stopped);
+        assert!(status.bind_failure.is_none());
+        assert!(handle.last_bind_failure().is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_web_server_timeout_preserves_stopping_and_shared_deadline() {
+        let handle = WebServerHandle::default();
+        let admission = start_running_web_handle(&handle, "127.0.0.1", 8752).await;
+        let retained = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let first = handle
+            .begin_stop_with_timeout(Duration::from_millis(40))
+            .expect("running generation is owned");
+        drop(first);
+
+        assert_eq!(
+            stop_web_server_handle(&handle).await,
+            Err("Timed out waiting for web server generation to stop".to_string())
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+
+        drop(retained);
+        wait_for_web_lifecycle(&handle, WebServerLifecycle::Stopped).await;
+    }
+
+    #[tokio::test]
+    async fn ensure_web_remote_open_allowed_rejects_enabled_settings_without_owned_handle() {
         let settings = AppSettings {
             web_server_enabled: true,
             web_server_bind: "127.0.0.1".to_string(),
@@ -3387,10 +3788,62 @@ mod tests {
             ..AppSettings::default()
         };
         let handle = WebServerHandle::default();
+        assert_eq!(
+            ensure_web_remote_open_allowed(&settings, &handle).unwrap_err(),
+            "Web server is not owned by this app process"
+        );
 
-        let err = ensure_web_remote_open_allowed(&settings, &handle).unwrap_err();
+        let lifecycle = handle.clone();
+        let (factory_entered_sender, factory_entered_receiver) = oneshot::channel();
+        let (factory_release_sender, factory_release_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    "127.0.0.1".to_string(),
+                    8765,
+                ));
+                assert!(factory_entered_sender.send(()).is_ok());
+                factory_release_receiver.await.expect("release factory");
+                if generation_token.is_cancelled() {
+                    Err(WEB_SERVER_START_CANCELLED.to_string())
+                } else {
+                    Ok(None)
+                }
+            },
+        );
+        factory_entered_receiver.await.expect("factory entered");
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Starting);
+        assert_eq!(
+            ensure_web_remote_open_allowed(&settings, &handle).unwrap_err(),
+            "Web server is not owned by this app process"
+        );
+        let stop = handle.begin_stop().expect("starting generation is owned");
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        assert_eq!(
+            ensure_web_remote_open_allowed(&settings, &handle).unwrap_err(),
+            "Web server is not owned by this app process"
+        );
+        assert!(factory_release_sender.send(()).is_ok());
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        stop.wait().await.expect("stopping generation drains");
 
-        assert_eq!(err, "Web server is not owned by this app process");
+        let mismatched = WebServerHandle::default();
+        start_running_web_handle(&mismatched, "127.0.0.1", 8766).await;
+        assert_eq!(
+            ensure_web_remote_open_allowed(&settings, &mismatched).unwrap_err(),
+            "Web server is not owned by this app process"
+        );
+        mismatched
+            .begin_stop()
+            .expect("mismatched running generation is owned")
+            .wait()
+            .await
+            .expect("mismatched generation drains");
     }
 
     #[tokio::test]
@@ -3402,14 +3855,409 @@ mod tests {
             ..AppSettings::default()
         };
         let handle = WebServerHandle::default();
-        let task = tauri::async_runtime::spawn(async {
-            std::future::pending::<()>().await;
+        start_running_web_handle(&handle, "127.0.0.1", 8765).await;
+
+        let authorized = ensure_web_remote_open_allowed(&settings, &handle)
+            .expect("matching Running generation is authorized");
+        assert_eq!(authorized.lifecycle, WebServerLifecycle::Running);
+        assert_eq!(authorized.endpoint, Some(("127.0.0.1".to_string(), 8765)));
+        assert!(handle.snapshot_is_current(&authorized));
+
+        let stop = handle.begin_stop().expect("running generation is owned");
+        assert!(!handle.snapshot_is_current(&authorized));
+        assert_eq!(
+            ensure_web_remote_open_allowed(&settings, &handle).unwrap_err(),
+            "Web server is not owned by this app process"
+        );
+        stop.wait().await.expect("authorized generation drains");
+    }
+
+    #[tokio::test]
+    async fn web_server_owned_status_retries_when_starting_revision_changes() {
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let endpoint_a = ("127.0.0.1".to_string(), 8811);
+        let endpoint_b = ("127.0.0.1".to_string(), 8812);
+        let (factory_entered_sender, factory_entered_receiver) = oneshot::channel();
+        let (factory_release_sender, factory_release_receiver) = oneshot::channel();
+        let endpoint_a_for_factory = endpoint_a.clone();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    endpoint_a_for_factory.0,
+                    endpoint_a_for_factory.1,
+                ));
+                assert!(factory_entered_sender.send(()).is_ok());
+                factory_release_receiver.await.expect("release factory");
+                if generation_token.is_cancelled() {
+                    Err(WEB_SERVER_START_CANCELLED.to_string())
+                } else {
+                    Ok(None)
+                }
+            },
+        );
+        factory_entered_receiver.await.expect("factory entered");
+        let before = handle.snapshot();
+        assert_eq!(before.lifecycle, WebServerLifecycle::Starting);
+        assert_eq!(before.endpoint, Some(endpoint_a.clone()));
+        let generation = before.generation.expect("starting generation id");
+
+        let (probe_a_sender, probe_a_receiver) = oneshot::channel();
+        let (probe_b_sender, probe_b_receiver) = oneshot::channel();
+        let replies = Arc::new(Mutex::new(VecDeque::from([
+            probe_a_receiver,
+            probe_b_receiver,
+        ])));
+        let (calls_sender, mut calls_receiver) = mpsc::unbounded_channel();
+        let status_handle = handle.clone();
+        let replies_for_probe = Arc::clone(&replies);
+        let status_task = tokio::spawn(async move {
+            resolve_web_server_owned_status(
+                &status_handle,
+                ("127.0.0.1".to_string(), 8899),
+                move |addr| {
+                    calls_sender.send(addr).expect("record status probe");
+                    let reply = replies_for_probe
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("configured probe response");
+                    async move { reply.await.expect("release status probe") }
+                },
+            )
+            .await
+        });
+        assert_eq!(
+            calls_receiver.recv().await.expect("first probe call"),
+            web_server_probe_addr(&endpoint_a.0, endpoint_a.1).unwrap()
+        );
+        assert!(handle.publish_effective_endpoint(generation, endpoint_b.0.clone(), endpoint_b.1,));
+        let after_publish = handle.snapshot();
+        assert_eq!(after_publish.generation, before.generation);
+        assert_eq!(after_publish.lifecycle, WebServerLifecycle::Starting);
+        assert_eq!(after_publish.revision, before.revision + 1);
+        assert_eq!(after_publish.endpoint, Some(endpoint_b.clone()));
+        assert!(probe_a_sender.send(true).is_ok());
+        assert_eq!(
+            calls_receiver.recv().await.expect("second probe call"),
+            web_server_probe_addr(&endpoint_b.0, endpoint_b.1).unwrap()
+        );
+        assert!(probe_b_sender.send(false).is_ok());
+        let status = status_task.await.expect("status task panicked");
+        assert_eq!(status.bind, endpoint_b.0);
+        assert_eq!(status.port, endpoint_b.1);
+        assert!(!status.listening);
+        assert_eq!(status.state, WebServerOwnershipState::Starting);
+        assert!(status.owned);
+        assert!(!status.open_allowed);
+
+        let stop = handle.begin_stop().expect("starting generation is owned");
+        assert!(factory_release_sender.send(()).is_ok());
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        stop.wait().await.expect("starting generation drains");
+    }
+
+    #[tokio::test]
+    async fn web_server_owned_status_retries_when_phase_changes_during_probe() {
+        let handle = WebServerHandle::default();
+        let endpoint = ("127.0.0.1".to_string(), 8813);
+        let admission = start_running_web_handle(&handle, &endpoint.0, endpoint.1).await;
+        let retained = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let (running_probe_sender, running_probe_receiver) = oneshot::channel();
+        let (stopping_probe_sender, stopping_probe_receiver) = oneshot::channel();
+        let replies = Arc::new(Mutex::new(VecDeque::from([
+            running_probe_receiver,
+            stopping_probe_receiver,
+        ])));
+        let (calls_sender, mut calls_receiver) = mpsc::unbounded_channel();
+        let status_handle = handle.clone();
+        let replies_for_probe = Arc::clone(&replies);
+        let status_task = tokio::spawn(async move {
+            resolve_web_server_owned_status(
+                &status_handle,
+                ("127.0.0.1".to_string(), 8899),
+                move |addr| {
+                    calls_sender.send(addr).expect("record status probe");
+                    let reply = replies_for_probe
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("configured probe response");
+                    async move { reply.await.expect("release status probe") }
+                },
+            )
+            .await
         });
 
-        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+        let expected_probe = web_server_probe_addr(&endpoint.0, endpoint.1).unwrap();
+        assert_eq!(
+            calls_receiver.recv().await.expect("Running probe call"),
+            expected_probe
+        );
+        let stop = handle.begin_stop().expect("running generation is owned");
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        assert!(running_probe_sender.send(true).is_ok());
+        assert_eq!(
+            calls_receiver.recv().await.expect("Stopping probe call"),
+            expected_probe
+        );
+        assert!(stopping_probe_sender.send(false).is_ok());
+        let status = status_task.await.expect("status task panicked");
+        assert_eq!(status.state, WebServerOwnershipState::Stopping);
+        assert!(status.owned);
+        assert!(!status.listening);
+        assert!(!status.external_listening);
+        assert!(!status.open_allowed);
 
-        assert!(ensure_web_remote_open_allowed(&settings, &handle).is_ok());
-        assert!(handle.abort_running());
+        drop(retained);
+        stop.wait().await.expect("stopping generation drains");
+    }
+
+    #[tokio::test]
+    async fn web_server_owned_status_stopping_before_endpoint_uses_configured_fallback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind configured fallback listener");
+        let fallback = listener.local_addr().expect("fallback listener address");
+        let handle = WebServerHandle::default();
+        let (factory_entered_sender, factory_entered_receiver) = oneshot::channel();
+        let (factory_release_sender, factory_release_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |_generation, _admission, _generation_token| async move {
+                assert!(factory_entered_sender.send(()).is_ok());
+                factory_release_receiver.await.expect("release factory");
+                Err(WEB_SERVER_START_CANCELLED.to_string())
+            },
+        );
+        factory_entered_receiver.await.expect("factory entered");
+        let stop = handle.begin_stop().expect("starting generation is owned");
+        let stopping = handle.snapshot();
+        assert_eq!(stopping.lifecycle, WebServerLifecycle::Stopping);
+        assert_eq!(stopping.endpoint, None);
+        let configured = (fallback.ip().to_string(), fallback.port());
+
+        let listening =
+            resolve_web_server_owned_status(&handle, configured.clone(), super::is_tcp_listening)
+                .await;
+        assert_eq!(listening.bind, configured.0);
+        assert_eq!(listening.port, configured.1);
+        assert!(listening.listening);
+        assert_eq!(listening.state, WebServerOwnershipState::Stopping);
+        assert!(listening.owned);
+        assert!(!listening.external_listening);
+        assert!(!listening.open_allowed);
+
+        let failed_probe =
+            resolve_web_server_owned_status(&handle, configured, |_addr| async { false }).await;
+        assert!(!failed_probe.listening);
+        assert_eq!(failed_probe.state, WebServerOwnershipState::Stopping);
+        assert!(failed_probe.owned);
+        assert!(!failed_probe.external_listening);
+        assert!(!failed_probe.open_allowed);
+
+        assert!(factory_release_sender.send(()).is_ok());
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        stop.wait().await.expect("stopping generation drains");
+    }
+
+    #[tokio::test]
+    async fn web_server_owned_status_stopping_retries_when_endpoint_appears_during_fallback_probe()
+    {
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let fallback_a = ("127.0.0.1".to_string(), 8821);
+        let endpoint_b = ("127.0.0.1".to_string(), 8822);
+        let endpoint_b_for_factory = endpoint_b.clone();
+        let (factory_entered_sender, factory_entered_receiver) = oneshot::channel();
+        let (publish_sender, publish_receiver) = oneshot::channel();
+        let (published_sender, published_receiver) = oneshot::channel();
+        let (finish_sender, finish_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, _generation_token| async move {
+                assert!(factory_entered_sender.send(()).is_ok());
+                publish_receiver
+                    .await
+                    .expect("release endpoint publication");
+                assert!(
+                    !lifecycle.publish_effective_endpoint(
+                        generation,
+                        endpoint_b_for_factory.0,
+                        endpoint_b_for_factory.1,
+                    ),
+                    "Stopping publication updates status but cannot continue start"
+                );
+                assert!(published_sender.send(()).is_ok());
+                finish_receiver.await.expect("release factory terminal");
+                Err(WEB_SERVER_START_CANCELLED.to_string())
+            },
+        );
+        factory_entered_receiver.await.expect("factory entered");
+        let stop = handle.begin_stop().expect("starting generation is owned");
+        let before = handle.snapshot();
+        assert_eq!(before.lifecycle, WebServerLifecycle::Stopping);
+        assert_eq!(before.endpoint, None);
+
+        let (probe_a_sender, probe_a_receiver) = oneshot::channel();
+        let (probe_b_sender, probe_b_receiver) = oneshot::channel();
+        let replies = Arc::new(Mutex::new(VecDeque::from([
+            probe_a_receiver,
+            probe_b_receiver,
+        ])));
+        let (calls_sender, mut calls_receiver) = mpsc::unbounded_channel();
+        let status_handle = handle.clone();
+        let replies_for_probe = Arc::clone(&replies);
+        let fallback_for_status = fallback_a.clone();
+        let status_task = tokio::spawn(async move {
+            resolve_web_server_owned_status(&status_handle, fallback_for_status, move |addr| {
+                calls_sender.send(addr).expect("record status probe");
+                let reply = replies_for_probe
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("configured probe response");
+                async move { reply.await.expect("release status probe") }
+            })
+            .await
+        });
+        assert_eq!(
+            calls_receiver.recv().await.expect("fallback probe call"),
+            web_server_probe_addr(&fallback_a.0, fallback_a.1).unwrap()
+        );
+        assert!(publish_sender.send(()).is_ok());
+        published_receiver.await.expect("endpoint published");
+        let after_publish = handle.snapshot();
+        assert_eq!(after_publish.generation, before.generation);
+        assert_eq!(after_publish.lifecycle, WebServerLifecycle::Stopping);
+        assert_eq!(after_publish.revision, before.revision + 1);
+        assert_eq!(after_publish.endpoint, Some(endpoint_b.clone()));
+        assert!(probe_a_sender.send(true).is_ok());
+        assert_eq!(
+            calls_receiver.recv().await.expect("effective probe call"),
+            web_server_probe_addr(&endpoint_b.0, endpoint_b.1).unwrap()
+        );
+        assert!(probe_b_sender.send(false).is_ok());
+        let status = status_task.await.expect("status task panicked");
+        assert_eq!(status.bind, endpoint_b.0);
+        assert_eq!(status.port, endpoint_b.1);
+        assert!(!status.listening);
+        assert_eq!(status.state, WebServerOwnershipState::Stopping);
+        assert!(status.owned);
+        assert!(!status.external_listening);
+        assert!(!status.open_allowed);
+
+        assert!(finish_sender.send(()).is_ok());
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        stop.wait().await.expect("stopping generation drains");
+    }
+
+    async fn assert_wildcard_owned_phase_probe(
+        handle: &WebServerHandle,
+        expected_state: WebServerOwnershipState,
+        probe_result: bool,
+        port: u16,
+    ) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_probe = Arc::clone(&calls);
+        let status =
+            resolve_web_server_owned_status(handle, ("0.0.0.0".to_string(), port), move |addr| {
+                calls_for_probe.lock().unwrap().push(addr);
+                async move { probe_result }
+            })
+            .await;
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))]
+        );
+        assert_eq!(status.state, expected_state);
+        assert_eq!(status.listening, probe_result);
+        assert!(status.owned);
+        assert!(!status.external_listening);
+        assert_eq!(
+            status.open_allowed,
+            expected_state == WebServerOwnershipState::OwnedRunning
+        );
+        assert_eq!(status.bind, "0.0.0.0");
+        assert_eq!(status.port, port);
+    }
+
+    #[tokio::test]
+    async fn web_server_owned_status_wildcard_uses_probe_in_all_owned_phases() {
+        let port = 8831;
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let (factory_entered_sender, factory_entered_receiver) = oneshot::channel();
+        let (factory_release_sender, factory_release_receiver) = oneshot::channel();
+        let (admission_sender, admission_receiver) = oneshot::channel();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, admission, generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    "0.0.0.0".to_string(),
+                    port,
+                ));
+                assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
+                assert!(factory_entered_sender.send(()).is_ok());
+                factory_release_receiver.await.expect("release factory");
+                Ok::<_, String>(Some(tauri::async_runtime::spawn(async move {
+                    generation_token.cancelled().await;
+                })))
+            },
+        );
+        factory_entered_receiver.await.expect("factory entered");
+        let admission = admission_receiver.await.expect("admission exposed");
+        for result in [true, false] {
+            assert_wildcard_owned_phase_probe(
+                &handle,
+                WebServerOwnershipState::Starting,
+                result,
+                port,
+            )
+            .await;
+        }
+
+        assert!(factory_release_sender.send(()).is_ok());
+        assert_eq!(start.wait().await, Ok(true));
+        for result in [true, false] {
+            assert_wildcard_owned_phase_probe(
+                &handle,
+                WebServerOwnershipState::OwnedRunning,
+                result,
+                port,
+            )
+            .await;
+        }
+
+        let retained = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let stop = handle.begin_stop().expect("running generation is owned");
+        for result in [true, false] {
+            assert_wildcard_owned_phase_probe(
+                &handle,
+                WebServerOwnershipState::Stopping,
+                result,
+                port,
+            )
+            .await;
+        }
+        drop(retained);
+        stop.wait().await.expect("wildcard generation drains");
     }
 
     fn profile_assignment_request(

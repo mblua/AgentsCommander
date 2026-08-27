@@ -972,7 +972,7 @@ const ProjectPanel: Component = () => {
               : null,
             resolveReplicaAgentLabel(session, replica),
             resolveReplicaProfileBadge(session, replica),
-            replica.isCoordinator ? "coordinator" : null,
+            replica.isCoordinator ? "orchestrator" : null,
             extraBadge,
             sessionSearchText(session)
           );
@@ -1013,7 +1013,7 @@ const ProjectPanel: Component = () => {
           );
         };
         const teamMemberMatches = (team: AcTeam, agentName: string) =>
-          matchesFilterText(teamMemberDisplayLabel(agentName), agentName === team.coordinator ? "coordinator" : null);
+          matchesFilterText(teamMemberDisplayLabel(agentName), agentName === team.coordinator ? "orchestrator" : null);
         const teamOwnMatches = (team: AcTeam) => matchesFilterText(team.name);
         const teamMatches = (team: AcTeam) =>
           teamOwnMatches(team) || team.agents.some((agentName) => teamMemberMatches(team, agentName));
@@ -2203,7 +2203,7 @@ const ProjectPanel: Component = () => {
             () => isCoord() && !!effectiveManuallyClosedAt(replica) && !isSessionLive(session())
           );
           const idleBadgeTitle = () =>
-            "Time this team has been idle. Resets when you message the coordinator or any member is active (persists across restarts)." +
+            "Time this team has been idle. Resets when you message the orchestrator or any member is active (persists across restarts)." +
             (settingsStore.current?.coordinatorAutoCloseEnabled
               ? " The team auto-closes at the configured limit."
               : "");
@@ -2380,7 +2380,7 @@ const ProjectPanel: Component = () => {
                   <Show when={manuallyClosed()}>
                     <span
                       class="ac-discovery-badge coord-autoclosed"
-                      title="This team's coordinator was closed manually. Reopen it to clear."
+                      title="This team's orchestrator was closed manually. Reopen it to clear."
                     >
                       MANUALLY-CLOSED
                     </span>
@@ -2441,7 +2441,7 @@ const ProjectPanel: Component = () => {
                     />
                   </Show>
                   <Show when={isCoord()}>
-                    <span class="ac-discovery-badge coord">coordinator</span>
+                    <span class="ac-discovery-badge coord">orchestrator</span>
                   </Show>
                   <Show when={extraBadge}>
                     <span class="ac-discovery-badge team">{extraBadge}</span>
@@ -2687,7 +2687,7 @@ const ProjectPanel: Component = () => {
                             &#x25BE;
                           </span>
                           <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Coordinators</span>
+                            <span class="ac-wg-name">Orchestrators</span>
                           </div>
                           <span class="ac-team-count">{filteredCoordinatorItems().length}</span>
                         </div>
@@ -3285,7 +3285,7 @@ const ProjectPanel: Component = () => {
                                             <div class="ac-team-member" title={agentName}>
                                               <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
                                               <Show when={agentName === team.coordinator}>
-                                                <span class="ac-discovery-badge coord">coordinator</span>
+                                                <span class="ac-discovery-badge coord">orchestrator</span>
                                               </Show>
                                             </div>
                                           );
@@ -4233,7 +4233,7 @@ const ProjectPanel: Component = () => {
         <div class="modal-overlay" data-ac-testid="coordinatorClose.modal">
           <div class="agent-modal" style={{ "max-width": "380px" }}>
             <div class="agent-modal-header">
-              <span class="agent-modal-title">Close coordinator?</span>
+              <span class="agent-modal-title">Close orchestrator?</span>
             </div>
             <div class="new-agent-form">
               <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>

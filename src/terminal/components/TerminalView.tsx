@@ -13,10 +13,19 @@ import {
 import { isBrowser, isTauri } from "../../shared/platform";
 import {
   registerPtyViewportProbe,
+  registerUiTerminalController,
   takeSpawnViewport,
 } from "../../shared/terminal-viewport";
 import { terminalStore } from "../stores/terminal";
-import type {
+import {
+  MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT,
+  type MainTerminalLayoutGeometry,
+  type MainTerminalLayoutObserverAck,
+  type MainTerminalLayoutPulsePhaseTrace,
+  type MainTerminalLayoutPulseRequest,
+  type MainTerminalLayoutPulseResult,
+  type MainTerminalLayoutPulseSample,
+  type MainTerminalLayoutPulseTrace,
   PtyOutputEvent,
   PtyScreenSnapshot,
   PtyViewport,
@@ -43,6 +52,59 @@ const SNAPSHOT_RECONCILE_LIMIT_BYTES = 2 * 1024 * 1024;
 
 const PTY_RESIZE_RETRY_DELAY_MS = 120;
 const PTY_RESIZE_MAX_RETRIES = 3;
+
+type PendingPtyResizeAttempt = {
+  cols: number;
+  rows: number;
+  completion: Promise<"sent" | "failed">;
+};
+
+type SettledMainTerminalLayoutPulseTrace = {
+  attachGeneration: number;
+  trace: MainTerminalLayoutPulseTrace;
+};
+
+type TerminalLayoutObserverState = {
+  observedObserverEpoch: number;
+  completedObserverAck: MainTerminalLayoutObserverAck | null;
+};
+
+type TerminalLayoutObserverRecord = {
+  epoch: number;
+  entry: SessionTerminalEntry;
+};
+
+const emptyLayoutPulsePhase = (): MainTerminalLayoutPulsePhaseTrace => ({
+  sidebarWidth: null,
+  hostWidth: null,
+  cols: null,
+  rows: null,
+  baselineObservedEpoch: null,
+  completedObserverAck: null,
+});
+
+const makeLocalLayoutPulseResult = (
+  requestId: number,
+  sessionId: string,
+  attachGeneration: number,
+  status: "skipped" | "failed",
+  reason: "unhandled" | "exception",
+): MainTerminalLayoutPulseResult => {
+  const trace: MainTerminalLayoutPulseTrace = {
+    version: 1,
+    requestId,
+    sessionId,
+    attachGeneration,
+    status,
+    reason,
+    original: emptyLayoutPulsePhase(),
+    expanded: emptyLayoutPulsePhase(),
+    restored: emptyLayoutPulsePhase(),
+    dwellMs: 0,
+    settingsWritesDelta: 0,
+  };
+  return { status, reason, trace };
+};
 
 const TerminalView: Component<TerminalViewProps> = (props) => {
   let hostRef!: HTMLDivElement;
@@ -112,6 +174,21 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     beforeResourceDispose,
   });
 
+  const pendingPtyResizeAttempts = new WeakMap<
+    SessionTerminalEntry,
+    Map<string, PendingPtyResizeAttempt>
+  >();
+  const layoutPulseTraces = new WeakMap<
+    SessionTerminalEntry,
+    SettledMainTerminalLayoutPulseTrace
+  >();
+  const layoutObserverStates = new WeakMap<
+    SessionTerminalEntry,
+    TerminalLayoutObserverState
+  >();
+  let layoutObserverEpoch = 0;
+  let layoutPulseRequestId = 0;
+
   const setReplayStatus = (entry: SessionTerminalEntry, message: string | null) => {
     entry.replayStatus.textContent = message ?? "";
     entry.replayStatus.hidden = !message;
@@ -162,6 +239,27 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     replayStatus.hidden = true;
     replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
     container.appendChild(replayStatus);
+
+    const gridStatus = document.createElement("div");
+    gridStatus.className = "terminal-grid-status";
+    gridStatus.setAttribute("data-testid", `terminal-grid-size-${sessionId}`);
+    gridStatus.setAttribute("aria-label", "Terminal grid size");
+    gridStatus.style.position = "absolute";
+    gridStatus.style.right = "8px";
+    gridStatus.style.bottom = "4px";
+    gridStatus.style.zIndex = "2";
+    gridStatus.style.pointerEvents = "none";
+    gridStatus.style.padding = "1px 3px";
+    gridStatus.style.color = "var(--statusbar-fg)";
+    gridStatus.style.background = "var(--terminal-bg)";
+    gridStatus.style.fontFamily = "var(--font-mono)";
+    gridStatus.style.fontSize = "10px";
+    gridStatus.style.opacity = "0.75";
+    const updateGridStatus = (cols: number, rows: number) => {
+      gridStatus.textContent = `COLS: ${cols} ROWS: ${rows}`;
+    };
+    updateGridStatus(terminal.cols, terminal.rows);
+    container.appendChild(gridStatus);
 
     let webglAddon: WebglAddon | null = null;
     try {
@@ -241,6 +339,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
 
     terminal.onResize(({ cols, rows }) => {
+      updateGridStatus(cols, rows);
       const entry = registry.get(sessionId);
       if (
         visibleSessionId !== sessionId ||
@@ -342,39 +441,85 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }, PTY_RESIZE_RETRY_DELAY_MS * attempt);
   };
 
-  // #1489: awaitable typed resize. The settle awaits it so the viewport
-  // bottoms only after the fitted grid reached the PTY (or was deduplicated
-  // because the PTY already holds it). The three ordinary call sites ignore
-  // the outcome with `void`; only the attach settle consumes it.
+  const ptyResizeAttemptKey = (cols: number, rows: number): string => `${cols}:${rows}`;
+
+  const startPtyResizeAttempt = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    cols: number,
+    rows: number,
+  ): Promise<"sent" | "failed"> => {
+    const previous = entry.lastSentViewport;
+    reportSpawnSizeDrift(sessionId, entry, cols, rows);
+
+    const sent: PtyViewport = { cols, rows };
+    entry.lastSentViewport = sent;
+
+    let attempts = pendingPtyResizeAttempts.get(entry);
+    if (!attempts) {
+      attempts = new Map<string, PendingPtyResizeAttempt>();
+      pendingPtyResizeAttempts.set(entry, attempts);
+    }
+    const key = ptyResizeAttemptKey(cols, rows);
+    const completion = (async (): Promise<"sent" | "failed"> => {
+      try {
+        await PtyAPI.resize(sessionId, cols, rows);
+        entry.resizeRetryAttempts = 0;
+        return "sent";
+      } catch (error: unknown) {
+        if (entry.lastSentViewport === sent) {
+          entry.lastSentViewport = previous;
+        }
+        console.warn(`[terminal] pty_resize ${sessionId} failed:`, error);
+
+        scheduleResizeRetry(sessionId, entry);
+        return "failed";
+      }
+    })();
+    attempts.set(key, { cols, rows, completion });
+    void completion.then(() => {
+      const currentAttempts = pendingPtyResizeAttempts.get(entry);
+      const current = currentAttempts?.get(key);
+      if (current?.completion !== completion) {
+        return;
+      }
+      currentAttempts!.delete(key);
+      if (currentAttempts!.size === 0) {
+        pendingPtyResizeAttempts.delete(entry);
+      }
+    });
+    return completion;
+  };
+
+  // #1489: ordinary callers preserve optimistic tuple dedup. Only the final
+  // attach confirmation below deliberately requires a real transport success.
   const sendPtyResize = async (
     sessionId: string,
     entry: SessionTerminalEntry,
     cols: number,
-    rows: number
+    rows: number,
   ): Promise<"sent" | "deduplicated" | "failed"> => {
     const previous = entry.lastSentViewport;
     if (previous && previous.cols === cols && previous.rows === rows) {
       return "deduplicated";
     }
 
-    reportSpawnSizeDrift(sessionId, entry, cols, rows);
+    return startPtyResizeAttempt(sessionId, entry, cols, rows);
+  };
 
-    const sent: PtyViewport = { cols, rows };
-    entry.lastSentViewport = sent;
-
-    try {
-      await PtyAPI.resize(sessionId, cols, rows);
-      entry.resizeRetryAttempts = 0;
-      return "sent";
-    } catch (error: unknown) {
-      if (entry.lastSentViewport === sent) {
-        entry.lastSentViewport = previous;
-      }
-      console.warn(`[terminal] pty_resize ${sessionId} failed:`, error);
-
-      scheduleResizeRetry(sessionId, entry);
-      return "failed";
+  const confirmFinalPtyResize = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    cols: number,
+    rows: number,
+  ): Promise<"sent" | "failed"> => {
+    const pending = pendingPtyResizeAttempts
+      .get(entry)
+      ?.get(ptyResizeAttemptKey(cols, rows));
+    if (pending && pending.cols === cols && pending.rows === rows) {
+      return pending.completion;
     }
+    return startPtyResizeAttempt(sessionId, entry, cols, rows);
   };
 
   const syncViewport = (sessionId: string, skipPtyResize = false) => {
@@ -388,6 +533,37 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       void sendPtyResize(sessionId, entry, entry.terminal.cols, entry.terminal.rows);
     }
   };
+
+  const isLiveVisibleEntry = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+  ): boolean =>
+    visibleSessionId === sessionId &&
+    registry.get(sessionId) === entry &&
+    registry.getVisible() === sessionId &&
+    !entry.destroyed &&
+    !entry.container.hidden &&
+    hostRef.isConnected &&
+    entry.container.isConnected &&
+    hostRef.contains(entry.container);
+
+  const captureLayoutGeometry = (
+    entry: SessionTerminalEntry,
+  ): MainTerminalLayoutGeometry => ({
+    hostWidth: entry.container.getBoundingClientRect().width,
+    cols: entry.terminal.cols,
+    rows: entry.terminal.rows,
+  });
+
+  const isValidLayoutGeometry = (
+    geometry: MainTerminalLayoutGeometry,
+  ): boolean =>
+    Number.isFinite(geometry.hostWidth) &&
+    geometry.hostWidth >= 0 &&
+    Number.isSafeInteger(geometry.cols) &&
+    geometry.cols >= 0 &&
+    Number.isSafeInteger(geometry.rows) &&
+    geometry.rows >= 0;
 
   const measureFittedViewport = (): PtyViewport | null => {
     if (!visibleSessionId) {
@@ -409,18 +585,67 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   onCleanup(registerPtyViewportProbe(measureFittedViewport));
 
-  const scheduleViewportSync = (sessionId: string) => {
+  const scheduleViewportSync = (
+    sessionId: string,
+    observerRecord?: TerminalLayoutObserverRecord,
+  ) => {
     requestAnimationFrame(() => {
-      if (sessionId !== visibleSessionId) {
+      if (!observerRecord) {
+        if (sessionId !== visibleSessionId) {
+          return;
+        }
+        syncViewport(sessionId);
+        requestAnimationFrame(() => {
+          if (sessionId === visibleSessionId) {
+            syncViewport(sessionId);
+          }
+        });
         return;
       }
 
-      syncViewport(sessionId);
+      const { entry, epoch } = observerRecord;
+      if (!isLiveVisibleEntry(sessionId, entry)) {
+        return;
+      }
+      try {
+        syncViewport(sessionId);
+      } catch {
+        return;
+      }
+      if (!isLiveVisibleEntry(sessionId, entry)) {
+        return;
+      }
+      const first = captureLayoutGeometry(entry);
+      if (!isValidLayoutGeometry(first)) {
+        return;
+      }
 
       requestAnimationFrame(() => {
-        if (sessionId === visibleSessionId) {
-          syncViewport(sessionId);
+        if (!isLiveVisibleEntry(sessionId, entry)) {
+          return;
         }
+        try {
+          syncViewport(sessionId);
+        } catch {
+          return;
+        }
+        if (!isLiveVisibleEntry(sessionId, entry)) {
+          return;
+        }
+        const second = captureLayoutGeometry(entry);
+        if (!isValidLayoutGeometry(second) || !isLiveVisibleEntry(sessionId, entry)) {
+          return;
+        }
+
+        const state = layoutObserverStates.get(entry);
+        if (
+          !state ||
+          (state.completedObserverAck !== null &&
+            state.completedObserverAck.epoch >= epoch)
+        ) {
+          return;
+        }
+        state.completedObserverAck = { epoch, first, second };
       });
     });
   };
@@ -692,6 +917,86 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     attachedSessionId === sessionId &&
     visibleSessionId === sessionId;
 
+  const sampleMainLayoutPulse = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    generation: number,
+  ): MainTerminalLayoutPulseSample | null => {
+    if (
+      !isCurrentAttach(sessionId, entry, generation) ||
+      !isLiveVisibleEntry(sessionId, entry)
+    ) {
+      return null;
+    }
+    const geometry = captureLayoutGeometry(entry);
+    const observerState = layoutObserverStates.get(entry);
+    return {
+      ...geometry,
+      observedObserverEpoch: observerState?.observedObserverEpoch ?? 0,
+      completedObserverAck: observerState?.completedObserverAck ?? null,
+    };
+  };
+
+  const requestMainLayoutPulse = (
+    sessionId: string,
+    entry: SessionTerminalEntry,
+    generation: number,
+  ): Promise<MainTerminalLayoutPulseResult> => {
+    const requestId = layoutPulseRequestId;
+    layoutPulseRequestId =
+      layoutPulseRequestId < Number.MAX_SAFE_INTEGER ? layoutPulseRequestId + 1 : 0;
+
+    return new Promise((resolve) => {
+      let completed = false;
+      const complete = (result: MainTerminalLayoutPulseResult): void => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        resolve(result);
+      };
+      const request: MainTerminalLayoutPulseRequest = {
+        requestId,
+        sessionId,
+        attachGeneration: generation,
+        accepted: false,
+        sample: () => sampleMainLayoutPulse(sessionId, entry, generation),
+        complete,
+      };
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent<MainTerminalLayoutPulseRequest>(
+            MAIN_TERMINAL_LAYOUT_PULSE_REQUEST_EVENT,
+            { detail: request },
+          ),
+        );
+      } catch {
+        complete(
+          makeLocalLayoutPulseResult(
+            requestId,
+            sessionId,
+            generation,
+            "failed",
+            "exception",
+          ),
+        );
+        return;
+      }
+      if (!request.accepted) {
+        complete(
+          makeLocalLayoutPulseResult(
+            requestId,
+            sessionId,
+            generation,
+            "skipped",
+            "unhandled",
+          ),
+        );
+      }
+    });
+  };
+
   const clearSnapshotSettleTimer = (entry: SessionTerminalEntry) => {
     if (entry.snapshotSettleTimer !== null) {
       clearTimeout(entry.snapshotSettleTimer);
@@ -721,6 +1026,113 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const attachGenerations = new WeakMap<SessionTerminalEntry, number>();
   const attachDrains = new WeakMap<SessionTerminalEntry, AttachDrain>();
+
+  onCleanup(
+    registerUiTerminalController(({ element, sessionId, operation }) => {
+      if (
+        element.getAttribute("data-ac-testid") !== `terminal.session.${sessionId}` ||
+        element.getAttribute("data-ac-session-id") !== sessionId
+      ) {
+        return {
+          ok: false,
+          error: "terminal_target_mismatch",
+          message: "Terminal target metadata no longer matches the requested session.",
+        };
+      }
+
+      const entry = registry.get(sessionId);
+      if (!entry || entry.destroyed) {
+        return {
+          ok: false,
+          error: "terminal_entry_stale",
+          message: "The requested terminal entry is no longer live.",
+        };
+      }
+      if (entry.container !== element) {
+        return {
+          ok: false,
+          error: "terminal_target_mismatch",
+          message: "The requested terminal container is not the current session entry.",
+        };
+      }
+
+      const terminalElement = entry.terminal.element;
+      if (
+        !entry.container.isConnected ||
+        terminalElement?.isConnected !== true ||
+        !entry.container.contains(terminalElement)
+      ) {
+        return {
+          ok: false,
+          error: "terminal_entry_stale",
+          message: "The requested terminal entry is disconnected.",
+        };
+      }
+      if (
+        visibleSessionId !== sessionId ||
+        registry.getVisible() !== sessionId ||
+        entry.container.hidden
+      ) {
+        return {
+          ok: false,
+          error: "terminal_session_not_visible",
+          message: "The requested terminal session is not visible in this WebView.",
+        };
+      }
+
+      switch (operation.kind) {
+        case "query":
+          break;
+        case "top":
+          entry.terminal.scrollToTop();
+          break;
+        case "bottom":
+          entry.terminal.scrollToBottom();
+          break;
+        case "line":
+          entry.terminal.scrollToLine(operation.value);
+          break;
+        case "lines":
+          entry.terminal.scrollLines(operation.value);
+          break;
+        case "pages":
+          entry.terminal.scrollPages(operation.value);
+          break;
+      }
+
+      const active = entry.terminal.buffer.active;
+      if (operation.kind !== "query" && active.viewportY < active.baseY) {
+        const drain = attachDrains.get(entry);
+        if (drain) {
+          drain.userScrolled = true;
+        }
+      }
+
+      const currentGeneration = attachGenerations.get(entry);
+      const settledLayoutPulse = layoutPulseTraces.get(entry);
+      const layoutPulse =
+        currentGeneration !== undefined &&
+        settledLayoutPulse?.attachGeneration === currentGeneration &&
+        settledLayoutPulse.trace.attachGeneration === currentGeneration
+          ? settledLayoutPulse.trace
+          : undefined;
+
+      return {
+        ok: true,
+        target: {
+          sessionId,
+          baseY: active.baseY,
+          viewportY: active.viewportY,
+          length: active.length,
+          cols: entry.terminal.cols,
+          rows: entry.terminal.rows,
+          type: active.type,
+          atBottom: active.viewportY === active.baseY,
+          ...(layoutPulse ? { layoutPulse } : {}),
+        },
+      };
+    }),
+  );
 
   const concludeSnapshotFetch = (
     sessionId: string,
@@ -864,7 +1276,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       if (!isCurrentAttach(sessionId, entry, generation)) {
         return;
       }
-      void settleAttachViewport(sessionId, entry, generation, snapshot);
+      void settleAttachViewport(sessionId, entry, generation, snapshot).catch((error) => {
+        console.warn(`[terminal] attach settle ${sessionId} failed:`, error);
+      });
     });
   };
 
@@ -880,13 +1294,33 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     generation: number,
     snapshot: PtyScreenSnapshot
   ): Promise<void> => {
-    entry.fitAddon.fit();
-    const resizeOutcome = await sendPtyResize(
-      sessionId,
-      entry,
-      entry.terminal.cols,
-      entry.terminal.rows
-    );
+    let pulseTrace: MainTerminalLayoutPulseTrace | null = null;
+    let resizeOutcome: "sent" | "deduplicated" | "failed";
+    if (snapshot.data.length > 0) {
+      const pulseResult = await requestMainLayoutPulse(sessionId, entry, generation);
+      pulseTrace = pulseResult.trace;
+      if (!isCurrentAttach(sessionId, entry, generation)) {
+        return;
+      }
+
+      entry.fitAddon.fit();
+      const finalCols = entry.terminal.cols;
+      const finalRows = entry.terminal.rows;
+      resizeOutcome = await confirmFinalPtyResize(
+        sessionId,
+        entry,
+        finalCols,
+        finalRows,
+      );
+    } else {
+      entry.fitAddon.fit();
+      resizeOutcome = await sendPtyResize(
+        sessionId,
+        entry,
+        entry.terminal.cols,
+        entry.terminal.rows,
+      );
+    }
     if (!isCurrentAttach(sessionId, entry, generation)) {
       return;
     }
@@ -905,6 +1339,18 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         `snapshotRows=${String(snapshot.rows)} seedBytes=${snapshot.data.length} ` +
         `resize=${resizeOutcome}`
     );
+
+    if (!isCurrentAttach(sessionId, entry, generation)) {
+      return;
+    }
+    if (
+      resizeOutcome === "sent" &&
+      pulseTrace !== null &&
+      pulseTrace.sessionId === sessionId &&
+      pulseTrace.attachGeneration === generation
+    ) {
+      layoutPulseTraces.set(entry, { attachGeneration: generation, trace: pulseTrace });
+    }
   };
 
   const applySnapshot = (
@@ -982,7 +1428,12 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // attach-window user-scroll marker. The drain itself is created once and
     // reused across generations: it must keep fencing this entry's queued
     // writes, because `reset()` does not discard xterm's pending queue.
-    attachGenerations.set(entry, (attachGenerations.get(entry) ?? 0) + 1);
+    layoutPulseTraces.delete(entry);
+    const previousGeneration = attachGenerations.get(entry) ?? 0;
+    attachGenerations.set(
+      entry,
+      previousGeneration < Number.MAX_SAFE_INTEGER ? previousGeneration + 1 : 0,
+    );
 
     const existing = attachDrains.get(entry);
     if (existing) {
@@ -1201,9 +1652,28 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   onMount(async () => {
     resizeObserver = new ResizeObserver(() => {
-      if (visibleSessionId) {
-        scheduleViewportSync(visibleSessionId);
+      const sessionId = visibleSessionId;
+      if (!sessionId) {
+        return;
       }
+      const entry = registry.get(sessionId);
+      if (!entry || !isLiveVisibleEntry(sessionId, entry)) {
+        return;
+      }
+      const nextEpoch = layoutObserverEpoch + 1;
+      if (!Number.isSafeInteger(nextEpoch)) {
+        return;
+      }
+      layoutObserverEpoch = nextEpoch;
+
+      let state = layoutObserverStates.get(entry);
+      if (!state) {
+        state = { observedObserverEpoch: nextEpoch, completedObserverAck: null };
+        layoutObserverStates.set(entry, state);
+      } else {
+        state.observedObserverEpoch = nextEpoch;
+      }
+      scheduleViewportSync(sessionId, { epoch: nextEpoch, entry });
     });
     resizeObserver.observe(hostRef);
 

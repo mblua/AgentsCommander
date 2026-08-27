@@ -29,6 +29,7 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
+import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
@@ -831,7 +832,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           options.push({
             path: replica.path,
             label: `${project.folderName} / ${workgroup.name} / ${replica.name}${
-              replica.isCoordinator ? " (coordinator)" : ""
+              replica.isCoordinator ? " (orchestrator)" : ""
             }`,
           });
         }
@@ -1655,19 +1656,19 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const yellow = data.coordinatorIdleBadgeYellowMinutes;
     const red = data.coordinatorIdleBadgeRedMinutes;
     if (!Number.isInteger(yellow) || yellow < 1) {
-      return "Coordinator idle: badge yellow threshold must be a whole number of at least 1 minute";
+      return "Orchestrator idle: badge yellow threshold must be a whole number of at least 1 minute";
     }
     if (!Number.isInteger(red) || red < 1) {
-      return "Coordinator idle: badge red threshold must be a whole number of at least 1 minute";
+      return "Orchestrator idle: badge red threshold must be a whole number of at least 1 minute";
     }
     if (yellow >= red) {
-      return "Coordinator idle: yellow threshold must be below the red threshold";
+      return "Orchestrator idle: yellow threshold must be below the red threshold";
     }
     if (
       !Number.isInteger(data.coordinatorAutoCloseMinutes) ||
       data.coordinatorAutoCloseMinutes < 1
     ) {
-      return "Coordinator idle: auto-close minutes must be a whole number of at least 1";
+      return "Orchestrator idle: auto-close minutes must be a whole number of at least 1";
     }
 
     return null;
@@ -1857,7 +1858,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
             }
           />
-          <span>On start, wake coordinators that were awake when the app closed</span>
+          <span>On start, wake orchestrators that were awake when the app closed</span>
         </label>
         <label class="settings-checkbox-field">
           <input
@@ -1895,7 +1896,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">Coordinator idle</div>
+        <div class="settings-section-title">Orchestrator idle</div>
         <label class="settings-field">
           <span class="settings-label">Badge turns yellow after (minutes)</span>
           <input
@@ -1980,10 +1981,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <span>Skip Telegram-assigned sessions during auto-close</span>
         </label>
         <div class="settings-hint">
-          The idle badge shows minutes since your last message to a coordinator
+          The idle badge shows minutes since your last message to an orchestrator
           (green below yellow, yellow up to red, red beyond). Auto-close
           terminates a team's sessions after the whole team is silent for the
-          configured minutes; the coordinator stays as a dormant row you can
+          configured minutes; the orchestrator stays as a dormant row you can
           reopen by messaging it.
         </div>
         <label class="settings-checkbox-field">
@@ -1996,7 +1997,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             }
             data-ac-testid="settings.general.coordinatorCascadeCloseEnabled"
           />
-          <span>Always close team members when manually closing Coordinator</span>
+          <span>Always close team members when manually closing Orchestrator</span>
         </label>
         <label class="settings-checkbox-field">
           <input
@@ -2022,7 +2023,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           />
           <span>
             Auto-clear and hand off context after 3 closed topics (on for
-            coordinators and Root; other agents opt in per agent)
+            orchestrators and Root; other agents opt in per agent)
           </span>
         </label>
       </div>
@@ -2085,7 +2086,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-hint settings-hint-warning"
           data-ac-testid="settings.general.terminalSnapshotsEnabled.warning"
         >
-          Allow authorized Root Agents and same-workgroup Coordinators to capture live terminal
+          Allow authorized Root Agents and same-workgroup Orchestrators to capture live terminal
           contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
           prompts, and personal data. Disabled by default.
         </div>
@@ -3666,6 +3667,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 </button>
               </div>
             </div>
+
+            <AgentAutoUpdateStatusList
+              autoUpdateByCommand={() => settings.data?.agentAutoUpdateByCommand ?? {}}
+              registeredCommands={() => (settings.data?.agents ?? []).map((agent) => agent.command)}
+            />
 
             {renderAgentPresets()}
           </div>

@@ -225,7 +225,7 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Workgroup Coordinator</label>
+            <label class="new-agent-label">Workgroup Orchestrator</label>
             <select
               class="entity-select"
               value={selectedWorkgroup()}
@@ -233,13 +233,13 @@ const EditLoopModal: Component<{
               disabled={loading() || coordinatorOptions().length === 0}
               data-ac-testid="loop.edit.workgroup"
             >
-              <option value="" disabled>Select a coordinator...</option>
+              <option value="" disabled>Select an orchestrator...</option>
               <For each={coordinatorOptions()}>
                 {(option) => <option value={option.workgroup}>{option.label}</option>}
               </For>
             </select>
             <Show when={coordinatorOptions().length === 0}>
-              <div class="new-agent-error">A workgroup with a verified coordinator is required.</div>
+              <div class="new-agent-error">A workgroup with a verified orchestrator is required.</div>
             </Show>
           </div>
 
@@ -279,7 +279,7 @@ const EditLoopModal: Component<{
               disabled={loading()}
               data-ac-testid="loop.edit.forceInject"
             />
-            Force inject even if coordinator is busy
+            Force inject even if orchestrator is busy
           </label>
 
           <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>

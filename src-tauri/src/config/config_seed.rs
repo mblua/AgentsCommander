@@ -229,8 +229,8 @@ pub fn compute_config_dir_warning(
     let key = match CodingAgentKind::detect(shell, shell_args) {
         Some(CodingAgentKind::Claude) => "CLAUDE_CONFIG_DIR",
         Some(CodingAgentKind::Codex) => "CODEX_HOME",
-        // Gemini and Pi have no AC-managed config-dir env to compare against.
-        Some(CodingAgentKind::Gemini | CodingAgentKind::Pi) => return None,
+        // Antigravity and Pi have no AC-managed config-dir env to compare against.
+        Some(CodingAgentKind::Antigravity | CodingAgentKind::Pi) => return None,
         None => {
             if crate::config::agent_command::command_runs_opencode(shell, shell_args) {
                 "OPENCODE_CONFIG_DIR"
@@ -684,6 +684,19 @@ fn perform_config_seed_with_clock_and_hooks(
         tier,
         src.display()
     );
+    // #1596: pi's bash tool runs through `shellPath`; project `.pi/settings.json`
+    // overrides the global one, so an absent-only seed routes pi through Git Bash
+    // on Windows. Best-effort: failure logs and never changes the seed outcome.
+    #[cfg(windows)]
+    if dest_name == ".pi" {
+        if let Err(error) = ensure_pi_bash_shell_path(&seed.dest) {
+            log::warn!(
+                "[config-seed] could not seed pi shellPath at {}: {}",
+                seed.dest.display(),
+                error
+            );
+        }
+    }
     ConfigSeedReport::Published(ConfigSeedPublication {
         tier: *tier,
         dest: seed.dest.clone(),
@@ -697,6 +710,39 @@ fn destination_absent_no_follow(path: &Path) -> Result<bool, String> {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(format!("inspect destination metadata: {error}")),
+    }
+}
+
+/// #1596: absent-only, best-effort seed of pi's project-level `shellPath` to
+/// Git Bash on Windows. pi merges project settings over global settings, so a
+/// project `.pi/settings.json` routes the pi bash tool through bash.exe even
+/// when the global settings name pwsh. An existing `settings.json` (operator-
+/// authored or template-shipped) is never overwritten: the no-follow presence
+/// check mirrors `destination_absent_no_follow` and the `create_new` open makes
+/// the write race-safe. A write failure logs and never changes the seed
+/// outcome. Windows-only: the shellPath value is a Windows path.
+#[cfg(target_os = "windows")]
+fn ensure_pi_bash_shell_path(pi_dir: &Path) -> std::io::Result<()> {
+    const PI_SETTINGS_JSON: &[u8] = b"{\"shellPath\": \"C:/Program Files/Git/bin/bash.exe\"}";
+    let settings_path = pi_dir.join("settings.json");
+    match std::fs::symlink_metadata(&settings_path) {
+        Ok(_) => return Ok(()), // operator-authored or template-shipped: untouched
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&settings_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            file.write_all(PI_SETTINGS_JSON)
+        }
+        // A racing writer created the file between the check and the open:
+        // absent-only semantics hold, treat it as untouched.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1474,6 +1520,74 @@ mod tests {
     // Stage E (#1064) end-to-end config-staging scale benchmark (plan section
     // 7.4, 10.5 item 7): config staging is the only per-file target I/O, and the
     // collector returns exactly the installed regular-file list. `#[ignore]`
+    // ---- #1596 pi shellPath seed (Windows-only) ---------------------------
+
+    #[cfg(target_os = "windows")]
+    fn seed_pi_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(&ac_root.join("default.pi").join("extensions.txt"), b"EXT");
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
+        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx)).unwrap();
+        (temp, resolved, replica)
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pi_seed_writes_shell_path_when_settings_absent() {
+        // #1596: a `.pi` template without settings.json gets the Git-Bash
+        // shellPath written; the seed report stays Published.
+        let (_temp, resolved, replica) = seed_pi_fixture();
+        let publication = assert_published(perform_config_seed(&resolved, "sfx"));
+        assert_eq!(publication.dest, replica.join(".pi"));
+        assert_eq!(
+            std::fs::read(replica.join(".pi").join("settings.json")).unwrap(),
+            b"{\"shellPath\": \"C:/Program Files/Git/bin/bash.exe\"}"
+        );
+        assert_eq!(
+            std::fs::read(replica.join(".pi").join("extensions.txt")).unwrap(),
+            b"EXT"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pi_seed_preserves_existing_settings() {
+        // #1596: a settings.json shipped by the template (operator-authored
+        // content) is never overwritten: absent-only.
+        let temp = tempfile::tempdir().unwrap();
+        let ac_root = temp.path().join("ws");
+        let replica = ac_root.join("wg-1-team").join("__agent_x");
+        std::fs::create_dir_all(&replica).unwrap();
+        write_file(
+            &ac_root.join("default.pi").join("settings.json"),
+            b"{\"shellPath\": \"C:/custom/pwsh.exe\"}",
+        );
+        let ctx = ctx_with(&replica, Some(&ac_root), None);
+        let resolved = resolve_config_seed(&seed_cfg(".pi"), "A", Some(&ctx)).unwrap();
+        let publication = assert_published(perform_config_seed(&resolved, "sfx"));
+        assert_eq!(publication.dest, replica.join(".pi"));
+        assert_eq!(
+            std::fs::read(replica.join(".pi").join("settings.json")).unwrap(),
+            b"{\"shellPath\": \"C:/custom/pwsh.exe\"}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn non_pi_seed_writes_no_settings_json() {
+        // #1596: only an exact `.pi` dest triggers the shellPath step; a
+        // non-`.pi` seed must not write settings.json anywhere.
+        let (_temp, resolved, replica) = seed_swap_fixture(); // `.claude` dest
+        let publication = assert_published(perform_config_seed(&resolved, "sfx"));
+        assert_eq!(publication.dest, replica.join(".claude"));
+        assert!(!replica.join(".claude").join("settings.json").exists());
+        assert!(!replica.join(".pi").join("settings.json").exists());
+        assert!(!replica.join("settings.json").exists());
+    }
+
     // (release-mode measurement; registered in test-debt.allowlist.json).
     #[test]
     #[ignore = "release-mode end-to-end config staging benchmark (plan 7.4/10.5 item 7)"]
@@ -2258,10 +2372,10 @@ mod tests {
 
     #[test]
     fn warning_none_for_non_config_dir_agent() {
-        let dest = abs(r"C:\replica\.gemini", "/replica/.gemini");
-        // Gemini and Pi have no managed config-dir env; a custom command also yields None.
+        let dest = abs(r"C:\replica\.antigravity", "/replica/.antigravity");
+        // Antigravity and Pi have no managed config-dir env; a custom command also yields None.
         for (shell, args) in [
-            ("gemini", Vec::new()),
+            ("agy", Vec::new()),
             (
                 "pi",
                 vec!["--model".to_string(), "claude-sonnet".to_string()],

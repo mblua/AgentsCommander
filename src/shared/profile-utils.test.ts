@@ -272,16 +272,18 @@ describe("profile utils", () => {
     expect(defaultInstructionsFilename("cmd.exe /c claude --continue")).toBe("CLAUDE.md");
     expect(defaultInstructionsFilename("claude-mb")).toBe("CLAUDE.md");
     expect(defaultInstructionsFilename("C:\\tools\\claude.exe")).toBe("CLAUDE.md");
-    // Gemini → GEMINI.md, with and without flags.
-    expect(defaultInstructionsFilename("gemini")).toBe("GEMINI.md");
-    expect(defaultInstructionsFilename("gemini --yolo")).toBe("GEMINI.md");
+    // Antigravity (agy/antigravity) falls through to AGENTS.md, with flags.
+    expect(defaultInstructionsFilename("agy")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("antigravity")).toBe("AGENTS.md");
+    expect(defaultInstructionsFilename("agy --yolo")).toBe("AGENTS.md");
     // Codex, OpenCode, custom, and empty all fall to AGENTS.md.
     expect(defaultInstructionsFilename("codex")).toBe("AGENTS.md");
     expect(defaultInstructionsFilename("codex --sandbox workspace-write")).toBe("AGENTS.md");
     expect(defaultInstructionsFilename("opencode")).toBe("AGENTS.md");
     expect(defaultInstructionsFilename("my-agent-cli --flag")).toBe("AGENTS.md");
     expect(defaultInstructionsFilename("")).toBe("AGENTS.md");
-    // Codex precedence over a later gemini token (mirrors Rust claude>codex>gemini).
+    // Codex precedence over a later option value (mirrors Rust claude>codex>
+    // antigravity; value tokens do not detect).
     expect(defaultInstructionsFilename("codex --base gemini")).toBe("AGENTS.md");
   });
 
@@ -492,8 +494,8 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     // Deliberately NOT defaultInstructionsFilename's "AGENTS.md"-style fallback: a
     // wrong filename costs a renamed file, a wrong pattern costs a silently wrong
     // percentage. No evidence, no guess.
-    expect(suggestedContextRegex("gemini")).toBeNull();
-    expect(suggestedContextRegex("gemini --yolo")).toBeNull();
+    expect(suggestedContextRegex("agy")).toBeNull();
+    expect(suggestedContextRegex("antigravity")).toBeNull();
     expect(suggestedContextRegex("nonsense")).toBeNull();
     expect(suggestedContextRegex("opencode")).toBeNull();
     expect(suggestedContextRegex("my-agent-cli --flag")).toBeNull();

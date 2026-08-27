@@ -19,7 +19,6 @@ _logbooks/
 
 # Per-session agent context materialized by default_context()
 CLAUDE.md
-GEMINI.md
 AGENTS.md
 
 # npm wrapper downloaded binaries
@@ -32,3 +31,6 @@ npm-test-results.json
 
 artifacts/
 /graph.json
+
+# Portable zip staging output (#1589)
+dist-portable/

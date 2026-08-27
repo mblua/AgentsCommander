@@ -19,6 +19,29 @@ use crate::config::settings::{
 use crate::session::profile::CodingAgentKind;
 use sha2::{Digest, Sha256};
 
+/// #1551 - true when `token` is a bare program name (no path separator, not absolute):
+/// the only form resolved through PATH, and the only form the version probe executes.
+pub fn is_bare_program_token(token: &str) -> bool {
+    !(token.contains('/') || token.contains('\\') || Path::new(token).is_absolute())
+}
+
+/// #1551 - resolve a program token to a file. Lifted byte-equivalently from the
+/// `resolve_token_to_file` helper that `commands::session` used for the claude token:
+/// explicit path (separator or absolute) -> Some iff it is a file, never consulting
+/// PATH; bare name -> `which::which` (PATH, plus PATHEXT on Windows, so npm `.cmd`
+/// shims resolve). The GUI process PATH is what is consulted (documented caveat).
+pub fn resolve_program(token: &str) -> Option<PathBuf> {
+    let p = Path::new(token);
+    if !is_bare_program_token(token) {
+        return if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
+    }
+    which::which(token).ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedAgentCommand {
     pub shell: String,
@@ -180,8 +203,9 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
     match normalize_legacy_agent_command(command) {
         Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
             Some(CodingAgentKind::Claude) => "CLAUDE.md",
-            Some(CodingAgentKind::Gemini) => "GEMINI.md",
-            Some(CodingAgentKind::Codex) | Some(CodingAgentKind::Pi) => "AGENTS.md",
+            Some(CodingAgentKind::Codex)
+            | Some(CodingAgentKind::Pi)
+            | Some(CodingAgentKind::Antigravity) => "AGENTS.md",
             // OpenCode, custom, and unknown commands also use AGENTS.md.
             None => "AGENTS.md",
         },
@@ -277,7 +301,7 @@ pub fn is_safe_instructions_filename(filename: &str) -> bool {
         return false;
     }
     // G9: reject the exact AC-internal sentinel (case-insensitive). The
-    // user-facing built-ins CLAUDE.md / GEMINI.md / AGENTS.md stay allowed.
+    // user-facing built-ins CLAUDE.md / AGENTS.md stay allowed.
     if filename.eq_ignore_ascii_case("last_ac_context.md") {
         return false;
     }
@@ -574,7 +598,7 @@ const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd
 
 /// True when the launch command runs opencode, matched by executable name.
 /// There is no `CodingAgentKind::OpenCode` (the closed enum covers Claude,
-/// Codex, Gemini, and Pi, but `detect` does not know opencode), so this mirrors the
+/// Codex, Antigravity, and Pi, but `detect` does not know opencode), so this mirrors the
 /// `executable_basename(shell) == "codex"` fallback in [`compute_codex_home`].
 ///
 /// The `shell` (the program being launched) is matched on `file_stem`, like the
@@ -1004,9 +1028,10 @@ mod tests {
     use super::{
         build_agent_spawn_command, command_runs_opencode,
         default_instructions_filename_for_command, ensure_opencode_config_dir,
-        find_opencode_config_dir, is_safe_instructions_filename, managed_instructions_filenames,
-        normalize_legacy_agent_command, prepare_agent_spawn_command, profile_content_hash,
-        resolve_agent_spawn_command, resolve_instructions_filename, resolve_target_filename,
+        find_opencode_config_dir, is_bare_program_token, is_safe_instructions_filename,
+        managed_instructions_filenames, normalize_legacy_agent_command,
+        prepare_agent_spawn_command, profile_content_hash, resolve_agent_spawn_command,
+        resolve_instructions_filename, resolve_program, resolve_target_filename,
         AgentSpawnCommand, OpencodeConfigDirOutcome,
     };
     use crate::config::coding_agent_profiles::ProfileResolution;
@@ -1635,8 +1660,8 @@ mod tests {
             "CLAUDE.md"
         );
         assert_eq!(
-            default_instructions_filename_for_command("gemini -m gpt-5"),
-            "GEMINI.md"
+            default_instructions_filename_for_command("agy -m gpt-5"),
+            "AGENTS.md"
         );
         assert_eq!(
             default_instructions_filename_for_command("codex"),
@@ -1703,7 +1728,7 @@ mod tests {
             agents: vec![
                 agent("claude", "claude"),     // CLAUDE.md
                 agent("codex", "codex"),       // AGENTS.md
-                agent("gemini", "gemini"),     // GEMINI.md
+                agent("agy", "agy"),           // AGENTS.md
                 agent("opencode", "opencode"), // AGENTS.md (dup of codex)
             ],
             ..AppSettings::default()
@@ -1712,11 +1737,7 @@ mod tests {
         got.sort();
         assert_eq!(
             got,
-            vec![
-                "AGENTS.md".to_string(),
-                "CLAUDE.md".to_string(),
-                "GEMINI.md".to_string()
-            ]
+            vec!["AGENTS.md".to_string(), "CLAUDE.md".to_string()]
         );
     }
 
@@ -1743,9 +1764,13 @@ mod tests {
         );
         // 3. unknown id -> detection fallback.
         assert_eq!(
-            resolve_target_filename(Some("ghost"), &settings, Some(ManagedContextTarget::Gemini))
-                .as_deref(),
-            Some("GEMINI.md")
+            resolve_target_filename(
+                Some("ghost"),
+                &settings,
+                Some(ManagedContextTarget::Antigravity)
+            )
+            .as_deref(),
+            Some("AGENTS.md")
         );
         // 3b. no id -> detection fallback.
         assert_eq!(
@@ -2636,5 +2661,56 @@ mod tests {
             profile_content_hash("claude", &upper),
             "a case-only env-key edit must not false-flag drift on Windows"
         );
+    }
+
+    // #1551 - the shared program resolver lifted out of `commands::session`.
+
+    #[test]
+    fn resolve_program_explicit_path_requires_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("tool.exe");
+        std::fs::write(&file, b"x").expect("write");
+        assert_eq!(
+            resolve_program(&file.to_string_lossy()),
+            Some(file.clone()),
+            "an explicit path to a file resolves to itself"
+        );
+        let missing = dir.path().join("missing.exe");
+        assert_eq!(
+            resolve_program(&missing.to_string_lossy()),
+            None,
+            "an explicit path that does not exist never falls back to PATH"
+        );
+        assert_eq!(
+            resolve_program(&dir.path().to_string_lossy()),
+            None,
+            "a directory is not a program"
+        );
+    }
+
+    #[test]
+    fn resolve_program_bare_name_uses_path() {
+        let token = if cfg!(windows) { "cmd" } else { "sh" };
+        let resolved = resolve_program(token).expect("a bare shell name resolves through PATH");
+        let stem = resolved
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("file stem")
+            .to_ascii_lowercase();
+        assert_eq!(stem, token);
+    }
+
+    #[test]
+    fn resolve_program_bare_unknown_is_none() {
+        assert_eq!(resolve_program("definitely-not-a-program-1551"), None);
+    }
+
+    #[test]
+    fn is_bare_program_token_cases() {
+        assert!(is_bare_program_token("claude"));
+        assert!(!is_bare_program_token("./claude"));
+        assert!(!is_bare_program_token(r"C:\x\claude.exe"));
+        assert!(!is_bare_program_token("/usr/bin/claude"));
+        assert!(!is_bare_program_token(r"bin\claude"));
     }
 }

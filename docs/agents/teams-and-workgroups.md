@@ -4,7 +4,7 @@ For developers ready to compose multiple agents around a shared goal. Teams defi
 
 ## Team
 
-A **team** is one coordinator plus one or more worker agents. The coordinator and every member must already exist as agent matrices before you create the team. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names.
+A **team** is one orchestrator plus one or more worker agents. The orchestrator and every member must already exist as agent matrices before you create the team. The team's config lives at `.ac/_team_<name>/config.json` and lists members by their canonical names.
 
 ```
 my-project/
@@ -30,18 +30,18 @@ my-project/
 }
 ```
 
-You create teams from the **Teams** UI in the sidebar, or from the CLI with `team create`. Pick an existing coordinator agent, pick one or more existing member agents, optionally define repo access, then save. Workgroups are created later when you activate the team for a task.
+You create teams from the **Teams** UI in the sidebar, or from the CLI with `team create`. Pick an existing orchestrator agent, pick one or more existing member agents, optionally define repo access, then save. Workgroups are created later when you activate the team for a task.
 
-### Coordinator authority
+### Orchestrator authority
 
-The coordinator is the only team member that can:
+The orchestrator is the only team member that can:
 
-- Send messages to any other team member (members can only message peers in the same team plus their coordinator).
+- Send messages to any other team member (members can only message peers in the same team plus their orchestrator).
 - Edit the workgroup `TASK.md` through the CLI (`task-set-title`, `task-append-body`).
 - Close other members' sessions (`close-session`).
 - See the synthetic `agentscommander://root-agent` peer when verified.
 
-This is enforced at the daemon mailbox boundary. Non-coordinator attempts return an authorization error.
+This is enforced at the daemon mailbox boundary. Non-orchestrator attempts return an authorization error.
 
 ### One agent, many teams
 
@@ -57,7 +57,7 @@ my-project/
     └── wg-1-feature-x/
         ├── TASK.md                       # canonical task file
         ├── messaging/                    # inter-agent messages (see below)
-        ├── __agent_tech-lead/            # coordinator replica
+        ├── __agent_tech-lead/            # orchestrator replica
         ├── __agent_dev-rust/             # worker replica
         └── __agent_dev-ts/               # worker replica
 ```
@@ -94,9 +94,9 @@ We want a working OAuth2 PKCE flow against the new identity service.
 - Both must land behind feature flag `auth.oauth2`.
 ```
 
-The coordinator owns the task file. Workers reference it.
+The orchestrator owns the task file. Workers reference it.
 
-Coordinators can edit `TASK.md` through the CLI:
+Orchestrators can edit `TASK.md` through the CLI:
 
 ```bash
 # set/replace the title
@@ -106,9 +106,9 @@ agentscommander task-set-title --token "$TOKEN" --root "$ROOT" --title "New titl
 agentscommander task-append-body --token "$TOKEN" --root "$ROOT" --text "We dropped the legacy /login route."
 ```
 
-Both verbs validate the caller is a coordinator of any team in the project and create a timestamped `.bak.md` of the previous `TASK.md` before writing.
+Both verbs validate the caller is an orchestrator of any team in the project and create a timestamped `.bak.md` of the previous `TASK.md` before writing.
 
-Coordinator title updates do not overwrite titles that begin with `USER:` (a human set those through the in-app title editor). Coordinator-supplied titles also cannot start with the reserved `USER:` prefix. Use Clean to reset a user-owned task before coordinator auto-title updates resume.
+Orchestrator title updates do not overwrite titles that begin with `USER:` (a human set those through the in-app title editor). Orchestrator-supplied titles also cannot start with the reserved `USER:` prefix. Use Clean to reset a user-owned task before orchestrator auto-title updates resume.
 
 ## Activating a workgroup
 
@@ -116,10 +116,10 @@ From the UI, click **Activate** on the team. From the CLI, use `workgroup add`. 
 
 1. Creates `.ac/wg-<N>-<team>/`.
 2. Copies the team config and member references.
-3. Provisions each member's replica directory (`__agent_<name>/`, with the same double-underscore prefix for both workers and the coordinator).
+3. Provisions each member's replica directory (`__agent_<name>/`, with the same double-underscore prefix for both workers and the orchestrator).
 4. Generates `TASK.md`, `messaging/`, and per-replica session artifacts.
 
-When activated from the UI, AC also launches the coordinator's session. The CLI creates the workgroup and requests a sidebar refresh; launch sessions separately as needed.
+When activated from the UI, AC also launches the orchestrator's session. The CLI creates the workgroup and requests a sidebar refresh; launch sessions separately as needed.
 
 ```bash
 agentscommander team create \
@@ -179,9 +179,9 @@ agentscommander team add-member \
   --agent qa
 ```
 
-This updates the team config used by `wg-1-feature-x` and creates `wg-1-feature-x/__agent_qa/` immediately. Use `--coordinator` to make the added agent the coordinator.
+This updates the team config used by `wg-1-feature-x` and creates `wg-1-feature-x/__agent_qa/` immediately. Use `--coordinator` to make the added agent the orchestrator.
 
-Remove a non-coordinator member with:
+Remove a non-orchestrator member with:
 
 ```bash
 agentscommander team remove-member \
@@ -196,12 +196,12 @@ Membership edits are scoped to the selected workgroup. Other existing workgroups
 
 ## Recovery
 
-AC restores sessions at startup based on the persisted state in each instance's `sessions.json`. If `restore_coordinator_wake_state` is true (Settings → General), coordinators that were running at shutdown wake up; non-coordinators stay asleep until you click them.
+AC restores sessions at startup based on the persisted state in each instance's `sessions.json`. If `restore_coordinator_wake_state` is true (Settings → General), orchestrators that were running at shutdown wake up; non-orchestrators stay asleep until you click them.
 
 See [`docs/troubleshooting.md`](../troubleshooting.md) for what to do when a workgroup gets stuck.
 
 ## See also
 
-- [Inter-agent messaging](inter-agent-messaging.md) — the file protocol coordinators use
+- [Inter-agent messaging](inter-agent-messaging.md) — the file protocol orchestrators use
 - [Creating agents](creating-agents.md) — what to build before forming a team
-- [CLI reference](../reference/cli.md) — full coordinator-only verbs
+- [CLI reference](../reference/cli.md) — full orchestrator-only verbs

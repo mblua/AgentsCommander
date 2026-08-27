@@ -170,6 +170,37 @@ You are running inside an AgentsCommander session - a terminal session manager c
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #1541: `get_default_agent_template()` exactly as it shipped from #1369
+/// (the `{{AGENT_REPOS}}` rename, v3) through base commit 6aae531e, frozen so
+/// pristine v3 project templates and standalone templates remain exact
+/// generated operands after the v4 summarization. Never edit. The shipped
+/// accessor is len 563, sha256
+/// 99a0aa4a15062d4b68b94597111ae268958cbeb4e3902aafe1b7361b63d34157;
+/// pinned by `global_before_summarization_snapshot_is_byte_exact`.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION: &str = r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{AGENT_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
 /// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
 /// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
@@ -222,6 +253,38 @@ const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
      - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
+     - Give recommendations that help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
+
+/// #1571: `get_default_coordinator_template()` exactly as it shipped through
+/// base commit ecc6527b, frozen as the fourth legacy snapshot so a pristine v4
+/// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
+/// after the v5 Coordinator-to-Orchestrator rename.
+/// Never edit. Provenance (plan #1571 3.6): the shipped accessor measured at
+/// base commit ecc6527b printed len 2509, sha256
+/// f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6; pinned by
+/// `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
+    "You are the coordinator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - To reach another workgroup, message its coordinator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to a coordinator who messaged you first is always authorized.\n\
      - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
      - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
      - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
@@ -417,7 +480,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 3,
+            current_version: 4,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -426,8 +489,8 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
         SeededContextTemplateSpec {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
-            label: "Coordinator context",
-            current_version: 4,
+            label: "Orchestrator context",
+            current_version: 5,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -441,7 +504,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 6,
+        current_version: 7,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
         project_actionable: false,
@@ -473,6 +536,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -490,6 +554,7 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
     content == crate::config::session_context::get_default_agent_template()
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
 }
 
@@ -498,6 +563,7 @@ fn is_known_generated_coordinator_template(content: &str) -> bool {
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1972,8 +2038,14 @@ mod tests {
         assert!(is_known_generated_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        ));
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
         assert!(
             !is_known_generated_global_template(
@@ -1981,6 +2053,33 @@ mod tests {
             ),
             "the global recognizer must not widen to a coordinator snapshot"
         );
+    }
+
+    #[test]
+    fn project_specs_bump_only_the_global_template_to_v4() {
+        let [global, coordinator] = project_specs();
+        assert_eq!(global.id, "global");
+        assert_eq!(global.current_version, 4);
+        assert_eq!(
+            (global.current_content)(),
+            crate::config::session_context::get_default_agent_template()
+        );
+        assert!((global.is_known_generated)(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        ));
+
+        assert_eq!(coordinator.id, "coordinator");
+        assert_eq!(coordinator.current_version, 5);
+        assert_eq!(
+            (coordinator.current_content)(),
+            get_default_coordinator_template()
+        );
+        assert!((coordinator.is_known_generated)(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+        ));
+        assert!(!(coordinator.is_known_generated)(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        ));
     }
 
     fn hash_text(content: &str) -> String {
@@ -2171,6 +2270,43 @@ mod tests {
         );
     }
 
+    /// #1571 T1: the frozen v4 coordinator snapshot must stay byte-identical to
+    /// what shipped at base commit ecc6527b. Expected values captured by a one-off
+    /// run of the shipped accessor AT ecc6527b (plan 3.6), never from this const.
+    #[test]
+    fn coordinator_pre_orchestrator_rename_snapshot_is_byte_exact() {
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME.len(),
+            2509,
+            "frozen v4 coordinator snapshot must be the ecc6527b bytes"
+        );
+        assert_eq!(
+            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME),
+            "f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6",
+            "frozen v4 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1571 T5: the frozen v1 coordinator snapshot had no byte pin, and the
+    /// existing `old_coordinator_default_is_known_generated_without_raise_hand`
+    /// cannot detect an edit to it: its recognizer assertion is self-referential
+    /// and its three `contains()` assertions do not cover the first line, which is
+    /// the very sentence the #1571 rename rewrites elsewhere. Expected values
+    /// captured by a one-off run AT ecc6527b (plan 9.1), never from this const.
+    #[test]
+    fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
+        assert_eq!(
+            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.len(),
+            2066,
+            "frozen v1 coordinator snapshot must be the ecc6527b bytes"
+        );
+        assert_eq!(
+            hash_text(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND),
+            "31d49d02c12fcc8cd2d5277455074dcae3fbc1a84f1f1a0cf0f37828e03f792f",
+            "frozen v1 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
     /// #1005 S4 failing-first migration proof: the assert_ne fails while the live
     /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
     /// proves a pristine v2 file on disk auto-upgrades to the current default.
@@ -2210,6 +2346,56 @@ mod tests {
             std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
+    }
+
+    /// #1571 T2, failing-first migration proof for the fifth recognizer arm: the
+    /// assert_ne fails while the live template still equals the frozen v4 bytes
+    /// (pre-rewrite), and the sync half proves a pristine v4 file on disk
+    /// auto-upgrades to the current default.
+    ///
+    /// The direct recognizer assertion is deliberately LAST, unlike the sibling
+    /// above. With the fifth arm deleted, a first-position direct assert panics
+    /// before the sync runs, so a mutation probe would only prove that a predicate
+    /// whose one matching arm was just removed returns false. Asserting the
+    /// behavior first makes the probe prove that the sync path actually consumes
+    /// the recognizer, which is the silent-half-migration risk it exists to close.
+    #[test]
+    fn read_sync_updates_pre_orchestrator_rename_coordinator_template() {
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+            get_default_coordinator_template(),
+            "the #1571 rename must actually change the template or the freeze is pointless"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+        )
+        .expect("write pristine v4 coordinator");
+
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(
+            &ac_root,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        assert_one_publication(
+            &publications,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        let content =
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator");
+        assert_eq!(content, get_default_coordinator_template());
+
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+        ));
     }
 
     /// #1005 S6 / G3: the frozen v1 global snapshot must stay byte-identical to
@@ -2282,8 +2468,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 3,
-            "global current_version must be bumped to 3 by the #1369 {{AGENT_REPOS}} rename"
+            parsed["templates"]["global"]["currentVersion"], 4,
+            "recognized v1 global content must land on the current v4 default"
         );
     }
 
@@ -2303,6 +2489,310 @@ mod tests {
             "e5861a9f011967e96e5515f858e1643f7fdf161511ad909fe86ddb4ce1a0cff7",
             "frozen v2 global snapshot changed; it must stay byte-identical to what shipped"
         );
+    }
+
+    #[test]
+    fn global_before_summarization_snapshot_is_byte_exact() {
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION.len(),
+            563,
+            "frozen v3 global snapshot must be the 6aae531e bytes"
+        );
+        assert_eq!(
+            hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION),
+            "99a0aa4a15062d4b68b94597111ae268958cbeb4e3902aafe1b7361b63d34157",
+            "frozen v3 global snapshot changed; it must stay byte-identical to what shipped"
+        );
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+            crate::config::session_context::get_default_agent_template(),
+            "the v4 summarization must differ from its frozen v3 operand"
+        );
+    }
+
+    #[test]
+    fn global_before_summarization_is_an_exact_generated_operand() {
+        let one_byte = format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION}X");
+        let crlf = GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION.replace('\n', "\r\n");
+        let recognizers = [
+            (
+                "project",
+                is_known_generated_global_template as fn(&str) -> bool,
+            ),
+            (
+                "standalone",
+                is_known_generated_standalone_global_template as fn(&str) -> bool,
+            ),
+        ];
+
+        for (label, recognizes) in recognizers {
+            assert!(
+                recognizes(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION),
+                "{label} recognizer must accept the exact v3 operand"
+            );
+            assert!(!recognizes(&one_byte), "{label} accepted v3 + X");
+            assert!(!recognizes(&crlf), "{label} accepted CRLF v3");
+        }
+    }
+
+    #[test]
+    fn read_sync_updates_pristine_v3_global_template_without_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+        )
+        .expect("write pristine v3 global");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        let current = crate::config::session_context::get_default_agent_template();
+        let current_hash = hash_text(current);
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read migrated global"),
+            current
+        );
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(state["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(
+            state["templates"]["global"]["lastSeededSha256"],
+            current_hash
+        );
+
+        assert!(
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at).is_empty(),
+            "a second sync must be already-current"
+        );
+        assert!(scan_project_context_template_updates(temp.path(), &ac_root)
+            .expect("scan updates")
+            .is_empty());
+    }
+
+    #[test]
+    fn read_sync_updates_pristine_v3_global_template_with_trusted_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+        )
+        .expect("write pristine v3 global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: 3,
+                last_seeded_sha256: Some(hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION)),
+                last_observed_sha256: None,
+                ignored_default_sha256: None,
+                ignored_observed_sha256: None,
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist trusted v3 state");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+        let current = crate::config::session_context::get_default_agent_template();
+        let current_hash = hash_text(current);
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read migrated global"),
+            current
+        );
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state"),
+        )
+        .expect("parse seeded state");
+        assert_eq!(state["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(
+            state["templates"]["global"]["lastSeededSha256"],
+            current_hash
+        );
+
+        assert!(
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at).is_empty(),
+            "a second sync must be already-current"
+        );
+        assert!(scan_project_context_template_updates(temp.path(), &ac_root)
+            .expect("scan updates")
+            .is_empty());
+    }
+
+    #[test]
+    fn v3_global_near_matches_remain_custom_in_both_project_state_shapes() {
+        let variants = [
+            (
+                "one-byte",
+                format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION}X").into_bytes(),
+            ),
+            (
+                "crlf",
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+                    .replace('\n', "\r\n")
+                    .into_bytes(),
+            ),
+        ];
+
+        for (label, bytes) in variants {
+            for trusted_state in [false, true] {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let ac_root = temp.path().join(".ac");
+                std::fs::create_dir(&ac_root).expect("create workspace");
+                std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &bytes)
+                    .expect("write v3 near match");
+                if trusted_state {
+                    let mut state = SeededContextTemplateState::default();
+                    state.templates.insert(
+                        "global".to_string(),
+                        SeededContextTemplateEntry {
+                            template_id: "global".to_string(),
+                            current_version: 3,
+                            last_seeded_sha256: Some(hash_text(
+                                GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+                            )),
+                            last_observed_sha256: None,
+                            ignored_default_sha256: None,
+                            ignored_observed_sha256: None,
+                        },
+                    );
+                    persist_state(&ac_root, &state).expect("persist trusted v3 state");
+                }
+
+                let published_at = fixed_publication_time();
+                assert!(
+                    sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at)
+                        .is_empty(),
+                    "{label}/{trusted_state}: a near match must not publish"
+                );
+                assert_eq!(
+                    std::fs::read(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                        .expect("read preserved near match"),
+                    bytes,
+                    "{label}/{trusted_state}: sync changed bytes"
+                );
+
+                let mut clock = || published_at;
+                let mut scan_publications = Vec::new();
+                let updates = scan_project_context_template_updates_with_clock(
+                    temp.path(),
+                    &ac_root,
+                    &mut clock,
+                    &mut |filename, publication| scan_publications.push((filename, publication)),
+                )
+                .expect("scan v3 near match");
+                assert!(scan_publications.is_empty(), "{label}/{trusted_state}");
+                if trusted_state {
+                    assert_eq!(updates.len(), 1, "{label}: trusted state must be pending");
+                    assert_eq!(updates[0].current_default_version, 4);
+                    assert_eq!(
+                        updates[0].current_default_sha256,
+                        hash_text(crate::config::session_context::get_default_agent_template())
+                    );
+                } else {
+                    assert!(updates.is_empty(), "{label}: stateless global is ambiguous");
+                }
+
+                assert!(
+                    sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at)
+                        .is_empty(),
+                    "{label}/{trusted_state}: second read must not publish"
+                );
+                assert_eq!(
+                    std::fs::read(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                        .expect("re-read preserved near match"),
+                    bytes,
+                    "{label}/{trusted_state}: second read changed bytes"
+                );
+                let second = scan_project_context_template_updates(temp.path(), &ac_root)
+                    .expect("second scan v3 near match");
+                assert_eq!(second.len(), usize::from(trusted_state));
+            }
+        }
+    }
+
+    #[test]
+    fn compact_fine_token_global_template_remains_custom_in_both_state_shapes() {
+        const FINE_TEMPLATE: &str = "# Fine custom context\n{{AGENT_ROOT}}{{MATRIX_SECTION}}{{MESSAGING_EXCEPTION}}{{MATRIX_ALLOWED}}{{MESSAGING_ALLOWED}}{{FORBIDDEN_SCOPE}}{{GIT_SCOPE}}{{SKILLS_SECTION}}{{PEER_NAME_FORMAT}}{{SEND_MESSAGE_INSTRUCTIONS}}\n";
+        assert!(!is_known_generated_global_template(FINE_TEMPLATE));
+        assert!(!is_known_generated_standalone_global_template(
+            FINE_TEMPLATE
+        ));
+
+        for trusted_state in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).expect("create workspace");
+            std::fs::write(
+                ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+                FINE_TEMPLATE,
+            )
+            .expect("write fine custom global");
+            if trusted_state {
+                let mut state = SeededContextTemplateState::default();
+                state.templates.insert(
+                    "global".to_string(),
+                    SeededContextTemplateEntry {
+                        template_id: "global".to_string(),
+                        current_version: 3,
+                        last_seeded_sha256: Some(hash_text(
+                            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+                        )),
+                        last_observed_sha256: None,
+                        ignored_default_sha256: None,
+                        ignored_observed_sha256: None,
+                    },
+                );
+                persist_state(&ac_root, &state).expect("persist trusted prior state");
+            }
+
+            assert!(
+                sync_for_read_at(
+                    &ac_root,
+                    GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                    fixed_publication_time(),
+                )
+                .is_empty(),
+                "fine custom content must never publish"
+            );
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                    .expect("read fine custom global"),
+                FINE_TEMPLATE
+            );
+            let updates = scan_project_context_template_updates(temp.path(), &ac_root)
+                .expect("scan fine custom global");
+            assert_eq!(updates.len(), usize::from(trusted_state));
+            if trusted_state {
+                assert_eq!(updates[0].current_default_version, 4);
+            }
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                    .expect("re-read fine custom global"),
+                FINE_TEMPLATE
+            );
+        }
     }
 
     /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
@@ -2354,7 +2844,7 @@ mod tests {
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -2412,7 +2902,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -2424,10 +2914,10 @@ mod tests {
     /// #1369 (C4) AC-4.8a: the whole flow the update modal drives, minus the
     /// pixels. A v2 template with a trusted state entry and ONE user edit is a
     /// genuine customization, so it must surface as a pending update carrying the
-    /// v3 digest and version, and overwriting must land the v3 bytes on disk and
+    /// v4 digest and version, and overwriting must land the v4 bytes on disk and
     /// in the state.
     #[test]
-    fn customized_pre_agent_repos_global_template_scans_and_overwrites_to_v3() {
+    fn customized_pre_agent_repos_global_template_scans_and_overwrites_to_current() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -2452,10 +2942,10 @@ mod tests {
             .expect("scan updates")
             .pop()
             .expect("pending update");
-        let v3_sha = hash_text(crate::config::session_context::get_default_agent_template());
+        let v4_sha = hash_text(crate::config::session_context::get_default_agent_template());
         assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        assert_eq!(update.current_default_sha256, v3_sha);
-        assert_eq!(update.current_default_version, 3);
+        assert_eq!(update.current_default_sha256, v4_sha);
+        assert_eq!(update.current_default_version, 4);
 
         let result = overwrite_context_template_with_default(
             &ac_root,
@@ -2479,8 +2969,8 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v3_sha);
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 3);
+        assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v4_sha);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
     }
 
     #[test]
@@ -2867,8 +3357,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["coordinator"]["currentVersion"], 4,
-            "coordinator current_version must be bumped to 4 by the v4 rewrite"
+            parsed["templates"]["coordinator"]["currentVersion"], 5,
+            "coordinator current_version must be bumped to 5 by the #1571 orchestrator rename"
         );
         assert_eq!(
             parsed["templates"]["coordinator"]["lastSeededSha256"]
@@ -3005,6 +3495,159 @@ mod tests {
             publications.is_empty(),
             "a dismissed observation must not manufacture publication evidence"
         );
+    }
+
+    #[test]
+    fn ignored_v3_pair_becomes_pending_against_v4() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let custom = "# Custom global\n\nKEEP THIS CONTENT\n";
+        let custom_hash = hash_text(custom);
+        let v3_hash = hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION);
+        let v4_hash = hash_text(crate::config::session_context::get_default_agent_template());
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: 3,
+                last_seeded_sha256: Some(v3_hash.clone()),
+                last_observed_sha256: Some(custom_hash.clone()),
+                ignored_default_sha256: Some(v3_hash.clone()),
+                ignored_observed_sha256: Some(custom_hash.clone()),
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist ignored v3 pair");
+
+        let mut clock = || fixed_publication_time();
+        let mut publications = Vec::new();
+        let updates = scan_project_context_template_updates_with_clock(
+            temp.path(),
+            &ac_root,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("scan stale ignored pair");
+        assert!(publications.is_empty());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].current_file_sha256, custom_hash);
+        assert_eq!(updates[0].current_default_sha256, v4_hash);
+        assert_eq!(updates[0].current_default_version, 4);
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read preserved custom global"),
+            custom
+        );
+        let after_observation = load_state(&ac_root, true).expect("load observed state");
+        let entry = after_observation
+            .trusted_entry(project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap())
+            .expect("trusted global entry");
+        assert_eq!(
+            entry.ignored_observed_sha256.as_deref(),
+            Some(custom_hash.as_str())
+        );
+        assert_eq!(
+            entry.ignored_default_sha256.as_deref(),
+            Some(v3_hash.as_str())
+        );
+
+        dismiss_context_template_update(
+            &ac_root,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            &updates[0].current_file_sha256,
+            &updates[0].current_default_sha256,
+        )
+        .expect("dismiss v4 update");
+        let second = scan_project_context_template_updates(temp.path(), &ac_root)
+            .expect("scan re-dismissed v4 pair");
+        assert!(second.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("re-read preserved custom global"),
+            custom
+        );
+
+        let spec = project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap();
+        let mut loaded = load_state(&ac_root, true).expect("load re-dismissed state");
+        let mut clock = || fixed_publication_time();
+        let outcome = sync_one_template(
+            Some(temp.path()),
+            &ac_root,
+            spec,
+            &mut loaded,
+            false,
+            true,
+            &mut clock,
+        )
+        .completion
+        .expect("classify re-dismissed pair");
+        assert!(matches!(
+            outcome.target_outcome,
+            TemplatePublication::Skipped(ContextTemplateSkipReason::IgnoredByUser)
+        ));
+    }
+
+    #[test]
+    fn ignored_current_v4_pair_remains_suppressed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        let custom = "# Current ignored custom global\n";
+        let custom_hash = hash_text(custom);
+        let v4_hash = hash_text(crate::config::session_context::get_default_agent_template());
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom global");
+        let mut state = SeededContextTemplateState::default();
+        state.templates.insert(
+            "global".to_string(),
+            SeededContextTemplateEntry {
+                template_id: "global".to_string(),
+                current_version: 4,
+                last_seeded_sha256: Some(v4_hash.clone()),
+                last_observed_sha256: Some(custom_hash.clone()),
+                ignored_default_sha256: Some(v4_hash),
+                ignored_observed_sha256: Some(custom_hash),
+            },
+        );
+        persist_state(&ac_root, &state).expect("persist ignored v4 pair");
+
+        let mut clock = || fixed_publication_time();
+        let mut publications = Vec::new();
+        let updates = scan_project_context_template_updates_with_clock(
+            temp.path(),
+            &ac_root,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("scan ignored v4 pair");
+        assert!(updates.is_empty());
+        assert!(publications.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read ignored custom global"),
+            custom
+        );
+
+        let spec = project_spec_by_filename(GLOBAL_CONTEXT_TEMPLATE_FILENAME).unwrap();
+        let mut loaded = load_state(&ac_root, true).expect("load ignored v4 state");
+        let outcome = sync_one_template(
+            Some(temp.path()),
+            &ac_root,
+            spec,
+            &mut loaded,
+            false,
+            true,
+            &mut clock,
+        )
+        .completion
+        .expect("classify ignored v4 pair");
+        assert!(matches!(
+            outcome.target_outcome,
+            TemplatePublication::Skipped(ContextTemplateSkipReason::IgnoredByUser)
+        ));
     }
 
     #[test]
@@ -3178,7 +3821,7 @@ mod tests {
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
-                label: "Coordinator context".to_string(),
+                label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-a".to_string(),
                 current_default_sha256: "default".to_string(),
                 current_default_version: 2,
@@ -3188,7 +3831,7 @@ mod tests {
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
-                label: "Coordinator context".to_string(),
+                label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-a".to_string(),
                 current_default_sha256: "default".to_string(),
                 current_default_version: 2,
@@ -3198,7 +3841,7 @@ mod tests {
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
                 filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
-                label: "Coordinator context".to_string(),
+                label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-b".to_string(),
                 current_default_sha256: "default".to_string(),
                 current_default_version: 2,
@@ -3328,6 +3971,56 @@ mod tests {
 
         assert!(!live_global(temp.path()).exists());
         assert!(retired_backups(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn retire_deletes_the_exact_v3_global_before_summarization() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            live_global(temp.path()),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
+        )
+        .expect("write exact v3 global");
+
+        retire_standalone_global_context(temp.path()).expect("retire exact v3");
+
+        assert!(!live_global(temp.path()).exists());
+        assert!(
+            retired_backups(temp.path()).is_empty(),
+            "the exact generated v3 backup must be deleted"
+        );
+    }
+
+    #[test]
+    fn retire_preserves_v3_global_near_matches_byte_for_byte() {
+        let variants = [
+            (
+                "one-byte",
+                format!("{GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION}X").into_bytes(),
+            ),
+            (
+                "crlf",
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+                    .replace('\n', "\r\n")
+                    .into_bytes(),
+            ),
+        ];
+
+        for (label, bytes) in variants {
+            let temp = tempfile::tempdir().expect("tempdir");
+            std::fs::write(live_global(temp.path()), &bytes).expect("write v3 near match");
+
+            retire_standalone_global_context(temp.path()).expect("retire v3 near match");
+
+            assert!(!live_global(temp.path()).exists(), "{label}");
+            let backups = retired_backups(temp.path());
+            assert_eq!(backups.len(), 1, "{label}: expected one inert backup");
+            assert_eq!(
+                std::fs::read(&backups[0]).expect("read v3 near-match backup"),
+                bytes,
+                "{label}: retirement changed bytes"
+            );
+        }
     }
 
     #[test]

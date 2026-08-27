@@ -2,7 +2,7 @@
 
 Install and run AgentsCommander from npm.
 
-AgentsCommander coordinates coding agents such as Claude Code, Codex, Gemini, and Pi in real terminal sessions. Agents work in local folders and exchange markdown messages you can inspect, diff, and audit.
+AgentsCommander coordinates coding agents such as Claude Code, Codex, Antigravity, and Pi in real terminal sessions. Agents work in local folders and exchange markdown messages you can inspect, diff, and audit.
 
 ## Install
 
@@ -27,6 +27,6 @@ https://github.com/mblua/AgentsCommander/releases/latest
 ## Requirements
 
 - Node.js 18+
-- One supported coding-agent CLI installed separately: Claude Code, Codex, Gemini, or Pi
+- One supported coding-agent CLI installed separately: Claude Code, Codex, Antigravity, or Pi
 
 AgentsCommander does not install coding-agent CLIs for you.

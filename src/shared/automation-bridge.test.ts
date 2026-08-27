@@ -3,13 +3,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { executeAutomationRequest, resetAutomationBridgeForTests } from "./automation-bridge";
-import type { UiAutomationAction, UiAutomationRequest, UiAutomationResponse } from "./types";
+import type {
+  MainTerminalLayoutPulseTrace,
+  UiAutomationAction,
+  UiAutomationRequest,
+  UiAutomationResponse,
+} from "./types";
+
+const terminalAutomation = vi.hoisted(() => ({
+  execute: vi.fn(),
+  reset: vi.fn(),
+}));
 
 vi.mock("./ipc", () => ({
   AutomationAPI: {
     complete: vi.fn(() => Promise.resolve()),
     enabled: vi.fn(() => Promise.resolve(false)),
     frontendReady: vi.fn(() => Promise.resolve()),
+    executeTerminalController: terminalAutomation.execute,
+    resetTerminalControllerForTests: terminalAutomation.reset,
   },
   onUiAutomationRequest: vi.fn(() => Promise.resolve(() => {})),
 }));
@@ -27,12 +39,12 @@ function productionSourceFiles(
     .sort();
 }
 
-function request(
-  action: UiAutomationAction,
+function request<A extends UiAutomationAction>(
+  action: A,
   selector: string,
   value?: string,
   expiresAtUnixMs?: number | null,
-): UiAutomationRequest {
+): UiAutomationRequest<A> {
   return {
     requestId: `request-${action}-${selector}`,
     token: "token",
@@ -90,6 +102,14 @@ function addTarget<K extends keyof HTMLElementTagNameMap>(
   if (text) element.textContent = text;
   document.body.append(element);
   return element;
+}
+
+function addTerminalTarget(sessionId = "session-a"): HTMLDivElement {
+  const target = addTarget("div", `terminal.session.${sessionId}`);
+  target.setAttribute("data-ac-session-id", sessionId);
+  target.setAttribute("data-ac-role", "surface");
+  topmostElement = target;
+  return target;
 }
 
 /** #944 - a visible automation target nested under `parent` (the chain tests need
@@ -154,6 +174,8 @@ describe("automation bridge", () => {
     // `from` and takes the staleFrom branch: A13 would fail on test ORDER alone.
     // beforeEach (not afterEach) because it is self-defending.
     resetAutomationBridgeForTests();
+    terminalAutomation.execute.mockReset().mockReturnValue(null);
+    terminalAutomation.reset.mockClear();
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
       value: vi.fn(() => topmostElement),
@@ -673,6 +695,294 @@ describe("automation bridge", () => {
     if (!response.ok) throw new Error(response.message);
     expect(response.target.testId).toBe("shadow.secret");
     expect(response.target.text).toBe("");
+  });
+
+  describe("terminal automation", () => {
+    const layoutPulse = {
+      version: 1,
+      requestId: 7,
+      sessionId: "session-a",
+      attachGeneration: 3,
+      status: "completed",
+      reason: "completed",
+      original: {
+        sidebarWidth: 440,
+        hostWidth: 900,
+        cols: 120,
+        rows: 39,
+        baselineObservedEpoch: null,
+        completedObserverAck: null,
+      },
+      expanded: {
+        sidebarWidth: 424,
+        hostWidth: 916,
+        cols: 122,
+        rows: 39,
+        baselineObservedEpoch: 10,
+        completedObserverAck: {
+          epoch: 11,
+          first: { hostWidth: 916, cols: 122, rows: 39 },
+          second: { hostWidth: 916, cols: 122, rows: 39 },
+        },
+      },
+      restored: {
+        sidebarWidth: 440,
+        hostWidth: 900,
+        cols: 120,
+        rows: 39,
+        baselineObservedEpoch: 12,
+        completedObserverAck: {
+          epoch: 13,
+          first: { hostWidth: 900, cols: 120, rows: 39 },
+          second: { hostWidth: 900, cols: 120, rows: 39 },
+        },
+      },
+      dwellMs: 208,
+      settingsWritesDelta: 0,
+    } satisfies MainTerminalLayoutPulseTrace;
+    const metrics = {
+      sessionId: "session-a",
+      baseY: 40,
+      viewportY: 0,
+      length: 64,
+      cols: 122,
+      rows: 39,
+      type: "normal" as const,
+      atBottom: false,
+      layoutPulse,
+    };
+
+    it.each([
+      ["query", { kind: "query" }],
+      ["top", { kind: "top" }],
+      ["bottom", { kind: "bottom" }],
+      ["line:0", { kind: "line", value: 0 }],
+      ["line:2147483647", { kind: "line", value: 2147483647 }],
+      ["lines:-2147483648", { kind: "lines", value: -2147483648 }],
+      ["lines:2147483647", { kind: "lines", value: 2147483647 }],
+      ["pages:-2147483648", { kind: "pages", value: -2147483648 }],
+      ["pages:2147483647", { kind: "pages", value: 2147483647 }],
+    ] as const)("routes canonical operation %s and returns exact metrics", async (value, operation) => {
+      const target = addTerminalTarget();
+      terminalAutomation.execute.mockReturnValue({ ok: true, target: metrics });
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", value),
+      );
+
+      expect(terminalAutomation.execute).toHaveBeenCalledWith({
+        element: target,
+        sessionId: "session-a",
+        operation,
+      });
+      expect(response).toMatchObject({
+        ok: true,
+        action: "terminal",
+        selector: "terminal.session.session-a",
+        target: metrics,
+      });
+      if (!response.ok) throw new Error(response.message);
+      expect(response.target).toEqual(metrics);
+      target.remove();
+      terminalAutomation.execute.mockReset();
+    });
+
+    it.each([
+      null,
+      "",
+      "QUERY",
+      " query",
+      "query ",
+      "line:",
+      "line:+1",
+      "line:-1",
+      "line:01",
+      "line:1.0",
+      "line:1e2",
+      "line:1:2",
+      "line:2147483648",
+      "lines:+1",
+      "lines:01",
+      "lines:-0",
+      "lines:1.0",
+      "lines:1e2",
+      "lines:-2147483649",
+      "pages:2147483648",
+      "unknown",
+    ])("rejects noncanonical terminal value %j before controller execution", async (value) => {
+      addTerminalTarget();
+      const terminalRequest = request(
+        "terminal",
+        "terminal.session.session-a",
+        value ?? undefined,
+      );
+      if (value === null) terminalRequest.value = null;
+
+      const response = await executeAutomationRequest("main", terminalRequest);
+
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected value_not_supported");
+      expect(response.error).toBe("value_not_supported");
+      expect(terminalAutomation.execute).not.toHaveBeenCalled();
+    });
+
+    it("checks expiry immediately before terminal controller execution", async () => {
+      addTerminalTarget();
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValueOnce(100).mockReturnValueOnce(100).mockReturnValue(101);
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "top", 101),
+      );
+
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected request_expired");
+      expect(response.error).toBe("request_expired");
+      expect(terminalAutomation.execute).not.toHaveBeenCalled();
+    });
+
+    it("reuses missing, duplicate, hidden, disabled, and obscured DOM failures", async () => {
+      const missing = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(missing.ok ? null : missing.error).toBe("missing_selector");
+
+      const first = addTerminalTarget();
+      addTerminalTarget();
+      const duplicate = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(duplicate.ok ? null : duplicate.error).toBe("duplicate_selector");
+
+      document.body.innerHTML = "";
+      const hiddenTarget = addTerminalTarget();
+      hiddenTarget.style.visibility = "hidden";
+      const hidden = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(hidden.ok ? null : hidden.error).toBe("target_hidden");
+
+      document.body.innerHTML = "";
+      const disabledTarget = addTerminalTarget();
+      disabledTarget.setAttribute("aria-disabled", "true");
+      const disabled = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(disabled.ok ? null : disabled.error).toBe("target_disabled");
+
+      document.body.innerHTML = "";
+      addTerminalTarget();
+      topmostElement = addTarget("div", "blocking.target");
+      const obscured = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(obscured.ok ? null : obscured.error).toBe("target_obscured");
+      expect(terminalAutomation.execute).not.toHaveBeenCalled();
+      first.remove();
+    });
+
+    it.each([
+      ["invalid prefix", "terminal.other.session-a", "session-a"],
+      ["empty session", "terminal.session.", ""],
+      ["control session", "terminal.session.bad\u0085", "bad\u0085"],
+      ["mismatched metadata", "terminal.session.session-a", "session-b"],
+    ])("rejects %s as terminal_target_mismatch", async (_label, selector, metadata) => {
+      const target = addTarget("div", selector);
+      target.setAttribute("data-ac-session-id", metadata);
+      topmostElement = target;
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", selector, "query"),
+      );
+
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error("expected terminal_target_mismatch");
+      expect(response.error).toBe("terminal_target_mismatch");
+      expect(terminalAutomation.execute).not.toHaveBeenCalled();
+    });
+
+    it("rejects session ids longer than 256 UTF-8 bytes", async () => {
+      const sessionId = "é".repeat(129);
+      addTerminalTarget(sessionId);
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", `terminal.session.${sessionId}`, "query"),
+      );
+      expect(response.ok ? null : response.error).toBe("terminal_target_mismatch");
+      expect(terminalAutomation.execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      "terminal_target_mismatch",
+      "terminal_entry_stale",
+      "terminal_session_not_visible",
+    ] as const)("copies controller error %s unchanged", async (error) => {
+      addTerminalTarget();
+      terminalAutomation.execute.mockReturnValue({ ok: false, error, message: error });
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+
+      expect(response.ok).toBe(false);
+      if (response.ok) throw new Error(`expected ${error}`);
+      expect(response.error).toBe(error);
+      expect(response.message).toBe(error);
+    });
+
+    it("maps controller absence and thrown exceptions", async () => {
+      addTerminalTarget();
+      const absent = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(absent.ok ? null : absent.error).toBe("terminal_controller_unavailable");
+
+      terminalAutomation.execute.mockImplementation(() => {
+        throw new Error("terminal exploded");
+      });
+      const thrown = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "query"),
+      );
+      expect(thrown.ok ? null : thrown.error).toBe("automation_bridge_exception");
+      expect(thrown.ok ? "" : thrown.message).toBe("terminal exploded");
+    });
+
+    it("does not focus, click, dispatch DOM input, or settle a terminal operation", async () => {
+      const target = addTerminalTarget();
+      terminalAutomation.execute.mockReturnValue({ ok: true, target: metrics });
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      const click = vi.spyOn(HTMLElement.prototype, "click");
+      const dispatch = vi.spyOn(target, "dispatchEvent");
+      const timeout = vi.spyOn(window, "setTimeout");
+
+      const response = await executeAutomationRequest(
+        "main",
+        request("terminal", "terminal.session.session-a", "top"),
+      );
+
+      expect(response.ok).toBe(true);
+      expect(focus).not.toHaveBeenCalled();
+      expect(click).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(timeout).not.toHaveBeenCalled();
+    });
+
+    it("bridge reset clears the terminal controller seam", () => {
+      terminalAutomation.reset.mockClear();
+      resetAutomationBridgeForTests();
+      expect(terminalAutomation.reset).toHaveBeenCalledTimes(1);
+    });
   });
 
   // #944 - hover. Eight events, sticky, focus-free, click-free, move-free.
@@ -1340,13 +1650,13 @@ describe("automation bridge", () => {
 
       expect(authoredRoles.size).toBeGreaterThan(0);
       expect([...authoredRoles].sort()).toEqual(declaredRoles?.slice().sort());
-      expect(declaredRoles).toHaveLength(25);
+      expect(declaredRoles).toHaveLength(27);
       expect(authoredRoles).toEqual(
         new Set([
           "agent-preset", "alert", "button", "cell", "checkbox", "combobox", "dialog",
-          "group", "input", "list", "menu", "menuitem", "metric", "overlay", "region",
+          "group", "input", "list", "listitem", "menu", "menuitem", "metric", "overlay", "region",
           "row", "searchbox", "separator", "spinbutton", "status", "surface", "tab",
-          "text", "textbox", "toolbar",
+          "table", "text", "textbox", "toolbar",
         ]),
       );
     });

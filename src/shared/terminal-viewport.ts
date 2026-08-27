@@ -1,9 +1,39 @@
-import type { PtyViewport } from "./types";
-
+import type { PtyViewport, UiTerminalAutomationTarget } from "./types";
 
 type PtyViewportProbe = () => PtyViewport | null;
 
+export type UiTerminalOperation =
+  | { kind: "query" }
+  | { kind: "top" }
+  | { kind: "bottom" }
+  | { kind: "line"; value: number }
+  | { kind: "lines"; value: number }
+  | { kind: "pages"; value: number };
+
+export interface UiTerminalControllerInput {
+  element: HTMLElement;
+  sessionId: string;
+  operation: UiTerminalOperation;
+}
+
+export type UiTerminalControllerError =
+  | "terminal_target_mismatch"
+  | "terminal_entry_stale"
+  | "terminal_session_not_visible";
+
+export type UiTerminalControllerResult =
+  | { ok: true; target: UiTerminalAutomationTarget }
+  | { ok: false; error: UiTerminalControllerError; message: string };
+
+type UiTerminalController = (
+  input: UiTerminalControllerInput,
+) => UiTerminalControllerResult;
+
 let probe: PtyViewportProbe | null = null;
+let terminalController: {
+  controller: UiTerminalController;
+  token: symbol;
+} | null = null;
 
 const spawnViewports = new Map<string, PtyViewport>();
 const MAX_TRACKED_SPAWN_VIEWPORTS = 32;
@@ -27,6 +57,27 @@ export const registerPtyViewportProbe = (next: PtyViewportProbe): (() => void) =
       probe = null;
     }
   };
+};
+
+export const registerUiTerminalController = (
+  controller: UiTerminalController,
+): (() => void) => {
+  const token = Symbol("ui-terminal-controller");
+  terminalController = { controller, token };
+  return () => {
+    if (terminalController?.token === token) {
+      terminalController = null;
+    }
+  };
+};
+
+export const executeUiTerminalController = (
+  input: UiTerminalControllerInput,
+): UiTerminalControllerResult | null =>
+  terminalController?.controller(input) ?? null;
+
+export const resetUiTerminalControllerForTests = (): void => {
+  terminalController = null;
 };
 
 export const measurePtyViewport = (): PtyViewport | null => {

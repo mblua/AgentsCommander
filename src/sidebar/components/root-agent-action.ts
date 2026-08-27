@@ -10,7 +10,7 @@ export type RootAgentAction =
  * Live root → fresh restart (skipAutoResume defaults true on the backend).
  * Dormant root (status is an `{ exited }` object) → restart with
  * skipAutoResume:false so the provider's resume flag is forwarded
- * (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
+ * (`claude --continue`, `codex resume --last`, `antigravity --continue`).
  */
 export function rootAgentCodingAgentAction(
   root: Session | undefined,

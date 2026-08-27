@@ -71,7 +71,7 @@ struct MessageSpec {
 }
 
 const CONTEXT_ALERT_DOC_COMMENT: &str = "\
-# Injected into the coordinator's terminal when a member crosses a configured
+# Injected into the orchestrator's terminal when a member crosses a configured
 # context-usage threshold.
 # Placeholders:
 #   %MEMBER%      name of the observed member, e.g. dev-rust
@@ -1324,7 +1324,7 @@ schema_version = 1
 coverage_version = 1
 
 [messages.context-alert]
-# Injected into the coordinator's terminal when a member crosses a configured
+# Injected into the orchestrator's terminal when a member crosses a configured
 # context-usage threshold.
 # Placeholders:
 #   %MEMBER%      name of the observed member, e.g. dev-rust
@@ -1668,7 +1668,7 @@ template = '''
         );
 
         // Against the transcribed literal, never against the generator.
-        assert_eq!(EXPECTED_SEED.len(), 1533, "the pinned seed is 1533 bytes");
+        assert_eq!(EXPECTED_SEED.len(), 1534, "the pinned seed is 1534 bytes");
         assert!(!EXPECTED_SEED.contains('\r'), "the pinned seed is LF");
         let written = read(&main_path(dir.path()));
         assert_eq!(written, EXPECTED_SEED);

@@ -29,9 +29,9 @@ If AC finds no host credential, or if the destination directory or file is a sym
 
 First-run stamping means AC pre-accepts Claude Code's **"do you trust this folder?"** dialog for the container's `/workspace`. That is a safety prompt, and AC answers it on your behalf so the agent does not stall at launch. The folder is the agent's replica root, which AC already bind-mounts read-write. This is deliberate, it is stated in the Settings hint, and it is stated here.
 
-## Terminal snapshots from a container Coordinator
+## Terminal snapshots from a container Orchestrator
 
-An automatically bound live container Coordinator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Coordinator member in the same exact physical project and workgroup. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
+An automatically bound live container Orchestrator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Orchestrator member in the same exact physical project and workgroup. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
 
 Enable the default-off **Settings > General > Terminal snapshots** gate first. The screen can contain credentials, source, prompts, and personal data, and AgentsCommander does not redact it.
 
@@ -78,7 +78,7 @@ With `--dangerously-skip-permissions`, a brand-new replica still shows Claude Co
 
 ### 3. Credential reuse is Claude Code only
 
-Codex, Gemini, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
+Codex, Antigravity, and Pi have no credential descriptor. AC copies no credentials and stamps no provider-specific first-run state for them. Their container sessions authenticate with credentials you supply yourself.
 
 For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CODING_AGENT_SESSION_DIR`, or provision a `--session-dir` path. Pi 0.80.10 accepts only the separated spelling `--session-dir <dir>`; it rejects `--session-dir=<dir>`. AC preserves the user-authored spelling and path during any eligible `--continue` insertion but does not make the path container-aware. Any custom session directory and its durable state must already be meaningful inside the container.
 

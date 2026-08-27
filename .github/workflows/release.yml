@@ -1,12 +1,101 @@
 name: Release
 
+# One paved path from a tag to production:
+#
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# ...produces a published GitHub Release with every platform asset and a
+# matching @mblua/agentscommander@X.Y.Z on the public npm registry.
+#
+# Job order is load-bearing. npm/install.js resolves its binaries from
+#   https://github.com/<repo>/releases/download/vX.Y.Z/<asset>
+# and that URL 404s while the release is still a draft, so npm must not be
+# published until publish-github has flipped the release out of draft.
+#
+# This workflow is deliberately version-agnostic. Never pin it to a single
+# tag; a release pipeline that only knows how to ship one version is not a
+# release pipeline.
+
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  # ---------------------------------------------------------------------
+  # Fail before spending 40 minutes of matrix build time on a bad tag.
+  # ---------------------------------------------------------------------
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Tag must match every version location in the tree
+        id: check
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          version="${TAG#v}"
+
+          # Every version location (package.json, package-lock.json, Cargo.toml,
+          # Cargo.lock, tauri.conf.json, npm/package.json, npm/install.js) must
+          # already agree with each other.
+          npm run version:check
+
+          manifest="$(node -p "require('./package.json').version")"
+          npm_manifest="$(node -p "require('./npm/package.json').version")"
+
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::tag $TAG does not match package.json version $manifest."
+            echo "::error::Run 'npm run version:bump -- $version', merge, then retag."
+            exit 1
+          fi
+          if [ "$npm_manifest" != "$version" ]; then
+            echo "::error::npm/package.json is at $npm_manifest but the tag is $TAG."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version from $TAG"
+
+      - name: Version must not already exist on npm
+        shell: bash
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # npm versions are immutable. Catch the collision now rather than
+          # after the GitHub Release is already published.
+          if npm view "@mblua/agentscommander@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@mblua/agentscommander@$VERSION is already published. Bump and retag."
+            exit 1
+          fi
+          echo "@mblua/agentscommander@$VERSION is free."
+
+  # ---------------------------------------------------------------------
+  # Build every platform and upload into a DRAFT release.
+  # ---------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.platform }}${{ matrix.label && format(' {0}', matrix.label) || '' }})
+    needs: guard
     permissions:
       contents: write
     strategy:
@@ -14,12 +103,14 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: '--config src-tauri/tauri.prod.conf.json --bundles nsis' 
+            args: '--config src-tauri/tauri.prod.conf.json --bundles nsis'
           - platform: ubuntu-22.04
             args: '--config src-tauri/tauri.prod.conf.json'
           - platform: macos-latest
+            label: aarch64
             args: '--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin'
           - platform: macos-latest
+            label: x86_64
             args: '--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
@@ -32,6 +123,7 @@ jobs:
       - name: Generate changelog
         if: matrix.platform == 'windows-latest'
         id: changelog
+        shell: bash
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
@@ -50,7 +142,6 @@ jobs:
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo -e "$BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-        shell: bash
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
@@ -76,7 +167,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build and release
+      - name: Build and upload bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -86,6 +177,12 @@ jobs:
           releaseBody: |
             ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
 
+            ### Install from npm
+
+            ```
+            npx @mblua/agentscommander@${{ needs.guard.outputs.version }}
+            ```
+
             ### Trust and privacy
             - [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.
             - [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)
@@ -93,18 +190,12 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-      - name: SignPath integration (Placeholder)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          echo "SignPath integration is pending maintainer setup and approval."
-          echo "After setup, this workflow can use the SignPath GitHub Action to submit artifacts for signing."
-          echo "Prerequisites: SignPath org/project/policy/artifact config ids, and an API token."
-          echo "See CODE_SIGNING_POLICY.md for the pending policy and approval gate."
-      - name: Upload raw binaries and npm assets
+      - name: Upload raw binaries consumed by the npm package
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
           if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
             node scripts/copy-testable-binary.mjs
@@ -129,21 +220,232 @@ jobs:
             gh release upload "$TAG" agentscommander-mac-x86_64.app.tar.gz --clobber
           fi
 
+      # The raw asset above is named for npm/install.js to resolve by URL, and
+      # that name is not runnable as-is: binary_suffix() splits the file stem on
+      # the first underscore, so agentscommander-windows-x86_64.exe comes up as
+      # instance "64" with a non-default config dir, mutex, and ports. The
+      # portable download therefore ships the same binary under its canonical
+      # name, with the files a standalone copy needs. See issue #1589.
+      - name: Pack, smoke, and upload the Windows portable zip
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "dist-portable/agentscommander-$env:VERSION-windows-x86_64-portable.zip"
+
+          node scripts/pack-windows-portable.mjs `
+            --binary target/release/agentscommander.exe `
+            --version $env:VERSION `
+            --out $zip
+          if ($LASTEXITCODE -ne 0) { throw "packing the portable zip failed" }
+
+          # Smoke BEFORE upload: a broken portable asset must never reach the
+          # release, not even as a draft attachment someone might publish.
+          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip -ExpectedVersion $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "the portable zip failed its smoke test" }
+
+          gh release upload "${{ github.ref_name }}" $zip --clobber
+          if ($LASTEXITCODE -ne 0) { throw "uploading the portable zip failed" }
+
+  # ---------------------------------------------------------------------
+  # SHASUMS256.txt over every asset. npm/install.js verifies against this.
+  # The portable zip needs no change here: this job downloads whatever is
+  # attached to the release and hashes all of it.
+  # ---------------------------------------------------------------------
   checksums:
-    needs: release
+    name: checksums
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+
       - name: Generate and upload checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
           mkdir -p release-assets
           cd release-assets
           gh release download "$TAG"
           sha256sum * > ../SHASUMS256.txt
           cd ..
+          cat SHASUMS256.txt
           gh release upload "$TAG" SHASUMS256.txt --clobber
+
+  # ---------------------------------------------------------------------
+  # Flip the draft to published, but only once the assets npm depends on
+  # are provably present and downloadable.
+  # ---------------------------------------------------------------------
+  publish-github:
+    name: publish-github
+    needs: [guard, checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release and prove the npm assets resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # A draft release is invisible to GET /releases/tags/{tag}; that
+          # endpoint only serves published releases. Resolving the draft by
+          # tag through it is what silently skipped the v0.30.1 release run.
+          # List and filter instead.
+          release_id="$(gh api --paginate "repos/$REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)"
+
+          if [ -z "$release_id" ]; then
+            echo "::error::No release found for tag $TAG."
+            exit 1
+          fi
+          echo "Release id for $TAG is $release_id"
+
+          gh api "repos/$REPO/releases/$release_id/assets" --paginate \
+            --jq '.[].name' | sort > present.txt
+          echo "Assets attached:"
+          sed 's/^/  /' present.txt
+
+          # These are exactly the files npm/install.js downloads at postinstall
+          # time. If any is missing, npm installs would break for that platform,
+          # so refuse to publish.
+          cat > required.txt <<'EOF'
+          SHASUMS256.txt
+          agentscommander-linux-x86_64
+          agentscommander-mac-aarch64.app.tar.gz
+          agentscommander-mac-x86_64.app.tar.gz
+          agentscommander-windows-x86_64.exe
+          EOF
+
+          # The portable download the docs promise (#1589). Its name carries the
+          # version, so it is appended rather than inlined in the fixed list
+          # above, which keeps this workflow version-agnostic.
+          echo "agentscommander-${VERSION}-windows-x86_64-portable.zip" >> required.txt
+
+          missing=0
+          while read -r asset; do
+            [ -z "$asset" ] && continue
+            if ! grep -qxF "$asset" present.txt; then
+              echo "::error::Required asset missing from the release: $asset"
+              missing=1
+            fi
+          done < required.txt
+          [ "$missing" -eq 0 ] || exit 1
+
+          gh api -X PATCH "repos/$REPO/releases/$release_id" \
+            -F draft=false -f make_latest=true >/dev/null
+
+          state="$(gh api "repos/$REPO/releases/$release_id" --jq '.draft')"
+          [ "$state" = "false" ] || { echo "::error::Release is still a draft."; exit 1; }
+
+          # Final proof: the exact URL npm/install.js will hit must resolve.
+          # This is the check that distinguishes "published" from "works".
+          url="https://github.com/$REPO/releases/download/$TAG/SHASUMS256.txt"
+          curl -sSfL --retry 5 --retry-delay 5 -o /dev/null "$url"
+          echo "Release $TAG is published and its assets are publicly downloadable."
+
+  # ---------------------------------------------------------------------
+  # Publish to npm, then prove a clean install actually works.
+  # ---------------------------------------------------------------------
+  publish-npm:
+    name: publish-npm
+    needs: [guard, publish-github]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # provenance attestation
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      # OIDC Trusted Publishing needs npm >= 11.5.1, and node 22 ships 10.9.8.
+      # This pin is what makes OIDC engage at all: without it npm silently
+      # falls back to token auth and nothing looks wrong.
+      # Same pin as version-sync-check.yml.
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2
+
+      - name: Show OIDC preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "npm  $(npm --version)   (OIDC trusted publishing needs >= 11.5.1)"
+          echo "node $(node --version)  (OIDC trusted publishing needs >= 22.14.0)"
+
+      # Authenticates via OIDC Trusted Publishing. There is no npm token: the
+      # trusted publisher on npmjs.com is pinned to owner mblua, repo
+      # AgentsCommander, workflow release.yml, no environment, npm publish only.
+      #
+      # No --provenance flag: trusted publishing generates the attestation on
+      # its own. The flag is only needed on the token path.
+      #
+      # To confirm a release really used OIDC, check the registry metadata
+      # rather than the publish log, which does not say. `_npmUser` carries a
+      # `trustedPublisher` object on the OIDC path and is a plain account on the
+      # token path. See docs/npm-authentication.md in the release skill.
+      - name: Publish @mblua/agentscommander
+        working-directory: npm
+        run: npm publish --access public
+
+      - name: Wait for the registry to serve the new version
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            got="$(npm view "@mblua/agentscommander@$VERSION" version 2>/dev/null || true)"
+            if [ "$got" = "$VERSION" ]; then
+              echo "Registry is serving $VERSION."
+              exit 0
+            fi
+            echo "Attempt $attempt: not visible yet, waiting."
+            sleep 10
+          done
+          echo "::error::@mblua/agentscommander@$VERSION never became visible."
+          exit 1
+
+      - name: Smoke test a clean install from the registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Installs the real published tarball and lets postinstall download
+          # and checksum-verify the Linux binary from the GitHub Release.
+          # This exercises the whole chain the way a user does.
+          work="$(mktemp -d)"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "@mblua/agentscommander@$VERSION"
+          test -x node_modules/@mblua/agentscommander/bin/agentscommander
+          echo "Clean install of $VERSION succeeded."
+
+      - name: Report
+        shell: bash
+        run: |
+          {
+            echo "### Released $VERSION"
+            echo
+            echo "- GitHub Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+            echo "- npm: https://www.npmjs.com/package/@mblua/agentscommander/v/$VERSION"
+            echo
+            echo '```'
+            echo "npx @mblua/agentscommander@$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

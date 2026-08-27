@@ -59,7 +59,7 @@ export async function requestCoordinatorCloseById(id: string): Promise<void> {
       if (coordinatorCloseModalHostAvailable()) {
         setPendingCoordinatorClose({
           sessionId: id,
-          name: s?.name ?? "this coordinator",
+          name: s?.name ?? "this orchestrator",
           workingCount: outcome.workingCount,
         });
       } else {

@@ -55,10 +55,10 @@ We use these terms consistently across all docs:
 
 | Use | Not |
 |---|---|
-| Coding agent (Claude Code, Codex, Gemini, Pi) | "the AI" |
+| Coding agent (Claude Code, Codex, Pi, Antigravity) | "the AI" |
 | Team | "Dark Factory", "crew" |
 | Workgroup | "the session" (it is a directory) |
-| Coordinator | "leader", "boss" |
+| Orchestrator | "leader", "boss" |
 | Brief | "the prompt" (briefs are persistent files; prompts are turn-by-turn) |
 | Session | "tab" (sessions are PTYs; AC has no tabs) |
 | Messaging | "chat", "comms" |

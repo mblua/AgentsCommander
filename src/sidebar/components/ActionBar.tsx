@@ -296,7 +296,7 @@ const ActionBar: Component = () => {
             class={`toolbar-gear-btn coord-sort-activity-btn ${sessionsStore.coordSortByActivity ? "active" : ""}`}
             disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}
             onClick={() => sessionsStore.toggleCoordSortByActivity()}
-            title={sessionsStore.coordSortByActivity ? "Show recent coordinators first" : "Show coordinators in default order"}
+            title={sessionsStore.coordSortByActivity ? "Show recent orchestrators first" : "Show orchestrators in default order"}
             aria-pressed={sessionsStore.coordSortByActivity}
             data-ac-testid="actionBar.sortCoordinators"
             data-ac-role="button"

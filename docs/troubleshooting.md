@@ -42,7 +42,7 @@ AC launches the commands configured under `settings.json → agents[]`. Verify t
 ```powershell
 where.exe claude
 where.exe codex
-where.exe gemini
+where.exe agy
 where.exe pi
 ```
 
@@ -51,7 +51,7 @@ On Linux or macOS:
 ```bash
 command -v claude
 command -v codex
-command -v gemini
+command -v agy
 command -v pi
 ```
 
@@ -59,13 +59,13 @@ Each successful command prints an executable path. If the binary is installed bu
 
 ### A coding-agent wrapper is not detected
 
-Claude, Codex, and Gemini use the legacy **executable basename prefix** detector. Wrappers such as `claude-mb`, `codex-foo`, or `gemini-bar` retain tuned behavior because the prefix matches. An unrelated name such as `my-llm` is treated as a plain shell.
+Claude and Codex use the legacy **executable basename prefix** detector. Wrappers such as `claude-mb` or `codex-foo` retain tuned behavior because the prefix matches. Antigravity matches the exact executable stems `agy` and `antigravity` (prefix wrappers are not inferred). An unrelated name such as `my-llm` is treated as a plain shell.
 
-Pi is intentionally stricter. Use an exact executable leaf named `pi`, `pi.exe`, or `pi.cmd`, directly or as the first command under `cmd.exe /C` or `/K`. An alias such as `my-pi`, a wrapper such as `npx pi`, `/S /C pi`, grouped Pi, or Pi after a compound separator does not receive Pi resume behavior. Unsupported Pi-shaped positions fail closed rather than being reclassified from a later Claude, Codex, or Gemini option value. See [How AC identifies a tuned integration](integrations/coding-agents.md#how-ac-identifies-a-tuned-integration).
+Pi is intentionally stricter. Use an exact executable leaf named `pi`, `pi.exe`, or `pi.cmd`, directly or as the first command under `cmd.exe /C` or `/K`. An alias such as `my-pi`, a wrapper such as `npx pi`, `/S /C pi`, grouped Pi, or Pi after a compound separator does not receive Pi resume behavior. Unsupported Pi-shaped positions fail closed rather than being reclassified from a later Claude or Codex option value. See [How AC identifies a tuned integration](integrations/coding-agents.md#how-ac-identifies-a-tuned-integration).
 
 ### Pi starts but does not continue a conversation
 
-First determine whether the launch should be fresh. AC adds `--continue` only when its final lifecycle decision requests known state, such as an eligible restore or reopen. A fresh create, fresh restart, or final coordinator fresh override deliberately launches without an AC-authored selector.
+First determine whether the launch should be fresh. AC adds `--continue` only when its final lifecycle decision requests known state, such as an eligible restore or reopen. A fresh create, fresh restart, or final orchestrator fresh override deliberately launches without an AC-authored selector.
 
 For an expected known-state launch, set `logLevel` to `info` and look for:
 
@@ -108,7 +108,7 @@ agentscommander send --send "20260527-150000-wg1-foo-to-wg1-bar-hello.md" ...
 
 ### `routing rejected`
 
-The sender does not share a team with the recipient, or the sender is not a coordinator. Run `list-peers-lean` from the sender's directory to see who is reachable:
+The sender does not share a team with the recipient, or the sender is not an orchestrator. Run `list-peers-lean` from the sender's directory to see who is reachable:
 
 ```bash
 agentscommander list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"

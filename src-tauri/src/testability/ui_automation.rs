@@ -80,6 +80,10 @@ const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
 const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
 const MAX_WINDOW_LABEL_BYTES: usize = 128;
 const MAX_SELECTOR_BYTES: usize = 256;
+const UI_TERMINAL_SELECTOR_PREFIX: &str = "terminal.session.";
+const MAX_UI_TERMINAL_SESSION_ID_BYTES: usize = 256;
+const MAX_UI_TERMINAL_SELECTOR_BYTES: usize =
+    UI_TERMINAL_SELECTOR_PREFIX.len() + MAX_UI_TERMINAL_SESSION_ID_BYTES;
 const MAX_PREFIX_BYTES: usize = 256;
 const MAX_ROLE_BYTES: usize = 32;
 const MAX_STATE_PREDICATE_BYTES: usize = 64;
@@ -103,7 +107,7 @@ const MAX_TERMINAL_ROWS: usize = 200;
 const MAX_TERMINAL_COLUMNS: usize = 500;
 const MAX_TERMINAL_CELLS: usize = 100_000;
 const PROTOCOL_SCHEMA_VERSION: u32 = 1;
-const SUPPORTED_ROLES: [&str; 25] = [
+const SUPPORTED_ROLES: [&str; 27] = [
     "agent-preset",
     "alert",
     "button",
@@ -114,6 +118,7 @@ const SUPPORTED_ROLES: [&str; 25] = [
     "group",
     "input",
     "list",
+    "listitem",
     "menu",
     "menuitem",
     "metric",
@@ -126,11 +131,12 @@ const SUPPORTED_ROLES: [&str; 25] = [
     "status",
     "surface",
     "tab",
+    "table",
     "text",
     "textbox",
     "toolbar",
 ];
-const CAPABILITY_ACTIONS: [&str; 10] = [
+const CAPABILITY_ACTIONS: [&str; 11] = [
     "query",
     "list",
     "wait",
@@ -141,6 +147,7 @@ const CAPABILITY_ACTIONS: [&str; 10] = [
     "setValue",
     "typeText",
     "backend",
+    "terminal",
 ];
 const CAPABILITY_WAIT_PREDICATES: [&str; 8] = [
     "state", "text", "enabled", "disabled", "selected", "expanded", "focused", "absent",
@@ -242,6 +249,17 @@ pub struct UiQueryArgs {
     pub selector: String,
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
     pub timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct UiTerminalArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+    pub operation: String,
 }
 
 #[derive(Debug, Args)]
@@ -452,6 +470,7 @@ pub enum UiAutomationAction {
     TypeText,
     Focus,
     Backend,
+    Terminal,
 }
 
 impl UiAutomationAction {
@@ -471,7 +490,8 @@ impl UiAutomationAction {
             Self::SetValue => Self::TypeText,
             Self::TypeText => Self::Focus,
             Self::Focus => Self::Backend,
-            Self::Backend => return None,
+            Self::Backend => Self::Terminal,
+            Self::Terminal => return None,
         })
     }
 
@@ -2372,7 +2392,12 @@ fn validate_request_shape_and_limits(
             "Terminal session selection was invalid.",
         ));
     }
-    if request.selector.as_bytes().len() > MAX_SELECTOR_BYTES {
+    let selector_limit = if request.action == UiAutomationAction::Terminal {
+        MAX_UI_TERMINAL_SELECTOR_BYTES
+    } else {
+        MAX_SELECTOR_BYTES
+    };
+    if request.selector.as_bytes().len() > selector_limit {
         return Err(("selector_too_large", "Automation selector exceeded its limit."));
     }
     if request
@@ -2459,6 +2484,21 @@ fn validate_request_action_shape(
                 return Err(malformed());
             }
         }
+        UiAutomationAction::Terminal => {
+            let valid_selector = request
+                .selector
+                .strip_prefix(UI_TERMINAL_SELECTOR_PREFIX)
+                .is_some_and(valid_terminal_session_id);
+            if !valid_selector
+                || request.value.is_none()
+                || request.prefix.is_some()
+                || request.role.is_some()
+                || request.owner_window.is_some()
+                || request.session.is_some()
+            {
+                return Err(malformed());
+            }
+        }
         UiAutomationAction::Hover => {
             if request.prefix.is_some()
                 || request.role.is_some()
@@ -2512,6 +2552,109 @@ pub fn execute_query(context: &UiCliDispatchContext, args: UiQueryArgs) -> i32 {
         value: None,
         timeout_ms: args.timeout_ms,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiTerminalOperation {
+    Query,
+    Top,
+    Bottom,
+    Line(i32),
+    Lines(i32),
+    Pages(i32),
+}
+
+fn parse_terminal_operation(value: &str) -> Option<UiTerminalOperation> {
+    match value {
+        "query" => return Some(UiTerminalOperation::Query),
+        "top" => return Some(UiTerminalOperation::Top),
+        "bottom" => return Some(UiTerminalOperation::Bottom),
+        _ => {}
+    }
+
+    let parse_unsigned = |operand: &str| {
+        let bytes = operand.as_bytes();
+        let canonical = bytes == b"0"
+            || (bytes
+                .first()
+                .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+                && bytes[1..].iter().all(u8::is_ascii_digit));
+        canonical.then(|| operand.parse::<i32>().ok()).flatten()
+    };
+    let parse_signed = |operand: &str| {
+        let bytes = operand.as_bytes();
+        let canonical_unsigned = bytes == b"0"
+            || (bytes
+                .first()
+                .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+                && bytes[1..].iter().all(u8::is_ascii_digit));
+        let canonical_negative = bytes.first() == Some(&b'-')
+            && bytes.get(1).is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+            && bytes[2..].iter().all(u8::is_ascii_digit);
+        (canonical_unsigned || canonical_negative)
+            .then(|| operand.parse::<i32>().ok())
+            .flatten()
+    };
+
+    if let Some(operand) = value.strip_prefix("line:") {
+        return parse_unsigned(operand).map(UiTerminalOperation::Line);
+    }
+    if let Some(operand) = value.strip_prefix("lines:") {
+        return parse_signed(operand).map(UiTerminalOperation::Lines);
+    }
+    if let Some(operand) = value.strip_prefix("pages:") {
+        return parse_signed(operand).map(UiTerminalOperation::Pages);
+    }
+    None
+}
+
+fn valid_terminal_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= MAX_UI_TERMINAL_SESSION_ID_BYTES
+        && !session_id.chars().any(char::is_control)
+}
+
+fn terminal_cli_request(args: UiTerminalArgs) -> Result<CliRequest, Value> {
+    if !valid_terminal_session_id(&args.session_id) {
+        return Err(preflight_error(
+            "invalid_terminal_session_id",
+            "Terminal session id must contain 1 to 256 UTF-8 bytes and no control characters.",
+            None,
+        ));
+    }
+    if parse_terminal_operation(&args.operation).is_none() {
+        return Err(preflight_error(
+            "invalid_terminal_operation",
+            "Terminal operation must be query, top, bottom, line:N, lines:N, or pages:N in the signed 32-bit range.",
+            None,
+        ));
+    }
+
+    Ok(CliRequest {
+        window: args.window,
+        selector: format!("{UI_TERMINAL_SELECTOR_PREFIX}{}", args.session_id),
+        prefix: None,
+        role: None,
+        owner_window: None,
+        session: None,
+        action: UiAutomationAction::Terminal,
+        value: Some(args.operation),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_terminal(context: &UiCliDispatchContext, args: UiTerminalArgs) -> i32 {
+    if let Err(error) = ensure_current_exe_is_testable() {
+        print_stdout_value(&error);
+        return 1;
+    }
+    match terminal_cli_request(args) {
+        Ok(request) => execute_cli(context, request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
 }
 
 pub fn execute_click(context: &UiCliDispatchContext, args: UiClickArgs) -> i32 {
@@ -4351,7 +4494,12 @@ fn validate_cli_request(input: &CliRequest) -> Result<(), Value> {
             None,
         ));
     }
-    if input.selector.as_bytes().len() > MAX_SELECTOR_BYTES {
+    let selector_limit = if input.action == UiAutomationAction::Terminal {
+        MAX_UI_TERMINAL_SELECTOR_BYTES
+    } else {
+        MAX_SELECTOR_BYTES
+    };
+    if input.selector.as_bytes().len() > selector_limit {
         return Err(preflight_error(
             "selector_too_large",
             "Automation selector exceeded its limit.",
@@ -4414,6 +4562,19 @@ fn validate_cli_request(input: &CliRequest) -> Result<(), Value> {
         UiAutomationAction::SetValue | UiAutomationAction::TypeText => {
             !input.selector.is_empty()
                 && input.value.is_some()
+                && input.prefix.is_none()
+                && input.role.is_none()
+                && input.owner_window.is_none()
+                && input.session.is_none()
+        }
+        UiAutomationAction::Terminal => {
+            input
+                .selector
+                .strip_prefix(UI_TERMINAL_SELECTOR_PREFIX)
+                .is_some_and(valid_terminal_session_id)
+                && input.value.is_some()
+                && input.prefix.is_none()
+                && input.role.is_none()
                 && input.owner_window.is_none()
                 && input.session.is_none()
         }
@@ -6368,13 +6529,23 @@ mod tests {
 
     #[test]
     fn managed_automation_types_are_send_sync_static() {
-        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
-        assert_send_sync_static::<Arc<dyn AutomationConfigWitness>>();
-        assert_send_sync_static::<Arc<dyn InstanceIsolationTestHooks>>();
-        assert_send_sync_static::<UiCliDispatchContext>();
-        assert_send_sync_static::<UiAutomationState>();
-        assert_send_sync_static::<TerminalTaskControl>();
-        assert_send_sync_static::<Arc<dyn TerminalCaptureHooks>>();
+        fn assert_send_sync_static<T: Send + Sync + 'static>() -> std::any::TypeId {
+            std::any::TypeId::of::<T>()
+        }
+
+        let managed_type_ids = [
+            assert_send_sync_static::<Arc<dyn AutomationConfigWitness>>(),
+            assert_send_sync_static::<Arc<dyn InstanceIsolationTestHooks>>(),
+            assert_send_sync_static::<UiCliDispatchContext>(),
+            assert_send_sync_static::<UiAutomationState>(),
+            assert_send_sync_static::<TerminalTaskControl>(),
+            assert_send_sync_static::<Arc<dyn TerminalCaptureHooks>>(),
+        ];
+        assert_eq!(
+            managed_type_ids.iter().copied().collect::<HashSet<_>>().len(),
+            managed_type_ids.len(),
+            "each managed automation type must remain a distinct static type",
+        );
     }
 
     #[test]
@@ -6971,6 +7142,7 @@ mod tests {
             UiAutomationAction::TypeText => "typeText",
             UiAutomationAction::Focus => "focus",
             UiAutomationAction::Backend => "backend",
+            UiAutomationAction::Terminal => "terminal",
         }
     }
 
@@ -7371,6 +7543,181 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_operation_parser_accepts_exact_i32_boundaries() {
+        assert_eq!(
+            parse_terminal_operation("query"),
+            Some(UiTerminalOperation::Query)
+        );
+        assert_eq!(
+            parse_terminal_operation("top"),
+            Some(UiTerminalOperation::Top)
+        );
+        assert_eq!(
+            parse_terminal_operation("bottom"),
+            Some(UiTerminalOperation::Bottom)
+        );
+        assert_eq!(
+            parse_terminal_operation("line:0"),
+            Some(UiTerminalOperation::Line(0))
+        );
+        assert_eq!(
+            parse_terminal_operation("line:2147483647"),
+            Some(UiTerminalOperation::Line(i32::MAX))
+        );
+        for (prefix, constructor) in [
+            (
+                "lines:",
+                UiTerminalOperation::Lines as fn(i32) -> UiTerminalOperation,
+            ),
+            (
+                "pages:",
+                UiTerminalOperation::Pages as fn(i32) -> UiTerminalOperation,
+            ),
+        ] {
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}-2147483648")),
+                Some(constructor(i32::MIN))
+            );
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}0")),
+                Some(constructor(0))
+            );
+            assert_eq!(
+                parse_terminal_operation(&format!("{prefix}2147483647")),
+                Some(constructor(i32::MAX))
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_operation_parser_rejects_every_noncanonical_grammar_class() {
+        for value in [
+            "",
+            "QUERY",
+            " query",
+            "query ",
+            "line:",
+            "line:+1",
+            "line:-1",
+            "line:00",
+            "line:01",
+            "line:-0",
+            "line:1.0",
+            "line:1e2",
+            "line:1:2",
+            "line:2147483648",
+            "lines:",
+            "lines:+1",
+            "lines:01",
+            "lines:-0",
+            "lines:1.0",
+            "lines:1e2",
+            "lines:1:2",
+            "lines:2147483648",
+            "lines:-2147483649",
+            "pages:+1",
+            "pages:01",
+            "pages:-0",
+            "pages:2147483648",
+            "pages:-2147483649",
+            "unknown:1",
+        ] {
+            assert_eq!(
+                parse_terminal_operation(value),
+                None,
+                "unexpectedly accepted {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_session_id_validation_uses_exact_utf8_bytes_and_control_rule() {
+        assert!(!valid_terminal_session_id(""));
+        assert!(!valid_terminal_session_id("bad\nvalue"));
+        assert!(!valid_terminal_session_id("bad\u{7f}value"));
+        assert!(valid_terminal_session_id("a"));
+        assert!(valid_terminal_session_id(&"a".repeat(256)));
+        assert!(!valid_terminal_session_id(&"a".repeat(257)));
+        assert!(valid_terminal_session_id(&"é".repeat(128)));
+        assert!(!valid_terminal_session_id(&"é".repeat(129)));
+    }
+
+    #[test]
+    fn terminal_cli_request_preserves_session_and_derives_fixed_selector() {
+        let session_id = " exact-é session ".to_string();
+        let request = terminal_cli_request(UiTerminalArgs {
+            window: "terminal".to_string(),
+            session_id: session_id.clone(),
+            timeout_ms: 4321,
+            operation: "pages:-2".to_string(),
+        })
+        .expect("valid terminal request");
+
+        assert_eq!(request.window, "terminal");
+        assert_eq!(request.selector, format!("terminal.session.{session_id}"));
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.role, None);
+        assert_eq!(request.owner_window, None);
+        assert_eq!(request.session, None);
+        assert_eq!(request.action, UiAutomationAction::Terminal);
+        assert_eq!(request.value.as_deref(), Some("pages:-2"));
+        assert_eq!(request.timeout_ms, 4321);
+    }
+
+    #[test]
+    fn terminal_selector_keeps_the_full_session_id_bound_without_raising_other_selector_limits() {
+        let session_id = "é".repeat(128);
+        let request = terminal_cli_request(UiTerminalArgs {
+            window: "main".to_string(),
+            session_id: session_id.clone(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: "query".to_string(),
+        })
+        .expect("maximum-size terminal session id");
+        assert_eq!(
+            request.selector.as_bytes().len(),
+            MAX_UI_TERMINAL_SELECTOR_BYTES
+        );
+        validate_cli_request(&request).expect("terminal CLI selector limit");
+
+        let mut wire_request = sample_request(
+            "00000000-0000-4000-8000-000000000160".to_string(),
+            &request.selector,
+        );
+        wire_request.action = UiAutomationAction::Terminal;
+        wire_request.value = Some("query".to_string());
+        validate_request_shape_and_limits(&wire_request).expect("terminal wire selector limit");
+
+        wire_request.action = UiAutomationAction::Query;
+        wire_request.value = None;
+        assert_eq!(
+            validate_request_shape_and_limits(&wire_request),
+            Err(("selector_too_large", "Automation selector exceeded its limit."))
+        );
+    }
+
+    #[test]
+    fn terminal_cli_request_rejects_before_request_construction() {
+        let invalid_session = terminal_cli_request(UiTerminalArgs {
+            window: "main".to_string(),
+            session_id: "bad\nvalue".to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: "query".to_string(),
+        })
+        .unwrap_err();
+        assert_eq!(invalid_session["error"], "invalid_terminal_session_id");
+
+        let invalid_operation = terminal_cli_request(UiTerminalArgs {
+            window: "main".to_string(),
+            session_id: "session-a".to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: "line:01".to_string(),
+        })
+        .unwrap_err();
+        assert_eq!(invalid_operation["error"], "invalid_terminal_operation");
+    }
+
     /// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`
     /// are two closed lists that MUST agree. They are not generated from one another
     /// (no ts-rs / typeshare / specta in this crate), so nothing but this test stops
@@ -7439,7 +7786,7 @@ mod tests {
 
         assert_eq!(
             types_ts.matches("activeTestId: string | null;").count(),
-            3,
+            4,
             "every TypeScript UiAutomationResponse union arm must require nullable activeTestId"
         );
     }

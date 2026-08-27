@@ -328,7 +328,6 @@ const MANAGED_HOME_ENV_KEYS = new Set([
   "CODEX_HOME",
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_HOME",
-  "GEMINI_HOME",
 ]);
 
 function isLiteralAbsolutePath(value: string): boolean {
@@ -402,7 +401,6 @@ export function defaultInstructionsFilename(command: string): string {
   const stems = command.trim().split(/\s+/).filter(Boolean).map(executableTokenBasename);
   if (stems.some((s) => s.startsWith("claude"))) return "CLAUDE.md";
   if (stems.some((s) => s.startsWith("codex"))) return "AGENTS.md";
-  if (stems.some((s) => s.startsWith("gemini"))) return "GEMINI.md";
   return "AGENTS.md";
 }
 

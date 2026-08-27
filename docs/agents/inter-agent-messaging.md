@@ -70,6 +70,8 @@ The recipient's PTY receives a short notification pointing to the file's absolut
 
 The agent reads the file from disk. PTY size limits do not apply.
 
+**Receipt required (never report "enviado" without it):** `send` prints `Queued: <message-id>` to stdout as soon as the message is enqueued, and `Delivered: <message-id>` once delivery is confirmed. Capture both lines and verify them before considering the message sent: a missing `Queued:` line means the message was **NOT enqueued** — report failure, never success. A `Queued:` line with a later confirmation timeout (exit 1) means "enqueued but unconfirmed": the message stays durably queued, so verify the outbox instead of re-sending. On Windows, capture these lines through the Git Bash wrap above.
+
 ## Discovering peers
 
 Before sending, resolve the exact peer name via `list-peers-lean`:
@@ -96,17 +98,40 @@ JSON output (one entry per peer):
 
 The `name` field is the canonical FQN. Pass it verbatim to `send --to`.
 
+## Shell routing on Windows (required)
+
+On Windows, the release binary is GUI-subsystem, so PowerShell direct capture of its stdout is **empty** (and PS 5.1 does not propagate its exit code): `$x = & $bin ... | ConvertFrom-Json` silently yields nothing and the agent cannot tell whether the CLI even ran. Run **every** AgentsCommander CLI invocation through Git Bash instead; `bash.exe` is console-subsystem, so PowerShell waits for it, captures its stdout, and propagates its exit code.
+
+```bash
+# list-peers-lean through Git Bash from any shell (PowerShell, pwsh, cmd)
+peers=$("C:\Program Files\Git\bin\bash.exe" -lc '"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"' 2>/dev/null)
+```
+
+Parse the captured JSON with `python` or `jq` (never PowerShell `ConvertFrom-Json` on a direct capture):
+
+```bash
+peer=$(printf '%s' "$peers" | python -c "import json,sys; print(json.load(sys.stdin)[0]['name'])")
+```
+
+`send` follows the same wrap:
+
+```bash
+"C:\Program Files\Git\bin\bash.exe" -lc '"<AGENTSCOMMANDER_BINARY_PATH>" send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT" --to "$peer" --send "<filename>" --mode wake'
+```
+
+The `$x = & $bin ... | ConvertFrom-Json` capture pattern is **banned**. For runners that expose both a Bash and a PowerShell tool (e.g. Claude Code), prefer the Bash tool for AgentsCommander CLI invocations; the wrap form works from any tool or shell regardless.
+
 ## Routing rules
 
 The CLI validates routing **before** delivery. If the call would be rejected the CLI fails fast and never writes to the outbox.
 
 | Sender | Allowed recipients |
 |---|---|
-| Worker (non-coordinator) | The team's coordinator + peers sharing a team. |
-| Coordinator | Any team member; any other coordinator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup coordinator replica. |
-| Root Agent | Verified WG coordinator replicas only. |
+| Worker (non-orchestrator) | The team's orchestrator + peers sharing a team. |
+| Orchestrator | Any team member; any other orchestrator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup orchestrator replica. |
+| Root Agent | Verified WG orchestrator replicas only. |
 
-**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both coordinators. This is a defect, not intended behavior, and it contradicts the coordinator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already coordinator-to-coordinator only.
+**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both orchestrators. This is a defect, not intended behavior, and it contradicts the orchestrator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already orchestrator-to-orchestrator only.
 
 `reachable: false` peers appear in `list-peers-lean` (so you know they exist) but cannot be addressed directly.
 
@@ -137,7 +162,7 @@ agentscommander send --to <peer> --command compact --mode wake
 
 | Direct recipient shell | `clear` text | `compact` text |
 |---|---|---|
-| Claude, Codex, or Gemini filename stem/prefix | `/clear` | `/compact` |
+| Claude, Codex, or Antigravity filename stem | `/clear` | `/compact` |
 | Cursor exact stem `agent` | `/clear` | `/compact` |
 | Pi exact stem `pi` | `/new` | Unsupported |
 | Other shells, including outer `cmd` or `pwsh` wrappers | Unsupported | Unsupported |
@@ -163,7 +188,7 @@ agentscommander send \
   --mode wake
 ```
 
-Container coordinator form:
+Container orchestrator form:
 
 ```bash
 agentscommander-api-helper send \
@@ -178,11 +203,11 @@ Authorization is narrower than ordinary messaging:
 
 | Sender | Valid PTY-input target | Plane |
 |---|---|---|
-| Live verified workgroup coordinator replica | One verified non-coordinator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
-| Live canonical local Root Agent | One verified workgroup coordinator replica | Local host filesystem only |
-| Worker, origin coordinator, manual API client, stale session, or master credential without a live session | None | None |
+| Live verified workgroup orchestrator replica | One verified non-orchestrator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
+| Live canonical local Root Agent | One verified workgroup orchestrator replica | Local host filesystem only |
+| Worker, origin orchestrator, manual API client, stale session, or master credential without a live session | None | None |
 
-Coordinator-to-coordinator, coordinator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
+Orchestrator-to-orchestrator, orchestrator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
 
 Text must be valid UTF-8 and 1 through 65,536 bytes. Spaces, LF, TAB, Unicode, leading hyphens, quotes, and shell metacharacters are preserved. Control, bidi, CR, and Unicode line-separator scalars are rejected. Prefer stdin because the caller's shell processes an argument before AC sees it.
 
@@ -226,7 +251,7 @@ agentscommander terminal-snapshot \
   --to "project:wg-1-team/member"
 ```
 
-Root can read verified workgroup members and Coordinators in active registered projects through the host plane. A verified workgroup Coordinator can read a non-Coordinator member in the same exact project and workgroup. An automatically bound container Coordinator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
+Root can read verified workgroup members and Orchestrators in active registered projects through the host plane. A verified workgroup Orchestrator can read a non-Orchestrator member in the same exact project and workgroup. An automatically bound container Orchestrator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
 
 The host transport uses only these transient requester-side protocol directories:
 
@@ -242,7 +267,7 @@ The CLI removes a consumed response, and the daemon performs identity-safe 60-se
 | Error | Cause | Fix |
 |---|---|---|
 | `filename '...' contains path separators or traversal` | You passed a path to `--send` | Use the filename only |
-| `routing rejected` | Sender cannot reach recipient (membership or coordinator check) | Verify the peer is `reachable: true` in `list-peers-lean` |
+| `routing rejected` | Sender cannot reach recipient (membership or orchestrator check) | Verify the peer is `reachable: true` in `list-peers-lean` |
 | `invalid token` | Token is not a UUID or root/master token | Set `AGENTSCOMMANDER_TOKEN` from your AC session env |
 | `--get-output is non-functional under --mode wake` | You set `--get-output` | Remove it; use the reply-file pattern above |
 

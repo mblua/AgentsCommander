@@ -60,7 +60,7 @@ pub struct AgentConfig {
     pub isolated_home: bool,
     /// #529 - filename AC writes into the agent root at launch (content = AC
     /// context + Role.md). `None`/empty falls back to the command-derived default
-    /// (Claude -> CLAUDE.md, Gemini -> GEMINI.md, Codex/Pi/else -> AGENTS.md). Serialized as
+    /// (Claude -> CLAUDE.md, Codex/Pi/Antigravity/else -> AGENTS.md). Serialized as
     /// `instructionsFilename`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
@@ -967,20 +967,11 @@ fn find_provider_token(tokens: &[&str], provider: &str) -> Option<usize> {
         .position(|token| command_token_basename(token) == provider)
 }
 
-fn gemini_has_manual_resume(tokens: &[&str], gemini_idx: usize) -> bool {
-    let mut idx = gemini_idx + 1;
-    while idx < tokens.len() {
-        let token = tokens[idx];
-        if token.eq_ignore_ascii_case("-c") || token.eq_ignore_ascii_case("--config") {
-            idx = advance_past_config_value(tokens, idx + 1);
-            continue;
-        }
-        if token.eq_ignore_ascii_case("--resume") || token.to_lowercase().starts_with("--resume=") {
-            return true;
-        }
-        idx += 1;
-    }
-    false
+fn antigravity_has_manual_resume(tokens: &[&str], antigravity_idx: usize) -> bool {
+    tokens[antigravity_idx + 1..].iter().any(|t| {
+        let lower = t.to_lowercase();
+        lower == "--continue" || lower == "-c"
+    })
 }
 
 fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool {
@@ -1676,11 +1667,12 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
             if cell.enabled && !cell.command.trim().is_empty() {
                 // #597 - the cell holds params appended to the agent base command,
                 // so validate the COMPOSED effective command. Otherwise a banned
-                // provider flag (Claude --continue/-c or Codex/Gemini manual resume)
-                // placed in the cell params escapes the check. Pi session selectors
-                // are intentionally allowed and remain user-authoritative. The provider token
-                // lives in the base, not the cell. Falls back to the cell text when
-                // the cell references an agent id that has no configured agent.
+                // provider flag (Claude --continue/-c or Codex manual resume /
+                // Antigravity --continue/-c) placed in the cell params escapes the
+                // check. Pi session selectors are intentionally allowed and remain
+                // user-authoritative. The provider token lives in the base, not the
+                // cell. Falls back to the cell text when the cell references an
+                // agent id that has no configured agent.
                 let base = settings
                     .agents
                     .iter()
@@ -1745,10 +1737,12 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
         }
     }
 
-    if let Some(gemini_idx) = find_provider_token(&tokens, "gemini") {
-        if gemini_has_manual_resume(&tokens, gemini_idx) {
+    if let Some(antigravity_idx) = find_provider_token(&tokens, "agy")
+        .or_else(|| find_provider_token(&tokens, "antigravity"))
+    {
+        if antigravity_has_manual_resume(&tokens, antigravity_idx) {
             return Err(format!(
-                "{context}: Gemini commands must not include --resume; AgentsCommander injects gemini --resume latest automatically"
+                "{context}: Antigravity commands must not include --continue or -c; AgentsCommander injects agy --continue automatically"
             ));
         }
     }
@@ -4417,6 +4411,47 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), SettingsSaveErro
 }
 
 #[cfg(windows)]
+const WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS: [u64; 5] = [15, 30, 60, 120, 240];
+
+#[cfg(windows)]
+fn replace_settings_file_atomic_with_retry<Replace, Sleep>(
+    mut replace: Replace,
+    mut sleep: Sleep,
+) -> std::io::Result<()>
+where
+    Replace: FnMut() -> std::io::Result<()>,
+    Sleep: FnMut(std::time::Duration),
+{
+    let total_attempts = WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS.len() + 1;
+    for (attempt_index, backoff_ms) in WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(5) | Some(32)) => {
+                let failed_attempt = attempt_index + 1;
+                let raw_os_error = error
+                    .raw_os_error()
+                    .expect("retryable Windows errors have a raw OS error");
+                log::warn!(
+                    "Windows settings atomic replace attempt {} of {} failed with raw OS error {}; retrying in {} ms",
+                    failed_attempt,
+                    total_attempts,
+                    raw_os_error,
+                    backoff_ms
+                );
+                sleep(std::time::Duration::from_millis(backoff_ms));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    replace()
+}
+
+#[cfg(windows)]
 fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -4432,18 +4467,23 @@ fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::R
         .encode_wide()
         .chain(Some(0))
         .collect();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    replace_settings_file_atomic_with_retry(
+        || {
+            let result = unsafe {
+                MoveFileExW(
+                    source.as_ptr(),
+                    destination.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if result == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        },
+        std::thread::sleep,
+    )
 }
 
 #[cfg(not(windows))]
@@ -5168,6 +5208,93 @@ mod tests {
         drop(lock_guard);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_settings_replace_retries_access_denied() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+
+        super::replace_settings_file_atomic_with_retry(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    Err(std::io::Error::from_raw_os_error(5))
+                } else {
+                    Ok(())
+                }
+            },
+            |duration| sleeps.push(duration.as_millis() as u64),
+        )
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(sleeps, vec![15]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_settings_replace_retries_sharing_violation() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+
+        super::replace_settings_file_atomic_with_retry(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    Err(std::io::Error::from_raw_os_error(32))
+                } else {
+                    Ok(())
+                }
+            },
+            |duration| sleeps.push(duration.as_millis() as u64),
+        )
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(sleeps, vec![15]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_settings_replace_non_retryable_fails_immediately() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+
+        let error = super::replace_settings_file_atomic_with_retry(
+            || {
+                calls += 1;
+                Err(std::io::Error::from_raw_os_error(87))
+            },
+            |duration| sleeps.push(duration.as_millis() as u64),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(87));
+        assert_eq!(calls, 1);
+        assert!(sleeps.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_settings_replace_exhaustion_returns_final_error() {
+        let mut calls = 0;
+        let mut sleeps = Vec::new();
+
+        let error = super::replace_settings_file_atomic_with_retry(
+            || {
+                calls += 1;
+                let raw_os_error = if calls < 6 { 5 } else { 32 };
+                Err(std::io::Error::from_raw_os_error(raw_os_error))
+            },
+            |duration| sleeps.push(duration.as_millis() as u64),
+        )
+        .unwrap_err();
+
+        assert_eq!(calls, 6);
+        assert_eq!(sleeps, vec![15, 30, 60, 120, 240]);
+        assert_eq!(error.raw_os_error(), Some(32));
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn startup_preserve_failure_diagnostics_cover_all_save_triggers() {
@@ -5770,16 +5897,29 @@ mod tests {
     }
 
     #[test]
-    fn validate_agent_commands_allows_plain_gemini() {
-        let settings = settings_with_agents(&[("Gemini", "gemini")]);
+    fn validate_agent_commands_allows_plain_antigravity() {
+        let settings = settings_with_agents(&[("Antigravity", "agy")]);
         assert!(super::validate_agent_commands(&settings).is_ok());
     }
 
     #[test]
-    fn validate_agent_commands_rejects_gemini_resume_latest() {
-        let settings = settings_with_agents(&[("Gemini", "gemini --resume latest")]);
-        let err = super::validate_agent_commands(&settings).unwrap_err();
-        assert!(err.contains("Gemini commands must not include --resume"));
+    fn validate_agent_commands_rejects_antigravity_continue() {
+        for command in ["agy --continue", "agy -c"] {
+            let settings = settings_with_agents(&[("Antigravity", command)]);
+            let err = super::validate_agent_commands(&settings).unwrap_err();
+            assert!(
+                err.contains("must not include --continue or -c"),
+                "command={command:?} err={err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_agent_commands_allows_antigravity_conversation() {
+        // `--conversation <ID>` is a user-authored resume-by-ID form and stays
+        // allowed (analog of Claude `--resume <id>`; the injector skip honors it).
+        let settings = settings_with_agents(&[("Antigravity", "agy --conversation abc123")]);
+        assert!(super::validate_agent_commands(&settings).is_ok());
     }
 
     #[test]

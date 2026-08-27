@@ -46,6 +46,33 @@ fn run_ps(shell: &str, args: &str) -> Option<(i32, String, String)> {
     Some((code, stdout, stderr))
 }
 
+/// `run_ps` variant for a caller-supplied PS script (no `& '<BIN>'` prefix)
+/// that ends with `; exit $LASTEXITCODE` so the outer powershell.exe exit code
+/// reflects the inner process's. Only meaningful for console-subsystem carriers
+/// (bash.exe); the GUI-subsystem AC binary under bare `&` leaves
+/// `$LASTEXITCODE` unset, which is why the four direct-capture tests above
+/// intentionally never assert exit codes.
+fn run_ps_script_with_exit_propagation(shell: &str, script: &str) -> Option<(i32, String, String)> {
+    if Command::new(shell)
+        .arg("-Help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        return None;
+    }
+    let mut c = Command::new(shell);
+    c.args(["-NonInteractive", "-NoProfile", "-Command", script]);
+    c.stdout(Stdio::piped());
+    c.stderr(Stdio::piped());
+    let out = c.spawn().ok()?.wait_with_output().ok()?;
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    Some((code, stdout, stderr))
+}
+
 #[allow(clippy::assertions_on_constants)] // Plan R2.6 step 3: intentional runtime guard.
 fn debug_guard() {
     assert!(
@@ -60,7 +87,9 @@ fn debug_guard() {
 // propagate the AC binary's $LASTEXITCODE for GUI-subsystem children (PE
 // Subsystem=2); the outer powershell.exe always exits 0 regardless. The bug-
 // relevant signals are stdout/stderr presence — those alone distinguish fixed
-// from unfixed binaries.
+// from unfixed binaries. The exit-code carrier is the bash-routed test below
+// (`..._via_git_bash`): bash.exe is console-subsystem, so $LASTEXITCODE
+// propagates through it and out of the outer powershell.exe.
 
 #[test]
 #[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
@@ -161,6 +190,69 @@ fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
     );
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert!(parsed.is_array());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+#[ignore = "Manual developer check; CI uses smoke:cli-release-windows against shipped/testable exe names"]
+fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() {
+    debug_guard();
+
+    // #1596: Git Bash is the required carrier on Windows — bash.exe is
+    // console-subsystem, so PowerShell captures its stdout AND propagates the
+    // AC binary's exit code through it (`; exit $LASTEXITCODE`). Skip (not a
+    // failure) when bash.exe is not on PATH, e.g. a non-Git-Bash dev machine.
+    if Command::new("bash.exe")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("skip: bash.exe not available");
+        return;
+    }
+
+    let tmp = std::env::temp_dir().join(format!(
+        "ac-test-bash-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let safe_root = tmp.to_string_lossy().replace('\'', "''");
+    let token = "00000000-0000-0000-0000-000000000000";
+
+    // Inner bash command (single-quote escaping identical to `ps_command`):
+    //   'BIN' list-peers --token <token> --root '<root>'
+    // wrapped as  & bash.exe -lc '<inner>'; exit $LASTEXITCODE  at the PS level.
+    let bash_inner = format!(
+        "'{}' list-peers --token {} --root '{}'",
+        BIN.replace('\'', "''"),
+        token,
+        safe_root
+    );
+    let ps_script = format!(
+        "& bash.exe -lc '{}'; exit $LASTEXITCODE",
+        bash_inner.replace('\'', "''")
+    );
+    let (code, stdout, stderr) = run_ps_script_with_exit_propagation("powershell.exe", &ps_script)
+        .expect("powershell.exe must be available on Windows CI/dev");
+
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should contain the JSON payload via the Git Bash carrier. stderr=[{}]",
+        stderr
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout should parse as JSON");
+    assert!(parsed.is_array(), "expected JSON array");
+    assert_eq!(
+        code, 0,
+        "outer powershell.exe must exit 0 (bash.exe propagates the AC binary's \
+         $LASTEXITCODE through `; exit $LASTEXITCODE`); stderr=[{}]",
+        stderr
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

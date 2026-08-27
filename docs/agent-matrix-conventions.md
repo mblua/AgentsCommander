@@ -23,7 +23,7 @@ The team is the logical capability and organization: it defines who can work tog
 
 ## Project Context Templates
 
-Project `.ac` creation seeds the editable global and coordinator context templates under:
+Project `.ac` creation seeds the editable global and orchestrator context templates under:
 
 ```text
 .ac/
@@ -31,7 +31,7 @@ Project `.ac` creation seeds the editable global and coordinator context templat
 └── Context.coordinator.md
 ```
 
-`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for coordinator sessions. The separator and `# Coordinator Context` heading are owned by AgentsCommander, so the coordinator file should contain only the body text.
+`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md` and `AGENTS.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for orchestrator sessions. The separator and `# Orchestrator Context` heading are owned by AgentsCommander, so the orchestrator file should contain only the body text.
 
 ### The Root Agent does not use the global template (#979)
 
@@ -229,7 +229,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 | Field | Required | Description |
 |---|---|---|
 | `agents` | Yes | Array of portable agent references (`_agent_<name>` or bare `<name>`). These agents become peers and can message each other. |
-| `coordinator` | Yes | The agent reference of the agent that coordinates work. Shown with `COORDINATOR` badge in sidebar. Must also be in `agents`. |
+| `coordinator` | Yes | The agent reference of the agent that coordinates work. Shown with `orchestrator` badge in sidebar. Must also be in `agents`. |
 | `repos` | Yes | Array of repo objects. Each has `agents` (which agents work on this repo) and `url` (the git remote). |
 
 ### Critical Rules for Team Config
@@ -240,7 +240,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 3. **Don't reference external projects.** If you're building a team for project A, the agents must be `_agent_*` matrices inside project A's `.ac/`. Referencing agents from project B (for example `_agent_foo` from another project's root) makes them appear as belonging to the wrong project.
 
-4. **The coordinator must be in the agents list.** The coordinator path must also appear in the `agents` array.
+4. **The orchestrator must be in the agents list.** The orchestrator path must also appear in the `agents` array.
 
 5. **Repos.agents can be a subset.** Not every team member needs access to every repo. The `repos[].agents` array specifies which agents work on which repo.
 
@@ -418,7 +418,7 @@ When creating a full agent team for a new project:
 .ac/
 ├── .gitignore                    # Must exclude wg-*/
 ├── project-settings.json         # Coding agent config
-├── _agent_COORDINATOR/
+├── _agent_ORCHESTRATOR/
 │   └── Role.md
 ├── _agent_WORKER_1/
 │   └── Role.md
@@ -502,7 +502,7 @@ These are proven team compositions. Adapt to your project's domain.
 
 | Agent | Role | Scope |
 |---|---|---|
-| **tech-lead** | Coordinator | Breaks requirements into tasks, delegates, verifies, reports |
+| **tech-lead** | Orchestrator | Breaks requirements into tasks, delegates, verifies, reports |
 | **architect** | Planner | Designs implementation plans, maps affected files, flags cascading effects |
 | **dev** | Implementer | Writes code, runs checks, commits to feature branches |
 | **grinch** | Reviewer | Adversarial review — finds bugs, edge cases, security issues |
@@ -512,7 +512,7 @@ These are proven team compositions. Adapt to your project's domain.
 
 | Agent | Role | Scope |
 |---|---|---|
-| **lead** | Coordinator + Planner | Plans and delegates (combines tech-lead + architect) |
+| **lead** | Orchestrator + Planner | Plans and delegates (combines tech-lead + architect) |
 | **dev** | Implementer | Writes code |
 | **reviewer** | Quality gate | Reviews for correctness |
 
