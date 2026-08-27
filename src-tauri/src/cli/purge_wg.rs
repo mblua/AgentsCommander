@@ -77,7 +77,7 @@ fn print_status_prose(content: &str) {
 #[command(after_help = "\
 SCOPE: Purges every peer in the CALLER'S OWN workgroup. The caller itself is never \
 purged, and neither is the Root Agent. Cross-workgroup purge is not supported.\n\n\
-AUTHORIZATION: The caller must be the identity-verified coordinator of its workgroup. \
+AUTHORIZATION: The caller must be the identity-verified orchestrator of its workgroup. \
 The master/root token does NOT bypass this: a root token has no workgroup.\n\n\
 BUSY GATE: If ANY in-scope peer has produced printable output within --quiet-period-ms, \
 the command purges NOBODY and exits 3.\n\n\

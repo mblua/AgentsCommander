@@ -665,7 +665,7 @@ fn validate_root_sender_route(
     }
 
     if crate::config::teams::verified_wg_coordinator_target(to, project_paths).is_none() {
-        return Err("Root Agent can only message verified WG coordinator replicas");
+        return Err("Root Agent can only message verified WG orchestrator replicas");
     }
 
     Ok(())
@@ -676,7 +676,7 @@ fn validate_coordinator_to_root_route(
     project_paths: &[String],
 ) -> Result<(), &'static str> {
     if crate::config::teams::verified_wg_coordinator_target(from, project_paths).is_none() {
-        return Err("Only verified WG coordinator replicas may message the Root Agent");
+        return Err("Only verified WG orchestrator replicas may message the Root Agent");
     }
     Ok(())
 }
@@ -7497,7 +7497,7 @@ impl MailboxPoller {
                             return Err("Context alert delivery was canceled during live settle".to_string());
                         }
                         _ = self.settle_internal_live_before_inject(app, Uuid::parse_str(&candidate.id)
-                            .map_err(|e| format!("Invalid coordinator session id '{}': {}", candidate.id, e))?) => {}
+                            .map_err(|e| format!("Invalid orchestrator session id '{}': {}", candidate.id, e))?) => {}
                     }
                     if cancellation.is_cancelled() {
                         return Err(
@@ -7505,7 +7505,7 @@ impl MailboxPoller {
                         );
                     }
                     let session_id = Uuid::parse_str(&candidate.id)
-                        .map_err(|e| format!("Invalid coordinator session id: {}", e))?;
+                        .map_err(|e| format!("Invalid orchestrator session id: {}", e))?;
                     match self
                         .inject_internal_system_notice(
                             app,
@@ -7542,7 +7542,7 @@ impl MailboxPoller {
                 );
             }
             let exited_id = Uuid::parse_str(&exited_candidate.id)
-                .map_err(|e| format!("Invalid exited coordinator session id: {}", e))?;
+                .map_err(|e| format!("Invalid exited orchestrator session id: {}", e))?;
             self.recheck_internal_exited_candidate(app, exited_id, &target)
                 .await?;
             Self::run_internal_guard(Arc::clone(&guard)).await?;
@@ -7559,7 +7559,7 @@ impl MailboxPoller {
                 .await
                 .map_err(|error| {
                     format!(
-                        "Failed to destroy stale coordinator session {}: {}",
+                        "Failed to destroy stale orchestrator session {}: {}",
                         exited_id, error
                     )
                 })?;
@@ -7576,7 +7576,7 @@ impl MailboxPoller {
             .is_empty()
         {
             return Err(format!(
-                "Coordinator recipient '{}' changed immediately before background spawn",
+                "Orchestrator recipient '{}' changed immediately before background spawn",
                 target.fqn()
             ));
         }
@@ -7654,7 +7654,7 @@ impl MailboxPoller {
             .is_empty()
         {
             return Err(format!(
-                "Coordinator recipient '{}' changed immediately before background spawn",
+                "Orchestrator recipient '{}' changed immediately before background spawn",
                 target.fqn()
             ));
         }
@@ -7686,13 +7686,13 @@ impl MailboxPoller {
         };
         let info = spawn_result.map_err(|error| {
             format!(
-                "Failed to spawn supported coordinator session for '{}': {}",
+                "Failed to spawn supported orchestrator session for '{}': {}",
                 target.fqn(),
                 error
             )
         })?;
         let session_id = Uuid::parse_str(&info.id)
-            .map_err(|e| format!("Invalid spawned coordinator session id: {}", e))?;
+            .map_err(|e| format!("Invalid spawned orchestrator session id: {}", e))?;
 
         if carried_bot.is_some() {
             self.attach_persisted_telegram_for_wake(app, session_id, carried_bot.as_deref())
@@ -7821,7 +7821,7 @@ impl MailboxPoller {
                 .collect::<Vec<_>>()
         })
         .await
-        .map_err(|error| format!("Coordinator candidate path task failed: {}", error))?;
+        .map_err(|error| format!("Orchestrator candidate path task failed: {}", error))?;
         owned.sort_by_key(|session| {
             let temporary = session
                 .name
@@ -7837,7 +7837,7 @@ impl MailboxPoller {
         let mut result = Vec::with_capacity(owned.len());
         for session in owned {
             let id = Uuid::parse_str(&session.id)
-                .map_err(|e| format!("Invalid coordinator session id '{}': {}", session.id, e))?;
+                .map_err(|e| format!("Invalid orchestrator session id '{}': {}", session.id, e))?;
             let has_pty = self.has_pty_session_for_wake(app, id).await;
             if matches!(session.status, SessionStatus::Exited(_)) || has_pty {
                 result.push((session, has_pty));
@@ -7857,14 +7857,14 @@ impl MailboxPoller {
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
-        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        .ok_or_else(|| format!("Exited orchestrator session {} disappeared", session_id))?;
         if !matches!(session.status, SessionStatus::Exited(_))
             || session.is_root_agent
             || session.agent_id.is_none()
             || !crate::pty::inject::needs_explicit_enter(&session.shell)
         {
             return Err(format!(
-                "Coordinator session {} changed before exited-session destruction",
+                "Orchestrator session {} changed before exited-session destruction",
                 session_id
             ));
         }
@@ -7873,10 +7873,10 @@ impl MailboxPoller {
         let owned =
             tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
                 .await
-                .map_err(|error| format!("Exited coordinator path task failed: {}", error))??;
+                .map_err(|error| format!("Exited orchestrator path task failed: {}", error))??;
         if !owned {
             return Err(format!(
-                "Coordinator session {} no longer belongs to target replica",
+                "Orchestrator session {} no longer belongs to target replica",
                 session_id
             ));
         }
@@ -7895,7 +7895,7 @@ impl MailboxPoller {
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
-        .ok_or_else(|| format!("Exited coordinator session {} disappeared", session_id))?;
+        .ok_or_else(|| format!("Exited orchestrator session {} disappeared", session_id))?;
         if !matches!(session.status, SessionStatus::Exited(_))
             || session.is_root_agent
             || session.agent_id.is_none()
@@ -7904,7 +7904,7 @@ impl MailboxPoller {
             || crate::config::teams::agent_fqn_from_path(&session.working_directory) != target.fqn()
         {
             return Err(format!(
-                "Coordinator session {} restarted or changed immediately before destruction",
+                "Orchestrator session {} restarted or changed immediately before destruction",
                 session_id
             ));
         }
@@ -7915,13 +7915,13 @@ impl MailboxPoller {
                 .await
                 .map_err(|error| {
                     format!(
-                        "Final exited coordinator path task failed for {}: {}",
+                        "Final exited orchestrator path task failed for {}: {}",
                         session_id, error
                     )
                 })??;
         if !owned {
             return Err(format!(
-                "Coordinator session {} escaped the canonical target before destruction",
+                "Orchestrator session {} escaped the canonical target before destruction",
                 session_id
             ));
         }
@@ -8004,7 +8004,7 @@ impl MailboxPoller {
                         target.replica_dir(),
                     )? {
                         return Err(format!(
-                            "Coordinator session {} escaped canonical target replica",
+                            "Orchestrator session {} escaped canonical target replica",
                             session_id
                         ));
                     }
@@ -8025,7 +8025,7 @@ impl MailboxPoller {
                     target.replica_dir(),
                 )? {
                     return Err(format!(
-                        "Coordinator session {} escaped canonical target replica",
+                        "Orchestrator session {} escaped canonical target replica",
                         session_id
                     ));
                 }
@@ -9146,7 +9146,7 @@ impl MailboxPoller {
                         path,
                         msg,
                         &format!(
-                            "Not authorized: '{}' is not a coordinator of '{}' team",
+                            "Not authorized: '{}' is not an orchestrator of '{}' team",
                             msg.from, target
                         ),
                     )
@@ -9454,7 +9454,7 @@ impl MailboxPoller {
                             path,
                             msg,
                             &format!(
-                            "Not authorized: '{}' is not the verified coordinator of its workgroup",
+                            "Not authorized: '{}' is not the verified orchestrator of its workgroup",
                             msg.from
                         ),
                         )
@@ -15698,7 +15698,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a/tech-lead", &paths, false, true, true),
-            Err("Root Agent can only message verified WG coordinator replicas")
+            Err("Root Agent can only message verified WG orchestrator replicas")
         );
     }
 
@@ -15708,7 +15708,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a:wg-1-dev-team/tech-lead", &paths, false, true, true,),
-            Err("Root Agent can only message verified WG coordinator replicas")
+            Err("Root Agent can only message verified WG orchestrator replicas")
         );
     }
 
@@ -15730,7 +15730,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a/tech-lead", &paths, true, false, false),
-            Err("Root Agent can only message verified WG coordinator replicas")
+            Err("Root Agent can only message verified WG orchestrator replicas")
         );
     }
 
@@ -15849,7 +15849,7 @@ mod tests {
         let (_temp, paths) = make_root_route_fixture(false);
         assert_eq!(
             validate_coordinator_to_root_route("proj-a:wg-1-dev-team/dev-rust", &paths),
-            Err("Only verified WG coordinator replicas may message the Root Agent")
+            Err("Only verified WG orchestrator replicas may message the Root Agent")
         );
     }
 
@@ -15858,7 +15858,7 @@ mod tests {
         let (_temp, paths) = make_root_route_fixture(true);
         assert_eq!(
             validate_coordinator_to_root_route("proj-a:wg-1-dev-team/tech-lead", &paths),
-            Err("Only verified WG coordinator replicas may message the Root Agent")
+            Err("Only verified WG orchestrator replicas may message the Root Agent")
         );
     }
 

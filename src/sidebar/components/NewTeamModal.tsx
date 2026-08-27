@@ -318,7 +318,7 @@ const NewTeamModal: Component<{
                               <span class="wizard-agent-name">{agent.name}</span>
                             </label>
                             <Show when={isSelected()}>
-                              <label class="wizard-coord-label" title="Set as coordinator">
+                              <label class="wizard-coord-label" title="Set as orchestrator">
                                 <input
                                   type="radio"
                                   name="coordinator"

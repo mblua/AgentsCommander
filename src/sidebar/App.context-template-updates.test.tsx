@@ -25,7 +25,7 @@ function update(
     workspacePath: `${projectPath}\\.ac`,
     filePath: `${projectPath}\\.ac\\Context.coordinator.md`,
     filename: "Context.coordinator.md",
-    label: "Coordinator context",
+    label: "Orchestrator context",
     currentFileSha256: "file-a",
     currentDefaultSha256: "default-2",
     currentDefaultVersion: 2,
@@ -74,7 +74,7 @@ describe("SidebarApp context-template update flow (#695)", () => {
         2000,
       );
       expect(target("contextTemplateUpdate.modal")!.textContent).toContain(
-        "Coordinator context",
+        "Orchestrator context",
       );
     } finally {
       rendered.cleanup();

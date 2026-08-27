@@ -23,13 +23,13 @@ export function loopToastFromEvent(data: LoopEventPayload): LoopToast | null {
     case "skipped":
     case "skippedBusy":
       return {
-        message: data.message ?? `Loop "${name}" skipped because the coordinator is busy`,
+        message: data.message ?? `Loop "${name}" skipped because the orchestrator is busy`,
         className: "toast-error",
       };
     case "pending":
     case "pendingBusy":
       return {
-        message: data.message ?? `Loop "${name}" is pending until the coordinator is idle`,
+        message: data.message ?? `Loop "${name}" is pending until the orchestrator is idle`,
         className: "toast-info",
       };
     case "delivered":

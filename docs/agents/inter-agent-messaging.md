@@ -102,11 +102,11 @@ The CLI validates routing **before** delivery. If the call would be rejected the
 
 | Sender | Allowed recipients |
 |---|---|
-| Worker (non-coordinator) | The team's coordinator + peers sharing a team. |
-| Coordinator | Any team member; any other coordinator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup coordinator replica. |
-| Root Agent | Verified WG coordinator replicas only. |
+| Worker (non-orchestrator) | The team's orchestrator + peers sharing a team. |
+| Orchestrator | Any team member; any other orchestrator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup orchestrator replica. |
+| Root Agent | Verified WG orchestrator replicas only. |
 
-**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both coordinators. This is a defect, not intended behavior, and it contradicts the coordinator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already coordinator-to-coordinator only.
+**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both orchestrators. This is a defect, not intended behavior, and it contradicts the orchestrator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already orchestrator-to-orchestrator only.
 
 `reachable: false` peers appear in `list-peers-lean` (so you know they exist) but cannot be addressed directly.
 
@@ -163,7 +163,7 @@ agentscommander send \
   --mode wake
 ```
 
-Container coordinator form:
+Container orchestrator form:
 
 ```bash
 agentscommander-api-helper send \
@@ -178,11 +178,11 @@ Authorization is narrower than ordinary messaging:
 
 | Sender | Valid PTY-input target | Plane |
 |---|---|---|
-| Live verified workgroup coordinator replica | One verified non-coordinator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
-| Live canonical local Root Agent | One verified workgroup coordinator replica | Local host filesystem only |
-| Worker, origin coordinator, manual API client, stale session, or master credential without a live session | None | None |
+| Live verified workgroup orchestrator replica | One verified non-orchestrator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
+| Live canonical local Root Agent | One verified workgroup orchestrator replica | Local host filesystem only |
+| Worker, origin orchestrator, manual API client, stale session, or master credential without a live session | None | None |
 
-Coordinator-to-coordinator, coordinator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
+Orchestrator-to-orchestrator, orchestrator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
 
 Text must be valid UTF-8 and 1 through 65,536 bytes. Spaces, LF, TAB, Unicode, leading hyphens, quotes, and shell metacharacters are preserved. Control, bidi, CR, and Unicode line-separator scalars are rejected. Prefer stdin because the caller's shell processes an argument before AC sees it.
 
@@ -226,7 +226,7 @@ agentscommander terminal-snapshot \
   --to "project:wg-1-team/member"
 ```
 
-Root can read verified workgroup members and Coordinators in active registered projects through the host plane. A verified workgroup Coordinator can read a non-Coordinator member in the same exact project and workgroup. An automatically bound container Coordinator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
+Root can read verified workgroup members and Orchestrators in active registered projects through the host plane. A verified workgroup Orchestrator can read a non-Orchestrator member in the same exact project and workgroup. An automatically bound container Orchestrator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
 
 The host transport uses only these transient requester-side protocol directories:
 
@@ -242,7 +242,7 @@ The CLI removes a consumed response, and the daemon performs identity-safe 60-se
 | Error | Cause | Fix |
 |---|---|---|
 | `filename '...' contains path separators or traversal` | You passed a path to `--send` | Use the filename only |
-| `routing rejected` | Sender cannot reach recipient (membership or coordinator check) | Verify the peer is `reachable: true` in `list-peers-lean` |
+| `routing rejected` | Sender cannot reach recipient (membership or orchestrator check) | Verify the peer is `reachable: true` in `list-peers-lean` |
 | `invalid token` | Token is not a UUID or root/master token | Set `AGENTSCOMMANDER_TOKEN` from your AC session env |
 | `--get-output is non-functional under --mode wake` | You set `--get-output` | Remove it; use the reply-file pattern above |
 

@@ -1685,7 +1685,7 @@ describe("SettingsModal automation hooks", () => {
     expect(section?.querySelector(".settings-section-title")?.textContent).toBe(
       "Terminal snapshots",
     );
-    expect(warning).toContain("authorized Root Agents and same-workgroup Coordinators");
+    expect(warning).toContain("authorized Root Agents and same-workgroup Orchestrators");
     expect(warning).toContain("JSON or PNG");
     expect(warning).toContain("passwords, tokens, source code, prompts, and personal data");
     expect(warning).toContain("Disabled by default");
@@ -1925,7 +1925,7 @@ describe("SettingsModal automation hooks", () => {
     const checkbox = byTestId<HTMLInputElement>("settings.general.coordinatorCascadeCloseEnabled");
     // The label is the issue's verbatim wording.
     expect(checkbox.closest("label")?.textContent).toContain(
-      "Always close team members when manually closing Coordinator",
+      "Always close team members when manually closing Orchestrator",
     );
     // Loaded default is true (the seeded settings have it on).
     expect(checkbox.checked).toBe(true);

@@ -58,7 +58,7 @@ All routes live under `/api/v1`.
 | `POST /api/v1/send` | `send` | Durable inline send to a peer FQN. `opId` is the idempotency key, enforced per sender, so a replay returns the same queued message id and never creates a second row. Inline payloads are capped at 256 KiB. Answers `202` with `{ "status": "queued", "messageId": "..." }`. |
 | `GET /api/v1/peers` | `list_peers` | `list-peers-lean` for the caller's bound replica. Reachability is computed from the bound identity, not from anything in the request. |
 | `GET /api/v1/session-transport` | `session_transport` | A WebSocket upgrade carrying one container session's terminal transport. Authorization happens before the upgrade, and the socket is bound to that session, its backend and its bound root, with a fixed maximum frame size. |
-| `POST /api/v1/pty-input` | `pty_input` | Privileged exact PTY actuation into one live, automatically bound container coordinator's same-workgroup member. Requires the `pty-input` scope. `text` is 1 through 65,536 decoded UTF-8 bytes. `opId` is permanently idempotent for that sender incarnation. |
+| `POST /api/v1/pty-input` | `pty_input` | Privileged exact PTY actuation into one live, automatically bound container orchestrator's same-workgroup member. Requires the `pty-input` scope. `text` is 1 through 65,536 decoded UTF-8 bytes. `opId` is permanently idempotent for that sender incarnation. |
 | `GET /api/v1/pty-input/{opId}` | `pty_input` | Metadata-only status for the authenticated sender's own operation. Statuses are `queued`, `actuating`, `injected`, `rejected` and `indeterminate`. Returns `200` or `404`. |
 | `POST /api/v1/terminal-snapshot` | `terminal_snapshot` | Reads one live backend terminal viewport as JSON or PNG. Requires the `terminal-snapshot` scope **and** the default-off `terminalSnapshotsEnabled` gate. See [Terminal snapshots](terminal-snapshots.md). |
 | `GET /api/v1/windows/{window_id}/screenshot` | `window_screenshot` | Returns the PNG bytes of exactly one live native window. **Windows only**: the route is absent from other builds rather than emulated. It enforces the `pty-input` scope and the same fresh bound-credential guard. See [Window capture](window-capture.md). |
@@ -70,7 +70,7 @@ Two notes on reading that table. `injected` proves the backend accepted the exac
 
 Scope is necessary and never sufficient. Authority is based on live physical identity, and the [security model](../security.md) is the binding description; the short version:
 
-- A live container coordinator may target one verified non-coordinator member in the same exact project and workgroup.
+- A live container orchestrator may target one verified non-orchestrator member in the same exact project and workgroup.
 - Manual API clients, workers, stale sessions, cross-workgroup and cross-project routes, aliases and wildcards have no privileged authority, whatever their scope list says.
 - Target names must be exact canonical FQNs.
 

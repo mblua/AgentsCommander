@@ -106,7 +106,7 @@ AC uses Pi's direct `--continue` option, not `--resume`, which opens Pi's intera
 - AC's final lifecycle decision requests known state rather than a fresh start.
 - Pi's first command segment is conversational and contains no lexical user-authored session control.
 
-Resume-intent launches include eligible restores, dormant or closed-session reopens, qualified mailbox wakes, and Loop deliveries. A Loop deliberately requests resume even on a cold spawn; Pi creates a new persisted session when no cwd match exists. Fresh creates, default or explicit fresh restarts, and a coordinator's final fresh override leave the configured command unchanged.
+Resume-intent launches include eligible restores, dormant or closed-session reopens, qualified mailbox wakes, and Loop deliveries. A Loop deliberately requests resume even on a cold spawn; Pi creates a new persisted session when no cwd match exists. Fresh creates, default or explicit fresh restarts, and an orchestrator's final fresh override leave the configured command unchanged.
 
 | Configured command | Eligible known-state runtime command |
 |---|---|

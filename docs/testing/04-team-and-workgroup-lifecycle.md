@@ -31,7 +31,7 @@ Known automation support:
 
 Known automation gaps:
 
-- Team and Workgroup section headers, context menus, New Team modal fields, agent checkboxes, coordinator radio buttons, repository assignment controls, New Workgroup modal fields, team select, task-title input, team rows, workgroup rows, and agent rows do not yet have stable semantic selectors.
+- Team and Workgroup section headers, context menus, New Team modal fields, agent checkboxes, orchestrator radio buttons, repository assignment controls, New Workgroup modal fields, team select, task-title input, team rows, workgroup rows, and agent rows do not yet have stable semantic selectors.
 - Until those hooks exist, this suite is repeatable as a human-style GUI script with screenshots and read-only filesystem verification, not fully repeatable through `ui-click` and `ui-set`.
 - Screen-rectangle screenshots can be contaminated by foreground windows. Before counting a screenshot as evidence, verify the target HWND/PID and that the target surface is unobscured.
 
@@ -52,7 +52,7 @@ Steps:
 1. Open New Team.
 2. Confirm `Next` is disabled or blocked while the team name is empty.
 3. Enter a valid team name and continue.
-4. Confirm `Next` is disabled or blocked until at least one agent and one coordinator are selected.
+4. Confirm `Next` is disabled or blocked until at least one agent and one orchestrator are selected.
 5. Use Back and Cancel before final creation.
 6. Confirm no `_team_*` directory was created.
 7. If a team already exists, open New Workgroup.
@@ -78,7 +78,7 @@ Pass if required inputs gate creation and cancel/back navigation does not mutate
 
 Purpose:
 
-Verify that a user can create a team by selecting existing project agents and one coordinator.
+Verify that a user can create a team by selecting existing project agents and one orchestrator.
 
 Preconditions:
 
@@ -92,7 +92,7 @@ Steps:
 3. Enter the unique team name.
 4. Continue to agent selection.
 5. Select the disposable agents.
-6. Mark one selected agent as coordinator.
+6. Mark one selected agent as orchestrator.
 7. Continue to repository assignment.
 8. Leave repositories empty unless the run explicitly covers repo cloning.
 9. Click `Create`.
@@ -101,19 +101,19 @@ Steps:
 
 Expected Result:
 
-The app creates the team, shows it in the Teams section, and lists the selected members with the coordinator badge.
+The app creates the team, shows it in the Teams section, and lists the selected members with the orchestrator badge.
 
 Evidence Required:
 
 - Screenshot of New Team step 1.
-- Screenshot of selected agents and coordinator in step 2.
+- Screenshot of selected agents and orchestrator in step 2.
 - Screenshot of repository assignment step.
 - Screenshot of the created team in the sidebar.
 - Read-only filesystem snapshot of `.ac/_team_<name>/config.json`.
 
 Pass/Fail Criteria:
 
-Pass if the team is created from the GUI with the expected roster and coordinator. Fail if the roster, coordinator, or team location is wrong.
+Pass if the team is created from the GUI with the expected roster and orchestrator. Fail if the roster, orchestrator, or team location is wrong.
 
 ### WGP-002: Activate a workgroup from a team
 
@@ -152,28 +152,28 @@ Pass/Fail Criteria:
 
 Pass if the workgroup is created from the GUI and appears with the expected team replicas. Fail if creation errors, clones wrong agents, writes no task, or does not refresh.
 
-### WGP-003: Launch coordinator session from created workgroup
+### WGP-003: Launch orchestrator session from created workgroup
 
 Purpose:
 
-Verify that the newly created workgroup exposes a usable coordinator replica entry and session launch path.
+Verify that the newly created workgroup exposes a usable orchestrator replica entry and session launch path.
 
 Preconditions:
 
 - Depends on WGP-002.
 - At least one configured coding agent exists.
-- The selected coordinator agent is visible in the workgroup.
+- The selected orchestrator agent is visible in the workgroup.
 
 Steps:
 
-1. Click the coordinator replica row in the workgroup.
+1. Click the orchestrator replica row in the workgroup.
 2. If prompted to choose a coding agent, choose the configured test coding agent.
-3. Wait for the terminal/session surface to reflect the launched coordinator.
+3. Wait for the terminal/session surface to reflect the launched orchestrator.
 4. Confirm the session identity matches the workgroup replica.
 
 Expected Result:
 
-The coordinator replica launches or focuses a terminal session for the correct workgroup replica.
+The orchestrator replica launches or focuses a terminal session for the correct workgroup replica.
 
 Evidence Required:
 
@@ -184,7 +184,7 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-Pass if the coordinator session starts or focuses with the expected workgroup identity. Fail if the wrong replica launches, no session starts, or the session starts outside the workgroup.
+Pass if the orchestrator session starts or focuses with the expected workgroup identity. Fail if the wrong replica launches, no session starts, or the session starts outside the workgroup.
 
 ### WGP-004: Peer discovery matches visible workgroup participants
 

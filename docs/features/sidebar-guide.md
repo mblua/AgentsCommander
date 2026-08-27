@@ -7,7 +7,7 @@ The sidebar has three parts: a rail of group entries down one edge, the project 
 Four of the action bar's toggles change what the panel shows, and each tooltip tells you what pressing it will do rather than what is on:
 
 - `Show Home` and `Hide Home` swap the central pane between Home and the terminal.
-- `Show recent coordinators first` and `Show coordinators in default order` reorder the coordinator list. It persists as [`coordSortByActivity`](../reference/settings.md#window--ui).
+- `Show recent orchestrators first` and `Show orchestrators in default order` reorder the orchestrator list. It persists as [`coordSortByActivity`](../reference/settings.md#window--ui).
 - `Show category sections` and `Hide category sections` toggle the panel's category grouping.
 - `Always keep selected workgroup visible` pins the selected workgroup in view. It persists as [`alwaysShowSelectedWorkgroup`](../reference/settings.md#window--ui).
 
@@ -35,7 +35,7 @@ One group is built in and cannot be removed: the non-stop group, described in [N
 
 ## Raise hand
 
-A raised hand means **a coordinator is asking for your attention**. The indicator appears on the rail entry for the group the coordinator is in, with the tooltip and accessible label `A coordinator raised its hand`, and on the replica row in the project panel.
+A raised hand means **an orchestrator is asking for your attention**. The indicator appears on the rail entry for the group the orchestrator is in, with the tooltip and accessible label `An orchestrator raised its hand`, and on the replica row in the project panel.
 
 An agent raises its own hand; you never raise it for it. It calls the CLI from inside its session:
 
@@ -43,7 +43,7 @@ An agent raises its own hand; you never raise it for it. It calls the CLI from i
 agentscommander raise-hand --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
 ```
 
-The daemon accepts it only when the caller's token belongs to a **live coordinator session with a visible `TASK.md` title slot**. Stdout is exactly `true` or `false`.
+The daemon accepts it only when the caller's token belongs to a **live orchestrator session with a visible `TASK.md` title slot**. Stdout is exactly `true` or `false`.
 
 **It is cleared by real user input to that session, and by nothing else.** It survives an app restart. Clicking the row, selecting it, or looking at it does not lower the hand: type something to the session.
 
@@ -147,5 +147,5 @@ See [Settings reference](../reference/settings.md#git-status-sweeper) for both, 
 ## See also
 
 - [App windows](app-windows.md) - the windows the sidebar opens beside itself
-- [Concepts](../concepts.md) - project, workgroup, replica, session and coordinator
+- [Concepts](../concepts.md) - project, workgroup, replica, session and orchestrator
 - [Coding agents](../integrations/coding-agents.md) - the catalog the picker and the quick panel write

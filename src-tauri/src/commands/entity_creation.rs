@@ -1026,7 +1026,7 @@ pub(crate) fn normalize_team_config_for_project(
         resolve_agent_ref(ac_root, &config.coordinator)?
     };
     if !coordinator.is_empty() && !agents.contains(&coordinator) {
-        return Err("Coordinator must be one of the selected agents".to_string());
+        return Err("Orchestrator must be one of the selected agents".to_string());
     }
     let mut repos = Vec::with_capacity(config.repos.len());
     for repo in &config.repos {
@@ -1156,10 +1156,10 @@ pub(crate) async fn create_workgroup_on_disk(
     let team_config =
         if !args.agents.is_empty() || args.coordinator.is_some() || !args.repos.is_empty() {
             let coordinator = args.coordinator.clone().ok_or_else(|| {
-                "Coordinator is required when provisioning team config".to_string()
+                "Orchestrator is required when provisioning team config".to_string()
             })?;
             if !args.agents.contains(&coordinator) {
-                return Err("Coordinator must be one of the selected agents".to_string());
+                return Err("Orchestrator must be one of the selected agents".to_string());
             }
             let config = TeamConfigResult {
                 agents: args.agents.clone(),
@@ -2307,7 +2307,7 @@ fn collect_agent_team_mutations_raw(
     if !coordinator_blockers.is_empty() {
         coordinator_blockers.sort();
         return Err(format!(
-            "Cannot delete agent '{}': coordinator of team(s): {}. Reassign the coordinator first.",
+            "Cannot delete agent '{}': orchestrator of team(s): {}. Reassign the orchestrator first.",
             agent_name,
             coordinator_blockers.join(", ")
         ));
@@ -4484,7 +4484,7 @@ mod tests {
         };
         assert_eq!(
             normalized_team_config_bytes(&ac_root, &without_coordinator).unwrap_err(),
-            "Coordinator must be one of the selected agents"
+            "Orchestrator must be one of the selected agents"
         );
     }
 
@@ -6371,7 +6371,7 @@ mod tests {
 
         let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
 
-        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+        assert!(err.contains("orchestrator of team(s): dev-team"), "{err}");
         assert!(agent_dir.is_dir());
         assert_eq!(std::fs::read(&config_path).expect("read config"), before);
     }
@@ -6394,7 +6394,7 @@ mod tests {
 
         let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
 
-        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+        assert!(err.contains("orchestrator of team(s): dev-team"), "{err}");
     }
 
     #[test]

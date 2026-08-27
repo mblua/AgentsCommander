@@ -1318,7 +1318,7 @@ impl ProductionContextAlertRuntime {
             Ok(Err(error)) => return AttemptPreparation::RetryableFailure(error),
             Err(error) => {
                 return AttemptPreparation::RetryableFailure(format!(
-                    "Coordinator route blocking task failed: {}",
+                    "Orchestrator route blocking task failed: {}",
                     error
                 ))
             }
@@ -1609,22 +1609,22 @@ fn prepare_internal_route_blocking(
     let expected = fingerprint
         .workgroup_dir
         .join(format!("__agent_{}", coordinator));
-    let canonical_expected = canonical_real_directory(&expected, "Coordinator replica")?;
+    let canonical_expected = canonical_real_directory(&expected, "Orchestrator replica")?;
     if canonical_expected.parent() != Some(fingerprint.workgroup_dir.as_path())
         || canonical_expected
             .file_name()
             .and_then(|name| name.to_str())
             != Some(format!("__agent_{}", coordinator).as_str())
     {
-        return Err("Coordinator replica escapes the sampled workgroup".to_string());
+        return Err("Orchestrator replica escapes the sampled workgroup".to_string());
     }
     let resolved = crate::config::teams::resolve_wg_coordinator_replica(
         &fingerprint.ac_root,
         &fingerprint.workgroup_dir,
     )
-    .ok_or_else(|| "Current coordinator replica is unavailable".to_string())?;
+    .ok_or_else(|| "Current orchestrator replica is unavailable".to_string())?;
     let canonical_resolved =
-        canonical_real_directory(&resolved.replica_dir, "Resolved coordinator replica")?;
+        canonical_real_directory(&resolved.replica_dir, "Resolved orchestrator replica")?;
     if resolved.project != fingerprint.project
         || resolved.team != fingerprint.team
         || resolved.wg_name != fingerprint.workgroup
@@ -1632,7 +1632,7 @@ fn prepare_internal_route_blocking(
         || canonical_resolved != canonical_expected
     {
         return Err(
-            "Resolved coordinator identity does not match the exact sampled workgroup".to_string(),
+            "Resolved orchestrator identity does not match the exact sampled workgroup".to_string(),
         );
     }
     let fqn = format!(
@@ -1712,7 +1712,7 @@ fn validate_attempt_guard<R: tauri::Runtime>(
     }
     let (fresh_target, _) = prepare_internal_route_blocking(fingerprint, 100, thresholds)?;
     if fresh_target != *target {
-        return Err("Coordinator target changed before notice delivery".to_string());
+        return Err("Orchestrator target changed before notice delivery".to_string());
     }
     Ok(())
 }
@@ -2944,7 +2944,7 @@ mod tests {
             &cancellation,
         )
         .unwrap_err()
-        .contains("Coordinator target changed"));
+        .contains("Orchestrator target changed"));
 
         std::fs::write(
             &fixture.team_config,

@@ -137,7 +137,7 @@ pub enum Commands {
     /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
     #[command(name = "self-handoff-and-switch")]
     SelfSwitch(self_switch::SelfSwitchArgs),
-    /// Show this session's raised-hand communication indicator in the Sidebar coordinator row
+    /// Show this session's raised-hand communication indicator in the Sidebar orchestrator row
     #[command(name = "raise-hand")]
     RaiseHand(raise_hand::RaiseHandArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
@@ -155,14 +155,14 @@ pub enum Commands {
     /// Manage Role.md variant experiments
     #[command(hide = true)]
     RoleExperiment(role_experiment::RoleExperimentArgs),
-    /// Close all sessions for a target agent (coordinator authorization required)
+    /// Close all sessions for a target agent (orchestrator authorization required)
     CloseSession(close_session::CloseSessionArgs),
-    /// Purge every agent in the caller's own workgroup (coordinator-only, fail-closed busy gate)
+    /// Purge every agent in the caller's own workgroup (orchestrator-only, fail-closed busy gate)
     #[command(name = "purge-wg")]
     PurgeWg(purge_wg::PurgeWgArgs),
-    /// Set the title field in the workgroup TASK.md frontmatter (coordinator-only)
+    /// Set the title field in the workgroup TASK.md frontmatter (orchestrator-only)
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
-    /// Append text to the body of the workgroup TASK.md (coordinator-only)
+    /// Append text to the body of the workgroup TASK.md (orchestrator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
