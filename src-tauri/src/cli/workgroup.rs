@@ -12,8 +12,8 @@ use crate::commands::entity_creation::{
     validate_existing_name, RepoAssignment, TeamConfigResult, WgDeleteOutcome,
     WorkgroupDiskCreateArgs,
 };
-use crate::config::projects::resolve_project_reference;
 use crate::config::ac_root::existing_ac_root;
+use crate::config::projects::resolve_project_reference;
 
 #[derive(Args)]
 pub struct WorkgroupArgs {
@@ -372,13 +372,8 @@ pub(crate) fn build_new_team_config(
     for agent in agents {
         push_unique(&mut roster, resolve_agent_ref(ac_root, agent)?);
     }
-    let repo_config = build_repo_assignments(
-        ac_root,
-        &roster,
-        repos,
-        repo_agents,
-        repo_exclude_agents,
-    )?;
+    let repo_config =
+        build_repo_assignments(ac_root, &roster, repos, repo_agents, repo_exclude_agents)?;
     Ok(TeamConfigResult {
         agents: roster,
         coordinator,

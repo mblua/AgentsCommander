@@ -109,7 +109,7 @@ describe("coordinator-close helper (#588)", () => {
     expect(fake.callsFor("destroy_session")).toHaveLength(0);
   });
 
-  it("by-id with an unknown id still routes through close_coordinator and falls back to 'this coordinator'", async () => {
+  it("by-id with an unknown id still routes through close_coordinator and falls back to 'this orchestrator'", async () => {
     disposeModalHost = registerCoordinatorCloseModalHost(); // sidebar/web window
     // No session in the store for this id -> the helper cannot short-circuit to a
     // plain destroy; it lets the backend self-route. The modal name falls back to
@@ -121,7 +121,7 @@ describe("coordinator-close helper (#588)", () => {
     const calls = fake.callsFor("close_coordinator");
     expect(calls).toHaveLength(1);
     expect(calls[0].args).toEqual({ id: "ghost-id", confirmed: false });
-    expect(pendingCoordinatorClose()?.name).toBe("this coordinator");
+    expect(pendingCoordinatorClose()?.name).toBe("this orchestrator");
   });
 
   it("falls back to a plain destroy (no modal, no cascade) on closed:false when NO modal host is mounted", async () => {

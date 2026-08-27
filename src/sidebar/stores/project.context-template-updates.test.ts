@@ -16,7 +16,7 @@ function update(
     workspacePath: `${projectPath}\\.ac`,
     filePath: `${projectPath}\\.ac\\Context.coordinator.md`,
     filename: "Context.coordinator.md",
-    label: "Coordinator context",
+    label: "Orchestrator context",
     currentFileSha256: "file-a",
     currentDefaultSha256: "default-2",
     currentDefaultVersion: 2,

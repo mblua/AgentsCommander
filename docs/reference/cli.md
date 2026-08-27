@@ -16,7 +16,7 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-wg` requires the caller to be the identity-verified workgroup coordinator, and the master/root token does NOT bypass that check (a root token has no workgroup).
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-wg` requires the caller to be the identity-verified workgroup orchestrator, and the master/root token does NOT bypass that check (a root token has no workgroup).
 
 `terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
@@ -133,7 +133,7 @@ printf '%s' "$PROMPT" | agentscommander send \
 
 \* Exactly one of `--send`, `--command`, `--pty-input`, or `--pty-input-stdin` is required.
 
-**Routing** is pre-validated against team membership and coordinator rules before delivery. PTY input uses a narrower identity-verified route described below. Failures exit 1 without writing to the outbox.
+**Routing** is pre-validated against team membership and orchestrator rules before delivery. PTY input uses a narrower identity-verified route described below. Failures exit 1 without writing to the outbox.
 
 Logical values and missing mappings are validated after authorization/routing but before recipient actuation. Unknown values and unsupported mappings are terminal first-poll rejections. A supported action against a busy session remains retriable. Exact-stem matching is lexical trusted configuration, not binary attestation or a runtime version/semantic-success probe. See [Inter-agent messaging](../agents/inter-agent-messaging.md) for the full mapping and trust boundary.
 
@@ -145,11 +145,11 @@ The accepted text is 1 through 65,536 UTF-8 bytes, inclusive. AC preserves accep
 
 Only these routes are authorized:
 
-- A live identity-verified workgroup coordinator can target one verified non-coordinator member in the same exact project and workgroup.
-- A live local Root Agent can target one verified workgroup coordinator.
-- A container coordinator uses the dedicated API helper and a live automatically bound container credential.
+- A live identity-verified workgroup orchestrator can target one verified non-orchestrator member in the same exact project and workgroup.
+- A live local Root Agent can target one verified workgroup orchestrator.
+- A container orchestrator uses the dedicated API helper and a live automatically bound container credential.
 
-Workers, origin coordinators, coordinator-to-coordinator requests, cross-workgroup or cross-project requests, Root-to-worker requests, master credentials without a live session, manual API clients, and filesystem requests from container sessions are rejected before target lifecycle mutation or PTY input. `--to` must be the exact canonical name returned by `list-peers-lean`.
+Workers, origin orchestrators, orchestrator-to-orchestrator requests, cross-workgroup or cross-project requests, Root-to-worker requests, master credentials without a live session, manual API clients, and filesystem requests from container sessions are rejected before target lifecycle mutation or PTY input. `--to` must be the exact canonical name returned by `list-peers-lean`.
 
 Target lifecycle is deterministic. One idle supported persistent session is selected. A busy or unsupported live session rejects with zero writes. An exited persistent session may be destroyed and respawned with its validated configured profile; a missing target may be spawned once. A newly spawned session must remain continuously ready before submission. No busy bypass, fan-out, broadcast, or deferred text exists.
 
@@ -200,7 +200,7 @@ Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you nee
 
 ## `raise-hand`
 
-Raise the caller session's communication indicator in the Sidebar coordinator row.
+Raise the caller session's communication indicator in the Sidebar orchestrator row.
 
 ```bash
 agentscommander raise-hand --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"
@@ -212,7 +212,7 @@ agentscommander raise-hand --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMA
 | `--root` | Yes | Caller's agent root directory. |
 | `--timeout` | No | Seconds to wait for the daemon's response. Default 15. |
 
-The daemon raises the indicator only when the caller token belongs to a live coordinator session with a visible `TASK.md` title slot. The indicator persists across app restarts until cleared by real user input to the session. On success stdout is exactly `true` or `false`. Exit codes: `0` valid boolean response, `1` auth/IO/delivery failure, `2` malformed response or no response within the timeout.
+The daemon raises the indicator only when the caller token belongs to a live orchestrator session with a visible `TASK.md` title slot. The indicator persists across app restarts until cleared by real user input to the session. On success stdout is exactly `true` or `false`. Exit codes: `0` valid boolean response, `1` auth/IO/delivery failure, `2` malformed response or no response within the timeout.
 
 ---
 
@@ -257,7 +257,7 @@ agentscommander list-peers-lean \
   --snapshot-targets
 ```
 
-This capability view returns every verified workgroup Coordinator and member in active registered projects for canonical Root, or same-workgroup non-Coordinator members for a verified Coordinator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
+This capability view returns every verified workgroup Orchestrator and member in active registered projects for canonical Root, or same-workgroup non-Orchestrator members for a verified Orchestrator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
 
 ---
 
@@ -301,9 +301,9 @@ terminal_snapshot_error code=<code> detail=<fixed-detail>
 
 Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior. If an OS failure occurs after a stdout write begins, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` without attempting a second document. See [Terminal snapshots](../features/terminal-snapshots.md#stable-errors) for every stable code, exact detail, and recovery step.
 
-Authorized host routes are canonical live Root to verified workgroup Coordinators or members in active registered projects, and a live workgroup Coordinator to a verified non-Coordinator member in the same exact project and workgroup. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
+Authorized host routes are canonical live Root to verified workgroup Orchestrators or members in active registered projects, and a live workgroup Orchestrator to a verified non-Orchestrator member in the same exact project and workgroup. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
 
-A container Coordinator uses the API helper instead of the host mailbox:
+A container Orchestrator uses the API helper instead of the host mailbox:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
@@ -359,7 +359,7 @@ Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasT
 
 ## `team create`
 
-Create a team configuration in a registered project from existing agent matrices. Create the coordinator and member agents first, then create the team, then activate it with `workgroup add`.
+Create a team configuration in a registered project from existing agent matrices. Create the orchestrator and member agents first, then create the team, then activate it with `workgroup add`.
 
 ```bash
 agentscommander team create \
@@ -478,7 +478,7 @@ agentscommander team add-member \
 | `--project` | Yes | Registered project name. |
 | `--workgroup` | Yes | Existing workgroup name. |
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
-| `--coordinator` | No | Make the added agent the coordinator. |
+| `--coordinator` | No | Make the added agent the orchestrator. |
 
 The command writes the team config used by the selected workgroup, creates `wg-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into that workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change. Output is JSON.
 
@@ -486,7 +486,7 @@ The command writes the team config used by the selected workgroup, creates `wg-.
 
 ## `team remove-member`
 
-Remove a non-coordinator agent from a team config and delete its workgroup replica.
+Remove a non-orchestrator agent from a team config and delete its workgroup replica.
 
 ```bash
 agentscommander team remove-member \
@@ -501,7 +501,7 @@ agentscommander team remove-member \
 | `--workgroup` | Yes | Existing workgroup name. |
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
 
-The command refuses to remove the current coordinator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config used by the selected workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change.
+The command refuses to remove the current orchestrator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config used by the selected workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change.
 
 ---
 
@@ -672,7 +672,7 @@ Manually minted privileged scopes (`pty-input`, `terminal-snapshot`) never gain 
 
 ## `close-session`
 
-Close all sessions for a target agent. Coordinator-only.
+Close all sessions for a target agent. Orchestrator-only.
 
 ```bash
 agentscommander close-session \
@@ -686,7 +686,7 @@ Default behaviour: graceful shutdown — AC injects the coding agent's exit comm
 | Flag | Required | Description |
 |---|---|---|
 | `--token` | Yes | Session token. |
-| `--root` | Yes | Coordinator's root directory. |
+| `--root` | Yes | Orchestrator's root directory. |
 | `--to` | Yes | Target agent name. |
 | `--timeout` | No | Seconds to wait for graceful exit before force-kill, per session (default 30). The CLI waits this plus 60 seconds for the daemon's response; the timeout does not cancel the operation. |
 
@@ -696,13 +696,13 @@ Exit codes:
 - `1` — auth, IO, or rejection failure.
 - `2` — outcome unknown (no response within `--timeout` + 60 seconds; the close keeps running server-side).
 
-Only coordinators of the target's team can close. The master/root token bypasses the check.
+Only orchestrators of the target's team can close. The master/root token bypasses the check.
 
 ---
 
 ## `purge-wg`
 
-Destroy every session of every peer in the caller's OWN workgroup. Coordinator-only.
+Destroy every session of every peer in the caller's OWN workgroup. Orchestrator-only.
 
 ```bash
 agentscommander purge-wg \
@@ -713,8 +713,8 @@ agentscommander purge-wg \
 
 | Flag | Required | Description |
 |---|---|---|
-| `--token` | Yes | Session token. The caller must be the identity-verified coordinator of its workgroup; the master/root token does NOT bypass this (a root token has no workgroup). |
-| `--root` | Yes | Coordinator's root directory. |
+| `--token` | Yes | Session token. The caller must be the identity-verified orchestrator of its workgroup; the master/root token does NOT bypass this (a root token has no workgroup). |
+| `--root` | Yes | Orchestrator's root directory. |
 | `--wg` | No | Safety assertion, not a scope selector: fail unless the resolved workgroup has exactly this name. |
 | `--graceful` | No | Inject the exit command and wait per session instead of killing immediately. Warning: it stalls ALL inter-agent messaging daemon-wide for the duration of the purge (the message poller is sequential). |
 | `--timeout` | No | Graceful shutdown timeout in seconds per session. Default 5. |
@@ -729,7 +729,7 @@ Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcom
 
 ## `task-set-title`
 
-Set the YAML-frontmatter `title:` field of the workgroup `TASK.md`. Coordinator-only.
+Set the YAML-frontmatter `title:` field of the workgroup `TASK.md`. Orchestrator-only.
 
 ```bash
 agentscommander task-set-title \
@@ -741,7 +741,7 @@ agentscommander task-set-title \
 | Flag | Required | Description |
 |---|---|---|
 | `--token` | Yes | Session token. |
-| `--root` | Yes | Coordinator's root directory. |
+| `--root` | Yes | Orchestrator's root directory. |
 | `--title` | Yes | New title. Single line. Embedded `\n`, `\r`, NUL, or other control chars (except tab) are rejected. |
 
 The verb writes a timestamped `*.bak.md` of the previous `TASK.md` on every successful write. Concurrent writes are serialized via an advisory lockfile (5s timeout). External edits between read and write abort the verb.
@@ -764,13 +764,13 @@ If `--title` itself starts with the reserved `USER:` prefix and the current titl
 Error: --title cannot start with reserved USER: prefix
 ```
 
-Use Clean to reset a user-owned task before coordinator title updates resume. Operational audit details are written to the app log, not normal command output.
+Use Clean to reset a user-owned task before orchestrator title updates resume. Operational audit details are written to the app log, not normal command output.
 
 ---
 
 ## `task-append-body`
 
-Append a paragraph to the body of the workgroup `TASK.md`. Coordinator-only. Frontmatter is never touched.
+Append a paragraph to the body of the workgroup `TASK.md`. Orchestrator-only. Frontmatter is never touched.
 
 ```bash
 agentscommander task-append-body \
@@ -782,7 +782,7 @@ agentscommander task-append-body \
 | Flag | Required | Description |
 |---|---|---|
 | `--token` | Yes | Session token. |
-| `--root` | Yes | Coordinator's root directory. |
+| `--root` | Yes | Orchestrator's root directory. |
 | `--text` | Yes | Body text. Newline, carriage return, and tab are allowed. NUL and other control chars are rejected. |
 
 Same locking + backup behaviour as `task-set-title`.
@@ -874,7 +874,7 @@ agentscommander loop remove  --project MyProject --loop daily-sync
 | `--id` | create | Optional id. Defaults to a sanitized form of `--name`. |
 | `--name` | create, update | Human-readable Loop name. |
 | `--cron` | create, update | Five-field cron expression: minute hour day-of-month month day-of-week. |
-| `--workgroup` | create, update | Target `wg-<N>-<team>` directory whose coordinator receives the prompt. |
+| `--workgroup` | create, update | Target `wg-<N>-<team>` directory whose orchestrator receives the prompt. |
 | `--prompt` / `--prompt-file` | create, update | Prompt text or UTF-8 prompt file. Use exactly one when setting a prompt. |
 | `--busy-coordinator` | create, update | `wait-until-idle`, `force-inject`, or `skip`. |
 | `--force-inject-when-busy` | create, update | Backward-compatible shortcut for `--busy-coordinator force-inject`. |

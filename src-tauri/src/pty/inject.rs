@@ -276,7 +276,7 @@ where
 fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Result<(), String> {
     if session.is_root_agent {
         return Err(format!(
-            "Session {} is a root session, not a supported coordinator agent",
+            "Session {} is a root session, not a supported orchestrator agent",
             session_id
         ));
     }

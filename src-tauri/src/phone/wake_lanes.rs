@@ -39,10 +39,7 @@ impl WakeLanes {
     /// test) and the global cap. Release is RAII via the reservation's `Drop`.
     /// Lock poisoning is absorbed so a panic holding the lock cannot wedge the
     /// set.
-    pub(crate) fn try_reserve(
-        self: &Arc<Self>,
-        target: &str,
-    ) -> Option<WakeLaneReservation> {
+    pub(crate) fn try_reserve(self: &Arc<Self>, target: &str) -> Option<WakeLaneReservation> {
         let mut active = self
             .active
             .lock()

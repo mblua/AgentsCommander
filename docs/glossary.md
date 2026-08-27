@@ -36,7 +36,7 @@ Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/we
 
 ## Context alert
 
-A notice AC injects into a workgroup's coordinator when a member's context usage crosses a threshold the team configured. It fires once per crossing and takes no action on the session. See [Context tracking](features/context-tracking.md).
+A notice AC injects into a workgroup's orchestrator when a member's context usage crosses a threshold the team configured. It fires once per crossing and takes no action on the session. See [Context tracking](features/context-tracking.md).
 
 ## Context badge
 
@@ -46,17 +46,13 @@ The `CTX <n>%` badge on a session row, showing how much of that agent's context 
 
 A local, opt-in HTTP server inside the daemon that lets a machine client speak the inter-agent control plane over a scoped token instead of the filesystem outbox. See [Control-plane API](features/control-plane-api.md).
 
-## Coordinator
-
-The single agent in a team that can send messages to any team member, edit the team's brief, and close other members' sessions. Members can only message peers they share a team with and their coordinator.
-
 ## Detached window
 
 A session popped out of the main window into its own dedicated terminal window. Useful for long-running sessions you want to keep visible while doing other work.
 
 ## Idle badge
 
-The `Nm` badge on a coordinator row showing whole minutes since the team was last active. Turns yellow, then red, as idle time grows. See [Session auto-close](features/session-auto-close.md).
+The `Nm` badge on an orchestrator row showing whole minutes since the team was last active. Turns yellow, then red, as idle time grows. See [Session auto-close](features/session-auto-close.md).
 
 ## Idle detector
 
@@ -68,7 +64,7 @@ Per-replica directories where an agent receives (`inbox/`) and stages outbound (
 
 ## Loop (Project Loop)
 
-A scheduled prompt delivered to a workgroup's coordinator on a cron expression. See [Concepts](concepts.md#project-loop).
+A scheduled prompt delivered to a workgroup's orchestrator on a cron expression. See [Concepts](concepts.md#project-loop).
 
 ## Messaging directory
 
@@ -77,6 +73,10 @@ A scheduled prompt delivered to a workgroup's coordinator on a cron expression. 
 ## Non-stop mode
 
 A per-project group of workgroups AC watches, alerting you when one stops working. See [Concepts](concepts.md#non-stop-mode).
+
+## Orchestrator
+
+The single agent in a team that can send messages to any team member, edit the team's brief, and close other members' sessions. Members can only message peers they share a team with and their orchestrator.
 
 ## Portable instance
 
@@ -104,7 +104,7 @@ Pseudo-terminal. Each AC session runs in a real PTY (ConPTY on Windows, Unix PTY
 
 ## Raise hand
 
-A coordinator's request for your attention, raised by the agent itself through the `raise-hand` CLI verb and shown on its rail entry and replica row. It survives restarts and is cleared only by real user input to that session. See [Sidebar guide](features/sidebar-guide.md#raise-hand).
+An orchestrator's request for your attention, raised by the agent itself through the `raise-hand` CLI verb and shown on its rail entry and replica row. It survives restarts and is cleared only by real user input to that session. See [Sidebar guide](features/sidebar-guide.md#raise-hand).
 
 ## Replica
 
@@ -120,7 +120,7 @@ A reusable agent definition (prompt + optional skills) that AC clones when you c
 
 ## Root Agent
 
-A Project AC Root-level coordinator that can route messages between coordinators of different teams. Identity-verified WG coordinators see it as a synthetic `agentscommander://root-agent` peer.
+A Project AC Root-level orchestrator that can route messages between orchestrators of different teams. Identity-verified WG orchestrators see it as a synthetic `agentscommander://root-agent` peer.
 
 ## Session
 
@@ -128,7 +128,7 @@ A running process bound to one agent directory and one coding-agent CLI. Session
 
 ## Session auto-close
 
-Automatic shutdown of an idle team (coordinator plus agent-owned sessions) after a timeout (60 minutes by default). Ad-hoc shells are never auto-closed. See [Session auto-close](features/session-auto-close.md).
+Automatic shutdown of an idle team (orchestrator plus agent-owned sessions) after a timeout (60 minutes by default). Ad-hoc shells are never auto-closed. See [Session auto-close](features/session-auto-close.md).
 
 ## Settings tab
 
@@ -140,7 +140,7 @@ A window holding one Mermaid file, with a live diagram beside its source. See [C
 
 ## Team
 
-A coordinator + worker agents working toward shared goals. Defined in `.ac/_team_<name>/config.json`.
+An orchestrator + worker agents working toward shared goals. Defined in `.ac/_team_<name>/config.json`.
 
 ## Telegram bridge
 

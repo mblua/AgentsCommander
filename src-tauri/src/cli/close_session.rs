@@ -109,7 +109,7 @@ fn print_status_prose(content: &str) {
 
 #[derive(Args)]
 #[command(after_help = "\
-AUTHORIZATION: Only coordinators of the target agent's team can close sessions. \
+AUTHORIZATION: Only orchestrators of the target agent's team can close sessions. \
 The master/root token bypasses this check.\n\n\
 BEHAVIOR: By default, graceful shutdown is used — an exit command is injected into \
 the agent's PTY (e.g., /exit for Claude Code) and the system waits for clean exit. \
@@ -206,13 +206,13 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             || !teams::is_coordinator_of(&sender, &resolved_target, &discovered)
         {
             log::error!(
-                "authorization denied — '{}' is not a coordinator of '{}'. Only coordinators can close sessions of their team agents.",
+                "authorization denied — '{}' is not an orchestrator of '{}'. Only orchestrators can close sessions of their team agents.",
                 sender,
                 resolved_target
             );
             eprintln!(
-                "Error: authorization denied — '{}' is not a coordinator of '{}'. \
-                 Only coordinators can close sessions of their team agents.",
+                "Error: authorization denied — '{}' is not an orchestrator of '{}'. \
+                 Only orchestrators can close sessions of their team agents.",
                 sender, resolved_target
             );
             return 1;

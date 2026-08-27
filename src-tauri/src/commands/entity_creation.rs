@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::cli::task_ops;
 use crate::commands::ac_discovery::DiscoveryBranchWatcher;
+use crate::config::ac_root::existing_ac_root;
 use crate::config::replica_identity::{
     expected_wg_replica_identity, normalize_wg_replica_context_entries,
     repair_wg_replica_config_value, ROLE_MD_FILENAME, WG_REPLICA_REQUIRED_CONTEXT,
@@ -18,7 +19,6 @@ use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
 };
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::config::ac_root::existing_ac_root;
 use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionRepo, SessionStatus};
@@ -513,9 +513,7 @@ pub(crate) fn create_agent_matrix_from_role(
         ));
     }
     validate_existing_name(args.safe_name, "Agent")?;
-    let agent_dir = args
-        .ac_root
-        .join(format!("_agent_{}", args.safe_name));
+    let agent_dir = args.ac_root.join(format!("_agent_{}", args.safe_name));
     if agent_dir.exists() {
         return Err(format!("Agent '{}' already exists", args.safe_name));
     }
@@ -600,10 +598,7 @@ impl TeamConfigMutationGuard {
         Self::acquire_with_timing(ac_root, TeamConfigLockTiming::PRODUCTION)
     }
 
-    fn acquire_with_timing(
-        ac_root: &Path,
-        timing: TeamConfigLockTiming,
-    ) -> Result<Self, String> {
+    fn acquire_with_timing(ac_root: &Path, timing: TeamConfigLockTiming) -> Result<Self, String> {
         let requested_lock_path = ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME);
         let canonical_ac_root = std::fs::canonicalize(ac_root)
             .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
@@ -1031,7 +1026,7 @@ pub(crate) fn normalize_team_config_for_project(
         resolve_agent_ref(ac_root, &config.coordinator)?
     };
     if !coordinator.is_empty() && !agents.contains(&coordinator) {
-        return Err("Coordinator must be one of the selected agents".to_string());
+        return Err("Orchestrator must be one of the selected agents".to_string());
     }
     let mut repos = Vec::with_capacity(config.repos.len());
     for repo in &config.repos {
@@ -1161,10 +1156,10 @@ pub(crate) async fn create_workgroup_on_disk(
     let team_config =
         if !args.agents.is_empty() || args.coordinator.is_some() || !args.repos.is_empty() {
             let coordinator = args.coordinator.clone().ok_or_else(|| {
-                "Coordinator is required when provisioning team config".to_string()
+                "Orchestrator is required when provisioning team config".to_string()
             })?;
             if !args.agents.contains(&coordinator) {
-                return Err("Coordinator must be one of the selected agents".to_string());
+                return Err("Orchestrator must be one of the selected agents".to_string());
             }
             let config = TeamConfigResult {
                 agents: args.agents.clone(),
@@ -2312,7 +2307,7 @@ fn collect_agent_team_mutations_raw(
     if !coordinator_blockers.is_empty() {
         coordinator_blockers.sort();
         return Err(format!(
-            "Cannot delete agent '{}': coordinator of team(s): {}. Reassign the coordinator first.",
+            "Cannot delete agent '{}': orchestrator of team(s): {}. Reassign the orchestrator first.",
             agent_name,
             coordinator_blockers.join(", ")
         ));
@@ -4489,7 +4484,7 @@ mod tests {
         };
         assert_eq!(
             normalized_team_config_bytes(&ac_root, &without_coordinator).unwrap_err(),
-            "Coordinator must be one of the selected agents"
+            "Orchestrator must be one of the selected agents"
         );
     }
 
@@ -4805,9 +4800,8 @@ mod tests {
         assert_eq!(normalized.context_alert_percentages, vec![50, 75, 90]);
 
         write_team_config(&ac_root, "dev-team", &config).expect("write config");
-        let written =
-            std::fs::read_to_string(ac_root.join("_team_dev-team").join("config.json"))
-                .expect("read config");
+        let written = std::fs::read_to_string(ac_root.join("_team_dev-team").join("config.json"))
+            .expect("read config");
         assert!(
             !written.contains(&tmp.path().to_string_lossy().to_string()),
             "team config must not persist absolute project paths: {}",
@@ -5831,8 +5825,7 @@ mod tests {
         let outside = tmp.path().join("outside.lock");
         std::fs::create_dir_all(&ac_root).expect("workspace");
         std::fs::write(&outside, b"").expect("outside lock");
-        symlink(&outside, ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME))
-            .expect("symlink sentinel");
+        symlink(&outside, ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME)).expect("symlink sentinel");
 
         let err = TeamConfigMutationGuard::acquire(&ac_root).expect_err("symlink escape");
         assert!(err.contains("regular non-link file"));
@@ -6378,7 +6371,7 @@ mod tests {
 
         let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
 
-        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+        assert!(err.contains("orchestrator of team(s): dev-team"), "{err}");
         assert!(agent_dir.is_dir());
         assert_eq!(std::fs::read(&config_path).expect("read config"), before);
     }
@@ -6401,7 +6394,7 @@ mod tests {
 
         let err = collect_agent_delete_plan(&base, &agent_dir).expect_err("coordinator blocks");
 
-        assert!(err.contains("coordinator of team(s): dev-team"), "{err}");
+        assert!(err.contains("orchestrator of team(s): dev-team"), "{err}");
     }
 
     #[test]
@@ -7476,8 +7469,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project = tmp.path().join("ProjectAlpha");
         let ac_root = project.join(".ac");
-        std::fs::create_dir_all(ac_root.join("_agent_tech-lead-control"))
-            .expect("existing target");
+        std::fs::create_dir_all(ac_root.join("_agent_tech-lead-control")).expect("existing target");
 
         let err = create_agent_matrix_from_role(CreateAgentMatrixFromRoleArgs {
             ac_root: &ac_root,

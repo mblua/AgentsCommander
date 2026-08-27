@@ -234,7 +234,7 @@ const AcDiscoveryPanel: Component = () => {
                       </span>
                       <div class="ac-discovery-badges">
                         <Show when={coord()}>
-                          <span class="ac-discovery-badge coord">C</span>
+                          <span class="ac-discovery-badge coord">O</span>
                         </Show>
                         <For each={agentTeams()}>
                           {(teamName) => (
@@ -287,7 +287,7 @@ const AcDiscoveryPanel: Component = () => {
                               <span class="replica-item-name">{replica.name}</span>
                               <div class="ac-discovery-badges">
                                 <Show when={replica.isCoordinator}>
-                                  <span class="ac-discovery-badge coord">C</span>
+                                  <span class="ac-discovery-badge coord">O</span>
                                 </Show>
                                 <Show when={replica.isCoordinator}>
                                   <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
