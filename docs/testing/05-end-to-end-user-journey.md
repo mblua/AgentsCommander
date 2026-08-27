@@ -47,10 +47,10 @@ Steps:
 4. Create two project agents from the UI.
 5. Confirm both agents appear under Agents.
 6. Create a team from the UI using those agents.
-7. Mark one agent as coordinator.
+7. Mark one agent as orchestrator.
 8. Create or activate a workgroup from that team through the UI.
 9. Confirm the workgroup appears in the sidebar with replica entries.
-10. Launch or focus the coordinator session from the workgroup.
+10. Launch or focus the orchestrator session from the workgroup.
 11. Close and relaunch the app.
 12. Confirm the project, agents, team, and workgroup remain visible.
 
@@ -61,7 +61,7 @@ A clean user can configure a coding agent, create a project, create agents, comp
 Evidence Required:
 
 - `window-info` before interaction and after relaunch.
-- Screenshot for each major UI stage: onboarding, project created, agents created, team created, workgroup created, coordinator launched, post-restart state.
+- Screenshot for each major UI stage: onboarding, project created, agents created, team created, workgroup created, orchestrator launched, post-restart state.
 - Semantic `ui-query` or `ui-wait` results for every available selector used.
 - Read-only filesystem snapshots for the disposable project `.ac/`, agent directories, team config, workgroup directory, `TASK.md`, and messaging directory.
 - A selector gap report listing each action that required coordinates, keyboard navigation, native picker automation, or visual-only confirmation.

@@ -91,7 +91,7 @@ A useful role prompt names four things explicitly:
 
 1. **Who the agent is.** One-line identity statement.
 2. **What it owns.** Files, modules, services, scope.
-3. **How it works with the team.** Who its coordinator is, who its peers are.
+3. **How it works with the team.** Who its orchestrator is, who its peers are.
 4. **What it never does.** Hard boundaries — "never push to main", "never delete files outside `src/`".
 
 Without #4, agents tend to over-reach. With it, they ask before touching anything ambiguous.

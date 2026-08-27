@@ -1,8 +1,8 @@
 # Context tracking
 
-For developers who want to see how much of a coding agent's context window is gone before it runs out. After this page you can turn the reading on for an agent, read the badge on a session row, set per-team alert thresholds, and know exactly when AC notifies a coordinator and when it does not.
+For developers who want to see how much of a coding agent's context window is gone before it runs out. After this page you can turn the reading on for an agent, read the badge on a session row, set per-team alert thresholds, and know exactly when AC notifies an orchestrator and when it does not.
 
-AC scrapes the context percentage out of an agent's own terminal output using a pattern you configure, shows it as a badge on the session row, and can notify a workgroup's coordinator when a member crosses a threshold you set. It never acts on the reading itself.
+AC scrapes the context percentage out of an agent's own terminal output using a pattern you configure, shows it as a badge on the session row, and can notify a workgroup's orchestrator when a member crosses a threshold you set. It never acts on the reading itself.
 
 ## What it tracks
 
@@ -30,7 +30,7 @@ The badge appears only when the session's coding agent has a non-blank `contextR
 
 ## Context alerts
 
-A team can carry up to **three** context alert thresholds. When a member session crosses one, AC sends that workgroup's coordinator an informational message. **No automatic action is taken**: no session is cleared, closed, restarted, handed off, or reassigned.
+A team can carry up to **three** context alert thresholds. When a member session crosses one, AC sends that workgroup's orchestrator an informational message. **No automatic action is taken**: no session is cleared, closed, restarted, handed off, or reassigned.
 
 The thresholds are validated when you save them:
 

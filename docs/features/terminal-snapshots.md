@@ -1,6 +1,6 @@
 # Terminal snapshots
 
-Terminal snapshots let an authorized Root Agent or workgroup Coordinator read one live backend terminal viewport as versioned JSON or a deterministic PNG without changing the target terminal.
+Terminal snapshots let an authorized Root Agent or workgroup Orchestrator read one live backend terminal viewport as versioned JSON or a deterministic PNG without changing the target terminal.
 
 Use this feature when you need the current terminal state of a hidden, minimized, detached, or never-mounted session. A snapshot is not a transcript, frontend screenshot, or request to wake an agent.
 
@@ -47,8 +47,8 @@ Pass the returned `name` exactly to `terminal-snapshot --to`.
 
 This discovery view is not authorization and does not reveal session liveness:
 
-- Root receives verified workgroup Coordinators and members from active registered projects.
-- A verified workgroup Coordinator receives non-Coordinator members from the same physical project and workgroup.
+- Root receives verified workgroup Orchestrators and members from active registered projects.
+- A verified workgroup Orchestrator receives non-Orchestrator members from the same physical project and workgroup.
 - Workers and origin agents receive `[]`.
 - Identity-only entries report `working=false`, `sessionStatus="unknown"`, `waitingForInput=false`, no `contextPercent`, and no `roleSummary`. `reachable` continues to describe ordinary messaging, not snapshot permission.
 - The view does not read `sessions.json`, create peer directories, or change default `list-peers-lean` behavior.
@@ -93,9 +93,9 @@ On macOS, `--output` with a non-UTF-8 leaf name exits 1 with `output_failed` and
 
 The daemon's disclosure deadline is 10 seconds, and a host request authorizes for at most `min(timeout, 30)` seconds. A blocking OS call can finish later, but it cannot authorize publication after the deadline. A timed-out host client attempts to cancel only its own still-unclaimed request. Retrying creates a new point-in-time read with a new request ID.
 
-## Capture from a container Coordinator
+## Capture from a container Orchestrator
 
-An automatically bound container Coordinator receives:
+An automatically bound container Orchestrator receives:
 
 - `AGENTSCOMMANDER_API_URL`
 - `AGENTSCOMMANDER_API_TOKEN`
@@ -127,12 +127,12 @@ Terminal snapshots use a separate read capability. They do not broaden ordinary 
 
 | Requester | Authorized target | Plane |
 |---|---|---|
-| Live verified canonical Root Agent | Any verified workgroup Coordinator or member in active registered project paths | Host only |
-| Live verified workgroup Coordinator | One verified non-Coordinator member in the same exact project and workgroup | Host |
-| Automatically bound live container Coordinator with `terminal-snapshot` scope | One verified non-Coordinator member in the same exact project and workgroup | Container API |
-| Worker, origin agent, origin Coordinator, manual API client, stale session, or static Root/master credential | None | None |
+| Live verified canonical Root Agent | Any verified workgroup Orchestrator or member in active registered project paths | Host only |
+| Live verified workgroup Orchestrator | One verified non-Orchestrator member in the same exact project and workgroup | Host |
+| Automatically bound live container Orchestrator with `terminal-snapshot` scope | One verified non-Orchestrator member in the same exact project and workgroup | Container API |
+| Worker, origin agent, origin Orchestrator, manual API client, stale session, or static Root/master credential | None | None |
 
-Coordinator-to-Coordinator, Coordinator-to-Root, self, cross-workgroup, cross-project, Root-to-Root, Root-to-origin, aliases, wildcards, filesystem directory names, and session IDs are not authorized targets.
+Orchestrator-to-Orchestrator, Orchestrator-to-Root, self, cross-workgroup, cross-project, Root-to-Root, Root-to-origin, aliases, wildcards, filesystem directory names, and session IDs are not authorized targets.
 
 AgentsCommander verifies the physical requester-to-target route before it looks up a target session, parser, backend, or liveness. Shape-valid unauthorized and nonexistent targets therefore return the same `not_authorized` response and do not expose target liveness. Local filesystem cache timing is outside that no-liveness guarantee.
 
@@ -430,5 +430,5 @@ Snapshot audit records operational metadata only, such as verified identities, f
 - [Settings reference](../reference/settings.md#terminal-snapshots)
 - [Security model](../security.md#authorized-terminal-snapshots)
 - [Inter-agent messaging](../agents/inter-agent-messaging.md#terminal-snapshots-are-a-separate-read-plane)
-- [Container coding agents](container-coding-agents.md#terminal-snapshots-from-a-container-coordinator)
+- [Container coding agents](container-coding-agents.md#terminal-snapshots-from-a-container-orchestrator)
 - [Terminal session test plan](../testing/07-terminal-sessions.md#terminal-snapshot-evidence-contract)
