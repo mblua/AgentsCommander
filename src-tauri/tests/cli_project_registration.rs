@@ -578,9 +578,8 @@ fn ac_discovery_rs_threads_production_tokens_for_context_boundaries() {
         "the per-repo discovery context-update (ContextUpdate) must thread the activation token"
     );
     assert!(
-        production.contains(
-            "scan_project_context_templates_recorded(&base,&ac_root,activation.as_ref()"
-        ),
+        production
+            .contains("scan_project_context_templates_recorded(&base,&ac_root,activation.as_ref()"),
         "the workgroup discovery context-update (ContextUpdate) must thread the activation token"
     );
     assert!(

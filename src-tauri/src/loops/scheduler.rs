@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
+use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
     next_due_after, read_loop_config, read_loop_state, revalidate_loop_current,
@@ -15,7 +16,6 @@ use crate::config::loops::{
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
-use crate::config::ac_root::existing_ac_root;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryReport};
 use crate::loops::events::emit_loop_change;
 use crate::shutdown::ShutdownSignal;
@@ -441,8 +441,8 @@ impl Default for LoopScheduler {
 }
 
 fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = std::fs::read_dir(ac_root)
-        .map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
+    let entries =
+        std::fs::read_dir(ac_root).map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();

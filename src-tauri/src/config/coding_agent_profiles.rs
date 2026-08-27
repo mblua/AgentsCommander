@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::config::settings::{
-    empty_profile_cell, normalize_profile_letter, AppSettings, ProfileCellConfig,
-};
 use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
+};
+use crate::config::settings::{
+    empty_profile_cell, normalize_profile_letter, AppSettings, ProfileCellConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -165,20 +165,14 @@ pub(crate) fn configured_ac_roots(settings: &AppSettings) -> Vec<PathBuf> {
                 continue;
             };
             if file_type.is_dir() {
-                collect_ac_root_candidate(
-                    &mut ac_roots,
-                    &entry.path().join(CANONICAL_AC_ROOT_DIR),
-                );
+                collect_ac_root_candidate(&mut ac_roots, &entry.path().join(CANONICAL_AC_ROOT_DIR));
             }
         }
     }
     ac_roots
 }
 
-fn ensure_ac_root_is_configured(
-    settings: &AppSettings,
-    ac_root: &Path,
-) -> Result<(), String> {
+fn ensure_ac_root_is_configured(settings: &AppSettings, ac_root: &Path) -> Result<(), String> {
     let ac_root = canonical_existing_dir(ac_root, "Project AC Root")?;
     let configured = configured_ac_roots(settings);
     if configured

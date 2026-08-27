@@ -1921,10 +1921,7 @@ mod tests {
         let ac_root = temp.path().join("ws");
         let replica = ac_root.join("wg-1-team").join("__agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(
-            &ac_root.join("default.claude").join("f.txt"),
-            b"WORKSPACE",
-        );
+        write_file(&ac_root.join("default.claude").join("f.txt"), b"WORKSPACE");
         let master = temp.path().join("master");
         write_file(&master.join("f.txt"), b"CATALOG");
 

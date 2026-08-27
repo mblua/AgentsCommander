@@ -1419,9 +1419,7 @@ fn enumerate_profile_assignment_targets(
             collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
         }
         ProfileAssignmentScope::Kind => {
-            for ac_root in
-                crate::config::coding_agent_profiles::configured_ac_roots(settings)
-            {
+            for ac_root in crate::config::coding_agent_profiles::configured_ac_roots(settings) {
                 collect_kind_replica_dirs(&ac_root, &mut candidate_dirs)?;
             }
         }

@@ -832,14 +832,12 @@ impl TerminalOutputAttachments {
             if labels.is_empty() {
                 return Accumulated::Unattached;
             }
-            let accumulator = Arc::clone(
-                state
-                    .accumulators
-                    .entry(session_id)
-                    .or_insert_with(|| {
-                        Arc::new(Mutex::new(SessionAccumulator::new(Arc::clone(registration))))
-                    }),
-            );
+            let accumulator =
+                Arc::clone(state.accumulators.entry(session_id).or_insert_with(|| {
+                    Arc::new(Mutex::new(SessionAccumulator::new(Arc::clone(
+                        registration,
+                    ))))
+                }));
             (accumulator, labels)
         };
 
@@ -2515,7 +2513,10 @@ mod tests {
             fanout.activate_terminal_output(id, WINDOW, true),
             Ok(None)
         ));
-        assert_eq!(fanout.attached_labels_for_test(id), vec![WINDOW.to_string()]);
+        assert_eq!(
+            fanout.attached_labels_for_test(id),
+            vec![WINDOW.to_string()]
+        );
 
         fanout.handle_output(&token, &id.to_string(), b"after the fault".to_vec());
         flush(&fanout, id);
@@ -2629,7 +2630,11 @@ mod tests {
         assert!(String::from_utf8_lossy(&snapshot.data).contains("before"));
         assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
         let seeded = events(&sink);
-        assert_eq!(seeded.len(), 1, "the window already watching keeps its bytes");
+        assert_eq!(
+            seeded.len(),
+            1,
+            "the window already watching keeps its bytes"
+        );
         assert_eq!(seeded[0].1, b"before\r\n");
         assert_eq!(seeded[0].2, Some(1));
 
@@ -2674,7 +2679,11 @@ mod tests {
         fanout.handle_output(&token, &id.to_string(), b"after divergence".to_vec());
         flush(&fanout, id);
         let emitted = events(&sink);
-        assert_eq!(emitted.len(), 1, "the attached window keeps receiving its bytes");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "the attached window keeps receiving its bytes"
+        );
         assert_eq!(emitted[0].1, b"after divergence");
         assert_eq!(emitted[0].2, Some(2));
 
@@ -2745,7 +2754,11 @@ mod tests {
         }
 
         let emitted = events(&sink);
-        assert_eq!(emitted.len(), 1, "no timer, no explicit flush: the ceiling did it");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "no timer, no explicit flush: the ceiling did it"
+        );
         assert_eq!(emitted[0].1.len(), UI_BATCH_LIMIT_BYTES);
         assert_eq!(fanout.pending_output_bytes_for_test(id), Some(0));
     }
@@ -2810,12 +2823,22 @@ mod tests {
             .expect("register app-handle session");
 
         attach(&fanout, id, WINDOW);
-        fanout.handle_output(&token, &id.to_string(), b"only the attached window".to_vec());
+        fanout.handle_output(
+            &token,
+            &id.to_string(),
+            b"only the attached window".to_vec(),
+        );
         flush(&fanout, id);
 
         assert_eq!(attached_events.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(unattached_events.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(any_target_events.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            unattached_events.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            any_target_events.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     /// 3.4.1's no-zombie invariant, at the one interleaving that broke it: an attach that

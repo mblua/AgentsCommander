@@ -1,3 +1,5 @@
+pub mod agent_update;
+pub mod agent_version;
 pub mod api;
 pub mod cli;
 pub mod commands;
@@ -17,8 +19,6 @@ pub mod shutdown;
 pub mod telegram;
 pub mod test_support;
 pub mod testability;
-pub mod agent_update;
-pub mod agent_version;
 pub mod update_check;
 pub mod voice;
 pub mod web;
@@ -1086,9 +1086,7 @@ pub(crate) fn spawn_restore_startup(
         struct RestoreGuard(Arc<RestoreInProgress>);
         impl Drop for RestoreGuard {
             fn drop(&mut self) {
-                self.0
-                     .0
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.0 .0.store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
         let _restore_guard = RestoreGuard(restore_flag);
@@ -1108,10 +1106,8 @@ pub(crate) fn spawn_restore_startup(
 
         // #1341 - the selection barrier must never wedge behind a failed
         // restore (the webview's session commands queue on it).
-        let mut completion = RestoreCompletionGuard::new(
-            restore_barrier,
-            Arc::clone(&restore_observer_barrier),
-        );
+        let mut completion =
+            RestoreCompletionGuard::new(restore_barrier, Arc::clone(&restore_observer_barrier));
 
         // #1341 - a panic inside the restore body degrades (logged + partial
         // restore, retried next boot) instead of aborting the task and
@@ -1128,7 +1124,10 @@ pub(crate) fn spawn_restore_startup(
             let root_agent_path = match crate::config::root_agent::ensure_root_agent_dir() {
                 Ok(path) => Some(path),
                 Err(e) => {
-                    log::error!("[root-agent] Failed to provision root agent during restore: {}", e);
+                    log::error!(
+                        "[root-agent] Failed to provision root agent during restore: {}",
+                        e
+                    );
                     None
                 }
             };
@@ -1136,9 +1135,7 @@ pub(crate) fn spawn_restore_startup(
                 .iter()
                 .find(|ps| {
                     ps.is_root_agent
-                        || crate::config::root_agent::is_root_agent_path(
-                            &ps.working_directory,
-                        )
+                        || crate::config::root_agent::is_root_agent_path(&ps.working_directory)
                 })
                 .cloned();
 
@@ -1163,7 +1160,7 @@ pub(crate) fn spawn_restore_startup(
                                     last_coding_agent.as_deref(),
                                 )
                             };
-    
+
                             if should_auto_create {
                                 match commands::session::execute_root_transaction(
                                     &restore_transaction_for_task,
@@ -1188,9 +1185,7 @@ pub(crate) fn spawn_restore_startup(
                                 );
                             }
                         }
-                        Some(ps)
-                            if should_wake_root_agent_on_restore(ps.status.as_ref()) =>
-                        {
+                        Some(ps) if should_wake_root_agent_on_restore(ps.status.as_ref()) => {
                             let existing_root = {
                                 let mgr = session_mgr_clone.read().await;
                                 mgr.list_sessions().await.into_iter().find(|s| {
@@ -1287,78 +1282,78 @@ pub(crate) fn spawn_restore_startup(
                                     None
                                 };
                                 if !rebuild_failed {
-                                let (shell, shell_args, agent_label) =
-                                    if let Some(spawn) = resolved_spawn.as_ref() {
-                                        (
-                                            spawn.shell.clone(),
-                                            spawn.shell_args.clone(),
-                                            Some(spawn.trusted_agent_label.clone()),
-                                        )
-                                    } else {
-                                        (
-                                            ps.shell.clone(),
-                                            ps.shell_args.clone(),
-                                            ps.agent_label.clone(),
-                                        )
-                                    };
-                                match commands::session::create_session_inner_for_restore(
-                                    &restore_transaction_for_task,
-                                    &session_mgr_clone,
-                                    &pty_mgr_clone,
-                                    shell,
-                                    shell_args,
-                                    root_path.clone(),
-                                    Some(ps.name.clone()),
-                                    ps.agent_id.clone(),
-                                    agent_label,
-                                    false,
-                                    ps.git_repos.clone(),
-                                    false,
-                                    resolved_spawn,
-                                    resolved_agent_host_shell,
-                                    // #973 - headless caller: no terminal to measure, keep 120x30.
-                                    None,
-                                    Some(ps.start_fresh_on_restore),
-                                    None,
-                                )
-                                .await
-                                {
-                                    Ok(info) => {
-                                        if ps.was_active {
-                                            active_id = Some(info.id.clone());
-                                        }
-                                        n_woken += 1;
-                                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                            commands::session::attach_persisted_telegram_if_configured(
+                                    let (shell, shell_args, agent_label) =
+                                        if let Some(spawn) = resolved_spawn.as_ref() {
+                                            (
+                                                spawn.shell.clone(),
+                                                spawn.shell_args.clone(),
+                                                Some(spawn.trusted_agent_label.clone()),
+                                            )
+                                        } else {
+                                            (
+                                                ps.shell.clone(),
+                                                ps.shell_args.clone(),
+                                                ps.agent_label.clone(),
+                                            )
+                                        };
+                                    match commands::session::create_session_inner_for_restore(
+                                        &restore_transaction_for_task,
+                                        &session_mgr_clone,
+                                        &pty_mgr_clone,
+                                        shell,
+                                        shell_args,
+                                        root_path.clone(),
+                                        Some(ps.name.clone()),
+                                        ps.agent_id.clone(),
+                                        agent_label,
+                                        false,
+                                        ps.git_repos.clone(),
+                                        false,
+                                        resolved_spawn,
+                                        resolved_agent_host_shell,
+                                        // #973 - headless caller: no terminal to measure, keep 120x30.
+                                        None,
+                                        Some(ps.start_fresh_on_restore),
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(info) => {
+                                            if ps.was_active {
+                                                active_id = Some(info.id.clone());
+                                            }
+                                            n_woken += 1;
+                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                commands::session::attach_persisted_telegram_if_configured(
                                                 &app_handle,
                                                 uuid,
                                                 ps.telegram_bot_id.as_deref(),
                                             )
                                             .await;
-                                        }
-    
-                                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                            if let Some(ref prompt) = ps.last_prompt {
-                                                let mgr = session_mgr_clone.read().await;
-                                                mgr.set_last_prompt(uuid, prompt.clone()).await;
                                             }
-                                        }
-    
-                                        if ps.was_detached {
+
                                             if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                                {
+                                                if let Some(ref prompt) = ps.last_prompt {
                                                     let mgr = session_mgr_clone.read().await;
-                                                    if let Some(ref geo) = ps.detached_geometry
-                                                    {
-                                                        mgr.set_detached_geometry(
-                                                            uuid,
-                                                            geo.clone(),
-                                                        )
-                                                        .await;
-                                                    }
+                                                    mgr.set_last_prompt(uuid, prompt.clone()).await;
                                                 }
-    
-                                                let detached_result =
+                                            }
+
+                                            if ps.was_detached {
+                                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                    {
+                                                        let mgr = session_mgr_clone.read().await;
+                                                        if let Some(ref geo) = ps.detached_geometry
+                                                        {
+                                                            mgr.set_detached_geometry(
+                                                                uuid,
+                                                                geo.clone(),
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+
+                                                    let detached_result =
                                                     commands::window::execute_detach_transaction(
                                                         &restore_transaction_for_task,
                                                         uuid,
@@ -1366,25 +1361,25 @@ pub(crate) fn spawn_restore_startup(
                                                         true,
                                                     )
                                                     .await;
-                                                if let Err(e) = detached_result {
-                                                    log::warn!(
+                                                    if let Err(e) = detached_result {
+                                                        log::warn!(
                                                         "[restore] detach_terminal_inner failed for root agent '{}': {} — session stays live (attached)",
                                                         ps.name,
                                                         e
                                                     );
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        log::error!(
+                                        Err(e) => {
+                                            log::error!(
                                             "[root-agent] Failed to restore root session '{}': {}",
                                             ps.name,
                                             e
                                         );
-                                        failed_recoverable.push(ps.clone());
+                                            failed_recoverable.push(ps.clone());
+                                        }
                                     }
-                                }
                                 }
                             }
                         }
@@ -1447,7 +1442,7 @@ pub(crate) fn spawn_restore_startup(
                             }
                         }
                     }
-                    }
+                }
             } else if let Some(ps) = root_ps.as_ref() {
                 failed_recoverable.push(ps.clone());
             }
@@ -1458,9 +1453,7 @@ pub(crate) fn spawn_restore_startup(
 
             for ps in &persisted {
                 if ps.is_root_agent
-                    || crate::config::root_agent::is_root_agent_path(
-                        &ps.working_directory,
-                    )
+                    || crate::config::root_agent::is_root_agent_path(&ps.working_directory)
                 {
                     continue;
                 }
@@ -1476,7 +1469,11 @@ pub(crate) fn spawn_restore_startup(
 
                 // Skip sessions whose CWD no longer exists (permanent failure)
                 if !std::path::Path::new(&ps.working_directory).exists() {
-                    log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
+                    log::warn!(
+                        "Skipping restore of '{}': CWD '{}' no longer exists",
+                        ps.name,
+                        ps.working_directory
+                    );
                     // §1295 site C (restore-skip): append ONE archive
                     // record BEFORE the `continue`. The restore task is
                     // async and holds no `sessions_save_lock` here, so we
@@ -1511,11 +1508,10 @@ pub(crate) fn spawn_restore_startup(
                     teams.is_empty(),
                     ps.is_coordinator,
                 );
-                let archived_session =
-                    sessions_persistence::is_under_normalized_archived_roots(
-                        &ps.working_directory,
-                        &archived_roots,
-                    );
+                let archived_session = sessions_persistence::is_under_normalized_archived_roots(
+                    &ps.working_directory,
+                    &archived_roots,
+                );
                 let wake = restore_session_should_wake(
                     archived_session,
                     setting_on,
@@ -1526,14 +1522,12 @@ pub(crate) fn spawn_restore_startup(
                 if !wake {
                     // Defer: create a dormant Session record (no PTY, status = Exited(0)).
                     match restore_transaction_for_task
-                        .restore_dormant_inline(
-                            crate::session::selection::DormantRestoreRequest {
-                                persisted: ps.clone(),
-                                working_directory: ps.working_directory.clone(),
-                                is_coordinator: is_coord,
-                                is_root_agent: false,
-                            },
-                        )
+                        .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
+                            persisted: ps.clone(),
+                            working_directory: ps.working_directory.clone(),
+                            is_coordinator: is_coord,
+                            is_root_agent: false,
+                        })
                         .await
                     {
                         Ok(info) => {
@@ -1552,10 +1546,8 @@ pub(crate) fn spawn_restore_startup(
                             // The post-loop branching (Fix A) ensures `set_active_only`
                             // is used (not `switch_session`), so the dormant status
                             // survives selection.
-                            if restore_session_should_become_active(
-                                ps.was_active,
-                                archived_session,
-                            ) {
+                            if restore_session_should_become_active(ps.was_active, archived_session)
+                            {
                                 active_id = Some(info.id);
                             }
                         }
@@ -1601,20 +1593,20 @@ pub(crate) fn spawn_restore_startup(
                 } else {
                     None
                 };
-                let (shell, shell_args, agent_label) =
-                    if let Some(spawn) = resolved_spawn.as_ref() {
-                        (
-                            spawn.shell.clone(),
-                            spawn.shell_args.clone(),
-                            Some(spawn.trusted_agent_label.clone()),
-                        )
-                    } else {
-                        (
-                            ps.shell.clone(),
-                            ps.shell_args.clone(),
-                            ps.agent_label.clone(),
-                        )
-                    };
+                let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref()
+                {
+                    (
+                        spawn.shell.clone(),
+                        spawn.shell_args.clone(),
+                        Some(spawn.trusted_agent_label.clone()),
+                    )
+                } else {
+                    (
+                        ps.shell.clone(),
+                        ps.shell_args.clone(),
+                        ps.agent_label.clone(),
+                    )
+                };
 
                 // Wake: full PTY restore inside the restore transaction.
                 match commands::session::create_session_inner_for_restore(
@@ -1635,13 +1627,17 @@ pub(crate) fn spawn_restore_startup(
                     // #973 - headless caller: no terminal to measure, keep 120x30.
                     None,
                     Some(ps.start_fresh_on_restore),
-                    is_coord.then(|| {
-                        crate::commands::session::carry_communication_for_restart(
-                            ps.communication.clone(),
-                            ps.start_fresh_on_restore,
-                        )
-                    }).flatten(),
-                ).await {
+                    is_coord
+                        .then(|| {
+                            crate::commands::session::carry_communication_for_restart(
+                                ps.communication.clone(),
+                                ps.start_fresh_on_restore,
+                            )
+                        })
+                        .flatten(),
+                )
+                .await
+                {
                     Ok(info) => {
                         if ps.was_active {
                             active_id = Some(info.id.clone());
@@ -1715,7 +1711,10 @@ pub(crate) fn spawn_restore_startup(
             // the restore log in chronological order, not interleaved with switch events.
             log::info!(
                 "[restore] complete — {} woken, {} deferred (setting_on={}, total_evaluated={})",
-                n_woken, n_deferred, setting_on, persisted.len()
+                n_woken,
+                n_deferred,
+                setting_on,
+                persisted.len()
             );
 
             let persisted_target = active_id
@@ -1733,14 +1732,18 @@ pub(crate) fn spawn_restore_startup(
             }
 
             // Persist restored sessions + failed-but-recoverable entries
-            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
+            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> =
+                session_mgr_clone.read().await;
             sessions_persistence::persist_merging_failed(&mgr, &failed_recoverable).await;
 
             if !failed_recoverable.is_empty() {
                 log::warn!(
                     "Session restore: {} sessions failed (preserved for next attempt): {:?}",
                     failed_recoverable.len(),
-                    failed_recoverable.iter().map(|s| &s.name).collect::<Vec<_>>()
+                    failed_recoverable
+                        .iter()
+                        .map(|s| &s.name)
+                        .collect::<Vec<_>>()
                 );
             }
         });

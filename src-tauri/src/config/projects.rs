@@ -10,8 +10,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
 use super::settings::AppSettings;
-use super::ac_root::{existing_ac_root, has_ac_root, ac_root_for_project};
 
 /// Outcome of a register call. Callers translate this into the verb-specific
 /// stdout / IPC payload (CLI prints the lines from §2; Tauri command returns
@@ -198,13 +198,12 @@ fn register_new_project_with_store(
     store: NewProjectSettingsStore,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<ProjectRegistration, ProjectError> {
-    let prepared =
-        prepare_new_project_impl(raw_path, activation, |ac_root, on_publication| {
-            crate::config::session_context::create_default_context_templates_with_publications(
-                ac_root,
-                on_publication,
-            )
-        })?;
+    let prepared = prepare_new_project_impl(raw_path, activation, |ac_root, on_publication| {
+        crate::config::session_context::create_default_context_templates_with_publications(
+            ac_root,
+            on_publication,
+        )
+    })?;
     store.refresh(settings)?;
     let before_settings = settings.clone();
     let result = commit_prepared_new_project(settings, &prepared);
@@ -284,16 +283,12 @@ pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, 
     let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
     #[cfg(test)]
     let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
-    prepare_new_project_impl(
-        raw_path,
-        activation.as_ref(),
-        |ac_root, on_publication| {
-            crate::config::session_context::create_default_context_templates_with_publications(
-                ac_root,
-                on_publication,
-            )
-        },
-    )
+    prepare_new_project_impl(raw_path, activation.as_ref(), |ac_root, on_publication| {
+        crate::config::session_context::create_default_context_templates_with_publications(
+            ac_root,
+            on_publication,
+        )
+    })
 }
 
 fn prepare_new_project_impl<F>(
@@ -333,8 +328,7 @@ where
     // `create_dir` below can race-detect properly. `create_dir_all` is
     // idempotent on an already-existing dir, so this costs nothing extra
     // when PATH is already there.
-    std::fs::create_dir_all(&abs)
-        .map_err(|e| ProjectError::AcRootCreateFailed(abs.clone(), e))?;
+    std::fs::create_dir_all(&abs).map_err(|e| ProjectError::AcRootCreateFailed(abs.clone(), e))?;
 
     let ac_root = ac_root_for_project(&abs);
     // The create syscall is the sole creation-intent authority. An earlier
@@ -342,12 +336,7 @@ where
     let created = match std::fs::create_dir(&ac_root) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(e) => {
-            return Err(ProjectError::AcRootCreateFailed(
-                ac_root.clone(),
-                e,
-            ))
-        }
+        Err(e) => return Err(ProjectError::AcRootCreateFailed(ac_root.clone(), e)),
     };
     let pinned_project = crate::config::seed_manifest::PinnedDirectory::open(&abs)
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
@@ -374,10 +363,7 @@ where
         .map_err(|error| ProjectError::ProjectSetupChanged(abs.clone(), error.to_string()))?;
     if created {
         if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root) {
-            return Err(ProjectError::AcRootGitignoreFailed(
-                ac_root.clone(),
-                e,
-            ));
+            return Err(ProjectError::AcRootGitignoreFailed(ac_root.clone(), e));
         }
     } else {
         // Gitignore sweep (Round-1 G15): best-effort when `.ac` pre-existed
@@ -2045,10 +2031,7 @@ mod tests {
         let mut s = AppSettings::default();
         let r = register_existing_project(&mut s, fix.path().to_str().unwrap()).unwrap();
         assert!(r.registered);
-        assert_eq!(
-            existing_ac_root(fix.path()),
-            Some(fix.path().join(".ac"))
-        );
+        assert_eq!(existing_ac_root(fix.path()), Some(fix.path().join(".ac")));
     }
 
     #[test]
@@ -2167,8 +2150,7 @@ mod tests {
             None,
             |ac_root, _on_publication| {
                 std::fs::write(
-                    ac_root
-                        .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+                    ac_root.join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                     crate::config::session_context::get_default_agent_template(),
                 )
                 .expect("write partial agent context");
@@ -2277,9 +2259,7 @@ mod tests {
             match prepare_new_project_impl_with_hook(
                 &creator_path,
                 None,
-                |_ac_root, _on_publication| {
-                    Err("injected creator failure after gate".to_string())
-                },
+                |_ac_root, _on_publication| Err("injected creator failure after gate".to_string()),
                 move |_, created| {
                     assert!(created, "creator must own the create_dir win");
                     ready_tx.send(()).expect("signal visible root");
