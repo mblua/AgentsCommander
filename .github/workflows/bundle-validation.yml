@@ -11,6 +11,9 @@ on:
       - 'package-lock.json'
       - 'Cargo.lock'
       - '.github/workflows/bundle-validation.yml'
+      - 'packaging/windows/**'
+      - 'scripts/pack-windows-portable.mjs'
+      - 'scripts/smoke-windows-portable.ps1'
 
 permissions:
   contents: read
@@ -63,3 +66,23 @@ jobs:
           if (-not $nsis) { Write-Error 'No NSIS installer produced'; exit 1 }
           Write-Host "MSI: $($msi.Name)"
           Write-Host "NSIS: $($nsis.Name)"
+
+      # The portable zip is assembled and smoked here as well as in release.yml
+      # (#1589). The release path is the only other place it runs, and there a
+      # failure is discovered with a tag already pushed; this gate answers the
+      # same questions on the pull request instead.
+      - name: Pack and smoke the Windows portable zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $zip = "dist-portable/agentscommander-$version-windows-x86_64-portable.zip"
+
+          node scripts/pack-windows-portable.mjs `
+            --binary target/release/agentscommander.exe `
+            --version $version `
+            --out $zip
+          if ($LASTEXITCODE -ne 0) { throw "packing the portable zip failed" }
+
+          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip -ExpectedVersion $version
+          if ($LASTEXITCODE -ne 0) { throw "the portable zip failed its smoke test" }
