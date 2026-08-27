@@ -179,7 +179,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
         badge.querySelector("svg.workgroup-group-rail-raise-hand-icon")
       ).not.toBeNull();
       expect(badge.textContent ?? "").not.toContain("!");
-      expect(badge.getAttribute("aria-label")).toBe("A coordinator raised its hand");
+      expect(badge.getAttribute("aria-label")).toBe("An orchestrator raised its hand");
 
       // #775 rule 3 (Option B): the hand renders inline, to the LEFT of the
       // title — first child of the title line, ahead of the title text.
