@@ -107,6 +107,104 @@ function Invoke-PSNonInteractiveDirect {
     }
 }
 
+# #1596: Git Bash is the required AC CLI carrier on Windows. bash.exe is
+# console-subsystem, so the outer PowerShell waits for it, captures its stdout,
+# AND propagates its exit code ($LASTEXITCODE) — which the GUI-subsystem AC
+# binary cannot provide through a bare PS `&` (see Invoke-BinaryDirect and the
+# Invoke-PSNonInteractiveDirect comment above). Skipped (not a failure) when
+# bash.exe is not on PATH.
+function Invoke-BashRouted {
+    param(
+        [Parameter(Mandatory=$true)] [string]$ShellPath,
+        [Parameter(Mandatory=$true)] [string]$CaseName,
+        [Parameter(Mandatory=$true)] [string]$Exe,
+        [Parameter(Mandatory=$true)] [string[]]$ExeArgs
+    )
+    $paths = New-CasePaths -CaseName $CaseName
+
+    if ($null -eq (Get-Command 'bash.exe' -ErrorAction SilentlyContinue)) {
+        Write-CaseLogs -Paths $paths -Command 'bash.exe not found on PATH' -Stdout '' -Stderr ''
+        $skipped = [pscustomobject]@{
+            name = $CaseName
+            shellPath = $ShellPath
+            binaryPath = $Exe
+            commandPath = $paths.CommandPath
+            stdoutPath = $paths.StdoutPath
+            stderrPath = $paths.StderrPath
+            exitCode = $null
+            skipped = $true
+        }
+        $summary.Add($skipped) | Out-Null
+        Write-Host "SKIP: bash.exe not found (case $CaseName)" -ForegroundColor Yellow
+        return [pscustomobject]@{
+            CaseName = $CaseName
+            Stdout = ''
+            Stderr = ''
+            ExitCode = $null
+            Skipped = $true
+            StdoutPath = $paths.StdoutPath
+            StderrPath = $paths.StderrPath
+            CommandPath = $paths.CommandPath
+        }
+    }
+
+    # Bash-level quoting: single quotes around the exe and each arg (backslashes
+    # and spaces stay literal inside bash single quotes).
+    $bashParts = New-Object System.Collections.Generic.List[string]
+    $bashParts.Add("'" + ($Exe -replace "'", "'\''") + "'")
+    foreach ($a in $ExeArgs) {
+        $bashParts.Add("'" + ($a -replace "'", "'\''") + "'")
+    }
+    $bashInner = $bashParts -join ' '
+    # Embed the whole bash command as ONE PS single-quoted literal: wrap in
+    # quotes and double every inner quote for PS, so bash.exe -lc receives the
+    # backslashes and spaces verbatim.
+    $psLiteral = "'" + ($bashInner -replace "'", "''") + "'"
+    $inner = "& bash.exe -lc $psLiteral; exit `$LASTEXITCODE"
+    $arguments = "-NonInteractive -NoProfile -Command `"$inner`""
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $ShellPath
+    $psi.Arguments = $arguments
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $stdout = if ($null -eq $stdoutTask.Result) { '' } else { $stdoutTask.Result }
+    $stderr = if ($null -eq $stderrTask.Result) { '' } else { $stderrTask.Result }
+    $commandText = "$ShellPath $arguments"
+    Write-CaseLogs -Paths $paths -Command $commandText -Stdout $stdout -Stderr $stderr
+
+    $case = [pscustomobject]@{
+        name = $CaseName
+        shellPath = $ShellPath
+        binaryPath = $Exe
+        commandPath = $paths.CommandPath
+        stdoutPath = $paths.StdoutPath
+        stderrPath = $paths.StderrPath
+        exitCode = $proc.ExitCode
+        skipped = $false
+    }
+    $summary.Add($case) | Out-Null
+
+    [pscustomobject]@{
+        CaseName = $CaseName
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $proc.ExitCode
+        Skipped = $false
+        StdoutPath = $paths.StdoutPath
+        StderrPath = $paths.StderrPath
+        CommandPath = $paths.CommandPath
+    }
+}
+
 # Start the binary with no shell in between, so the exit code read here is the binary's own.
 #
 # Why this exists separately from Invoke-PSNonInteractiveDirect: release builds carry
@@ -428,6 +526,33 @@ if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
         Write-Host "FAIL: list-peers stdout not valid JSON -- $(New-FailureDetail -CaseName $r1.CaseName -Detail $_.Exception.Message -Result $r1)" -ForegroundColor Red
         $failed++
     }
+}
+
+# Test 1b (#1596): same list-peers through the Git Bash carrier. Here the exit
+# code IS observable — bash.exe is console-subsystem, so $LASTEXITCODE
+# propagates out of the outer PowerShell — which the direct GUI-child case
+# above intentionally cannot assert. Missing bash.exe is an accepted SKIP.
+$r1b = Invoke-BashRouted -ShellPath $ShellPath -CaseName "01-list-peers-via-git-bash" -Exe $BinaryPath -ExeArgs @('list-peers', '--token', $Token, '--root', $Root)
+if (-not $r1b.Skipped) {
+    Assert-True "list-peers via Git Bash stdout non-empty" (-not [string]::IsNullOrWhiteSpace($r1b.Stdout)) "stdout was empty via the Git Bash carrier (#1596)" $r1b.CaseName $r1b
+    Assert-True "list-peers via Git Bash stderr empty" ([string]::IsNullOrWhiteSpace($r1b.Stderr)) "stderr leaked content; inspect stderr log" $r1b.CaseName $r1b
+    if (-not [string]::IsNullOrWhiteSpace($r1b.Stdout)) {
+        try {
+            $parsed = $r1b.Stdout | ConvertFrom-Json -ErrorAction Stop
+            $trimmedJson = $r1b.Stdout.Trim()
+            # PowerShell 7 writes no pipeline object for a valid empty JSON array.
+            if ($null -eq $parsed -and $trimmedJson -ne '[]') {
+                Write-Host "FAIL: list-peers via Git Bash ConvertFrom-Json returned null -- $(New-FailureDetail -CaseName $r1b.CaseName -Detail 'non-empty non-array stdout parsed to null' -Result $r1b)" -ForegroundColor Red
+                $failed++
+            } else {
+                Write-Host "PASS: list-peers via Git Bash stdout parses as JSON" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "FAIL: list-peers via Git Bash stdout not valid JSON -- $(New-FailureDetail -CaseName $r1b.CaseName -Detail $_.Exception.Message -Result $r1b)" -ForegroundColor Red
+            $failed++
+        }
+    }
+    Assert-True "list-peers via Git Bash exits zero" ($r1b.ExitCode -eq 0) "exit code was $($r1b.ExitCode), expected 0 (bash.exe propagates the AC binary's exit code)" $r1b.CaseName $r1b
 }
 
 # Test 2: send --help stdout must contain clap-rendered help text.
