@@ -19,6 +19,29 @@ use crate::config::settings::{
 use crate::session::profile::CodingAgentKind;
 use sha2::{Digest, Sha256};
 
+/// #1551 - true when `token` is a bare program name (no path separator, not absolute):
+/// the only form resolved through PATH, and the only form the version probe executes.
+pub fn is_bare_program_token(token: &str) -> bool {
+    !(token.contains('/') || token.contains('\\') || Path::new(token).is_absolute())
+}
+
+/// #1551 - resolve a program token to a file. Lifted byte-equivalently from the
+/// `resolve_token_to_file` helper that `commands::session` used for the claude token:
+/// explicit path (separator or absolute) -> Some iff it is a file, never consulting
+/// PATH; bare name -> `which::which` (PATH, plus PATHEXT on Windows, so npm `.cmd`
+/// shims resolve). The GUI process PATH is what is consulted (documented caveat).
+pub fn resolve_program(token: &str) -> Option<PathBuf> {
+    let p = Path::new(token);
+    if !is_bare_program_token(token) {
+        return if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
+    }
+    which::which(token).ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedAgentCommand {
     pub shell: String,
@@ -1005,9 +1028,10 @@ mod tests {
     use super::{
         build_agent_spawn_command, command_runs_opencode,
         default_instructions_filename_for_command, ensure_opencode_config_dir,
-        find_opencode_config_dir, is_safe_instructions_filename, managed_instructions_filenames,
-        normalize_legacy_agent_command, prepare_agent_spawn_command, profile_content_hash,
-        resolve_agent_spawn_command, resolve_instructions_filename, resolve_target_filename,
+        find_opencode_config_dir, is_bare_program_token, is_safe_instructions_filename,
+        managed_instructions_filenames, normalize_legacy_agent_command,
+        prepare_agent_spawn_command, profile_content_hash, resolve_agent_spawn_command,
+        resolve_instructions_filename, resolve_program, resolve_target_filename,
         AgentSpawnCommand, OpencodeConfigDirOutcome,
     };
     use crate::config::coding_agent_profiles::ProfileResolution;
@@ -2637,5 +2661,56 @@ mod tests {
             profile_content_hash("claude", &upper),
             "a case-only env-key edit must not false-flag drift on Windows"
         );
+    }
+
+    // #1551 - the shared program resolver lifted out of `commands::session`.
+
+    #[test]
+    fn resolve_program_explicit_path_requires_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("tool.exe");
+        std::fs::write(&file, b"x").expect("write");
+        assert_eq!(
+            resolve_program(&file.to_string_lossy()),
+            Some(file.clone()),
+            "an explicit path to a file resolves to itself"
+        );
+        let missing = dir.path().join("missing.exe");
+        assert_eq!(
+            resolve_program(&missing.to_string_lossy()),
+            None,
+            "an explicit path that does not exist never falls back to PATH"
+        );
+        assert_eq!(
+            resolve_program(&dir.path().to_string_lossy()),
+            None,
+            "a directory is not a program"
+        );
+    }
+
+    #[test]
+    fn resolve_program_bare_name_uses_path() {
+        let token = if cfg!(windows) { "cmd" } else { "sh" };
+        let resolved = resolve_program(token).expect("a bare shell name resolves through PATH");
+        let stem = resolved
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("file stem")
+            .to_ascii_lowercase();
+        assert_eq!(stem, token);
+    }
+
+    #[test]
+    fn resolve_program_bare_unknown_is_none() {
+        assert_eq!(resolve_program("definitely-not-a-program-1551"), None);
+    }
+
+    #[test]
+    fn is_bare_program_token_cases() {
+        assert!(is_bare_program_token("claude"));
+        assert!(!is_bare_program_token("./claude"));
+        assert!(!is_bare_program_token(r"C:\x\claude.exe"));
+        assert!(!is_bare_program_token("/usr/bin/claude"));
+        assert!(!is_bare_program_token(r"bin\claude"));
     }
 }

@@ -19,6 +19,25 @@ vi.mock("../../shared/ipc", async () => {
   const { FALLBACK_CODING_AGENTS } = await vi.importActual<
     typeof import("../../shared/agent-presets")
   >("../../shared/agent-presets");
+  // #1551 - the Coding Agents screen mounts AgentAutoUpdateStatusList, which imports
+  // AgentUpdateAPI.getOverview, onAgentInstallStateChanged and onAgentUpdatesFinished:
+  // an `undefined` import would throw inside its mount and fail the whole file. Six
+  // committed rows (no `checking`), so no 20 s re-poll timer is ever armed here.
+  const SIX_ROW_FIXTURE = [
+    ["claude", "claude"],
+    ["codex", "codex"],
+    ["hermes", "hermes"],
+    ["pi", "pi"],
+    ["opencode", "opencode"],
+    ["antigravity", "agy"],
+  ].map(([key, command], index) => ({
+    key,
+    label: key,
+    command,
+    color: "#10b981",
+    updateCommands: [`${command} update`],
+    install: { status: "installed", version: "1.0.0", path: `C:\\bin\\${command}.cmd`, seq: index + 1 },
+  }));
   return {
     SettingsAPI: {
       get: vi.fn(() => Promise.resolve(settings())),
@@ -46,6 +65,11 @@ vi.mock("../../shared/ipc", async () => {
       listReseedableCommands: vi.fn(() => Promise.resolve([])),
       reseedDefault: vi.fn(() => Promise.resolve({ dest: "", backupPath: "" })),
     },
+    AgentUpdateAPI: {
+      getOverview: vi.fn(async () => SIX_ROW_FIXTURE),
+    },
+    onAgentInstallStateChanged: vi.fn(async () => () => {}),
+    onAgentUpdatesFinished: vi.fn(async () => () => {}),
   };
 });
 
@@ -2376,6 +2400,76 @@ describe("SettingsModal automation hooks", () => {
 
     const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
     expect(saved?.agentAutoUpdateByCommand).toEqual({ codex: true });
+
+    dispose();
+  });
+
+  it("renders the read-only Auto-update table in the Coding Agents screen (#1551)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    await settle();
+
+    expect(byTestId("settings.autoUpdate.block")).toBeTruthy();
+    const keys = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-ac-testid^="settings.autoUpdate.row."][data-ac-role="row"]',
+      ),
+    ).map((el) => el.getAttribute("data-ac-testid"));
+    expect(keys).toEqual([
+      "settings.autoUpdate.row.claude",
+      "settings.autoUpdate.row.codex",
+      "settings.autoUpdate.row.hermes",
+      "settings.autoUpdate.row.pi",
+      "settings.autoUpdate.row.opencode",
+      "settings.autoUpdate.row.antigravity",
+    ]);
+    // agent row 0 is the registered `codex` agent of the fixture
+    expect(byTestId("settings.autoUpdate.row.codex.agent").getAttribute("data-ac-state")).toBe("registered");
+    expect(byTestId("settings.autoUpdate.row.codex.installed").getAttribute("data-ac-state")).toBe("installed");
+    expect(byTestId("settings.autoUpdate.row.codex.installed").textContent).toBe("1.0.0");
+    expect(byTestId("settings.autoUpdate.row.codex.live").getAttribute("data-ac-state")).toBe("idle");
+    expect(byTestId("settings.autoUpdate.hint").textContent).toContain(
+      "Only registered coding agents are updated at startup.",
+    );
+
+    dispose();
+  });
+
+  it("the Auto-update table's configured cell follows the dropdown draft (ask -> yes -> no) before Save (#1551)", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {}, section: "agents" }),
+      root,
+    );
+    await settle();
+    await settle();
+    expandAgentRow(0);
+    await settle();
+
+    const cell = () => byTestId("settings.autoUpdate.row.codex.configured");
+    expect(cell().getAttribute("data-ac-state")).toBe("ask");
+    expect(cell().textContent).toBe("Will ask at startup");
+
+    const select = byTestId<HTMLSelectElement>("settings.agentRow.0.autoUpdate");
+    select.value = "yes";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(cell().getAttribute("data-ac-state")).toBe("yes");
+    expect(cell().textContent).toBe("Yes");
+
+    select.value = "no";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(cell().getAttribute("data-ac-state")).toBe("no");
+    expect(cell().textContent).toBe("No");
+    // the table reads the DRAFT: nothing was saved
+    expect(vi.mocked(SettingsAPI.saveDraft)).not.toHaveBeenCalled();
 
     dispose();
   });
