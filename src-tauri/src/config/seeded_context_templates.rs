@@ -270,6 +270,38 @@ const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
          \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
 
+/// #1571: `get_default_coordinator_template()` exactly as it shipped through
+/// base commit ecc6527b, frozen as the fourth legacy snapshot so a pristine v4
+/// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
+/// after the v5 Coordinator-to-Orchestrator rename.
+/// Never edit. Provenance (plan #1571 3.6): the shipped accessor measured at
+/// base commit ecc6527b printed len 2509, sha256
+/// f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6; pinned by
+/// `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
+    "You are the coordinator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - To reach another workgroup, message its coordinator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to a coordinator who messaged you first is always authorized.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
+     - Give recommendations that help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop coordinator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness coordinator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
+
 /// #979: the standalone global context template that older builds seeded into the
 /// APP CONFIG directory (307 bytes; it predates `## Core Concepts`). Retirement may
 /// delete only bytes AgentsCommander provably generated itself, so this snapshot is
@@ -2234,6 +2266,43 @@ mod tests {
             hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE),
             "9f72fa83ac2fafc73565f975a2bec936a09d0e6a410b1ee1a4a13952e694ec84",
             "frozen v3 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1571 T1: the frozen v4 coordinator snapshot must stay byte-identical to
+    /// what shipped at base commit ecc6527b. Expected values captured by a one-off
+    /// run of the shipped accessor AT ecc6527b (plan 3.6), never from this const.
+    #[test]
+    fn coordinator_pre_orchestrator_rename_snapshot_is_byte_exact() {
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME.len(),
+            2509,
+            "frozen v4 coordinator snapshot must be the ecc6527b bytes"
+        );
+        assert_eq!(
+            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME),
+            "f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6",
+            "frozen v4 coordinator snapshot changed; it must stay byte-identical to what shipped"
+        );
+    }
+
+    /// #1571 T5: the frozen v1 coordinator snapshot had no byte pin, and the
+    /// existing `old_coordinator_default_is_known_generated_without_raise_hand`
+    /// cannot detect an edit to it: its recognizer assertion is self-referential
+    /// and its three `contains()` assertions do not cover the first line, which is
+    /// the very sentence the #1571 rename rewrites elsewhere. Expected values
+    /// captured by a one-off run AT ecc6527b (plan 9.1), never from this const.
+    #[test]
+    fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
+        assert_eq!(
+            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.len(),
+            2066,
+            "frozen v1 coordinator snapshot must be the ecc6527b bytes"
+        );
+        assert_eq!(
+            hash_text(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND),
+            "31d49d02c12fcc8cd2d5277455074dcae3fbc1a84f1f1a0cf0f37828e03f792f",
+            "frozen v1 coordinator snapshot changed; it must stay byte-identical to what shipped"
         );
     }
 
