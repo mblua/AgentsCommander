@@ -4,11 +4,14 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 3. Supersedes the round-2 candidate
+Author: ac-architect-v3. Consensus round 4. Supersedes the round-3 candidate
+`08A46CDCAC4279F9BE08B8D98AE7A0FEBDC7325C7E36CB21F2243A2D31D2962A` (two `PLAN_APPROVED`, one
+`CHANGES_REQUIRED`), before it the round-2 candidate
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
-`CHANGES_REQUIRED`) and, before it, the round-1 candidate
+`CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 and round-2 finding to the section that closes it.
+`CHANGES_REQUIRED`. Section 15 maps every round-1, round-2 and round-3 finding to the section that
+closes it.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -830,12 +833,21 @@ arithmetically possible once `raise-hand.test.tsx` joined the tables: those four
 6.5 changes as a result**; the three reviewers' independent sweeps of these 39 files all returned
 zero non-frozen occurrences, and so does this one.
 
-The nine non-test files among the 39 were also read individually and carry only
-frozen keys, a frozen `data-ac-testid`, a frozen collapse-key literal, or comment prose:
-`main/listeners-home.ts:22`, `shared/testing/ui-harness.tsx:120,169-174,231`,
-`sidebar/components/ActionBar.tsx:301`, `RaiseHandIcon.tsx:5`, `RootAgentBanner.tsx:403`,
-`workgroup-session.ts:47`, `sidebar/stores/clock.ts:3`, `project-collapse.ts:8`,
-`sessions-helpers.ts:82`.
+**Exactly two of the 39 are non-test files**, and both were read individually:
+`shared/testing/ui-harness.tsx:120,169-174,231` (seven frozen `AppSettings` keys plus a frozen
+`isCoordinator` fixture member) and `sidebar/components/workgroup-session.ts:47` (the frozen
+`replica.isCoordinator` read). The other 37 are `*.test.ts` / `*.test.tsx`.
+
+Seven further non-test files carry a `coordinator` token, but **only inside a comment or a string
+literal**, so the blanking pass erases every one of them and they are in neither the 73 nor the 39:
+`main/listeners-home.ts:22`, `sidebar/components/RaiseHandIcon.tsx:5`,
+`sidebar/components/RootAgentBanner.tsx:403`, `sidebar/stores/clock.ts:3` and
+`sidebar/stores/sessions-helpers.ts:82` are comment prose;
+`sidebar/components/ActionBar.tsx:301` is the frozen `data-ac-testid`
+`"actionBar.sortCoordinators"`; `sidebar/stores/project-collapse.ts:8` is the frozen
+`"coordinators"` collapse-key literal. They were read individually too. Round 2's prose called all
+nine of these files members of the 39, which the census that defines the 39 cannot support; the
+substance, that not one of them holds a non-frozen occurrence, is unchanged.
 
 ### 5.6 The 7 file renames in `repo-AgentsCommander`
 
@@ -909,10 +921,14 @@ judgment call:
   the field set to a distinctive value and assert the frozen key carries it.
 
 **"A minimal object is enough" is false, and the implementer must not be told it.** Serde requires
-every field that carries neither `#[serde(default)]` nor `#[serde(skip)]`, so
-`from_value(json!({ "<key>": .. }))` fails with `missing field` on 7 of the 12 owning types in the
-deserialise direction. Measured at `147ad4ef`, the fields each type requires **in addition to the
-key under test**, spelled as the wire key:
+every field that carries neither `#[serde(default)]` nor `#[serde(skip)]` **and is not an
+`Option<T>`**. The `Option<T>` exemption is not spelled by an attribute: serde's derive answers an
+absent key on an `Option<T>` field with `None` rather than with an error, so an attribute-less
+`Option<T>` is optional on the wire exactly as if it carried `#[serde(default)]`. Every other
+attribute-less field is required, so `from_value(json!({ "<key>": .. }))` fails with `missing field`
+on 7 of the 12 owning types in the deserialise direction. Measured at `147ad4ef` by reading each
+struct definition field by field and classifying each field by its declared type, the fields each
+type requires **in addition to the key under test**, spelled as the wire key:
 
 | Owning type | Section 3.3 rows | Additional fields serde requires |
 | --- | --- | --- |
@@ -920,13 +936,13 @@ key under test**, spelled as the wire key:
 | `AgentDarkFactory` | 9 | none |
 | `LoopPolicy` | 11 | none |
 | `LoopTargetKind`, `PtyInputReasonCode` | 10, 23, 24 | n/a: they are enums, and the value under test is the whole document |
-| `LoopCreateRequest` | 7 | `projectPath`, `id`, `name`, `expr`, `workgroup`, `promptBody` |
-| `LoopUpdateRequest` | 8 | `projectPath`, `id`, `name`, `expr`, `workgroup`, `promptBody` |
-| `LoopAuditEntry` | 12 | `runId`, `loopId`, `projectPath`, `kind`, `dueAt`, `startedAt`, `completedAt`, `target`, `sessionId`, `error`, `promptSnapshot` |
+| `LoopCreateRequest` | 7 | `projectPath`, `name`, `expr`, `workgroup`, `promptBody`. Not `id`: it is `Option<String>` with no attribute |
+| `LoopUpdateRequest` | 8 | `projectPath`, `id`. Not `name`, `expr`, `workgroup` or `promptBody`: all four are `Option<String>` with no attribute |
+| `LoopAuditEntry` | 12 | `runId`, `loopId`, `projectPath`, `kind`, `dueAt`, `startedAt`. Not `completedAt`, `target`, `sessionId`, `error` or `promptSnapshot`: all five are `Option<..>` with no attribute |
 | `PersistedSession` | 14 | `name`, `shell`, `shellArgs`, `workingDirectory` |
 | `AppSettings` | 15-22 | `defaultShell`, `defaultShellArgs`, `agents` |
-| `Session` | 27 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `lastPrompt`, `token` |
-| `SessionInfo` | 28 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `lastPrompt`, `token` |
+| `Session` | 27 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `token`. Not `lastPrompt`: it is `Option<String>` with no attribute |
+| `SessionInfo` | 28 | `id`, `name`, `shell`, `shellArgs`, `createdAt`, `workingDirectory`, `status`, `waitingForInput`, `token`. Not `lastPrompt`: it is `Option<String>` with no attribute |
 
 The recipe for the largest of these already exists in the tree: the issue-#248 migration tests at
 `config/settings.rs:8255-8312` carry exactly `defaultShell`, `defaultShellArgs` and `agents` plus the
@@ -1555,7 +1571,7 @@ missing pin is invisible to the compiler, to criterion 6 and to the frontend sui
 3. **`CoordinationDemo.css` joins the website rename set.** Section 3.7 gives the reason.
 4. **The frozen-snapshot constants take the new identifier, their bytes stay frozen.** Section 5.1
    gives the reason and distinguishes this from epic decision 2.
-5. **No string literal changes except the nine-entry allowlist.** This is what makes criterion 6 a
+5. **No string literal changes except the 14-entry allowlist of 5.4.** This is what makes criterion 6 a
    mechanical gate instead of a judgment call, and it is why test titles, `expect()` prose and log
    format strings are explicitly routed to phase 4.
 6. **`CoordinatorChangedPayload` renames but its `is_coordinator` field is pinned.** A struct type
@@ -1932,8 +1948,9 @@ naming the unit rather than by picking a side.
 
 Round 2 (`A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D`) drew `PLAN_APPROVED` from
 `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`, and `CHANGES_REQUIRED` from `ac-dev-webpage-ui-v3`.
-Every finding below was re-measured at `147ad4ef` before being acted on. No row of section 6.5, no
-pin, no digest and no gate command changed.
+Every finding below was re-measured at `147ad4ef` before being acted on. Exactly one row of section
+6.5 changed: the `App.tsx` row, whose frozen binding reference goes from `:801` to `:800`, which is
+finding C-C and nothing else. No pin, no digest, no gate command and no other 6.5 row changed.
 
 | # | Finding | Closed in |
 | --- | --- | --- |
@@ -1949,6 +1966,21 @@ pin, no digest and no gate command changed.
 | O-E | The row-16 tripwire cannot detect a dropped pin: after the migration the field is `None` and is elided, so the negative assertion passes either way | 3.3 row 16 and the 9.2 issue-#248 row both say so |
 | O-F | C6b's three pin-removal experiments leave one residual path to a vacuous test: a deserialise assertion fed a value equal to the member's own default | **Decided: expand, and close the general case by constraint.** 5.9 gains binding **constraint 5**; 12.1 C6b names **9** experiments, one per default kind plus one serialise experiment per test site; decision **10.1.15** records why sampling by default kind beats one run per pin |
 | Base | The plan's coordinates needed to be pinned to a named base while `origin/main` moved to `047248bc` | 1.1 names `147ad4ef` as the coordinate base and records the drift with its classification (zero added `coordinat` lines, zero changed paths under `src/`, `module-arcs.txt` byte-identical). 13.5 stays binding and 1.2 re-runs the classification before the first mutation |
+
+### Round-3 findings, and where each one is closed
+
+Round 3 (`08A46CDCAC4279F9BE08B8D98AE7A0FEBDC7325C7E36CB21F2243A2D31D2962A`) drew `PLAN_APPROVED`
+from `ac-dev-webpage-ui-v3` and `ac-dev-rust-grinch-v3`, and `CHANGES_REQUIRED` from
+`ac-dev-rust-v3`. All three reviewers audited the round-3 delta hunk by hunk and found nothing moved
+outside the frozen list. Round 4 changes prose only: no pin, no digest, no gate command, no row of
+section 6.5, no rule and no criterion changed.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| DN1 | 5.9's required-field table over-states 5 of its 12 rows. Its premise, "serde requires every field carrying neither `#[serde(default)]` nor `#[serde(skip)]`", is false for `Option<T>`: an attribute-less `Option<T>` deserialises to `None` when its key is absent. Raised independently by both Rust reviewers, who reached the same five rows and the same corrections | 5.9's premise now carries the `Option<T>` exemption explicitly, and rows 7, 8, 12, 27 and 28 drop their `Option` fields, each with the reason spelled in the cell. Rows 6, 9, 11, 14, 15-22 and the enum row are unchanged, and the count "7 of the 12" is unaffected because the five corrected types all keep at least one required field. Re-verified twice: by reading all twelve struct definitions field by field at `147ad4ef`, and by running the four corrected shapes plus a `missing field` negative control each against serde 1.0.228 / serde_json 1.0.149, the versions `Cargo.lock` pins |
+| DN2 | 5.5's "the nine non-test files among the 39" is arithmetically false: seven of the nine carry `coordinator` only in a comment or a literal, so the blanking pass that defines the census erases them and they are in neither the 73 nor the 39. Inherited round-2 prose, not a round-3 regression | 5.5 now states that **exactly two** of the 39 are non-test files, names them, and lists the seven comment-and-literal-only files separately with what each one carries. Re-measured: 73 files with a code token, 34 in section 6's tables, 39 remaining with 130 occurrences, of which 2 are non-test |
+| DN3 | Section 15's round-2 header says no row of section 6.5 changed, contradicting its own C-C row, which changed the `App.tsx` reference from `:801` to `:800` | the header now names that one row as the single 6.5 change and keeps the rest of the claim |
+| DN4 | **Not a reviewer finding; caught while making the three above.** Decision 10.1.5 still called the Rule P allowlist "the nine-entry allowlist", the round-1 size. Finding B1a grew it to 14 in round 2 and 5.4 has said 14 ever since, so the decision contradicted the number it depends on | decision 10.1.5 reads **the 14-entry allowlist of 5.4**. The allowlist itself, its 14 entries, its 23 distinct literals and its 22 expected `<=` rows are untouched |
 
 ### Tech lead's ruling, recorded
 
