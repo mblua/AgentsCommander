@@ -186,7 +186,7 @@ mod tests {
 
         let layout = wg_replica_layout_from_agent_dir(&canon)
             .unwrap()
-            .expect("WG replica layout should resolve");
+            .expect("Room replica layout should resolve");
 
         assert_eq!(layout.agent_name, "alice");
         assert_eq!(layout.wg_name, "wg-1-devs");

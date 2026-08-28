@@ -121,7 +121,7 @@ pub fn validate_root_notification_filename(filename: &str) -> Result<(), Messagi
 
 #[derive(Debug, thiserror::Error)]
 pub enum MessagingError {
-    #[error("no workgroup ancestor found for '{0}'")]
+    #[error("no room ancestor found for '{0}'")]
     NoWorkgroup(String),
     #[error("slug is empty after sanitization")]
     EmptySlug,

@@ -43,7 +43,7 @@ pub async fn pty_write(
     // target set, so typing in unrelated sessions is unaffected.
     if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
         if g.blocks_session(uuid) {
-            return Err("purge-wg in progress for this session; input rejected".to_string());
+            return Err("purge-room in progress for this session; input rejected".to_string());
         }
     }
 
@@ -63,7 +63,7 @@ pub async fn pty_write(
     // submission. Recheck at the serialized boundary.
     if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
         if g.blocks_session(uuid) {
-            return Err("purge-wg in progress for this session; input rejected".to_string());
+            return Err("purge-room in progress for this session; input rejected".to_string());
         }
     }
     PtyManager::write_with_permit(&permit, &data).map_err(|error| error.to_string())?;

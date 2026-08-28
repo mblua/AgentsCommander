@@ -75,10 +75,10 @@ fn print_status_prose(content: &str) {
 
 #[derive(Args)]
 #[command(after_help = "\
-SCOPE: Purges every peer in the CALLER'S OWN workgroup. The caller itself is never \
-purged, and neither is the Root Agent. Cross-workgroup purge is not supported.\n\n\
-AUTHORIZATION: The caller must be the identity-verified orchestrator of its workgroup. \
-The master/root token does NOT bypass this: a root token has no workgroup.\n\n\
+SCOPE: Purges every peer in the CALLER'S OWN room. The caller itself is never \
+purged, and neither is the Root Agent. Cross-room purge is not supported.\n\n\
+AUTHORIZATION: The caller must be the identity-verified orchestrator of its room. \
+The master/root token does NOT bypass this: a root token has no room.\n\n\
 BUSY GATE: If ANY in-scope peer has produced printable output within --quiet-period-ms, \
 the command purges NOBODY and exits 3.\n\n\
 EXIT CODES: 0 purged (or dry-run would pass) | 1 auth/IO error | 2 outcome unknown \
@@ -91,8 +91,8 @@ pub struct PurgeWgArgs {
     pub root: Option<String>,
 
     /// Safety assertion, not a scope selector: fail unless the resolved
-    /// workgroup has exactly this name.
-    #[arg(long)]
+    /// room has exactly this name.
+    #[arg(long = "room", alias = "wg", value_name = "ROOM")]
     pub wg: Option<String>,
 
     /// Inject an exit command and wait, instead of killing immediately.
@@ -236,7 +236,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
             log::error!("purge-wg rejected - {}", trimmed);
-            eprintln!("Error: purge-wg rejected - {}", trimmed);
+            eprintln!("Error: purge-room rejected - {}", trimmed);
             return 1;
         }
         if start.elapsed() >= deadline {
@@ -246,7 +246,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
                 msg_id
             );
             eprintln!(
-                "Error: purge-wg response timeout after {}s (request {} may still be pending)",
+                "Error: purge-room response timeout after {}s (request {} may still be pending)",
                 deadline.as_secs(),
                 msg_id
             );

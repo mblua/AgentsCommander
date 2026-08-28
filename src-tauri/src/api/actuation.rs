@@ -49,7 +49,7 @@ pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<S
     let overhead = crate::phone::messaging::PTY_WRAP_FIXED + from.len();
     if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
         return Err(ApiError::BadRequest(
-            "notification exceeds PTY-safe length; shorten the slug or use a shallower workgroup path"
+            "notification exceeds PTY-safe length; shorten the slug or use a shallower room path"
                 .to_string(),
         ));
     }
@@ -91,9 +91,8 @@ fn resolve_send_file_path(
         .map_err(|e| ApiError::BadRequest(format!("invalid filename: {}", e)))?;
 
     let agent_root = Path::new(bound_root);
-    let wg_root = crate::phone::messaging::workgroup_root(agent_root).map_err(|e| {
-        ApiError::BadRequest(format!("bound replica is not under a workgroup: {}", e))
-    })?;
+    let wg_root = crate::phone::messaging::workgroup_root(agent_root)
+        .map_err(|e| ApiError::BadRequest(format!("bound replica is not under a room: {}", e)))?;
     let msg_dir = crate::phone::messaging::messaging_dir(&wg_root)
         .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {}", e)))?;
     let abs = crate::phone::messaging::resolve_existing_message(&msg_dir, basename)

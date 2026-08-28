@@ -73,7 +73,7 @@ struct LoopCreateArgs {
     name: String,
     #[arg(long = "cron")]
     cron: String,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: String,
     #[arg(long)]
     prompt: Option<String>,
@@ -95,7 +95,7 @@ struct LoopUpdateArgs {
     name: Option<String>,
     #[arg(long = "cron")]
     cron: Option<String>,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: Option<String>,
     #[arg(long)]
     prompt: Option<String>,

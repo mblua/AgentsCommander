@@ -92,7 +92,12 @@ struct RunArgs {
     attempt_timeout_secs: u64,
     #[arg(long = "max-parallel", default_value_t = 1)]
     max_parallel: u32,
-    #[arg(long = "retain-workgroup", value_parser = BoolishValueParser::new())]
+    #[arg(
+        long = "retain-room",
+        alias = "retain-workgroup",
+        value_name = "RETAIN_ROOM",
+        value_parser = BoolishValueParser::new()
+    )]
     retain_workgroup: Option<bool>,
     #[arg(long = "resume-run")]
     resume_run: bool,
@@ -1069,7 +1074,7 @@ fn validate_run_mode(args: &RunArgs) -> Result<(), Vec<CliError>> {
     if matches!(args.retain_workgroup, Some(false)) {
         errors.push(err(
             "cleanup_not_supported",
-            "--retain-workgroup=false is not supported in Phase 3A",
+            "--retain-room=false is not supported in Phase 3A",
             None,
         ));
     }
@@ -1394,7 +1399,7 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             }),
             workgroup: Some(plan.workgroup.clone()),
             warnings: vec![
-                "run_workgroup_retained".to_string(),
+                "run_room_retained".to_string(),
                 "transcript_capture_best_effort".to_string(),
                 "no_scoring".to_string(),
                 "real_execution_deferred".to_string(),
@@ -1431,13 +1436,13 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
 
     warnings.extend([
         warn(
-            "run_workgroup_retained",
-            "Run workgroup was retained for inspection; cleanup is not implemented in Phase 3A.",
+            "run_room_retained",
+            "Run room was retained for inspection; cleanup is not implemented in Phase 3A.",
             None,
         ),
         warn(
             "transcript_capture_best_effort",
-            "Provider-native transcript paths may be unavailable; use run metadata and retained workgroup for inspection.",
+            "Provider-native transcript paths may be unavailable; use run metadata and retained room for inspection.",
             None,
         ),
         warn(
@@ -2201,7 +2206,7 @@ fn create_run_workgroup_dirs(
     let sanitized_experiment = sanitize_name(experiment).map_err(|e| {
         vec![err(
             "experiment_name_invalid",
-            format!("Experiment name cannot be used for workgroup: {}", e),
+            format!("Experiment name cannot be used for room: {}", e),
             None,
         )]
     })?;
@@ -2326,7 +2331,7 @@ fn validate_workgroup_under_ac_root(
     let canonical = fs::canonicalize(&path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
-            format!("Failed to canonicalize workgroup: {}", e),
+            format!("Failed to canonicalize room: {}", e),
             &path,
         )]
     })?;
@@ -2337,7 +2342,7 @@ fn validate_workgroup_under_ac_root(
     } else {
         Err(vec![err(
             "run_artifact_mismatch",
-            "Run workgroup is not under the current Project AC Root",
+            "Run room is not under the current Project AC Root",
             None,
         )])
     }
@@ -2515,7 +2520,7 @@ fn load_and_validate_resume_artifacts(
     let Some(workgroup) = run_artifact.workgroup.clone() else {
         errors.push(err(
             "run_artifact_mismatch",
-            "Run artifact is missing workgroup metadata",
+            "Run artifact is missing room metadata",
             None,
         ));
         return Err(errors);
@@ -2527,7 +2532,7 @@ fn load_and_validate_resume_artifacts(
     {
         errors.push(err(
             "run_artifact_mismatch",
-            "Run workgroup metadata does not match resume arguments",
+            "Run room metadata does not match resume arguments",
             None,
         ));
     }
@@ -2664,7 +2669,7 @@ fn replica_root_for_attempt(
     let canonical_workgroup = fs::canonicalize(&workgroup_path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
-            format!("Failed to canonicalize workgroup: {}", e),
+            format!("Failed to canonicalize room: {}", e),
             &workgroup_path,
         )]
     })?;
@@ -2680,7 +2685,7 @@ fn replica_root_for_attempt(
     } else {
         Err(vec![err(
             "run_artifact_mismatch",
-            "Replica root is outside run workgroup",
+            "Replica root is outside run room",
             Some(&attempt.variant),
         )])
     }
@@ -3871,7 +3876,7 @@ fn report_notes(dry_run: bool, workgroup: Option<&RunWorkgroupArtifact>) -> Vec<
     }
     let mut notes = Vec::new();
     if let Some(workgroup) = workgroup {
-        notes.push(format!("Run workgroup retained at {}.", workgroup.path));
+        notes.push(format!("Run room retained at {}.", workgroup.path));
     }
     notes.push("Transcript capture is best-effort.".to_string());
     notes.push("No scoring or winner selection performed.".to_string());
@@ -4011,7 +4016,7 @@ fn validate_report_artifacts(
     if !run.dry_run && run.workgroup.is_none() {
         errors.push(err(
             "run_artifact_mismatch",
-            "Real run artifacts must include workgroup metadata",
+            "Real run artifacts must include room metadata",
             None,
         ));
     }
@@ -4239,7 +4244,7 @@ mod tests {
         let run_dir = runs_dir(&loaded).join(&run_id);
         std::fs::create_dir_all(run_dir.join("attempt-state")).expect("run dirs");
         let workgroup_dir = loaded.ac_root.join("wg-1-role-exp-exp");
-        std::fs::create_dir_all(&workgroup_dir).expect("workgroup dir");
+        std::fs::create_dir_all(&workgroup_dir).expect("room dir");
 
         let suite = ParsedPromptSuite {
             path: loaded.experiment_dir.join("suite.md"),
@@ -4273,7 +4278,7 @@ mod tests {
         let workgroup = RunWorkgroupArtifact {
             name: "wg-1-role-exp-exp".to_string(),
             path: std::fs::canonicalize(&workgroup_dir)
-                .expect("canonical workgroup")
+                .expect("canonical room")
                 .to_string_lossy()
                 .to_string(),
             retained: true,

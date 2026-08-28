@@ -23,11 +23,11 @@ pub struct WorkgroupArgs {
 
 #[derive(Subcommand)]
 enum WorkgroupCommand {
-    /// List workgroups in a project
+    /// List rooms in a project
     List(WorkgroupListArgs),
-    /// Create an auto-numbered workgroup
+    /// Create an auto-numbered room
     Add(WorkgroupAddArgs),
-    /// Remove a workgroup
+    /// Remove a room
     Remove(WorkgroupRemoveArgs),
 }
 
@@ -61,7 +61,7 @@ struct WorkgroupAddArgs {
 struct WorkgroupRemoveArgs {
     #[arg(long)]
     project: String,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: String,
     #[arg(long = "force-dirty")]
     force_dirty: bool,
@@ -184,17 +184,17 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
         read_team_config(&ac_root, &safe_team)?;
         if has_legacy_team_flags {
             return Err(format!(
-                "Team '{}' already exists. `workgroup add` no longer updates team configuration. Use `team create` before `workgroup add`, or `team add-member` for membership changes.",
+                "Team '{}' already exists. `room add` no longer updates team configuration. Use `team create` before `room add`, or `team add-member` for membership changes.",
                 safe_team
             ));
         }
         None
     } else if has_legacy_team_flags {
         let coordinator = args.coordinator.as_deref().ok_or_else(|| {
-            "--coordinator is required when supplying team details on workgroup add".to_string()
+            "--coordinator is required when supplying team details on room add".to_string()
         })?;
         eprintln!(
-            "Warning: created missing team configuration from supplied workgroup details. Prefer creating the team before activating a workgroup."
+            "Warning: created missing team configuration from supplied room details. Prefer creating the team before activating a room."
         );
         Some(build_new_team_config(
             &ac_root,
@@ -266,7 +266,7 @@ fn remove_hooked(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     after_project_acquired: impl FnOnce(&Path),
 ) -> Result<(), String> {
-    validate_existing_name(&args.workgroup, "Workgroup")?;
+    validate_existing_name(&args.workgroup, "Room")?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let wg_dir = ac_root.join(&args.workgroup);
@@ -281,7 +281,7 @@ fn remove_hooked(
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(format!(
-                "Cannot delete workgroup: the following repos have pending work:\n{}\n\nCommit or push changes before deleting, or pass --force-dirty.",
+                "Cannot delete room: the following repos have pending work:\n{}\n\nCommit or push changes before deleting, or pass --force-dirty.",
                 list
             ));
         }
@@ -327,7 +327,7 @@ fn remove_hooked(
             "removed": true
         }))
     } else {
-        crate::cli_println!("Removed workgroup {}", args.workgroup);
+        crate::cli_println!("Removed room {}", args.workgroup);
         Ok(())
     }
 }
@@ -343,17 +343,17 @@ pub(crate) fn cli_remove_refresh_decision(
     match outcome {
         WgDeleteOutcome::Deleted => {}
         WgDeleteOutcome::Blocked(e) => {
-            return Err(format!("Failed to delete workgroup, file in use: {}", e));
+            return Err(format!("Failed to delete room, file in use: {}", e));
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
-                "Failed to fully delete workgroup directory; renamed workgroup to orphan '{}', but failed to remove orphan: {}",
+                "Failed to fully delete room directory; renamed room to orphan '{}', but failed to remove orphan: {}",
                 orphan_path.display(),
                 error
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete workgroup directory: {}", e));
+            return Err(format!("Failed to delete room directory: {}", e));
         }
     }
     Ok(RemoveRefreshDecision::EmitWorkgroupRemoved)
@@ -542,7 +542,7 @@ mod tests {
 
         let err = cli_remove_refresh_decision(outcome)
             .expect_err("partial delete must not authorize workgroupRemoved refresh");
-        assert!(err.contains("Failed to fully delete workgroup directory"));
+        assert!(err.contains("Failed to fully delete room directory"));
         assert!(err.contains(".deleting-wg-1-test-orphan"));
     }
 
@@ -634,10 +634,10 @@ mod tests {
         };
         let result = remove_hooked(args, None, |_ac_root: &Path| ctx.report_and_wait());
         if let Err(error) = &result {
-            println!("STAGE_D_LOCK_ORDER_ERROR {} workgroup {}", ctx.nonce, error);
+            println!("STAGE_D_LOCK_ORDER_ERROR {} room {}", ctx.nonce, error);
         }
         println!(
-            "STAGE_D_LOCK_ORDER_DONE {} workgroup ok={}",
+            "STAGE_D_LOCK_ORDER_DONE {} room ok={}",
             ctx.nonce,
             result.is_ok()
         );
@@ -661,7 +661,7 @@ mod tests {
             return;
         }
         let control = tempfile::tempdir().expect("tempdir");
-        let nonce = "driver-workgroup";
+        let nonce = "driver-room";
         let _guard = EnvGuard::capture(&[
             ACTION_VAR,
             NONCE_VAR,
@@ -701,7 +701,7 @@ mod tests {
             .join("wg-1-dev-team");
         assert!(
             !wg_dir.exists(),
-            "the workgroup must be removed after the barrier releases"
+            "the room must be removed after the barrier releases"
         );
     }
 }

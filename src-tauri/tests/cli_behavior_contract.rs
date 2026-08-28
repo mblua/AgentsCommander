@@ -179,7 +179,10 @@ fn root_help_lists_public_subcommands() {
         "open-project",
         "new-project",
         "telegram-send-image",
-        "workgroup",
+        // #1614: `room` is the canonical subcommand; `workgroup` remains an
+        // accepted deprecated alias, and D9 hides an alias from help on purpose,
+        // so root help must list `room` and must NOT list `workgroup`.
+        "room",
         "team",
         "harness",
     ] {
@@ -307,16 +310,17 @@ fn public_subcommand_help_contracts() {
         (&["open-project", "--help"], &["PATH"]),
         (&["new-project", "--help"], &["PATH"]),
         (&["telegram-send-image", "--help"], &["--path", "--caption"]),
-        (&["workgroup", "--help"], &["list", "add", "remove"]),
-        (&["workgroup", "list", "--help"], &["--project"]),
+        (&["room", "--help"], &["list", "add", "remove"]),
+        (&["room", "list", "--help"], &["--project"]),
         (
-            &["workgroup", "add", "--help"],
+            &["room", "add", "--help"],
             &["--project", "--team", "--title"],
         ),
-        (
-            &["workgroup", "remove", "--help"],
-            &["--project", "--workgroup"],
-        ),
+        (&["room", "remove", "--help"], &["--project", "--room"]),
+        // The deprecated spelling still reaches the same help, and help renders
+        // the CANONICAL name for it (section 5.8 fact 4).
+        (&["workgroup", "--help"], &["list", "add", "remove"]),
+        (&["workgroup", "remove", "--help"], &["--project", "--room"]),
         (
             &["team", "--help"],
             &["create", "list", "add-member", "remove-member"],
@@ -328,11 +332,11 @@ fn public_subcommand_help_contracts() {
         (&["team", "list", "--help"], &["--project"]),
         (
             &["team", "add-member", "--help"],
-            &["--project", "--workgroup", "--agent"],
+            &["--project", "--room", "--agent"],
         ),
         (
             &["team", "remove-member", "--help"],
-            &["--project", "--workgroup", "--agent"],
+            &["--project", "--room", "--agent"],
         ),
         (&["harness", "--help"], &["--dry-run", "--raw-command"]),
         (&["test-reset", "--help"], &["--confirm-testeable"]),

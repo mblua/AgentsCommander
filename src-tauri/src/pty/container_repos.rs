@@ -195,7 +195,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
             // check(s).
             return Err(format!(
                 "container repo mount refused: repos[] entry '{}' resolves to '{}', which is not an \
-                 admissible repo-* directory directly under the workgroup root \
+                 admissible repo-* directory directly under the room root \
                  (direct_wg_child={}, repo_prefix={}, is_dir={}, not_reserved={})",
                 entry,
                 crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical),
@@ -419,7 +419,7 @@ mod tests {
         write_repos(&replica, &[elsewhere_repo.to_str().unwrap()]);
         assert!(
             resolve_repo_mounts(&replica).is_err(),
-            "Q4: a repo outside the workgroup root is prohibited (post-collapse: hard-fail)"
+            "Q4: a repo outside the room root is prohibited (post-collapse: hard-fail)"
         );
     }
 

@@ -1187,7 +1187,7 @@ pub(crate) async fn create_workgroup_on_disk(
         return Err(format!("Room directory already exists: {}", wg_name));
     }
     std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create workgroup directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
     std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
@@ -2856,7 +2856,7 @@ pub async fn create_workgroup(
         return Err(format!("Room directory already exists: {}", wg_name));
     }
     std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create workgroup directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
 
@@ -3199,7 +3199,7 @@ pub async fn delete_workgroup(
     workgroup_name: String,
     force: Option<bool>,
 ) -> Result<(), String> {
-    validate_existing_name(&workgroup_name, "Workgroup")?;
+    validate_existing_name(&workgroup_name, "Room")?;
 
     let base = selected_ac_root(Path::new(&project_path))?;
 
@@ -3219,7 +3219,7 @@ pub async fn delete_workgroup(
                 .join("\n");
             // DIRTY_REPOS: prefix is a sentinel the frontend uses to detect this error type
             return Err(format!(
-                "DIRTY_REPOS:Cannot delete workgroup: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+                "DIRTY_REPOS:Cannot delete room: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
                 list
             ));
         }
@@ -3251,7 +3251,7 @@ pub async fn delete_workgroup(
         )
     })
     .await
-    .map_err(|e| format!("Workgroup delete blocking preparation failed: {e}"))??;
+    .map_err(|e| format!("Room delete blocking preparation failed: {e}"))??;
     delete_workgroup_dir_backend_with_outcome(
         &wg_dir,
         &workgroup_name,
@@ -3336,14 +3336,14 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
-                "Partial workgroup delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
+                "Partial room delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
                 wg_dir.display(),
                 orphan_path.display(),
                 error
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete workgroup directory: {}", e));
+            return Err(format!("Failed to delete room directory: {}", e));
         }
     }
     Ok(())
@@ -3868,7 +3868,7 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
         None => {
             return WgDeleteOutcome::Other(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "workgroup directory has no parent",
+                "room directory has no parent",
             ));
         }
     };
@@ -3877,7 +3877,7 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
         None => {
             return WgDeleteOutcome::Other(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "workgroup directory has no filename",
+                "room directory has no filename",
             ));
         }
     };
@@ -4880,7 +4880,7 @@ mod tests {
         let wg_dir = ac_root.join("wg-1-dev-team");
         let matrix_dir = ac_root.join("_agent_architect");
         std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
-        std::fs::create_dir_all(&wg_dir).expect("workgroup");
+        std::fs::create_dir_all(&wg_dir).expect("room");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
             ac_root: ac_root.clone(),
@@ -5109,7 +5109,7 @@ mod tests {
         });
         match outcome {
             WgDeleteOutcome::Partial { orphan_path, error } => {
-                assert!(!wg_dir.exists(), "original workgroup path should be gone");
+                assert!(!wg_dir.exists(), "original room path should be gone");
                 assert!(orphan_path.is_dir(), "orphan should remain on disk");
                 assert!(orphan_path
                     .file_name()
@@ -5148,7 +5148,7 @@ mod tests {
         .await
         .expect_err("partial delete must error before caller can refresh");
 
-        assert!(err.contains("Partial workgroup delete"));
+        assert!(err.contains("Partial room delete"));
         assert!(err.contains(&orphan.to_string_lossy().to_string()));
     }
 
@@ -7320,7 +7320,7 @@ mod tests {
         assert_eq!(
             determine_next_wg_number(tmp.path()),
             1,
-            "legacy Workgroup directories must not occupy a Room slot"
+            "legacy Room directories must not occupy a Room slot"
         );
     }
 
@@ -7956,7 +7956,7 @@ mod stage_e_cross_process {
     fn cli_workgroup_deletion_takes_project_gate_only_cross_process() {
         run_cross_process_parent(
             WORKGROUP_ACTION,
-            "cli::workgroup::tests::cli_workgroup_lock_order_inversion_child",
+            "cli::room::tests::cli_room_lock_order_inversion_child",
             false,
         );
     }

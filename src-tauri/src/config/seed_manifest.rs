@@ -1336,7 +1336,7 @@ fn parse_config_scope(scope: &str) -> Result<Vec<String>, SeedManifestError> {
     let components = parse_utf8_components(path)?;
     if components.len() != 4 {
         return Err(SeedManifestError::Validation(format!(
-            "config scope must be config:.ac/<workgroup>/<replica>/<dest>: {scope}"
+            "config scope must be config:.ac/<room>/<replica>/<dest>: {scope}"
         )));
     }
     crate::commands::entity_creation::parse_team_from_workgroup_name(&components[1])
@@ -3444,7 +3444,7 @@ impl ManifestLifecycleFilter {
         };
         if components.len() < 2 {
             return Err(SeedManifestError::Validation(
-                "lifecycle config prefix must include a workgroup component".to_string(),
+                "lifecycle config prefix must include a room component".to_string(),
             ));
         }
         crate::commands::entity_creation::parse_team_from_workgroup_name(&components[1])

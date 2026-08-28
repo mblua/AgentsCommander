@@ -18,7 +18,7 @@ use super::task_ops::{self, EditOutcome, TaskOp};
 #[command(after_help = "\
 AUTHORIZATION: Only orchestrators of any team in the caller's project can edit TASK.md. \
 The master/root token bypasses this check. The verb writes ONLY to \
-<workgroup-root>/TASK.md and its *.bak.md siblings.\n\n\
+<room-root>/TASK.md and its *.bak.md siblings.\n\n\
 INVARIANTS: A timestamped backup is created on every successful write that had a \
 prior file. Concurrent writes are serialized via an advisory lockfile (5s timeout). \
 External edits between our read and our write are detected and the verb aborts.\n\n\
@@ -105,7 +105,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         Err(_) => {
             eprintln!(
                 "Error: --root is not under a wg-<N>-* ancestor; \
-                 cannot locate the workgroup TASK.md."
+                 cannot locate the room TASK.md."
             );
             return 1;
         }

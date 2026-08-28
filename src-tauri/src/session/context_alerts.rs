@@ -1396,22 +1396,22 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return MemberPolicyResolution::PermanentIneligible(
-            "sampled CWD is not inside a lexical workgroup member replica".to_string(),
+            "sampled CWD is not inside a lexical room member replica".to_string(),
         );
     };
     let Some(lexical_workgroup) = lexical_replica.parent() else {
         return MemberPolicyResolution::PermanentIneligible(
-            "sampled lexical replica has no workgroup parent".to_string(),
+            "sampled lexical replica has no room parent".to_string(),
         );
     };
     let Some(lexical_ac_root) = lexical_workgroup.parent() else {
         return MemberPolicyResolution::PermanentIneligible(
-            "sampled lexical workgroup has no Project AC Root parent".to_string(),
+            "sampled lexical room has no Project AC Root parent".to_string(),
         );
     };
     for (path, label) in [
         (lexical_replica, "replica"),
-        (lexical_workgroup, "workgroup"),
+        (lexical_workgroup, "room"),
         (lexical_ac_root, "Project AC Root"),
     ] {
         let metadata = match std::fs::symlink_metadata(path) {
@@ -1464,7 +1464,7 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return MemberPolicyResolution::PermanentIneligible(
-            "sampled CWD is not inside a workgroup member replica".to_string(),
+            "sampled CWD is not inside a room member replica".to_string(),
         );
     };
     let replica_dir = match canonical_real_directory(replica_candidate, "Member replica") {
@@ -1485,12 +1485,12 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
         Ok(Some(layout)) => layout,
         Ok(None) => {
             return MemberPolicyResolution::PermanentIneligible(
-                "sampled replica does not have the canonical workgroup layout".to_string(),
+                "sampled replica does not have the canonical room layout".to_string(),
             )
         }
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
-    let workgroup_dir = match canonical_real_directory(&layout.wg_dir, "Workgroup") {
+    let workgroup_dir = match canonical_real_directory(&layout.wg_dir, "Room") {
         Ok(path) => path,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
@@ -1615,7 +1615,7 @@ fn prepare_internal_route_blocking(
             .and_then(|name| name.to_str())
             != Some(format!("__agent_{}", coordinator).as_str())
     {
-        return Err("Orchestrator replica escapes the sampled workgroup".to_string());
+        return Err("Orchestrator replica escapes the sampled room".to_string());
     }
     let resolved = crate::config::teams::resolve_wg_coordinator_replica(
         &fingerprint.ac_root,
@@ -1631,7 +1631,7 @@ fn prepare_internal_route_blocking(
         || canonical_resolved != canonical_expected
     {
         return Err(
-            "Resolved orchestrator identity does not match the exact sampled workgroup".to_string(),
+            "Resolved orchestrator identity does not match the exact sampled room".to_string(),
         );
     }
     let fqn = format!(
@@ -1662,7 +1662,7 @@ fn validate_attempt_guard<R: tauri::Runtime>(
         .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
         .is_some_and(|guard| guard.blocks_agent(target.fqn()))
     {
-        return Err(format!("purge-wg blocks '{}'", target.fqn()));
+        return Err(format!("purge-room blocks '{}'", target.fqn()));
     }
     let scraper = app
         .try_state::<Arc<ContextScraper>>()
@@ -1671,7 +1671,7 @@ fn validate_attempt_guard<R: tauri::Runtime>(
         return Err("Sampled session is no longer registered".to_string());
     }
     let replica = canonical_real_directory(&fingerprint.replica_dir, "Member replica")?;
-    let workgroup = canonical_real_directory(&fingerprint.workgroup_dir, "Workgroup")?;
+    let workgroup = canonical_real_directory(&fingerprint.workgroup_dir, "Room")?;
     let ac_root = canonical_real_directory(&fingerprint.ac_root, "Project AC Root")?;
     let project = canonical_real_directory(&fingerprint.project_dir, "Project")?;
     if replica != fingerprint.replica_dir
@@ -2911,7 +2911,7 @@ mod tests {
             &cancellation,
         )
         .unwrap_err()
-        .contains("purge-wg"));
+        .contains("purge-room"));
         drop(purge_lease);
 
         std::fs::write(

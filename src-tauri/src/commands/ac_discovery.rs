@@ -1510,7 +1510,7 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
         ),
         (
             "wg-*/",
-            "# AgentsCommander: exclude legacy workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
+            "# AgentsCommander: exclude legacy room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
             ".deleting-*/",
@@ -4009,7 +4009,7 @@ mod tests {
 
         assert!(
             watcher.task_cache.lock().unwrap().is_empty(),
-            "archived session workgroups must not be checked for TASK.md"
+            "archived session rooms must not be checked for TASK.md"
         );
     }
 
@@ -4535,7 +4535,7 @@ mod tests {
         );
         assert!(
             content.lines().any(|line| line.trim() == "wg-*/"),
-            "the legacy wg-*/ exclusion must survive; existing Workgroups are still supported"
+            "the legacy wg-*/ exclusion must survive; existing Rooms are still supported"
         );
     }
 
@@ -4552,7 +4552,7 @@ mod tests {
         std::fs::create_dir(&ac_root).expect("create .ac");
 
         // Exactly what a pre-#1614 installation has on disk.
-        const LEGACY: &str = "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\nwg-*/\n";
+        const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\nwg-*/\n";
         std::fs::write(ac_root.join(".gitignore"), LEGACY).expect("seed legacy .gitignore");
 
         ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
@@ -4593,7 +4593,7 @@ mod tests {
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
-            "workspace .gitignore must ignore workgroup delete sentinel directories"
+            "workspace .gitignore must ignore room delete sentinel directories"
         );
         assert!(
             content
@@ -5139,7 +5139,7 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
         let gitignore_path = ac_root.join(".gitignore");
-        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
+        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude room cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
             .to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 

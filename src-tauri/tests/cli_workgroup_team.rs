@@ -372,12 +372,12 @@ fn team_help_describes_existing_agents_and_workgroup_scoped_membership() {
     let bin = copy_binary_into(tmp.path());
 
     let team_help = run_stdout(&bin, &["team", "--help"]);
-    assert!(team_help.contains("Manage teams and scoped workgroup membership"));
+    assert!(team_help.contains("Manage teams and scoped room membership"));
 
     let create_help = run_stdout(&bin, &["team", "create", "--help"]);
     assert!(create_help.contains("Create a team configuration from existing agents"));
     assert!(create_help.contains("Existing agent matrix name or _agent_<name> reference"));
-    assert!(create_help.contains("Define a repo available to the team when workgroups are created"));
+    assert!(create_help.contains("Define a repo available to the team when rooms are created"));
 }
 
 #[test]
@@ -1335,7 +1335,7 @@ fn workgroup_add_existing_team_refuses_legacy_flags_without_rewrite() {
             "dev-rust",
         ],
     );
-    assert!(stderr.contains("workgroup add` no longer updates team configuration"));
+    assert!(stderr.contains("room add` no longer updates team configuration"));
     assert_eq!(std::fs::read(&config_path).expect("after"), before);
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(config_path).expect("config"))
