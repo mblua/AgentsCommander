@@ -2270,7 +2270,7 @@ mod tests {
     // fail them (plan acceptance item 22).
 
     #[test]
-    fn context_create_records_both_project_templates_under_the_gate() {
+    fn context_create_records_project_templates_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
         let ac_root = project.join(".ac");
@@ -2304,6 +2304,10 @@ mod tests {
         assert!(
             manifest.contains("scope = \"context:coordinator\""),
             "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("scope = \"context:platform\""),
+            "platform seed publications must record the context:platform scope: {manifest}"
         );
         assert!(
             manifest.contains("kind = \"project_context_template\""),
@@ -2680,6 +2684,11 @@ mod tests {
             ),
             "the project recognizer must not widen to a platform default"
         );
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            crate::config::session_context::get_default_agent_template(),
+            "the v5 placeholder insertion must differ from its frozen v4 operand"
+        );
     }
 
     #[test]
@@ -2965,6 +2974,62 @@ mod tests {
                 FINE_TEMPLATE
             );
         }
+    }
+
+    /// #1605 failing-first proof for ALL of: the v5 placeholder insertion
+    /// (assert_ne), BOTH recognizers (project auto-update and standalone root
+    /// retirement), the version bump, and the pristine-v4-on-disk auto-upgrade
+    /// through the seeded-state SHA flow.
+    #[test]
+    fn read_sync_updates_pre_host_platform_rules_global_template() {
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            crate::config::session_context::get_default_agent_template(),
+            "the v5 rewrite must actually change the template or the freeze is pointless"
+        );
+        assert!(
+            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
+            "project recognizer must accept the frozen v4 bytes"
+        );
+        assert!(
+            is_known_generated_standalone_global_template(
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+            ),
+            "standalone (retirement) recognizer must accept the frozen v4 bytes"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+        )
+        .expect("write pristine v4 global");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read global");
+        assert_eq!(
+            content,
+            crate::config::session_context::get_default_agent_template(),
+            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v5"
+        );
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"], 5,
+            "recognized v4 global content must land on the current v5 default"
+        );
     }
 
     /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk

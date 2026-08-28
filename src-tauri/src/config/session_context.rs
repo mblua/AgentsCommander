@@ -59,12 +59,21 @@ pub(crate) enum CreateOnlyPublication {
 
 /// Map a managed project context-template filename to its canonical v1 seed-manifest
 /// scope, or `None` for a non-project template (the Root agent context) that carries
-/// no manifest row. The two project scopes are the closed enum in plan section 4.2.
+/// no manifest row. The project scopes are the closed enum in plan section 4.2
+/// (#1605 adds the per-platform `context:platform` scope for the three
+/// `Context.platform.<os>.md` files).
 pub(crate) fn manifest_scope_for_project_context_filename(filename: &str) -> Option<&'static str> {
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
         Some("context:agentscommander")
     } else if filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME {
         Some("context:coordinator")
+    } else if matches!(
+        filename,
+        HOST_PLATFORM_RULES_FILENAME_WINDOWS
+            | HOST_PLATFORM_RULES_FILENAME_LINUX
+            | HOST_PLATFORM_RULES_FILENAME_MACOS
+    ) {
+        Some("context:platform")
     } else {
         None
     }
@@ -2520,6 +2529,8 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 
 {{CLI_CONTEXT}}
 
+{{HOST_PLATFORM_RULES}}
+
 {{SESSION_CREDENTIALS}}
 
 {{INTER_AGENT_MESSAGING}}
@@ -2638,6 +2649,11 @@ fn render_agent_context_template_inner(
     }
 
     let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
+    // #1605: computed BEFORE the replace chain (like `agent_repos`): the value
+    // feeds the `{{HOST_PLATFORM_RULES}}` replace between `{{CLI_CONTEXT}}` and
+    // `{{SESSION_CREDENTIALS}}`. Container sessions (repo_mounts.is_some())
+    // render nothing.
+    let host_platform_rules = render_host_platform_rules_block(agent_root, repo_mounts);
     // #1369 (C4): a template may carry the current token, the frozen legacy
     // alias, or - pathologically, if a user pasted both - the two of them.
     // Exactly one block must be emitted, so the alias renders the block only
@@ -2679,6 +2695,7 @@ fn render_agent_context_template_inner(
             &render_write_restrictions_block(agent_root, &rendered),
         )
         .replace("{{CLI_CONTEXT}}", DEFAULT_CLI_CONTEXT)
+        .replace("{{HOST_PLATFORM_RULES}}", &host_platform_rules)
         .replace("{{SESSION_CREDENTIALS}}", DEFAULT_SESSION_CREDENTIALS)
         .replace(
             "{{INTER_AGENT_MESSAGING}}",
@@ -3073,6 +3090,7 @@ const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
     "{{INTER_AGENT_MESSAGING}}",
     "{{SESSION_CREDENTIALS}}",
     "{{CLI_CONTEXT}}",
+    "{{HOST_PLATFORM_RULES}}",
     "{{SKILLS_SECTION}}",
     "{{AGENT_REPOS}}",
     "{{DELEGATED_TASK_REPORTING}}",
@@ -3090,6 +3108,7 @@ fn mandatory_section_heading(placeholder: &str) -> Option<&'static str> {
         "{{INTER_AGENT_MESSAGING}}" => "## Inter-Agent Messaging",
         "{{SESSION_CREDENTIALS}}" => "## Session credentials",
         "{{CLI_CONTEXT}}" => "## CLI executable",
+        "{{HOST_PLATFORM_RULES}}" => "## Host Platform Rules",
         "{{SKILLS_SECTION}}" => "## Skills",
         "{{AGENT_REPOS}}" => "# Agent Repos",
         "{{DELEGATED_TASK_REPORTING}}" => "## Delegated Task Reporting",
@@ -3195,6 +3214,12 @@ fn coarse_section_dedup_safe(
         // is absent, so any inline copy is a baked/stale list -> never dedup,
         // always append the current block.
         "{{SKILLS_SECTION}}" | "{{AGENT_REPOS}}" => false,
+        // #1605: never dedup an inline `## Host Platform Rules` copy: the block is
+        // platform- and file-dependent, so an inline baked copy can be stale or
+        // platform-wrong; appending the current block is the safe side (mirrors
+        // SKILLS_SECTION/AGENT_REPOS). No existing template generation carries the
+        // heading, so no real-world duplication can occur.
+        "{{HOST_PLATFORM_RULES}}" => false,
         _ => false,
     }
 }
@@ -3273,14 +3298,18 @@ fn render_root_runtime_prologue_inner(
     let rendered = default_context_dynamic_values(agent_root, None, skills_section, is_root_agent);
     let write_restrictions = render_write_restrictions_block(agent_root, &rendered);
     let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
+    // #1605: the 10th block, mirroring the template order between CLI context and
+    // session credentials; the `if block.is_empty() { continue; }` below drops it
+    // naturally for container roots.
+    let host_platform_rules = render_host_platform_rules_block(agent_root, repo_mounts);
     let inter_agent_messaging = render_inter_agent_messaging_block(&rendered);
 
-    // Nine blocks (#979 G4): the heading and Core Concepts reproduce the built-in
-    // template's preamble, then the seven mandatory blocks in the order
+    // Ten blocks (#979 G4): the heading and Core Concepts reproduce the built-in
+    // template's preamble, then the eight mandatory blocks in the order
     // `get_default_agent_template()` renders them today. ROOT_AUTHORITY_SECTION is
     // already emitted INSIDE the write-restrictions block and must not be appended
-    // separately. Do not "simplify" this back to seven blocks.
-    let blocks: [&str; 9] = [
+    // separately. Do not "simplify" this back to eight blocks.
+    let blocks: [&str; 10] = [
         ROOT_RUNTIME_PROLOGUE_HEADER,
         CORE_CONCEPTS_SECTION,
         &write_restrictions,
@@ -3288,6 +3317,7 @@ fn render_root_runtime_prologue_inner(
         skills_section,
         &agent_repos,
         DEFAULT_CLI_CONTEXT,
+        &host_platform_rules,
         DEFAULT_SESSION_CREDENTIALS,
         &inter_agent_messaging,
     ];
@@ -3323,11 +3353,11 @@ Credentials use these environment variables:
 - `AGENTSCOMMANDER_BINARY_PATH`: full CLI path to invoke
 - `AGENTSCOMMANDER_LOCAL_DIR`: config directory name for this instance
 
-Invoke only `AGENTSCOMMANDER_BINARY_PATH`; never hardcode or guess another executable.
+Invoke only `AGENTSCOMMANDER_BINARY_PATH`; never guess another executable.
 
 ## Self-discovery via --help
 
-Use `--help` only for commands or flags not documented here:
+Use `--help` only for undocumented commands or flags:
 
 ```
 "<AGENTSCOMMANDER_BINARY_PATH>" --help
@@ -3335,7 +3365,7 @@ Use `--help` only for commands or flags not documented here:
 "<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help
 ```
 
-The Inter-Agent Messaging section is authoritative for sending and peer discovery."#;
+The Inter-Agent Messaging section is authoritative for sending."#;
 
 const DEFAULT_SESSION_CREDENTIALS: &str = r#"## Session credentials
 
@@ -3479,13 +3509,13 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
 
 Before every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it.
 
-**Peer name format** (canonical FQN, the `list-peers-lean` `name` field):
+**Peer name format** (canonical FQN from `list-peers-lean`):
 
 {peer_name_format}
 
 {send_message_instructions}
 
-The recipient reads the notified file path. Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. After sending, wait for the reply.
+Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. Wait for the reply.
 
 ### List available peers
 
@@ -3498,15 +3528,79 @@ The recipient reads the notified file path. Do NOT use `--get-output` (blocks; n
     )
 }
 
-/// #1596: Windows-only paragraph appended to the inter-agent messaging block.
-/// The release binary is GUI-subsystem, so PowerShell direct capture of its
-/// stdout is empty; the recipe routes AC CLI invocations through Git Bash.
-/// The whole paragraph is the constant (empty string on non-Windows builds).
+/// #1605: Windows-only pointer to the `{{HOST_PLATFORM_RULES}}` block, which is
+/// now the SINGLE source of truth for the Git Bash CLI-routing rule (the #1596
+/// paragraph moved there; this pointer is the only Windows text left in
+/// messaging). Empty string on non-Windows builds.
 #[cfg(target_os = "windows")]
-const WINDOWS_SHELL_ROUTING: &str = "\n\n**Windows:** the release binary is GUI-subsystem; PowerShell direct capture is empty. Run AC CLI invocations via Git Bash (`C:\\Program Files\\Git\\bin\\bash.exe`); never `& $bin ... | ConvertFrom-Json`.";
+const WINDOWS_SHELL_ROUTING: &str = "\n\n**Windows:** see **Host Platform Rules** above.";
 
 #[cfg(not(target_os = "windows"))]
 const WINDOWS_SHELL_ROUTING: &str = "";
+
+/// #1605: the `{{HOST_PLATFORM_RULES}}` block content for THIS materialization.
+///
+/// - Container session (`repo_mounts.is_some()`): empty string — the execution
+///   platform is the container/transport-api session, so no host rules render
+///   and no platform file is ever read or mounted.
+/// - Host session: read `.ac/Context.platform.<os>.md` (per-OS filename) fresh
+///   on EVERY materialization (no cache): edit → respawn → new text, no rebuild.
+///   Missing/empty/unreadable file or unresolvable `.ac` → embedded default for
+///   the build's OS with a WARN; never an empty section on Windows.
+fn render_host_platform_rules_block(
+    agent_root: &str,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> String {
+    if repo_mounts.is_some() {
+        return String::new();
+    }
+    let filename = host_platform_rules_filename();
+    let fallback = host_platform_rules_default();
+    match read_context_template(agent_root, filename) {
+        Ok(Some(content)) if !content.trim().is_empty() => content,
+        Ok(Some(_)) => {
+            log::warn!(
+                "[session_context] platform rules file {} is empty; using the embedded default",
+                filename
+            );
+            fallback.to_string()
+        }
+        Ok(None) => {
+            log::warn!(
+                "[session_context] platform rules file {} is missing; using the embedded default",
+                filename
+            );
+            fallback.to_string()
+        }
+        Err(error) => {
+            log::warn!(
+                "[session_context] platform rules file {} is not readable ({error}); using the embedded default",
+                filename
+            );
+            fallback.to_string()
+        }
+    }
+}
+
+fn host_platform_rules_filename() -> &'static str {
+    if cfg!(target_os = "windows") {
+        HOST_PLATFORM_RULES_FILENAME_WINDOWS
+    } else if cfg!(target_os = "macos") {
+        HOST_PLATFORM_RULES_FILENAME_MACOS
+    } else {
+        HOST_PLATFORM_RULES_FILENAME_LINUX
+    }
+}
+
+fn host_platform_rules_default() -> &'static str {
+    if cfg!(target_os = "windows") {
+        DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+    } else if cfg!(target_os = "macos") {
+        DEFAULT_HOST_PLATFORM_RULES_MACOS
+    } else {
+        DEFAULT_HOST_PLATFORM_RULES_LINUX
+    }
+}
 
 fn default_context_dynamic_values(
     agent_root: &str,
@@ -4355,6 +4449,7 @@ mod tests {
         assert_eq!(count_context_occurrences(out, "## Skills"), 1);
         assert_eq!(count_context_occurrences(out, "# Agent Repos"), 1);
         assert_eq!(count_context_occurrences(out, "## CLI executable"), 1);
+        assert_eq!(count_context_occurrences(out, "## Host Platform Rules"), 1);
         assert_eq!(count_context_occurrences(out, "## Session credentials"), 1);
         assert_eq!(
             count_context_occurrences(out, "## Inter-Agent Messaging"),
@@ -4731,6 +4826,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
                 "{{SKILLS_SECTION}}",
                 "{{AGENT_REPOS}}",
                 "{{CLI_CONTEXT}}",
+                "{{HOST_PLATFORM_RULES}}",
                 "{{SESSION_CREDENTIALS}}",
                 "{{INTER_AGENT_MESSAGING}}",
             ]
@@ -5332,17 +5428,264 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn default_context_embeds_windows_shell_routing_paragraph() {
-        // #1596: the release binary is GUI-subsystem; PowerShell direct capture
-        // is empty, so the context routes AC CLI invocations through Git Bash.
+    fn default_context_embeds_windows_shell_routing_pointer() {
+        // #1605: the #1596 Git Bash paragraph moved to the
+        // `{{HOST_PLATFORM_RULES}}` block (single source of truth); messaging now
+        // carries only a pointer to it.
         let out = default_context(
             "C:/fake/wg-7-dev-team/__agent_architect",
             None,
             &no_skill_section(),
         );
-        assert!(out.contains("**Windows:**"));
+        assert!(out.contains("**Windows:** see **Host Platform Rules** above."));
+        assert!(out.contains("## Host Platform Rules"));
         assert!(out.contains("bash.exe"));
-        assert!(out.contains("ConvertFrom-Json"));
+        assert!(out.contains("2>&1 | Out-String"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn default_context_embeds_host_platform_rules_block() {
+        // #1605 T-1: a Windows host session carries the Git Bash routing rule in
+        // the platform block plus the messaging pointer.
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        assert!(out.contains("## Host Platform Rules"));
+        assert!(out.contains("bash.exe"));
+        assert!(out.contains("2>&1 | Out-String"));
+        assert!(out.contains("**Windows:** see **Host Platform Rules** above."));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn default_context_non_windows_embeds_minimal_platform_block() {
+        // #1605 T-2: Linux/macOS host sessions render only the minimal block.
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        assert!(out.contains("## Host Platform Rules"));
+        assert!(!out.contains("bash.exe"));
+        assert!(!out.contains("2>&1 | Out-String"));
+    }
+
+    #[test]
+    fn container_session_omits_host_platform_rules_block() {
+        // #1605 T-3: a container (transport-api) session renders no host platform
+        // rules block (the Windows messaging pointer may still name the block,
+        // so assert on the heading) and no raw placeholder.
+        let out = render_agent_context_template_inner(
+            get_default_agent_template(),
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+            Path::new("C:/fake/wg-7-dev-team/__agent_architect"),
+            None,
+            Some(&crate::pty::container_repos::RepoMountResolution::default()),
+            false,
+        );
+        assert!(!out.contains("## Host Platform Rules"));
+        assert!(!out.contains("bash.exe"));
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn root_prologue_embeds_host_platform_rules_block() {
+        // #1605 T-4: the Root runtime prologue renders the platform block as its
+        // 10th block between CLI context and session credentials.
+        let out = render_root_runtime_prologue_inner(
+            "C:/fake/ac-root-agent",
+            &no_skill_section(),
+            Path::new("C:/fake/ac-root-agent"),
+            None,
+            None,
+            true,
+        );
+        assert!(out.contains("## Host Platform Rules"));
+        assert!(out.contains("bash.exe"));
+        assert!(out.contains("2>&1 | Out-String"));
+        let cli_pos = out.find("## CLI executable").expect("CLI block");
+        let platform_pos = out.find("## Host Platform Rules").expect("platform block");
+        let credentials_pos = out
+            .find("## Session credentials")
+            .expect("credentials block");
+        assert!(
+            cli_pos < platform_pos && platform_pos < credentials_pos,
+            "the platform block must sit between CLI context and session credentials"
+        );
+    }
+
+    #[test]
+    fn container_root_prologue_omits_host_platform_rules_block() {
+        // #1605 T-5: a container root renders no host platform rules block.
+        let out = render_root_runtime_prologue_inner(
+            "C:/fake/ac-root-agent",
+            &no_skill_section(),
+            Path::new("C:/fake/ac-root-agent"),
+            None,
+            Some(&crate::pty::container_repos::RepoMountResolution::default()),
+            true,
+        );
+        assert!(!out.contains("## Host Platform Rules"));
+        assert!(!out.contains("bash.exe"));
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn personalized_template_without_host_platform_rules_token_appends_fallback() {
+        // #1605 T-6: a preserved personalized template lacking the token (and a
+        // root-agent-shaped fixture, per the owner's `Context.root-agent.md`
+        // probe) receives exactly one `## Host Platform Rules` section via the
+        // append fallback.
+        let no_token = get_default_agent_template().replace("{{HOST_PLATFORM_RULES}}", "");
+        let root_shaped = "# Root Agent\n\nCustom prose without the platform token.\n".to_string();
+        for template in [no_token, root_shaped] {
+            let out = render_agent_context_template_inner(
+                &template,
+                "C:/fake/wg-7-dev-team/__agent_architect",
+                None,
+                &no_skill_section(),
+                Path::new("C:/fake/wg-7-dev-team/__agent_architect"),
+                None,
+                None,
+                false,
+            );
+            assert_eq!(
+                count_context_occurrences(&out, "## Host Platform Rules"),
+                1,
+                "the fallback must append exactly one platform block"
+            );
+            assert_no_raw_template_placeholders(&out);
+        }
+
+        // Token present (both-tokens pathological shape): exactly one block.
+        let with_token = get_default_agent_template();
+        let out = render_agent_context_template_inner(
+            with_token,
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+            Path::new("C:/fake/wg-7-dev-team/__agent_architect"),
+            None,
+            None,
+            false,
+        );
+        assert_eq!(count_context_occurrences(&out, "## Host Platform Rules"), 1);
+        assert_no_raw_template_placeholders(&out);
+    }
+
+    #[test]
+    fn host_platform_rules_reads_project_file_each_materialization() {
+        // #1605 T-7: every materialization re-reads `.ac/Context.platform.<os>.md`
+        // (no cache, no rebuild): edit the file, render again, get the new text.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+        let filename = host_platform_rules_filename();
+
+        let first = format!("## Host Platform Rules\n\nFIRST CUSTOM TEXT {filename}\n");
+        std::fs::write(ac.join(filename), &first).expect("write first custom platform file");
+        let out1 = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            None,
+            false,
+        );
+        assert!(out1.contains("FIRST CUSTOM TEXT"));
+
+        let second = "## Host Platform Rules\n\nSECOND CUSTOM TEXT\n";
+        std::fs::write(ac.join(filename), second).expect("rewrite platform file");
+        let out2 = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            None,
+            false,
+        );
+        assert!(out2.contains("SECOND CUSTOM TEXT"));
+        assert!(!out2.contains("FIRST CUSTOM TEXT"));
+        assert_eq!(
+            count_context_occurrences(&out2, "## Host Platform Rules"),
+            1
+        );
+        assert_no_raw_template_placeholders(&out2);
+    }
+
+    #[test]
+    fn host_platform_rules_missing_or_empty_file_falls_back_to_embedded_default() {
+        // #1605 T-8: absent or empty platform file -> embedded default for the
+        // build's OS (with a WARN in app.log), never an empty section.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+        let filename = host_platform_rules_filename();
+        let default = host_platform_rules_default();
+
+        let missing = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            None,
+            false,
+        );
+        assert!(missing.contains("## Host Platform Rules"));
+        assert!(missing.contains(default));
+
+        std::fs::write(ac.join(filename), "").expect("write empty platform file");
+        let empty = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            None,
+            false,
+        );
+        assert!(empty.contains("## Host Platform Rules"));
+        assert!(empty.contains(default));
+        assert_eq!(
+            count_context_occurrences(&empty, "## Host Platform Rules"),
+            1
+        );
+    }
+
+    #[test]
+    fn coordinator_session_profile_embeds_host_platform_rules_once() {
+        // #1605 T-9: the block reaches coordinator sessions through the global
+        // render exactly once; the coordinator body adds no duplicate.
+        let replica = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        let coordinator = format!(
+            "{}\n\n---\n\n# Orchestrator Context\n\n{}",
+            replica,
+            get_default_coordinator_template()
+        );
+        assert_eq!(
+            count_context_occurrences(&coordinator, "## Host Platform Rules"),
+            1
+        );
+        assert!(!get_default_coordinator_template().contains("Host Platform Rules"));
     }
 
     #[test]
@@ -5968,6 +6311,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "## Skills",
             "# Agent Repos",
             "## CLI executable",
+            "## Host Platform Rules",
             "## Session credentials",
             "## Inter-Agent Messaging",
             "## Privileged PTY Input to Workgroup Orchestrators",
@@ -10305,6 +10649,12 @@ mod token_accounting {
         assert_eq!(full_wg.matches("# Agent Repos").count(), 1);
         assert!(!full_wg.contains("{{"));
         assert!(!full_wg.contains("}}"));
+        // #1605: the platform block renders in the WG profile on every OS (linux/
+        // macos render their minimal block too).
+        assert!(
+            full_wg.contains("## Host Platform Rules"),
+            "the platform block must render in the WG profile"
+        );
 
         assert!(
             touched_owners <= MAX_TOUCHED_OWNERS_BYTES,
@@ -10365,6 +10715,14 @@ mod token_accounting {
         print_row(
             "block: delegated task reporting (A4c)",
             super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
+        );
+        print_row(
+            "block: host platform rules (Windows default)",
+            super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS.len(),
+        );
+        print_row(
+            "block: host platform rules (linux/macos default)",
+            super::DEFAULT_HOST_PLATFORM_RULES_LINUX.len(),
         );
         print_row(
             "block: agent repos header (A6, replica variant)",
