@@ -11,11 +11,49 @@ import { applySelectionToSessionList, reconcileVisibleOrderKeys, upsertSessionLi
 
 const [toggleInFlight, setToggleInFlight] = createSignal(false);
 const [sidebarPointerInside, setSidebarPointerInside] = createSignal(false);
+const [sidebarMenuOpen, setSidebarMenuOpen] = createSignal(false);
 const [lastCoordinatorVisibleOrderByProject, setLastCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
 const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderByProject] = createSignal<Record<string, string[]>>({});
 // Independent of selection ordering: every full-row upsert/removal invalidates
 // an older wholesale list snapshot, even when the local membership is unchanged.
 let rowMembershipGeneration = 0;
+
+// Combined sidebar interaction lock: the coordinator tile order stays frozen
+// while the pointer is inside the sidebar OR while any sidebar context menu
+// (or flyout) node is present in the DOM. Menus are rendered through Solid
+// <Portal> under document.body, so a DOM-derived presence lock releases on
+// every close path structurally (close = node removed = observer recomputes).
+let sidebarOrderLockActive = false;
+let sidebarMenuLockObserverInstalled = false;
+
+function refreshSidebarOrderLock(): void {
+  const active = sidebarPointerInside() || sidebarMenuOpen();
+  if (active === sidebarOrderLockActive) return;
+  sidebarOrderLockActive = active;
+  if (active) {
+    setFrozenCoordinatorVisibleOrderByProject(lastCoordinatorVisibleOrderByProject());
+  } else {
+    setFrozenCoordinatorVisibleOrderByProject({});
+  }
+}
+
+function updateSidebarMenuOpen(value: boolean): void {
+  if (value === sidebarMenuOpen()) return;
+  setSidebarMenuOpen(value);
+  refreshSidebarOrderLock();
+}
+
+function installSidebarMenuLockObserver(): void {
+  if (sidebarMenuLockObserverInstalled) return;
+  if (typeof document === "undefined" || !document.body) return; // node-env unit tests
+  sidebarMenuLockObserverInstalled = true;
+  new MutationObserver(() => {
+    updateSidebarMenuOpen(
+      document.querySelector(".session-context-menu, .session-context-flyout") !== null
+    );
+  }).observe(document.body, { childList: true, subtree: true });
+}
+installSidebarMenuLockObserver();
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -578,6 +616,9 @@ export const sessionsStore = {
   get sidebarPointerInside() {
     return sidebarPointerInside();
   },
+  get sidebarMenuOpen() {
+    return sidebarMenuOpen();
+  },
 
   setAlwaysShowSelectedWorkgroup(value: boolean) {
     setState("alwaysShowSelectedWorkgroup", value);
@@ -585,16 +626,16 @@ export const sessionsStore = {
 
   setSidebarPointerInside(value: boolean) {
     if (value === sidebarPointerInside()) return;
-    if (value) {
-      setFrozenCoordinatorVisibleOrderByProject(lastCoordinatorVisibleOrderByProject());
-    } else {
-      setFrozenCoordinatorVisibleOrderByProject({});
-    }
     setSidebarPointerInside(value);
+    refreshSidebarOrderLock();
+  },
+
+  setSidebarMenuOpen(value: boolean) {
+    updateSidebarMenuOpen(value);
   },
 
   coordinatorVisibleOrder(projectPath: string, nextKeys: string[]): string[] {
-    if (!sidebarPointerInside()) return nextKeys;
+    if (!sidebarPointerInside() && !sidebarMenuOpen()) return nextKeys;
 
     const frozenByProject = frozenCoordinatorVisibleOrderByProject();
     const frozenKeys = frozenByProject[projectPath] ?? lastCoordinatorVisibleOrderByProject()[projectPath] ?? nextKeys;
@@ -653,6 +694,10 @@ export const sessionsStore = {
       "contextPercentBySessionId",
       reconcile(emptyReadings),
     );
+  },
+
+  resetActivityForTests() {
+    setState("lastActivityBySessionId", reconcile({}));
   },
 
   toggleTeamCollapsed(teamId: string) {
