@@ -1948,9 +1948,10 @@ naming the unit rather than by picking a side.
 
 Round 2 (`A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D`) drew `PLAN_APPROVED` from
 `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`, and `CHANGES_REQUIRED` from `ac-dev-webpage-ui-v3`.
-Every finding below was re-measured at `147ad4ef` before being acted on. Exactly one row of section
-6.5 changed: the `App.tsx` row, whose frozen binding reference goes from `:801` to `:800`, which is
-finding C-C and nothing else. No pin, no digest, no gate command and no other 6.5 row changed.
+Every finding below was re-measured at `147ad4ef` before being acted on. Exactly two rows of
+section 6.5 changed: the `ipc.ts` row, which is finding BN1, and the `App.tsx` row, whose frozen
+binding reference goes from `:801` to `:800`, which is finding C-C. No pin, no digest, no gate
+command and no other 6.5 row changed.
 
 | # | Finding | Closed in |
 | --- | --- | --- |
@@ -1979,7 +1980,7 @@ section 6.5, no rule and no criterion changed.
 | --- | --- | --- |
 | DN1 | 5.9's required-field table over-states 5 of its 12 rows. Its premise, "serde requires every field carrying neither `#[serde(default)]` nor `#[serde(skip)]`", is false for `Option<T>`: an attribute-less `Option<T>` deserialises to `None` when its key is absent. Raised independently by both Rust reviewers, who reached the same five rows and the same corrections | 5.9's premise now carries the `Option<T>` exemption explicitly, and rows 7, 8, 12, 27 and 28 drop their `Option` fields, each with the reason spelled in the cell. Rows 6, 9, 11, 14, 15-22 and the enum row are unchanged, and the count "7 of the 12" is unaffected because the five corrected types all keep at least one required field. Re-verified twice: by reading all twelve struct definitions field by field at `147ad4ef`, and by running the four corrected shapes plus a `missing field` negative control each against serde 1.0.228 / serde_json 1.0.149, the versions `Cargo.lock` pins |
 | DN2 | 5.5's "the nine non-test files among the 39" is arithmetically false: seven of the nine carry `coordinator` only in a comment or a literal, so the blanking pass that defines the census erases them and they are in neither the 73 nor the 39. Inherited round-2 prose, not a round-3 regression | 5.5 now states that **exactly two** of the 39 are non-test files, names them, and lists the seven comment-and-literal-only files separately with what each one carries. Re-measured: 73 files with a code token, 34 in section 6's tables, 39 remaining with 130 occurrences, of which 2 are non-test |
-| DN3 | Section 15's round-2 header says no row of section 6.5 changed, contradicting its own C-C row, which changed the `App.tsx` reference from `:801` to `:800` | the header now names that one row as the single 6.5 change and keeps the rest of the claim |
+| DN3 | Section 15's round-2 header says no row of section 6.5 changed, contradicting its own C-C row, which changed the `App.tsx` reference from `:801` to `:800` | the header now names **both rows that changed**, `ipc.ts` (BN1) and `App.tsx` (C-C), and keeps the rest of the claim |
 | DN4 | **Not a reviewer finding; caught while making the three above.** Decision 10.1.5 still called the Rule P allowlist "the nine-entry allowlist", the round-1 size. Finding B1a grew it to 14 in round 2 and 5.4 has said 14 ever since, so the decision contradicted the number it depends on | decision 10.1.5 reads **the 14-entry allowlist of 5.4**. The allowlist itself, its 14 entries, its 23 distinct literals and its 22 expected `<=` rows are untouched |
 
 ### Tech lead's ruling, recorded
