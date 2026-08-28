@@ -4,7 +4,11 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 6. Supersedes the round-5 candidate
+Author: ac-architect-v3. Consensus round 7. Supersedes the round-6 candidate
+`31AB7193D79D48D608A9E57C00DE575A5562BCA46FB5DFD112C86C9B1113CFC2` (three `CHANGES_REQUIRED`, every
+one of them on the **wording** of the gates round 6 added and none on their measurement: the boundary
+sets and the boundary table were reproduced independently, by compilation, by two reviewers). Before
+it the round-5 candidate
 `578E1D277FD807683748740C8F6DB87A0D73AE5DBBF685F58C5680A4D8B3AB75` (three `PLAN_APPROVED` and the
 user's explicit approval), which was dispatched and **failed in execution**: C1 landed with its gate
 green and the run stopped at C2 on a blocker from `ac-dev-rust-v3`. Before it the round-4 candidate
@@ -15,11 +19,20 @@ green and the run stopped at C2 on a blocker from `ac-dev-rust-v3`. Before it th
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-5 finding to the section that closes
-it. Round 6 changes the entry ritual of 1.2, section 7 item 6, decision 10.1.7, section 12.1 and the
-new section 12.1a, two cells of 13.3, two items of section 14, this authorship block and section 15.
-No pin, no rule, no criterion, no allowlist entry, no digest, no path table, no Content cell of 12.1
-or 12.2, and no row of section 3, 5, 6, 9, 11 or 13.2 changed.
+`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-6 finding to the section that closes
+it. Round 7 changes the drift paragraph of 1.1, the entry ritual of 1.2, the job table of 3.8, one
+row of 6.1, item 6 of section 7, the new decision 10.1.16, section 12.1 (the new commit **C1b**, the
+Gate column, and the C5 Content cell's word "12"), the three gate definitions and one line citation
+of 12.1a, two rows of 13.2, one row of 13.3, section 13.5, item 10 of section 14 and its new item 11,
+this authorship block and section 15.
+
+**Two byte changes fall outside the "Gate cells only" discipline round 6 held to, and both are named
+here rather than left to be found.** The C5 Content cell's "12 production files" becomes "**11**",
+which is what 5.2 enumerates and 6.3 assigns and what all three reviewers measured; and the 6.1 row
+for `orchestrator-close.ts` loses the clause "and the local `isCoordinator` uses that are not wire
+members", because there are none. Both are factual corrections a reviewer raised, not scope. Beyond
+them, no pin, no rule, no criterion, no allowlist entry, no digest, no boundary set, no path table,
+and no row of section 3.3, 5, 6.3, 6.4, 6.5, 9 or 11 changed.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -41,12 +54,40 @@ here, the measurement is authoritative and section 3.1 says why.
 **`147ad4ef` is the base against which every coordinate in this plan is measured.** Every file:line
 citation, every count, every set and every digest below is read at `147ad4ef` (app) and `5ec1ad27`
 (web); a line number here is meaningless against any other tree, and a reviewer who checks one
-against a different tree is measuring something else. `origin/main` has since moved to `047248bc`
-(the merge of #1601, `fix/1596`). That drift was classified and is inert for this plan: zero added
-lines matching `coordinat` under `src-tauri/src` and `src`, zero changed paths under `src/`, and
-`src-tauri/module-arcs.txt` byte-identical. It is recorded, not absorbed: section 13.5 stays binding
-and the entry ritual of 1.2 re-runs the classification against the live target before the first
-mutation.
+against a different tree is measuring something else.
+
+**`origin/main` has since moved to `d7008b34e155a8bd6481be5feecfc7d96575328f`, and that drift is
+not inert.** It is 41 files: 28 under `src-tauri/src`, 4 under `src-tauri/tests`, 4 workflows, two
+new plans, one doc, one script and `test-debt.allowlist.json`. Section 13.5 classifies it as
+requiring refreshed evidence, and this round refreshes it. What it does and does not move, all
+measured here at `147ad4ef` against `d7008b34`:
+
+- **It does not move a single identifier.** An independent census by the method of 12.1a returns
+  `files=61 distinct=221` at **both** SHAs, with **byte-identical file and identifier sets**. That
+  reproduces 12.1a's own numbers as its control, and it is the reason **B2**, **B3**, **B4**, **B5**,
+  **B7** and the whole boundary table of 12.1a survive the drift untouched.
+- **It does not move a module arc.** The 1095 internal `use crate::`/`use super::`/`use self::` and
+  `mod` declarations are identical at both SHAs but for one brace list reordered inside a single
+  `use super::ac_root::{...}` in `config/projects.rs`: same source module, same target module, same
+  arc. `src-tauri/module-arcs.txt` is not in the drift at all, so 1.2's baseline digest
+  `A93ED10E...` and section 3.6 both hold.
+- **It does move 13 line citations, in 5 files.** Of the 92 resolvable `path:line` citations this
+  plan makes into Rust files, **78 are byte-identical at `d7008b34`** and 13 are not:
+  `commands/ac_discovery.rs:1826`; `commands/session.rs:1432`, `:2573`, `:3406`, `:4582`;
+  `config/seed_manifest.rs:3279`, `:5913`; `config/teams.rs:1038`, `:1619`, `:1626`, `:1636`,
+  `:2328`, `:2360`. Every identifier they name still exists, in the same file, under the same rule.
+  Every citation the **gate machinery** depends on is in the 78: `config/mod.rs:12`,
+  `config/session_context.rs:13`, `tests/cli_project_registration.rs:514` (all of **B4**),
+  `tests/pty_lifecycle_regression.rs:25`, `tests/pty_powershell_managed_native.rs:50`,
+  `tests/wake_consumption_measure.rs:65` (all of **B5**) and `tests/cli_workgroup_team.rs:1811` with
+  its assertion at `:1836-1838` (**L8**, which `d7008b34` does not touch at all).
+- **It changes what `cargo fmt` does**, and that is the expensive half: see decision **10.1.16**,
+  which is where the drift is absorbed, by the new merge commit **C1b**.
+
+`147ad4ef` therefore **stays** the coordinate base. Moving it would force a re-measurement of the
+entire plan to buy 13 line numbers, and after C1b those 13 are the plan's known and enumerated cost,
+not a surprise: a reviewer who finds one of them off by a few lines after C1b is reading a citation
+this paragraph already declares moved, and should locate the site by its identifier.
 
 Codebase Memory gate for `repo-AgentsCommander`: `status: ready`,
 project `D-0_repos-AgentsCommander_iac-.ac-wg-13-ac-dev-team-v3-repo-AgentsCommander`,
@@ -58,26 +99,55 @@ Run this before the first mutation, in both repos. Any failure stops the run.
 
 **C1 has already landed.** The round-5 run committed C1 (`3e88cdc632171c6d58c24dec622e9c603ffd3f11`,
 7 renames, 0 insertions, 0 deletions) with its gate green and stopped at C2. C1 is not reverted: its
-gate passed, it is a pure `git mv`, and criterion 5 requires it. The run resumes at **C2**, and the
-app repo's expected HEAD below is C1, not the coordinate base. `147ad4ef` remains the base against
-which every coordinate in this plan is measured (1.1); only the seven paths of 5.6 have moved since,
-and section 12.1a's boundary measurement was taken at `3e88cdc6`, after that move.
+gate passed, it is a pure `git mv`, and criterion 5 requires it. The run resumes at **C1b**, and
+`147ad4ef` remains the base against which every coordinate in this plan is measured (1.1); only the
+seven paths of 5.6 have moved since, and section 12.1a's boundary measurement was taken at
+`3e88cdc6`, after that move.
+
+**This ritual does not name the branch tip, on purpose.** Rounds 5 and 6 each pinned an expected
+`HEAD` SHA, and each time the very next commit of the plan file falsified it and stopped the resumed
+run at its second command. A check that a new edition of this plan invalidates is not a check. What
+follows asserts the properties that actually matter instead, none of which any number of further
+plan-only commits can break.
 
 ```powershell
 cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-AgentsCommander
-git status --porcelain              # must be empty
-git rev-parse HEAD                  # must be 3e88cdc632171c6d58c24dec622e9c603ffd3f11 (C1)
-git rev-parse HEAD~1                # must be 30bfc405af85a310d381ae752cdc34220c488d5d (C0, round 5)
-git branch --show-current           # must be refactor/1572-orchestrator-internal-identifiers
-git fetch origin main --quiet ; git rev-parse origin/main
+git status --porcelain                                     # (1) must be empty
+git branch --show-current                                  # (2) refactor/1572-orchestrator-internal-identifiers
+git merge-base --is-ancestor 147ad4efa537f3ae5386c6949fa039dfa7e6735a HEAD ; $LASTEXITCODE   # (3) 0
+git merge-base --is-ancestor 3e88cdc632171c6d58c24dec622e9c603ffd3f11 HEAD ; $LASTEXITCODE   # (4) 0
+git diff --name-only 3e88cdc632171c6d58c24dec622e9c603ffd3f11 HEAD                           # (5)
+git log --format='%h %s' 3e88cdc632171c6d58c24dec622e9c603ffd3f11..HEAD                      # (6)
+git fetch origin main --quiet ; git rev-parse origin/main                                    # (7)
 ```
 
-The web repo has no commit of this phase yet; its expected HEAD is still `5ec1ad27`.
+Six conditions, counted, not judged:
 
-If `origin/main` has moved off `147ad4ef`, classify the drift by changed paths before continuing
+1. `git status --porcelain` prints nothing.
+2. The branch is `refactor/1572-orchestrator-internal-identifiers`.
+3. Exit code 0: the coordinate base `147ad4ef` is in this branch's history.
+4. Exit code 0: **C1 is in this branch's history.** This replaces round 6's `git rev-parse HEAD`
+   equality. It is true at C1 and stays true at every later commit, which is the point.
+5. Every path command (5) prints is under `plans/`, **or** is a path that table 12.1 assigns to a
+   commit whose row precedes the one about to be made. Nothing else has moved since C1. This is the
+   condition that expires correctly: it admits any number of plan-only commits, and the moment a
+   content commit lands it starts listing exactly that commit's declared paths and nothing more.
+6. Every subject command (6) prints begins `docs(1572)` or is the subject of a 12.1 row, and the
+   12.1 rows present are a prefix of the table in table order. **The run resumes at the first row of
+   12.1 whose subject is absent.** As of this edition that is **C1b**.
+
+If any condition fails, the run stops and reports; it does not repair the branch to fit the plan.
+
+The web repo has no commit of this phase yet; its expected HEAD is still `5ec1ad27`, checked the same
+way: `git merge-base --is-ancestor 5ec1ad27e1fed2970a83c191a5d4e33993a5436f HEAD` returns 0 and
+`git diff --name-only 5ec1ad27 HEAD` prints nothing.
+
+Command (7) records the live target. Classify its drift by changed paths before continuing
 (section 13.5). Drift that does not touch `src-tauri/`, `src/`, `scripts/02-module-arc-record.mjs`,
 `.github/workflows/` or `.gitattributes` is recorded and synchronised at the next bounded gate; it
-does not reopen this plan.
+does not reopen this plan. Drift that does touch them is absorbed by **C1b** under decision 10.1.16,
+and if `origin/main` has moved past `d7008b34` since this edition, C1b's gate is what re-measures
+it.
 
 Baseline digest that must hold before the first mutation:
 
@@ -85,6 +155,9 @@ Baseline digest that must hold before the first mutation:
 (Get-FileHash -Algorithm SHA256 src-tauri\module-arcs.txt).Hash
 # A93ED10E844CD18D3C2150AC53ACD8DFD704195D0783A5CA169CEB7B8C864D9E
 ```
+
+That digest is unchanged by C1b: `src-tauri/module-arcs.txt` is byte-identical at `147ad4ef`,
+`3e88cdc6`, `a7e6f20c` and `d7008b34`, so the check reads the same value before and after the merge.
 
 ---
 
@@ -408,8 +481,13 @@ leaves a file whose name contradicts its only importer. That is decided here, no
 
 ### 3.8 CI and local gate inventory, derived from the target-base workflows
 
+**Re-derived at `d7008b34`, the live target, as 13.5 and 13.4 require: this table is the one place
+in the plan whose source of truth is the target branch and not the frozen base.** Round 6's edition
+of it listed 7 jobs, read at `147ad4ef`. Issue #1608 has since added an eighth, and #1610 pinned
+every toolchain action to a full commit SHA.
+
 `repo-AgentsCommander/.github/workflows/pr-regression-gates.yml` (`on: pull_request` and `on: push`
-to any non-main branch, no path filter) runs 7 jobs:
+to any non-main branch, no path filter) runs **8** jobs:
 
 | Job | Runner | Commands |
 | --- | --- | --- |
@@ -417,15 +495,36 @@ to any non-main branch, no path filter) runs 7 jobs:
 | `rust-regression` | windows | `npm ci`, `npm run build`, `cargo check --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --lib --bins --tests` (cwd `src-tauri`) |
 | `rust-regression-linux` | ubuntu | `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`. **No `cargo test`.** |
 | `rust-regression-macos` | macos | `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`. **No `cargo test`.** |
+| `rust-fmt` | ubuntu | `cargo fmt --all -- --check` (cwd `src-tauri`), toolchain `stable` with the `rustfmt` component. **New at `d7008b34` (#1608). This plan was authored against a base without it, and decision 10.1.16 is how it is satisfied.** |
 | `terminal-snapshot-portable` | windows, ubuntu, macos-15, macos-15-intel | `cargo test --locked -p terminal-snapshot-renderer`, `cargo test --locked -p session-bridge --bin agentscommander-api-helper terminal_snapshot` |
 | `windows-release-cli-smoke` | windows | `npm run build:prod:no-bundle`, `npm run smoke:cli-release-windows` |
 | `frontend-regression` | ubuntu | `npm run typecheck`, `npm test` behind the #480 known-debt guard |
+
+All six `dtolnay/rust-toolchain` uses are pinned to `4360b52568e2003a75bf9bc1d59f33a8e3fc893c`
+(`# stable`), which strengthens gate 2 of 13.2 and costs this plan nothing.
 
 `validate-branch-name.yml` triggers on push and accepts `refactor/1572-...`.
 `bundle-validation.yml`, `lockfile-check.yml` and `version-sync-check.yml` are path-filtered on
 `package.json` / `package-lock.json` / `Cargo.lock` / `src-tauri/tauri*.conf.json` / `packaging/**` /
 `src-tauri/nsis/**` / `src-tauri/icons/**`. This diff touches none of those paths, so they do not
 trigger. `cache-warm.yml` is main-only and scheduled.
+
+**The formatting state of the two trees, measured.** `rustfmt 1.9.0-stable`, edition 2021, no
+`rustfmt.toml` anywhere in the repository, so the check is plain default rustfmt over the 218 `.rs`
+files of `src-tauri/src` and `src-tauri/tests`:
+
+| Tree | Non-conforming files | Note |
+| --- | --- | --- |
+| `147ad4ef` (this plan's frozen base, and the tree the branch still carries) | **30** | exactly the set that commit `9900dbf6` ("apply cargo fmt to the 30 non-conforming src-tauri files", #1602) rewrote. **12 of the 30 are outside every table of section 6** |
+| `d7008b34` (the live target) | **0** | `cargo fmt --all -- --check` is green |
+| `a7e6f20c` merged with `d7008b34` (the C1b tree) | **0 diffs**, but rustfmt **errors** with ``failed to resolve mod `coordinator_clocks` `` | C1 moved the file and `config/mod.rs:12` still names the old module. See 12.1a, **G-fmt** |
+
+The 12 outside section 6 are `src-tauri/src/agent_update.rs`, `commands/config.rs`, `commands/task.rs`,
+`config/agent_command.rs`, `config/coding_agent_profiles.rs`, `config/coding_agents_catalog.rs`,
+`config/config_seed.rs`, `config/replica_identity.rs`, `pty/local_backend.rs`, `pty/output.rs`,
+`session/profile.rs` and `telegram/bridge.rs`. That is the whole reason decision 10.1.16 exists:
+run `cargo fmt --all` on the branch as it stands and it writes those 12 paths, and **G-scope** goes
+red on whichever commit ran it.
 
 **Two acceptance criteria of the issue have no CI job.** Neither
 `npm run check:frontend-dependencies` (criterion 3) nor the levelization gate (criterion 4) is wired
@@ -1057,7 +1156,7 @@ its old name and in ADDED under its new name; the old path never appears in MODI
 | `src/shared/orchestrator-badge.test.ts` | `git mv` of `shared/coordinator-badge.test.ts`, then Rule A plus the L1 specifier. |
 | `src/sidebar/components/orchestrator-badge-class.ts` | `git mv`, then Rule A over `CoordinatorIdleLevel` plus the L2 specifier and the file-name reference in its own comment at line 6. |
 | `src/sidebar/components/orchestrator-badge-class.test.ts` | `git mv`, then Rule A plus the L2 and L3 specifiers. |
-| `src/sidebar/stores/orchestrator-close.ts` | `git mv`, then Rule A over the 11 store symbols (`PendingCoordinatorClose`, `pendingCoordinatorClose`, `setPendingCoordinatorClose`, `confirmPendingCoordinatorClose`, `requestCoordinatorClose`, `requestCoordinatorCloseById`, `registerCoordinatorCloseModalHost`, `__resetCoordinatorCloseModalHostForTests`, `coordinatorCloseModalHostAvailable`, `closeCoordinator`, and the local `isCoordinator` uses that are not wire members). |
+| `src/sidebar/stores/orchestrator-close.ts` | `git mv`, then Rule A over the 11 store symbols (`PendingCoordinatorClose`, `pendingCoordinatorClose`, `setPendingCoordinatorClose`, `confirmPendingCoordinatorClose`, `requestCoordinatorClose`, `requestCoordinatorCloseById`, `registerCoordinatorCloseModalHost`, `__resetCoordinatorCloseModalHostForTests`, `coordinatorCloseModalHostAvailable` and `closeCoordinator`). The file's `isCoordinator` tokens are **not** in that list: every one of them reads a wire member and is frozen by Rule K, exactly as B7 records. |
 | `src/sidebar/stores/orchestrator-close.test.ts` | `git mv`, then Rule A plus the L4 specifier. Its `describe("coordinator-close helper (#588)")` title is a literal and stays frozen (phase 4). |
 
 ### 6.2 `repo-AgentsCommander`: REMOVED (7)
@@ -1252,18 +1351,23 @@ Playwright spec references the renamed key or the renamed components.
 
    | Repo | Toolchain | Red at | First green |
    | --- | --- | --- | --- |
-   | app (13 commits) | `cargo check --lib --bins` | C1, C2, C3 | **C4** |
-   | app | `cargo check --all-targets`, `cargo clippy`, `cargo test` | C1, C2, C3, C4, C5 | **C6** |
-   | app | `npm run typecheck`, `npm test` | C1 to C7 (C2 to C6 touch no TypeScript, and C1 left it red) | **C8** |
+   | app (14 commits) | `cargo check --lib --bins` | C1, C1b, C2, C3 | **C4** |
+   | app | `cargo fmt --all -- --check` | C1, C1b (rustfmt cannot resolve `mod coordinator_clocks`) | **C2** |
+   | app | `cargo check --all-targets`, `cargo clippy`, `cargo test` | C1, C1b, C2, C3, C4, C5 | **C6** |
+   | app | `npm run typecheck`, `npm test` | C1 to C7 (C1b to C6 touch no TypeScript, and C1 left it red) | **C8** |
    | web (4 commits) | `npm run check` | W1 | **W2** |
 
-   So **8 of the app repo's 13 commits** (C1, C2, C3, C4, C5, C6, C6b, C7) leave a tree that fails at
-   least one of that repo's two toolchains, and **1 of the web repo's 4** (W1) does. The earlier
-   claim in this item, "exactly one commit in each repo is not independently buildable", was true only
-   of the web repo; it is corrected here (section 15, finding FN2). This is accepted, bounded and
-   declared: the intermediate trees carry only unresolved names from the rename in flight, section
-   12.1 gates each of them on the exact identifier set that section 12.1a measured for that boundary,
-   and the branch is validated at its tip. No CI job runs per-commit.
+   So **9 of the app repo's 14 commits** (C1, C1b, C2, C3, C4, C5, C6, C6b, C7) leave a tree that
+   fails at least one of that repo's three toolchains, and **1 of the web repo's 4** (W1) does. The
+   earlier claim in this item, "exactly one commit in each repo is not independently buildable", was
+   true only of the web repo; it is corrected here (section 15, finding FN2). This is accepted,
+   bounded and declared: the intermediate trees carry only unresolved names from the rename in
+   flight, section 12.1 gates each of them on the exact identifier set that section 12.1a measured
+   for that boundary, and the branch is validated at its tip. **No CI job runs per-commit**, and that
+   sentence now carries weight it did not carry in round 6: `pr-regression-gates.yml` fires on
+   `push`, so a push that lands C1 or C1b puts the new `rust-fmt` job red on the branch. That is a
+   red check on an intermediate tree, of the same accepted class as the red `rust-regression` job on
+   the same commits, and 13.4 is what settles it: only the **PR head** must be green.
 7. **Failure behavior of the run.** Any red gate stops the run at that commit. Recovery is
    `git restore --source=HEAD --staged --worktree -- <the exact paths this commit wrote>`, never a
    repository-wide `git reset --hard` or `git clean`. If a path's current bytes are not this run's
@@ -1338,7 +1442,7 @@ three declared exceptions listed after the table**, where the plan itself mandat
 | the four issue-#248 migration tests | `config/settings.rs:8255-8347` | assert `!out.contains("startOnlyCoordinators")` and `out.contains("\"restoreCoordinatorWakeState\":true")`. The first of those is **not** a tripwire for row 16's existing pin: after the migration the field is `None` and `skip_serializing_if` elides it, so the negative assertion passes either way. They are also the plan's worked recipe for the required-field problem of section 5.9. |
 | `exact_coordinator_error_strings_are_stable` | `session/selection.rs` | pins the three `selectionCoordinator*` error strings. Must stay green **unrenamed in its string content**. |
 | `source_ownership_sentinel_rejects_each_one_line_mutation` and the `ArbiterJob` sentinel | `session/selection.rs:3961-4053` | reads `selection.rs` back and pins the enum declaration. Green only if allowlist L7 is applied completely. |
-| `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1810` | pins the `is_coordinator` argument in the scraped call site. Green only if allowlist L8 is applied. |
+| `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1811` | pins the `is_coordinator` argument in the scraped call site. Green only if allowlist L8 is applied. |
 | `coordinator_pre_token_minimization_snapshot_is_byte_exact`, `coordinator_pre_cross_workgroup_snapshot_is_byte_exact`, `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact`, `old_coordinator_raise_hand_snapshot_is_byte_exact` | `config/seeded_context_templates.rs` | hash the frozen constants' bytes. Renaming the constants must not move a hash. |
 | `coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name` | `config/instance_artifacts.rs:617` | pins that `COORDINATOR_CLOCKS_TMP_GLOB` is derivable from `COORDINATOR_CLOCKS_FILE_NAME`. **Declared exception: this test's body must change.** Its `format!("{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp")` at `:620` is an inline capture of a renamed const and will not compile otherwise (allowlist L12), and its own fn name renames by Rule A. The two **values** it compares, `"coordinator_clocks.json"` and `"coordinator_clocks.json.*.tmp"`, stay byte-identical, so the property it asserts is unchanged. Round 1 listed this test as "assertions untouched", which contradicted its own section 6.3. |
 | `cli_workgroup_team.rs` `team_config["coordinator"]` assertions at :525 and :1342 | `tests/cli_workgroup_team.rs` | pin the team-config JSON key. |
@@ -1354,7 +1458,7 @@ a defect and stops the run.
 | Test | File | Allowlist entry | Why the text must change |
 | --- | --- | --- | --- |
 | `coordinator_jobs_are_typed_data_without_managed_handles_or_futures` and `source_ownership_sentinel_rejects_each_one_line_mutation` | `session/selection.rs:3961-4056` | L7 | the sentinel reads `selection.rs` back and pins the enum by name |
-| `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1810` | L8 | it scrapes `commands/session.rs` and pins the argument name in the call-site text |
+| `session_rs_threads_production_tokens_for_config_seed_and_context` | `tests/cli_workgroup_team.rs:1811` | L8 | it scrapes `commands/session.rs` and pins the argument name in the call-site text |
 | `terminal_snapshot_target_debug_omits_identity_and_path_text` (`teams.rs:2346`) and `terminal_snapshot_coordinator_policy_is_distinct_from_pty_input` (`teams.rs:2302`) | `config/teams.rs:2360`, `:2328` | L9, L11 | each asserts on `Debug` output whose text is a renamed field label or enum variant |
 | `coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name` | `config/instance_artifacts.rs:617` | L12 | inline format capture of a renamed const; a compile error otherwise |
 
@@ -1671,6 +1775,56 @@ missing pin is invisible to the compiler, to criterion 6 and to the frontend sui
     plus one serialise experiment per test site. The alternative considered and rejected was one
     experiment per pin: 27 pin-removal runs buy nothing over the constraint plus the per-kind sample,
     because members that share a default kind fail and pass together.
+16. **The target-branch drift is absorbed by an explicit merge commit `C1b` placed before the first
+    content commit, and `cargo fmt` runs per commit, scoped to the paths that commit already owns.**
+    `origin/main` moved to `d7008b34` and added a required `rust-fmt` job that runs
+    `cargo fmt --all -- --check`. A rename changes identifier length, which changes where rustfmt
+    wraps, so a pure rename can make a file non-conforming: this plan was written against a base with
+    no such job and had no formatting step anywhere. Four measurements decide the design, and each one
+    rules out an alternative rather than merely supporting the choice.
+
+    - **`cargo fmt --all` cannot be run on the branch as it stands.** At `147ad4ef`, **30** files are
+      non-conforming, and **12 of them are outside every table of section 6** (3.8 names all twelve).
+      Running `cargo fmt --all` at C2 would write those 12 paths and turn **G-scope** red on a
+      correct commit. Fixing them inside this phase is worse: it is 12 paths of unrelated
+      reformatting in a refactor whose entire claim is that it moves no byte it did not declare.
+    - **At `d7008b34` the tree is fmt-clean**, 0 of 218 files. The upstream commit `9900dbf6` did
+      exactly the cleanup this plan must not do. So merging the target is not a cost to be paid; it
+      is the thing that makes the fmt gate reachable at all.
+    - **The merge is free, now.** A trial `git merge --no-ff d7008b34` onto `a7e6f20c` succeeds with
+      **zero conflicts**: the branch side is 7 pure renames of files the drift does not touch, plus
+      `plans/`. Deferring the merge to the end is the expensive order, and by a wide margin: 18 of
+      the 30 reformatted files are files this plan rewrites, and `config/seeded_context_templates.rs`
+      alone carries **46** reformatted lines that name a `coordinat` identifier, every one of them a
+      line C2 also rewrites. That is a hand-resolved conflict on exactly the bytes this phase claims
+      to preserve, which is the worst place in the sequence to put it.
+    - **The merge costs no measurement.** The 12.1a census is `files=61 distinct=221` at both SHAs
+      with identical sets, and the 1095 internal arc declarations are identical but for one reordered
+      brace list (1.1). **B2**, **B3**, **B4**, **B5**, **B7**, the boundary table, section 3.6 and
+      1.2's `module-arcs.txt` digest all stand. The price is 13 line citations in 5 files, enumerated
+      in 1.1.
+
+    **The alternatives, and why each loses.** *Rebase the branch onto `d7008b34`*: forbidden by the
+    repository's landing rule (a branch is updated by merge, never by rebase) and it would rewrite
+    `3e88cdc6`, the landed C1 whose pure-rename gate is what criterion 5 rests on. *Re-base the plan's
+    coordinates at `d7008b34`*: a full re-measurement of every count, set and citation in the plan, to
+    buy 13 line numbers that 1.1 can simply name. *Skip `cargo fmt` and let the PR merge sort it out*:
+    `actions/checkout` on a `pull_request` event does check out the merge ref, so the PR twin of
+    `rust-fmt` would pass, but the workflow also fires `on: push`, and the push twin checks out the
+    branch tip and would be red on every push of the run. *Run `cargo fmt --all` once at the tip*:
+    it works, but it defers all formatting risk to a single commit after the last gate has passed, and
+    it leaves every intermediate commit in a state no gate ever inspected.
+
+    **What this costs at C1 and C1b, and it is not zero.** rustfmt resolves `mod` declarations, so on
+    the C1b tree it does not merely disagree about formatting, it **fails**:
+    ``failed to resolve mod `coordinator_clocks` ``, exit 1, zero diffs, because C1 moved the file
+    while `config/mod.rs:12` still names the old module. `cargo fmt --all -- --check` is therefore
+    red at C1 and C1b for the same structural reason `cargo check` is, and first green at **C2**,
+    which rewrites that line. Measured on the C1b tree with the C2 line applied, the whole
+    `src-tauri` crate reports exactly one file with a diff, `config/mod.rs`, and exactly one hunk
+    pair: rustfmt keeps `mod` declarations in alphabetical order, and `pub mod orchestrator_clocks;`
+    no longer belongs at line 12. That single hunk is the whole of the predicted "a rename moves where
+    rustfmt wraps" effect at C2, and it lands in a file C2 already owns.
 
 ### 10.2 Accepted residuals, each owned by a later phase
 
@@ -1749,32 +1903,33 @@ isomorphic and the cycle count cannot change. Criterion 3 measures it anyway, ba
 Route: Full. The implementer owns every commit; the reviewer owns section 9's gates; the tech lead
 owns the merge.
 
-### 12.1 `repo-AgentsCommander`, 13 commits
+### 12.1 `repo-AgentsCommander`, 14 commits
 
 **Read 12.1a before this table.** The commits are grouped by directory; the compile-dependency chain
 is not, and a rename is atomic between a definition and every reference to it. Four of the five Rust
 content commits and the first frontend commit therefore leave a tree that does not compile, by
 construction rather than by mistake. Their gates below are stated as **exact conditions on the
 compiler's error set**, not as "green", and 12.1a gives the measured boundary sets **B2**, **B3**,
-**B4**, **B5**, **B7** and the three gate definitions **G-scope**, **G-bound** and **G-bound-ts**
-that the Gate column names. Every gate stated as green below is green for the first time at that
+**B4**, **B5**, **B7** and the five gate definitions **G-scope**, **G-fmt**, **G-merge**, **G-bound**
+and **G-bound-ts** that the Gate column names. Every gate stated as green below is green for the first time at that
 commit; none of them could have been green earlier.
 
 | # | Commit | Content | Gate before moving on |
 | --- | --- | --- | --- |
 | C0 | `docs(1572): plan for orchestrator internal identifiers` | this file only | none |
-| C1 | `refactor(1572): rename 7 coordinator files (pure git mv)` | the 7 `git mv` of section 5.6 and nothing else. **Does not build. This is the mandated split.** | `git show --stat C1` shows 7 renames, 0 insertions, 0 deletions. **Landed as `3e88cdc6`, gate verified green. The run resumes at C2** |
-| C2 | `refactor(1572): orchestrator identifiers in config/` | `config/orchestrator_clocks.rs`, `config/mod.rs`, `teams.rs` (allowlist **L9, L10, L11, L14**), `settings.rs` (Rule S1), `session_context.rs`, `seeded_context_templates.rs`, `instance_artifacts.rs` (allowlist **L12**), `projects.rs`, `seed_manifest.rs`, `root_agent.rs`, `loops.rs` (Rule S1), `agent_config.rs` (Rule S1), `sessions_persistence.rs` (Rule S1), `activity_log.rs`, plus the two `docs/` path cells of section 6.6 | **G-scope**, then **G-bound** against boundary set **B2** of 12.1a |
-| C3 | `refactor(1572): orchestrator identifiers in commands/, lib.rs, web/` | `commands/*.rs` (Rule S1 on `ac_discovery`, `entity_creation`, `loops`), `lib.rs`, `web/commands.rs` | **G-scope**, then **G-bound** against boundary set **B3** of 12.1a |
-| C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S1 on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs`, and **Rule S2 on `cli/team.rs:49-53`, `:84-85` and `cli/workgroup.rs:48-49`** | **G-scope**; `cargo check --lib --bins` with **zero errors**, which is the first commit at which it can be; then **G-bound** against **B4** of 12.1a. Clippy and the `cli_workgroup_team` run move to **C6**, which is the first commit at which either can be green: 12.1a gives the two independent reasons |
-| C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 12 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | **G-scope**; `cargo check --lib --bins` with **zero errors**; then **G-bound** against **B5** of 12.1a |
-| C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | **the first commit at which the Rust tree compiles at all.** `cargo check --all-targets` with **zero errors**; `cargo clippy --workspace --all-targets -- -D warnings` with zero warnings; `cargo test --lib --bins --tests` (redirect stdout to a file, it is swallowed otherwise) all green, **including `cli_workgroup_team` with its `--coordinator` invocations unedited (criterion 8c)** |
-| C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit | criterion 8a green; **and each test proved real**: see the note below |
-| C7 | `refactor(1572): rewrite the 6 renamed TypeScript modules` | contents of the **6 TypeScript** files ADDED in 6.1 (**not** `config/orchestrator_clocks.rs`: that is the seventh renamed file, it is Rust, and 6.1 assigns its content commit to C2), plus the 10 module specifiers L1 to L6 in their importers and the renamed store and badge symbols at those importers' call sites. This closes `src/sidebar/components/SessionItem.tsx` and `src/shared/shortcuts.ts` **completely**, since the renamed-store import is their only in-scope content; `ProjectPanel.tsx` is only partly closed and returns in C8 | **G-scope**, then **G-bound-ts** against **B7** of 12.1a |
+| C1 | `refactor(1572): rename 7 coordinator files (pure git mv)` | the 7 `git mv` of section 5.6 and nothing else. **Does not build. This is the mandated split.** | `git show --stat C1` shows 7 renames, 0 insertions, 0 deletions. **Landed as `3e88cdc6`, gate verified green. The run resumes at C1b** |
+| C1b | `chore(1572): merge origin/main into the branch` | a merge commit and nothing else: `git merge --no-ff origin/main`, no hand edit, no conflict resolution. This absorbs the target drift under decision **10.1.16** and is what makes the base fmt-clean. **Does not build, and `cargo fmt` cannot even run on it** | **G-merge** of 12.1a. The tree it produces is the tree every later commit of this table is built on |
+| C2 | `refactor(1572): orchestrator identifiers in config/` | `config/orchestrator_clocks.rs`, `config/mod.rs`, `teams.rs` (allowlist **L9, L10, L11, L14**), `settings.rs` (Rule S1), `session_context.rs`, `seeded_context_templates.rs`, `instance_artifacts.rs` (allowlist **L12**), `projects.rs`, `seed_manifest.rs`, `root_agent.rs`, `loops.rs` (Rule S1), `agent_config.rs` (Rule S1), `sessions_persistence.rs` (Rule S1), `activity_log.rs`, plus the two `docs/` path cells of section 6.6 | **G-fmt**, then **G-scope**, then **G-bound** against boundary set **B2** of 12.1a |
+| C3 | `refactor(1572): orchestrator identifiers in commands/, lib.rs, web/` | `commands/*.rs` (Rule S1 on `ac_discovery`, `entity_creation`, `loops`), `lib.rs`, `web/commands.rs` | **G-fmt**, then **G-scope**, then **G-bound** against boundary set **B3** of 12.1a |
+| C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S1 on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs`, and **Rule S2 on `cli/team.rs:49-53`, `:84-85` and `cli/workgroup.rs:48-49`** | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**, which is the first commit at which it can be; then **G-bound** against **B4** of 12.1a. Clippy and the `cli_workgroup_team` run move to **C6**, which is the first commit at which either can be green: 12.1a gives the two independent reasons |
+| C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 11 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**; then **G-bound** against **B5** of 12.1a |
+| C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | **G-fmt**, then **G-scope**, and then the first commit at which the Rust tree compiles at all: `cargo check --all-targets` with **zero errors**; `cargo clippy --workspace --all-targets -- -D warnings` with zero warnings; `cargo test --lib --bins --tests` (redirect stdout to a file, it is swallowed otherwise) all green, **including `cli_workgroup_team` with its `--coordinator` invocations unedited (criterion 8c)** |
+| C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit | **G-fmt**, then **G-scope**; criterion 8a green; **and each test proved real**: see the note below |
+| C7 | `refactor(1572): rewrite the 6 renamed TypeScript modules` | contents of the **6 TypeScript** files ADDED in 6.1 (**not** `config/orchestrator_clocks.rs`: that is the seventh renamed file, it is Rust, and 6.1 assigns its content commit to C2), plus the 10 module specifiers L1 to L6 in their importers and the renamed store and badge symbols at those importers' call sites. This closes `src/sidebar/components/SessionItem.tsx` and `src/shared/shortcuts.ts` **completely**, since the renamed-store import is their only in-scope content; `ProjectPanel.tsx` is only partly closed and returns in C8 | **G-scope**, then **G-bound-ts** against **B7** of 12.1a. No **G-fmt**: `rust-fmt` is `working-directory: src-tauri` and C7 touches no Rust |
 | C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining **25** files of section 6.5, including `ProjectPanel.raise-hand.test.tsx`, the two `ipc.ts` parameter renames at `:1114`/`:1134`, and all four shorthand expansions (`ipc.ts:1081`, `:1122`, `:1142`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts`. **Derivation of the 25**, written out because gate 5 of 13.2 counts this commit's paths against it: section 6.5 has **28** rows; subtract `ProjectPanel.regex-filter.test.tsx` (**1**), whose only change is the new `it(...)` and which is therefore C9; subtract `SessionItem.tsx` and `shared/shortcuts.ts` (**2**), which C7 closes completely. 28 − 1 − 2 = **25**. The 6 renamed TypeScript files are **not** subtracted: they live in 6.1/6.2, not 6.5, per the section 6 header. `ProjectPanel.tsx` is touched by both C7 and C8 and is counted here | **the first commit at which either can be green.** `npm run typecheck` with **zero diagnostics**, and `npm test` green |
 | C9 | `test(1572): pin the sidebar orchestrator filter token (R11)` | the one new `it(...)` of section 5.8 | `npm test -- ProjectPanel.regex-filter` green, and green only with the production token present |
 | C10 | `chore(1572): regenerate module-arcs.txt` | `src-tauri/module-arcs.txt` only | section 9.4, all five conditions |
-| C11 | `chore(1572): final gate evidence` | nothing, or the PR body only | sections 9.3, 9.5 criteria 1 to 8, in order |
+| C11 | `chore(1572): final gate evidence` | nothing, or the PR body only | sections 9.3, 9.5 criteria 1 to 8, in order; and `cargo fmt --all -- --check` (cwd `src-tauri`) exit 0 at the tip, which is the local twin of the `rust-fmt` job of 3.8 |
 
 **Both new tests must be proved to be real tests, by the same materialise-and-revert technique.**
 
@@ -1806,7 +1961,7 @@ commit; none of them could have been green earlier.
 In both cases the revert must be verified by `git status --porcelain` being empty before the next
 commit. Materialise-and-revert is the accepted technique for proving a gate discriminates.
 
-### 12.1a The commit boundaries, measured, and the three gate definitions
+### 12.1a The commit boundaries, measured, and the five gate definitions
 
 **Why the round-5 gates could not pass.** Section 12.1 groups commits by directory. The
 compile-dependency chain does not follow directories, and a rename is atomic between a definition and
@@ -1915,7 +2070,7 @@ files, and a local binding is file-local.
 sufficient. First, `--all-targets` does not compile at C4, so neither clippy nor `cargo test` can
 run at all. Second, and independent of the first, the test
 `session_rs_threads_production_tokens_for_config_seed_and_context`
-(`src-tauri/tests/cli_workgroup_team.rs:1810`, assertion at `:1836-1838`) scrapes the **source text**
+(`src-tauri/tests/cli_workgroup_team.rs:1811`, assertion at `:1836-1838`) scrapes the **source text**
 of `commands/session.rs` and pins the substring `,is_coordinator,`, which is allowlist entry **L8**.
 C3 rewrites that argument, so the assertion is red from C3 and green only at C6, the commit that
 updates L8. Both gates move to C6 unchanged, and criterion 8c with them.
@@ -1954,34 +2109,92 @@ cargo check --all-targets --message-format=short 2>&1 |
 ```
 
 The capture goes to `$env:TEMP` and not into the repository, so gate 4 of 13.2 (no task-created file
-outside the intended path set) still holds. Then four conditions on that file, all of which must
-hold. They are counted, not judged: the implementer decides pass or fail without applying any
-criterion of their own.
+outside the intended path set) still holds.
+
+**First, one partition, because rustc emits two kinds of line and only one of them is about a name.**
+A line is **primary** when its code is one of the eleven name-resolution codes, the codes rustc emits
+when an identifier does not resolve:
+
+```
+E0405  E0412  E0422  E0425  E0432  E0433  E0531  E0560  E0574  E0599  E0609
+```
+
+Every other error line is a **cascade**: rustc reports it only because a primary error already denied
+the expression a type. The partition is by code alone, so it is read off the capture with no
+judgment. The six codes measured in C2 (E0609, E0425, E0433, E0560, E0432, E0599) are all primary. A code outside that list is treated as a cascade even if a rename did cause it, which
+is a deliberate and bounded weakening: such a line still has to sit in a path carrying a primary
+(condition 2) and in a path this plan owns (condition 3), it is simply not read for identifiers.
+
+Then four conditions on that file, all of which must hold. They are counted, not judged: the
+implementer decides pass or fail without applying any criterion of their own.
 
 1. **Every error is a coded diagnostic.** Every line matching `: error` matches `error\[E\d{4}\]`,
    with the two rustc epilogue lines excluded by name (`error: aborting due to` and
    `For more information about an error`). An uncoded `error:` is a syntax error, a link error or an
    unresolved crate, and none of those is a consequence of a rename in flight.
-2. **Every error names a renamed identifier.** Every such line matches `coordinat|orchestrat|arbiter`
-   case-insensitively. A name-resolution diagnostic always quotes the name it could not resolve, in
-   its old spelling where the consumer is still old and in its new spelling where this commit already
-   rewrote the consumer and the definition is still to come.
+2. **Every error is a consequence of a renamed identifier, and cascades are counted, not excused.**
+   - Every **primary** line matches `coordinat|orchestrat|arbiter` case-insensitively. A
+     name-resolution diagnostic always quotes the name it could not resolve, in its old spelling
+     where the consumer is still old and in its new spelling where this commit already rewrote the
+     consumer and the definition is still to come.
+   - Every **cascade** line sits in a path that also carries at least one **primary** line in the
+     same capture. A cascade in a file with no primary error is a failure: nothing about a rename in
+     flight explains it.
+
+   **Why the second half exists, measured.** C3 renames `coordinator_cwd` at `commands/pty.rs:187`
+   and `:412` while `session/manager.rs` still declares the old method until C4. rustc emits the
+   expected `E0599`, which names a member of **B3**, and then, with the receiver's type unknown,
+   **six `E0277` lines** at `:187`, `:190` (twice) and `:412` (three times) that name no renamed
+   identifier at all. No correct implementation of C3 can avoid them: the crossing is what defines
+   **B3**. Round 6's condition 2 required *every* error line to match the regex, so it went red on
+   correct work at the second content commit. Those six are cascades in a path that carries a
+   primary, and this condition admits them; the identical six in a file this commit never touched
+   would not be admitted, and neither would a type error standing alone in a file with no rename in
+   flight. The gate keeps its teeth and loses the false red.
 3. **Every error is in a path this plan owns.** The leading path of every such line, read
    repo-relative, is a member of the union of the paths in tables 6.1, 6.3 and 6.4. Damage outside
    this plan's own surface is a failure.
-4. **Every error names a member of this commit's boundary set.** Take every backtick-quoted
-   identifier on those lines, map it back through the inverse of Rules A and B (`orchestrator` to
-   `coordinator`, `Orchestrator` to `Coordinator`, `ORCHESTRATOR` to `COORDINATOR`, `Arbiter` to
-   `Coordinator`, `arbiter` to `coordinator`), and require the result to be a member of **B2**,
-   **B3**, **B4** or **B5** as this commit's row in 12.1 names. A name outside the set is a failure:
-   it is either a typo or a rename this plan did not intend.
+4. **Every unresolved name is a member of this commit's boundary set.** On each **primary** line,
+   and on primary lines only, take the backtick-quoted tokens and reduce the set in three mechanical
+   steps:
+   - **Keep only the tokens that match `coordinat|orchestrat|arbiter` case-insensitively.** Discard
+     the rest without reading them.
+   - **Reduce a path-shaped token to its last `::` segment.**
+     `crate::config::loops::BusyCoordinatorPolicy` gives `BusyCoordinatorPolicy`;
+     `agentscommander_lib::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME` gives
+     `COORDINATOR_CONTEXT_TEMPLATE_FILENAME`.
+   - **Map what is left back through the inverse of Rules A and B** (`orchestrator` to
+     `coordinator`, `Orchestrator` to `Coordinator`, `ORCHESTRATOR` to `COORDINATOR`, `Arbiter` to
+     `Coordinator`, `arbiter` to `coordinator`).
 
-Condition 4 is what makes this gate objective rather than "it is expected to fail". The boundary sets
-are measured from the tree and not from an implementation, so a correct run cannot produce a name
-outside them. At **B4** and **B5** the sets are small enough that the condition is an equality in
-practice: after C4 the only unresolvable name in the workspace is
-`COORDINATOR_CONTEXT_TEMPLATE_FILENAME` in one integration test, and after C5 it is that plus
-`SelectionCoordinator` in three.
+   Every surviving token must be a member of **B2**, **B3**, **B4** or **B5** as this commit's row in
+   12.1 names. A name outside the set is a failure: it is either a typo or a rename this plan did not
+   intend. A primary line whose surviving set is **empty** is not a failure: condition 2 already
+   requires that line to name the rename somewhere, and this condition only bounds the names it does
+   quote. Cascade lines are not read for identifiers at all: their quoted tokens are the surrounding
+   types, never a name in flight.
+
+**Why the family filter, and what it does not weaken.** rustc quotes the context of a diagnostic as
+well as its subject. Measured on the real C2 capture, the 132 error lines quote **more than thirty**
+tokens that are not members of **B2**: `AppSettings`, `LoopPolicy`, `LoopUpdatePatch`,
+`LoopAuditEntry`, `SessionInfo`, `Session`, `PersistedSession`, `DiscoveredTeam`,
+`PtyInputAuthorityKind`, `ResolvedLoopTarget`, `TerminalSnapshotTargetIdentity`,
+`VerifiedPtyInputIdentity`, `tokio::sync::RwLockReadGuard`, `settings::AppSettings`, and the full
+module path of every `E0432`. In C4 and C5 the single `E0432` at `tests/cli_project_registration.rs`
+likewise quotes `agentscommander_lib::config::session_context`. Not one of those is a name this phase
+touches. Round 6's condition 4 said "take **every** backtick-quoted identifier", so read literally it
+failed the gate on a correct run at the **first** content commit, and an implementer who passed it
+anyway did so by deciding privately which tokens counted, which is exactly the private criterion this
+gate exists to remove. The filter costs the gate nothing: a typo or an unintended rename is itself a
+coordinator-family token, so it survives the filter and is still caught. Round 6's claim that "a
+correct run cannot produce a name outside them" is true of coordinator-family tokens and was false of
+all tokens; it is restated correctly here. Measured with this reading by two reviewers independently,
+against real compiler output at each boundary, C2, C3, C4 and C5 pass conditions 1 to 4 with **zero
+violations**.
+
+At **B4** and **B5** the sets are small enough that condition 4 is an equality in practice: after C4
+the only unresolvable name in the workspace is `COORDINATOR_CONTEXT_TEMPLATE_FILENAME` in one
+integration test, and after C5 it is that plus `SelectionCoordinator` in three.
 
 It is worth saying what G-bound does not do. It is a **containment** gate: it bounds collateral
 damage and rejects unintended names, but it does not prove that a commit renamed everything it was
@@ -1996,10 +2209,110 @@ cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-AgentsCommander
 npm run typecheck 2>&1 | Out-File -Encoding utf8 "$env:TEMP\1572-typecheck-C7.txt"
 ```
 
-Every diagnostic must sit in a path that table 6.1 or 6.5 owns, and every identifier it quotes must
-map back into **B7**, which has exactly one member. The expected content is the two call sites
-`src/sidebar/stores/orchestrator-close.ts:57` and `:102` reporting that `closeCoordinator` is not a
-property of `SessionAPI`. Any other diagnostic stops the run.
+Then three conditions on that file, all of which must hold. They are counted, not judged.
+
+1. **A diagnostic is a line matching `error TS\d+`**, of the form
+   `<path>(<line>,<col>): error TS<code>: <message>`. The two `>` banner lines that `npm run` prints
+   (`> agentscommander@0.30.3 typecheck` and `> tsc --noEmit`) are not diagnostics, and `npm` adds no
+   epilogue of its own at exit 2. This is the clause `G-bound` pays for with its named rustc
+   epilogues; it costs nothing to pay it here too.
+2. **The diagnostic set is exactly two lines**, whose `<path>(<line>` prefixes are
+   `src/sidebar/stores/orchestrator-close.ts(57` and `src/sidebar/stores/orchestrator-close.ts(102`,
+   a path table 6.1 owns. One more or one fewer is a failure. C7's boundary is small enough for an
+   exact count, and an exact count is more objective than "any other diagnostic stops the run".
+3. **Each of the two names the property `closeOrchestrator`**, which is `closeCoordinator` under the
+   inverse of Rule A and is the single member of **B7**. The structural type `tsc` prints after the
+   property name is the still-unrewritten declaration of `SessionAPI`; it names members outside B7 by
+   construction and is **not** part of this check.
+
+Observed by `ac-dev-webpage-ui-v3` at `3e88cdc6` with C7 materialised and `npm run typecheck` run,
+TypeScript 5.9.3: two diagnostics, both **TS2339**, at `orchestrator-close.ts(57,38)` and `(102,22)`.
+
+**What round 6 got wrong here, because the shape of the error matters to the implementer.** Round 6
+said the expected content was the two call sites "reporting that `closeCoordinator` is not a property
+of `SessionAPI`". Neither half occurs. The reported name is `closeOrchestrator`, not
+`closeCoordinator`: in C7 the call sites are already rewritten and `closeCoordinator` is the name that
+still exists, because `ipc.ts` belongs to C8. And the token `SessionAPI` appears on neither line:
+`src/shared/ipc.ts:187` declares `export const SessionAPI = {` with **no type annotation**, so `tsc`
+prints the inferred object type structurally, with a `... 7 more ...` elision in the middle, and
+`closeCoordinator` shows up inside it only as one more member of the printed type. Round 6's second
+sentence, "every identifier it quotes must map back into **B7**", inherited the same defect as
+`G-bound`'s condition 4 and inherited it worse: of the **16** single-quoted identifiers on those two
+lines, only `closeOrchestrator` and `closeCoordinator` are in B7, and the other fourteen are the
+object declaration itself and cannot be anything else. An implementer following round 6's text would
+have compared a correct run against a description of an output that does not exist, and then failed
+it on fourteen tokens that are there by construction.
+
+**G-merge**, which only **C1b** carries.
+
+```powershell
+cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-AgentsCommander
+git fetch origin main --quiet
+git merge --no-ff origin/main -m "chore(1572): merge origin/main into the branch"
+git diff --name-only --diff-filter=U
+git diff --name-status -M origin/main HEAD
+```
+
+Four conditions, counted:
+
+1. **The merge is clean.** `git merge` exits 0 with no conflicted path
+   (`git diff --name-only --diff-filter=U` prints nothing). If it conflicts, the target has moved
+   past `d7008b34` into this plan's own surface, the run stops and reports, and it does **not**
+   hand-resolve: a conflict here means 1.1's census must be re-measured before the plan is executable.
+2. **The branch side contributed nothing but C0 and C1.** `git diff --name-status -M origin/main HEAD`
+   prints **exactly eight lines**: `A` for `plans/1572-orchestrator-internal-identifiers.md`, and
+   **`R100`** for each of the seven renames of 5.6. A ninth line, or an `R` score below 100, or any
+   `M`, is a failure: this commit resolves nothing and adds nothing, and a hand edit inside a merge
+   is the one thing that would make the rest of this table unverifiable. Measured on the trial merge
+   at authoring: exactly those eight lines, `8 files changed, 2303 insertions(+)`, the insertions
+   being the plan file alone.
+3. **The census did not move.** Re-run the sweep of this section's **Method** paragraph over the
+   merged tree: it must return **61 files and 221 distinct identifiers**, with the same file set and
+   the same identifier set the boundary table below was measured from. This is the condition that
+   makes every later gate in this table still valid, and it is the reason C1b is a gated commit and
+   not a housekeeping step. Measured at authoring: identical at `147ad4ef` and at `d7008b34`.
+4. **The formatting baseline is now clean, modulo the module C1 moved.** `cargo fmt --all -- --check`
+   from `src-tauri` is expected to **fail** here, with exit 1, zero `Diff in` lines, and the single
+   message ``failed to resolve mod `coordinator_clocks` ``. Anything else is a failure: a `Diff in`
+   line at C1b means the merged base is not fmt-clean and decision 10.1.16's premise is broken.
+
+`cargo check` is **not** run at C1b. C1b changes no Rust of this plan's making, and `config/mod.rs:12`
+still names a module whose file C1 moved, so the tree is red for exactly the reason C1 left it red.
+
+**G-fmt**, which every Rust content commit carries, run after that commit's edits and **before**
+`git commit`.
+
+```powershell
+cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-AgentsCommander\src-tauri
+cargo fmt --all
+cargo fmt --all -- --check
+cd ..
+git status --porcelain
+```
+
+Three conditions, counted:
+
+1. `cargo fmt --all` exits 0. From C2 onward it resolves; at C1 and C1b it does not, which is why
+   neither of those two commits carries G-fmt and item 6 of section 7 lists them red.
+2. **Every path `git status --porcelain` lists is a path this commit's Content cell in 12.1 already
+   owns.** A path that `cargo fmt` wrote and this commit does not own is a failure, reported and not
+   absorbed (gate 5 of 13.2). It means the merged base was not fmt-clean, so C1b did not land or did
+   not do its job, and the correct response is to stop, not to add the path to the commit.
+3. `cargo fmt --all -- --check` then exits **0**, with no `Diff in` line. This is the durable
+   evidence the commit carries: condition 1 leaves no artefact behind, and the CI `rust-fmt` job of
+   3.8 runs exactly this command.
+
+Condition 2 is exactly the statement that `cargo fmt` added no path, which is why **G-scope** runs
+after it and passes unchanged. The whole design of 10.1.16 exists to make condition 2 satisfiable: on
+the pre-merge branch it is false by 12 paths, and after C1b it is true.
+
+Measured at C2 on the C1b tree: `cargo fmt --all` writes exactly one file, `config/mod.rs`, moving
+the renamed `pub mod orchestrator_clocks;` from line 12 to its alphabetical slot after
+`pub mod loops;`. `config/mod.rs` is in C2's Content cell, so condition 2 holds and G-scope is
+unaffected. That single hunk is also the phase's only measured instance of the general hazard the
+`rust-fmt` job introduces, that a rename changes identifier length and so changes where rustfmt
+breaks a line; C3 to C6 have not been measured for it, which is precisely why G-fmt is a per-commit
+gate and not a single step at the tip.
 
 ### 12.2 `repo-agentscommander_webpage`, 4 commits
 
@@ -2057,8 +2370,8 @@ the offending commit; its owner is the implementer at each content commit.
 
 | Gate | Source of truth | Executable evidence | Expected result | Failure behavior | Owner and time |
 | --- | --- | --- | --- | --- | --- |
-| 1. CI-to-plan parity | `.github/workflows/*.yml` at the base | section 3.8 job table; the exact-head rule of 13.4 | 7 PR jobs plus `validate-branch-name` green; 3 path-filtered workflows do not trigger | any red job blocks the merge; an unexplained skip does not satisfy the gate | CI on the PR head; reviewer reads the checks |
-| 2. Deterministic toolchain | `.github/workflows/pr-regression-gates.yml`, `package.json`, `.gitattributes` | Rust `stable` via `dtolnay/rust-toolchain@stable`, Node 22, npm pinned to 11.6.2 in CI; locally the resolved `cargo`/`node` with versions recorded in the PR body; `src-tauri/module-arcs.txt` pinned `text eol=lf` | reproducible arc-record digest on Windows with `core.autocrlf=true` | a digest mismatch is a real failure, never normalised away | implementer at C10; CI at the PR head |
+| 1. CI-to-plan parity | `.github/workflows/*.yml` **at the live target**, re-derived at `d7008b34` per 13.5 | section 3.8 job table; the exact-head rule of 13.4 | **8** PR jobs plus `validate-branch-name` green; 3 path-filtered workflows do not trigger. The eighth is `rust-fmt`, new since authoring; decision 10.1.16 is how this plan satisfies it | any red job blocks the merge; an unexplained skip does not satisfy the gate | CI on the PR head; reviewer reads the checks |
+| 2. Deterministic toolchain | `.github/workflows/pr-regression-gates.yml`, `package.json`, `.gitattributes` | Rust `stable` via `dtolnay/rust-toolchain` **pinned to the full commit SHA `4360b525`** in all six uses (#1610, arrived with the drift and strengthens this gate), Node 22, npm pinned to 11.6.2 in CI; locally the resolved `cargo`/`node` with versions recorded in the PR body; `src-tauri/module-arcs.txt` pinned `text eol=lf` | reproducible arc-record digest on Windows with `core.autocrlf=true` | a digest mismatch is a real failure, never normalised away | implementer at C10; CI at the PR head |
 | 3. Authorized, traceable Git | issue #1572 open; branch `refactor/1572-orchestrator-internal-identifiers`; base `147ad4ef` / `5ec1ad27` | section 1.2 entry ritual; `git status --porcelain` empty before every commit | clean base, issue-numbered branch, delivery by PR only | a dirty or unknown base, or a direct push to `main`, blocks | implementer before the first mutation |
 | 4. Process state, configuration, cwd | `scripts/02-module-arc-record.mjs:27-35` | every `cargo` command with `working-directory: src-tauri`; `record:arcs` from the repo root; `graph.json` deleted after use (gitignored, carries an absolute path) | no task-created file outside the intended path set | a stray `graph.json` in `git status` blocks C10 | implementer |
 | 5. Validation and scope before acceptance | this plan's section 6 tables | `git status --porcelain` and `git diff --stat` after each commit, compared against the table for that commit | only the listed paths changed | any path outside the tables is reported, not absorbed | implementer per commit; reviewer at the tip |
@@ -2071,6 +2384,7 @@ the offending commit; its owner is the implementer at each content commit.
 | Evidence | Local | CI | Note |
 | --- | --- | --- | --- |
 | `cargo check` / `clippy` / `cargo test` | yes, per content commit, but only where the tree compiles: `cargo check --lib --bins` from **C4**, and `--all-targets`, clippy and `cargo test` from **C6**. C2 to C5 carry **G-bound** instead (12.1a) | `rust-regression` (Windows) is the only job that runs `cargo test`; the Linux and macOS jobs are check plus clippy only | a `#[cfg(unix)]` test would compile everywhere and run nowhere; this phase adds none |
+| `cargo fmt --all` | yes, **per Rust content commit**, as **G-fmt** (12.1a): C2, C3, C4, C5, C6, C6b, and `--check` once more at C11 | `rust-fmt`, new at `d7008b34` | red at C1 and C1b for a structural reason, not a formatting one: rustfmt cannot resolve `mod coordinator_clocks`. First green at C2 |
 | `npm run typecheck`, `npm test` | yes, from **C8**; C7 carries **G-bound-ts** (12.1a) | `frontend-regression` | |
 | `npm run check:frontend-dependencies` | **yes, only here** | **no job exists** | criterion 3; base and tip outputs in the PR body |
 | levelization gate | **yes, only here** | **no job exists** | criterion 4; digest in the PR body |
@@ -2099,6 +2413,25 @@ classify the drift by changed paths:
   only the affected evidence: re-measure the touched file's identifier set, re-derive section 3.8, and
   recompute the `module-arcs.txt` base and predicted digests of section 3.6.
 - Any other drift is recorded and synchronised at the next bounded gate. It does not reopen the design.
+
+**The classification actually performed, at `147ad4ef` against `d7008b34`.** This is the first drift
+of this plan that falls in the first bullet rather than the second, so the rule is exercised here
+rather than merely stated. 41 files, of which 28 under `src-tauri/src`, 4 under `src-tauri/tests` and
+4 workflows: first bullet, refresh the affected evidence. Refreshed, each with its result:
+
+| Evidence the first bullet names | Result | Where it is recorded |
+| --- | --- | --- |
+| Re-measure the touched files' identifier sets | `files=61 distinct=221` at both SHAs, **identical file and identifier sets** | 1.1, and condition 3 of **G-merge** re-runs it on the merged tree |
+| Re-derive section 3.8 | 7 jobs becomes **8**; toolchains pinned to a SHA | 3.8, and gates 1 and 2 of 13.2 |
+| Recompute the `module-arcs.txt` base and predicted digests of 3.6 | `module-arcs.txt` is **not in the drift**, and the 1095 internal arc declarations differ only by one reordered brace list in `config/projects.rs`. Base digest `A93ED10E...` and 3.6 stand. C10 still re-derives the predicted digest under 9.4's five conditions, on the post-C1b tree | 1.1, 1.2, 3.6 |
+
+Two things the first bullet did **not** anticipate and this round adds to it. First, drift can change
+what a *gate* does without changing a line of source this plan owns: the new `rust-fmt` job is the
+example, and decision 10.1.16 is the response. Second, drift that reformats a file this plan rewrites
+gets more expensive the longer it is left unabsorbed, because the conflict lands on the exact bytes
+the phase claims to preserve. So the rule gains a clause: **drift in the first bullet that reformats
+or rewrites a file in tables 6.3 or 6.4 is absorbed by merge before the first content commit, not
+after the last one.** `C1b` is that merge.
 
 Once a PR exists, exact PR-head checks and the repository merge policy are authoritative. Continuous
 pre-PR attestation that the target never moved is forbidden.
@@ -2156,7 +2489,22 @@ In this order, because this is where the phase can actually break:
     file-local everywhere it is not one of ten struct fields, all of them in C3 and C4) and that
     **B4 and B5 are complete** (they rest on integration tests being the only consumers left on the
     far side). A single missed cross-file identifier makes a gate this plan declares green red
-    again, which is exactly how round 5 failed.
+    again, which is exactly how round 5 failed. **Round 7 note:** both claims have since been
+    reproduced by compilation, independently, by `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`, and
+    the census by three parties. What round 7 changed in 12.1a is the **wording** of the conditions,
+    not a number, so the thing left to attack here is whether the rewritten conditions 2 and 4 of
+    `G-bound` and the three conditions of `G-bound-ts` can be run by an implementer with no private
+    criterion, and whether they still reject real damage. Try to construct a mistake that passes them.
+11. **The drift absorption, `C1b`, and `G-fmt`.** This is round 7's newest text and the only place
+    the plan reaches outside its own frozen base. Three claims carry it and all three are cheap to
+    break: that `cargo fmt --all -- --check` is **green at `d7008b34`** and **red at `147ad4ef` on
+    30 files, 12 of them outside section 6** (run rustfmt over both trees); that the merge of
+    `origin/main` into `a7e6f20c` is **conflict-free** (run it in a throwaway clone); and that the
+    census is **unchanged across the drift** (re-run the 12.1a sweep on both trees, and check it
+    returns 61/221 on the base as its own control). If the third is wrong, this plan needs a new
+    coordinate base and a full re-measurement, so it is the one to attack hardest. Then check the
+    ordering argument in 10.1.16 rather than the fmt mechanics: the expensive question is not whether
+    `cargo fmt` works, it is whether the merge belongs before C2 or after C9.
 
 ---
 
@@ -2260,8 +2608,8 @@ candidate that was **dispatched**. `ac-dev-rust-v3` committed C1 as
 renames, 0 insertions, 0 deletions, re-read here), and stopped at C2 on a blocker.
 `READY_FOR_IMPLEMENTATION`, the three-party consensus and the user's approval were all invalidated by
 that stop, and this is a new candidate. C1 is **not** reverted: its gate passed, it is a pure
-`git mv`, and criterion 5 requires it, so the run resumes at C2 and 1.2's entry ritual now expects
-`3e88cdc6` as HEAD.
+`git mv`, and criterion 5 requires it. **Superseded in round 7 by FN8 and FN9 below:** the run now
+resumes at **C1b**, and 1.2's entry ritual no longer names an expected HEAD at all.
 
 Round 6 changes the entry ritual of 1.2, section 7 item 6, decision 10.1.7, the Gate column of 12.1,
 the new section 12.1a, two cells of 13.3, two items of section 14, the authorship block and this
@@ -2273,9 +2621,56 @@ produced therefore still applies unchanged.
 | # | Finding | Closed in |
 | --- | --- | --- |
 | FN1 | Section 12.1 orders commits by directory while the compile-dependency chain does not follow directories, and a rename is atomic between a definition and every reference to it, so neither order of a split compiles. Every intermediate gate that assumed a compiling tree was therefore unsatisfiable in a **correct** implementation and not only in a mistaken one: `cargo check --all-targets` on C2, C3, C4 and C5, `cargo test --tests cli_workgroup_team` on C4, and `npm run typecheck` on C7. Raised by `ac-dev-rust-v3` from execution, forwarded by `ac-tech-lead-v3`. Three independent measurements, each named with its owner: (a) `ac-dev-rust-v3`, with C2 applied in a worktree, **132 errors across 27 files in 6 codes**, E0609 x35, E0425 x32, E0433 x26, E0560 x20, E0432 x11, E0599 x8, none of them an internal inconsistency of `config/`; (b) `ac-tech-lead-v3`, before accepting the blocker, `git grep -c 'config::coordinator_clocks' 147ad4ef -- src-tauri/src` returning **8 files outside `config/`**, all of them owned by C3, C4 or C5, which C2 breaks by construction when it renames `pub mod coordinator_clocks;` at `config/mod.rs:12`; (c) the author, here, by the tree-level boundary measurement of 12.1a, which is independent of any implementation. (b) was re-run at `3e88cdc6` and returns the same eight files: `cli/workgroup.rs`, `commands/ac_discovery.rs`, `commands/entity_creation.rs`, `commands/pty.rs`, `commands/session.rs`, `lib.rs`, `session/auto_close.rs`, `web/commands.rs`. The two sites (a) reported inside C2's own files were re-read and both hold: `config/sessions_persistence.rs:1675` is `is_coordinator: s.is_coordinator,` reading a `Session`, `config/activity_log.rs:973` is `is_coordinator: false,` in a `SessionInfo` literal, and `session/session.rs:122` and `:298` declare those two fields in a C4 file, so C2 cannot even self-compile | the new section **12.1a**, which measures every boundary over the tree (61 files, 221 distinct identifiers, reproducing the 55 + 6 file counts of 3.1 and 6.4), publishes the five boundary sets **B2** (27), **B3** (29), **B4** (1), **B5** (2) and **B7** (1), and defines the three gates **G-scope**, **G-bound** and **G-bound-ts**; the rewritten Gate column of **12.1**, where C2, C3, C4, C5 and C7 take those gates, C4 and C5 additionally take `cargo check --lib --bins` green, clippy and `cli_workgroup_team` move from C4 to **C6**, and C6 and C8 carry the zero-error terminal conditions; and the two corrected cells of **13.3**. The **decision is closed, not offered**: the directory split of 12.1 and 12.2 stays and the gates move, for the reason 12.1a records under "Why the commits are not reordered instead" |
-| FN2 | Item 6 of section 7 read "exactly one commit in each repo is not independently buildable". True of the web repo, false of the app repo, and it named one cause where there are two: the mandated pure-`git mv` commit, and the directory split of FN1 | item 6 now carries a four-row measured table: `cargo check --lib --bins` red at C1 to C3 and first green at **C4**; `--all-targets`, clippy and `cargo test` red at C1 to C5 and first green at **C6**; `npm run typecheck` red at C1 to C7 and first green at **C8**; the web repo's `npm run check` red at W1 only. **8 of the app repo's 13 commits** (C1, C2, C3, C4, C5, C6, C6b, C7) fail at least one of that repo's two toolchains; **1 of the web repo's 4** does. The web-repo half of the original claim was re-verified rather than assumed: `CoordinationDemo` and `CoordinationProof` are referenced outside the three renamed files only at `README.md:37`, so W2's three paths close everything W1 opens |
-| FN3 | **Not a reviewer finding; caught while making the two above.** 1.2's entry ritual asserted `git rev-parse HEAD` must be `147ad4ef`. C1 has landed, so that assertion is now false and would have stopped the resumed run at its first command | 1.2 expects **`3e88cdc6`** as the app repo's HEAD and `30bfc405` as its parent, states that C1 has landed and that the run resumes at C2, and keeps `147ad4ef` as the coordinate base of 1.1 against which every citation in this plan is read. The web repo's expected HEAD is unchanged at `5ec1ad27`. The `module-arcs.txt` baseline digest of 1.2 is untouched: C1 moved seven paths and changed no byte of that file |
+| FN2 | Item 6 of section 7 read "exactly one commit in each repo is not independently buildable". True of the web repo, false of the app repo, and it named one cause where there are two: the mandated pure-`git mv` commit, and the directory split of FN1 | item 6 now carries a measured table: `cargo check --lib --bins` red at C1 to C3 and first green at **C4**; `--all-targets`, clippy and `cargo test` red at C1 to C5 and first green at **C6**; `npm run typecheck` red at C1 to C7 and first green at **C8**; the web repo's `npm run check` red at W1 only. (Round 7 added a fifth row for `cargo fmt --all -- --check`, red at C1 and C1b and first green at **C2**, and the counts below became **9 of 14** with C1b: see FN9.) **8 of the app repo's 13 commits** (C1, C2, C3, C4, C5, C6, C6b, C7) fail at least one of that repo's two toolchains; **1 of the web repo's 4** does. The web-repo half of the original claim was re-verified rather than assumed: `CoordinationDemo` and `CoordinationProof` are referenced outside the three renamed files only at `README.md:37`, so W2's three paths close everything W1 opens |
+| FN3 | **Not a reviewer finding; caught while making the two above.** 1.2's entry ritual asserted `git rev-parse HEAD` must be `147ad4ef`. C1 has landed, so that assertion is now false and would have stopped the resumed run at its first command | 1.2 expected **`3e88cdc6`** as the app repo's HEAD and `30bfc405` as its parent, stated that C1 had landed and that the run resumed at C2, and kept `147ad4ef` as the coordinate base of 1.1 against which every citation in this plan is read. **The HEAD equality is superseded by FN8:** it was falsified by round 6's own plan commit, exactly as round 5's had been, and 1.2 now names no expected HEAD. The web repo's expected HEAD is unchanged at `5ec1ad27`. The `module-arcs.txt` baseline digest of 1.2 is untouched: C1 moved seven paths and changed no byte of that file |
 | FN4 | **Not a reviewer finding; caught while making the three above.** Section 14 item 1 still told the reviewer to check "the three pin-removal experiments". Round 2's finding O-F raised C6b from three experiments to nine and decision 10.1.15 records why, so section 14 contradicted both 12.1 and 10.1 from round 2 onward | section 14 item 1 reads **nine**, and cites 12.1 C6b and decision 10.1.15. The nine experiments, the constraint-5 argument that covers the other 18 members and every other word of 5.9 and 12.1 C6b are untouched |
+
+### Round-6 findings, and where each one is closed
+
+Round 6 (`31AB7193D79D48D608A9E57C00DE575A5562BCA46FB5DFD112C86C9B1113CFC2`, plan commit `a7e6f20c`)
+drew `CHANGES_REQUIRED` from all three reviewers. Every blocker is on the **wording** of the gates
+round 6 introduced; not one is on their measurement. The boundary sets, the boundary table and the
+census were reproduced independently: `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3` each materialised
+C2 to C6 in a throwaway worktree and ran `cargo check` at every frontier, and both returned
+**61 files (55 under `src`, 6 under `tests`) and 221 distinct identifiers**, the numbers 12.1a
+publishes, with **B2** (27), **B3** (29), **B4** (1), **B5** (2) and **B7** (1) confirmed frontier by
+frontier including the exact identifier left unresolvable at each. `ac-dev-rust-v3` also **retracted
+its round-5 claim in writing**: `cargo check --lib --bins` is green at C4 with zero errors, not at
+C5, and Grinch confirmed it by compiling separately. The C4-versus-C5 contradiction and the
+no-reordering argument are therefore closed by measurement, in this plan's favour, and are not
+reopened here.
+
+Round 7 changes the drift paragraph of 1.1, the entry ritual of 1.2, the job table of 3.8, one row of
+6.1, item 6 of section 7, the new decision 10.1.16, section 12.1 (the new commit C1b, the Gate column,
+and one word of the C5 Content cell), the gate definitions of 12.1a, two rows of 13.2, one row of
+13.3, section 13.5, item 10 of section 14 and its new item 11, the authorship block and this section.
+The **17 Content cells of 12.1 and 12.2 stay byte-identical apart from the single word named in FN10**,
+and no boundary set, pin, rule, criterion, allowlist entry, digest or path table moved.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| FN5 | `G-bound` condition 4 said "take **every** backtick-quoted identifier on those lines" and required all of them to map into the boundary set. rustc quotes the type and module context as well as the unresolvable name, so a **correct** run fails it at the first content commit. Found independently by both Rust reviewers, and `ac-dev-webpage-ui-v3` found the same defect in `G-bound-ts` without having read either. Measured on the real C2 capture: more than 30 quoted tokens are not members of **B2** (`AppSettings`, `LoopPolicy`, `LoopUpdatePatch`, `LoopAuditEntry`, `SessionInfo`, `Session`, `PersistedSession`, `DiscoveredTeam`, `PtyInputAuthorityKind`, `ResolvedLoopTarget`, `TerminalSnapshotTargetIdentity`, `VerifiedPtyInputIdentity`, `tokio::sync::RwLockReadGuard`, the full module path of every `E0432`); in C4 and C5 the same happens with `agentscommander_lib::config::session_context`. The plan's own sentence "a correct run cannot produce a name outside them" was **false under the letter of its own condition 4** | condition 4 of **G-bound** in 12.1a, rewritten as three mechanical steps: keep only tokens matching `coordinat\|orchestrat\|arbiter`, reduce a path-shaped token to its last `::` segment, then invert Rules A and B. An empty surviving set on a primary line is explicitly **not** a failure, because condition 2 already carries that line. The paragraph after it records the measurement, states why the filter costs the gate nothing, and restates the false sentence correctly. Both Rust reviewers measured **zero violations** in C2, C3, C4 and C5 under this reading. **The boundary sets themselves are untouched**: the defect was in what the membership test was applied to |
+| FN6 | `G-bound` condition 2 required **every** error line to match `coordinat\|orchestrat\|arbiter`, and is red at C3 under **any** reading, so unlike FN5 it could not be fixed by narrowing a set. Found only by `ac-dev-rust-grinch-v3`, by compiling. C3 renames `coordinator_cwd` at `commands/pty.rs:187` and `:412` while `session/manager.rs` declares the old method until C4; besides the expected `E0599`, which does name a member of **B3**, rustc emits **six `E0277` cascade lines** at `:187`, `:190` (x2) and `:412` (x3) that name no renamed identifier. No correct implementation of C3 can avoid them: the crossing is what defines B3, and the plan's "counted, not judged" forbids the implementer from excusing them | the **primary/cascade partition** added before the four conditions of **G-bound** in 12.1a, by error code alone (the eleven name-resolution codes are listed, and the six codes measured in C2 are all primary), and condition 2 rewritten in two halves: every **primary** line matches the regex, and every **cascade** line must sit in a path that also carries a primary line in the same capture. The six `E0277`s are admitted because `commands/pty.rs` carries the primary; the same six in a file this commit never touched are not. Stated as a count, with the measurement, so no criterion of the implementer's own enters |
+| FN7 | `G-bound-ts` described an output that does not occur. `ac-dev-webpage-ui-v3` did not judge it by reading: it materialised C7 and ran `npm run typecheck`. The gate said the two call sites report that `closeCoordinator` is not a property of `SessionAPI`. The real diagnostics report **`closeOrchestrator`** (in C7 the call sites are already rewritten, and `closeCoordinator` is the name that still exists, because `ipc.ts` is C8), and never print the token `SessionAPI` at all, because `src/shared/ipc.ts:187` declares `export const SessionAPI = {` **unannotated**, so `tsc` prints the inferred object type structurally with a `... 7 more ...` elision. They are `TS2339` with no "Did you mean" clause. Of the 16 quoted identifiers on those two lines only 2 are in **B7** | **G-bound-ts** in 12.1a, replaced with the reviewer's drafted three conditions, adopted as written and attributed: a definition of what a diagnostic is (and that the two `npm run` banner lines are not), an exact count of **two** diagnostics at `orchestrator-close.ts(57` and `(102`, and a check that each names the property `closeOrchestrator`, with the structural type explicitly outside the check. The observed run is recorded: TypeScript 5.9.3, two `TS2339` at `(57,38)` and `(102,22)`. A closing paragraph states what round 6 got wrong and why, because the shape of the error is what the implementer compares against |
+| FN8 | The entry ritual of 1.2 invalidated itself for the **second** consecutive round. Round 6's FN3 changed it to expect HEAD `3e88cdc6` with parent `30bfc405`; round 6's own plan commit `a7e6f20c` then landed on top, so HEAD became `a7e6f20c` and the resumed run stops at the ritual's second command. Found by `ac-dev-rust-v3`. Naming the new SHA would have set the same trap for round 7 | 1.2, rewritten so that **no SHA equality on HEAD appears at all**. It asserts the two properties that a plan-only commit cannot break: `git merge-base --is-ancestor` returns 0 for both the coordinate base `147ad4ef` and C1 `3e88cdc6`, and `git diff --name-only 3e88cdc6 HEAD` lists only paths under `plans/` or paths that a **prior row of 12.1** declares. Six numbered conditions, and an explicit resume rule: the run resumes at the first row of 12.1 whose subject is absent from the log. The web repo's check is restated the same way |
+| FN9 | **Not a reviewer finding about the plan: the target branch moved, and unlike every previous drift this one is not inert.** `origin/main` went from `147ad4ef` to `d7008b34` (#1602, #1603, #1608, #1609, #1610). It cleaned up `src-tauri`'s formatting drift, added a **required `rust-fmt` job** running `cargo fmt --all -- --check`, and pinned every toolchain action to a full commit SHA. A rename changes identifier length and so changes where rustfmt wraps, so a pure rename can make a file non-conforming; this plan had **no `cargo fmt` step in any commit** and, as written, would fail a required check. Raised by `ac-dev-rust-v3`, investigated by `ac-tech-lead-v3`, dimensioned here | the new decision **10.1.16**, the new commit **C1b** and the new gates **G-merge** and **G-fmt** in 12.1a; the re-derived job table of **3.8** with its measured formatting table; the new toolchain row of item 6 of section 7; gates 1 and 2 of **13.2**; the new `cargo fmt` row of **13.3**; the exercised classification and the new absorption clause of **13.5**; and the drift paragraph of **1.1**, which enumerates exactly what moves and what does not |
+| FN10 | The C5 Content cell said "Rule B across the **12** production files"; 5.2 enumerates 11 and 6.3 assigns 11. Inherited from round 5 and frozen since. Raised by `ac-dev-rust-grinch-v3` and forwarded by the tech lead | the cell now reads **11**. This is the one word of a Content cell round 7 changes, and the authorship block names it. The authoritative enumerations in 5.2 and 6.3 were re-read and both give 11; the implementer derives G-scope's path list from those, never from the number |
+| FN11 | The authorship block said round 6 touched "two items of section 14"; it touched three (items 1 and 9 modified, item 10 added). Raised by `ac-dev-rust-grinch-v3` | superseded: the authorship block is rewritten for round 7 and enumerates this round's changes, including the two that fall outside the Gate-cells-only discipline, explicitly rather than by count |
+| FN12 | The 6.1 row for `orchestrator-close.ts` listed "the local `isCoordinator` uses that are not wire members" among the 11 store symbols Rule A rewrites. **There are none.** All 8 `isCoordinator` tokens across the 6 renamed modules are wire-member reads, frozen by Rule K, exactly as **B7** already records. Raised by `ac-dev-rust-grinch-v3`, whose reproduction of B7 (102 tokens, 16 distinct, 12 own to C7, 3 frozen, 1 external) was exact | the 6.1 row, which now lists the 11 symbols and then states that the file's `isCoordinator` tokens are **not** among them and are frozen by Rule K. The count of 11 store symbols is unchanged; the parenthetical was describing a twelfth thing that does not exist |
+| FN13 | 12.1a and both tables of 9.2 cited the scrape function at `tests/cli_workgroup_team.rs:1810`. At `147ad4ef` the `#[test]` attribute is at `:1810` and the `fn` is at `:1811`. Raised by `ac-dev-rust-v3`, which also confirmed the assertion range `:1836-1838` is correct | all three citations read `:1811`. The assertion range, allowlist entry **L8** and the C4-to-C6 gate movement that rests on them are untouched, and `d7008b34` does not touch this file at all |
+
+**One reviewer measurement did not hold, and the correction matters because a decision rested on it.**
+`ac-dev-rust-v3` reported the drift as "19 files of `src-tauri/src`" with "**zero** lines matching
+`coordinator`", and offered that as the evidence that no coordinate of the plan moves. Re-measured
+here: the drift touches **28** files under `src-tauri/src` and **4** under `src-tauri/tests`, three of
+which are rows of table 6.4 rather than the one reported; and **52** added-or-removed lines match
+`coordinat` case-insensitively, 46 of them in `config/seeded_context_templates.rs`, 2 each in
+`config/teams.rs`, `phone/mailbox.rs` and `lib.rs`. They are reformattings of existing lines, not
+renames, so the **conclusion** was right; the evidence offered for it was not, and the correct
+evidence is different in kind. What actually establishes that no coordinate moves is the **census
+equality** of 1.1 (identical file and identifier sets at both SHAs, with 61/221 on the base as the
+control) plus the **explicit enumeration of the 13 line citations that do move**. A line-matching
+count could not have established it either way.
 
 ### Tech lead's ruling, recorded
 
