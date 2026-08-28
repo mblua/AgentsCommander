@@ -3443,7 +3443,7 @@ fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) ->
 
 ### Send a message to another agent
 
-Before every send, run `list-peers-lean` and use its exact JSON `name`; never guess. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it; never scan sibling directories instead.
+Before every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it.
 
 **Peer name format** (canonical FQN, the `list-peers-lean` `name` field):
 
@@ -3451,17 +3451,28 @@ Before every send, run `list-peers-lean` and use its exact JSON `name`; never gu
 
 {send_message_instructions}
 
-The recipient gets a file-path notification and reads the file. Do NOT use `--get-output`; it blocks and is only for non-interactive sessions. After sending, wait for the reply.
+The recipient reads the notified file path. Do NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. After sending, wait for the reply.
 
 ### List available peers
 
 ```
 "<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
-```"#,
+```{windows_shell_routing}"#,
         peer_name_format = rendered.peer_name_format,
         send_message_instructions = rendered.send_message_instructions,
+        windows_shell_routing = WINDOWS_SHELL_ROUTING,
     )
 }
+
+/// #1596: Windows-only paragraph appended to the inter-agent messaging block.
+/// The release binary is GUI-subsystem, so PowerShell direct capture of its
+/// stdout is empty; the recipe routes AC CLI invocations through Git Bash.
+/// The whole paragraph is the constant (empty string on non-Windows builds).
+#[cfg(target_os = "windows")]
+const WINDOWS_SHELL_ROUTING: &str = "\n\n**Windows:** the release binary is GUI-subsystem; PowerShell direct capture is empty. Run AC CLI invocations via Git Bash (`C:\\Program Files\\Git\\bin\\bash.exe`); never `& $bin ... | ConvertFrom-Json`.";
+
+#[cfg(not(target_os = "windows"))]
+const WINDOWS_SHELL_ROUTING: &str = "";
 
 fn default_context_dynamic_values(
     agent_root: &str,
@@ -5269,6 +5280,35 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("never a path"));
         assert!(out.contains("--send <filename> --mode wake"));
         assert!(out.contains("YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md"));
+    }
+
+    #[test]
+    fn default_context_embeds_send_receipt_rule() {
+        // #1596: the recipe mandates a captured `Queued:` enqueue receipt before
+        // reporting a message as sent; a missing receipt means NOT enqueued.
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        assert!(out.contains("Receipt required"));
+        assert!(out.contains("Queued: <message-id>"));
+        assert!(out.contains("missing receipt means NOT enqueued"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn default_context_embeds_windows_shell_routing_paragraph() {
+        // #1596: the release binary is GUI-subsystem; PowerShell direct capture
+        // is empty, so the context routes AC CLI invocations through Git Bash.
+        let out = default_context(
+            "C:/fake/wg-7-dev-team/__agent_architect",
+            None,
+            &no_skill_section(),
+        );
+        assert!(out.contains("**Windows:**"));
+        assert!(out.contains("bash.exe"));
+        assert!(out.contains("ConvertFrom-Json"));
     }
 
     #[test]

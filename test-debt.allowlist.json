@@ -34,6 +34,14 @@
       "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with pwsh.exe."
     },
     {
+      "id": "rust:src-tauri/tests/cli_powershell_capture.rs::list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1596,
+      "reason": "Release-only Windows Git-Bash routed subsystem coverage cannot run in debug cargo test.",
+      "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with bash.exe."
+    },
+    {
       "id": "rust:src-tauri/src/commands/telegram.rs::attach_detach_persistence_tests::telegram_attach_detach_persistence_ordering_harness_note",
       "category": "ignored-rust-test",
       "owner": "dev-rust",

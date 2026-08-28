@@ -39,6 +39,7 @@ type StatusSource = WebServerOwnedStatus | Error;
 
 interface TransportControl {
   getSettings: () => AppSettings;
+  getSavedDrafts: () => readonly AppSettings[];
   setStatus: (next: WebServerOwnedStatus) => void;
   queueStatus: (...next: StatusSource[]) => void;
 }
@@ -61,19 +62,25 @@ interface MountedTitlebar extends TransportControl {
 const cleanups: Array<() => void> = [];
 
 const status = (overrides: Partial<WebServerOwnedStatus> = {}): WebServerOwnedStatus => {
-  const owned = overrides.owned ?? false;
-  const externalListening = overrides.externalListening ?? false;
-  const listening = overrides.listening ?? (owned || externalListening);
+  const state =
+    overrides.state ??
+    (overrides.owned
+      ? "ownedRunning"
+      : overrides.externalListening
+        ? "externalListening"
+        : "stopped");
+  const owned = overrides.owned ?? ["starting", "ownedRunning", "stopping"].includes(state);
+  const externalListening = overrides.externalListening ?? state === "externalListening";
+  const listening =
+    overrides.listening ?? ["ownedRunning", "externalListening", "stopping"].includes(state);
   return {
     listening,
     owned,
     externalListening,
-    openAllowed: overrides.openAllowed ?? owned,
+    openAllowed: overrides.openAllowed ?? state === "ownedRunning",
     bind: overrides.bind ?? "127.0.0.1",
     port: overrides.port ?? 8765,
-    state:
-      overrides.state ??
-      (owned ? "ownedRunning" : externalListening ? "externalListening" : "stopped"),
+    state,
     bindFailure: overrides.bindFailure ?? null,
   };
 };
@@ -108,12 +115,34 @@ const stoppedStatus = (overrides: Partial<WebServerOwnedStatus> = {}) =>
     ...overrides,
   });
 
+const startingStatus = (overrides: Partial<WebServerOwnedStatus> = {}) =>
+  status({
+    listening: false,
+    owned: true,
+    externalListening: false,
+    openAllowed: false,
+    state: "starting",
+    ...overrides,
+  });
+
+const stoppingStatus = (overrides: Partial<WebServerOwnedStatus> = {}) =>
+  status({
+    listening: true,
+    owned: true,
+    externalListening: false,
+    openAllowed: false,
+    state: "stopping",
+    ...overrides,
+  });
+
 const deferred = <T,>() => {
   let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((nextResolve) => {
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 async function loadModules(): Promise<HarnessModules> {
@@ -139,6 +168,7 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
   let currentSettings = modules.baseSettings(options.settings);
   let currentStatus = options.status ?? stoppedStatus({ port: currentSettings.webServerPort });
   const statusQueue: StatusSource[] = [];
+  const savedDrafts: AppSettings[] = [];
 
   const readStatus = () => {
     const next = statusQueue.shift() ?? currentStatus;
@@ -149,6 +179,7 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
 
   const control: TransportControl = {
     getSettings: () => currentSettings,
+    getSavedDrafts: () => savedDrafts,
     setStatus: (next) => {
       currentStatus = next;
     },
@@ -159,7 +190,9 @@ async function mountTitlebar(options: MountOptions = {}): Promise<MountedTitleba
 
   fake.onInvoke("get_settings", () => currentSettings);
   fake.onInvoke("save_settings_draft", ({ draft }) => {
-    currentSettings = draft as AppSettings;
+    const next = { ...(draft as AppSettings) };
+    savedDrafts.push(next);
+    currentSettings = next;
   });
   fake.onInvoke("get_web_server_owned_status", readStatus);
   fake.onInvoke("start_web_server", () => options.startWebServer?.(control) ?? true);
@@ -400,7 +433,7 @@ describe("Titlebar webserver menu", () => {
     expect(mounted.fake.callsFor("open_web_remote")).toHaveLength(0);
   });
 
-  it("surfaces stop-still-listening conflicts and keeps Open disabled", async () => {
+  it("treats external listening after owner release as terminal and persists disabled", async () => {
     const mounted = await mountTitlebar({
       settings: { webServerEnabled: true },
       status: ownedStatus(),
@@ -414,9 +447,13 @@ describe("Titlebar webserver menu", () => {
     mounted.modules.click(byTestId("titlebar.webserver.toggle"));
 
     await mounted.modules.waitFor(() => {
-      expect(byTestId("titlebar.webserver.error").textContent).toContain("Port is still in use");
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+      expect(mounted.getSettings().webServerEnabled).toBe(false);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Port in use");
       expect(byTestId<HTMLButtonElement>("titlebar.webserver.open").disabled).toBe(true);
-    }, 2500);
+    });
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
     mounted.modules.click(byTestId("titlebar.webserver.open"));
     expect(mounted.fake.callsFor("open_web_remote")).toHaveLength(0);
   });
@@ -441,6 +478,76 @@ describe("Titlebar webserver menu", () => {
       });
       expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
     });
+  });
+
+  it("persists disabled after a successful Stop exceeds the old polling budget", async () => {
+    const stop = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: ownedStatus(),
+      stopWebServer: (control) => {
+        control.setStatus(stoppingStatus());
+        return stop.promise;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThanOrEqual(2);
+    });
+    mounted.fake.clearCalls();
+    vi.useFakeTimers();
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+
+    await vi.advanceTimersByTimeAsync(1_600);
+    expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThan(15);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    mounted.setStatus(stoppedStatus());
+    stop.resolve(true);
+    await vi.advanceTimersByTimeAsync(200);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(mounted.getSavedDrafts()).toHaveLength(1);
+    expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+    expect(mounted.getSettings().webServerEnabled).toBe(false);
+    expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+  });
+
+  it("persists enabled after a successful Start exceeds the old polling budget", async () => {
+    const start = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false },
+      status: stoppedStatus(),
+      startWebServer: async (control) => {
+        const result = await start.promise;
+        control.setStatus(ownedStatus());
+        return result;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThanOrEqual(2);
+    });
+    mounted.fake.clearCalls();
+    vi.useFakeTimers();
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+
+    await vi.advanceTimersByTimeAsync(1_600);
+    expect(mounted.fake.callsFor("get_web_server_owned_status").length).toBeGreaterThan(15);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    start.resolve(true);
+    await vi.advanceTimersByTimeAsync(200);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(mounted.getSavedDrafts()).toHaveLength(1);
+    expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: true });
+    expect(mounted.getSettings().webServerEnabled).toBe(true);
+    expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+    expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
   });
 
   it("rejects invalid port drafts without saving", async () => {
@@ -586,6 +693,7 @@ describe("Titlebar webserver menu", () => {
     stop.resolve(true);
     await mounted.modules.waitFor(() => {
       expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
     });
   });
 
@@ -613,6 +721,256 @@ describe("Titlebar webserver menu", () => {
     expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
   });
 
+  it("start_invoke_pending_exposes_starting_and_allows_stop", async () => {
+    const start = deferred<boolean>();
+    const stop = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false },
+      status: stoppedStatus(),
+      startWebServer: (control) => {
+        control.queueStatus(startingStatus());
+        return start.promise;
+      },
+      stopWebServer: (control) => {
+        control.queueStatus(stoppingStatus(), stoppedStatus());
+        return stop.promise;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Starting");
+      expect(byTestId("titlebar.webserver.button").getAttribute("data-ac-state")).toBe(
+        "ambiguous",
+      );
+      const toggle = byTestId<HTMLButtonElement>("titlebar.webserver.toggle");
+      expect(toggle.textContent).toContain("Stop Server");
+      expect(toggle.disabled).toBe(false);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.editAddr").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.editPort").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.restart").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.open").disabled).toBe(true);
+    });
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(1);
+    });
+    expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    stop.resolve(true);
+    start.reject(new Error("Web server start cancelled by stop"));
+    await mounted.modules.waitFor(() => {
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+      expect(mounted.getSavedDrafts().filter((draft) => draft.webServerEnabled)).toHaveLength(0);
+      expect(mounted.getSettings().webServerEnabled).toBe(false);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+    });
+  });
+
+  it("start_wins_but_late_start_continuation_cannot_override_completed_stop", async () => {
+    const start = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: false },
+      status: stoppedStatus(),
+      startWebServer: (control) => {
+        control.queueStatus(startingStatus(), ownedStatus());
+        return start.promise;
+      },
+      stopWebServer: (control) => {
+        control.queueStatus(stoppingStatus(), stoppedStatus());
+        return true;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+      const toggle = byTestId<HTMLButtonElement>("titlebar.webserver.toggle");
+      expect(toggle.textContent).toContain("Stop Server");
+      expect(toggle.disabled).toBe(false);
+    });
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(1);
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+      expect(mounted.getSettings().webServerEnabled).toBe(false);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+    });
+
+    start.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await mounted.modules.waitFor(() => {
+      expect(mounted.getSavedDrafts().filter((draft) => draft.webServerEnabled)).toHaveLength(0);
+      expect(mounted.getSettings().webServerEnabled).toBe(false);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+      expect(byTestId("titlebar.webserver.menu").textContent).not.toContain("Running");
+      expect(maybeByTestId("titlebar.webserver.error")).toBeNull();
+    });
+  });
+
+  it("stop_invoke_pending_exposes_stopping_before_persistence", async () => {
+    const stop = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: ownedStatus(),
+      stopWebServer: (control) => {
+        control.queueStatus(stoppingStatus());
+        return stop.promise;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    mounted.modules.click(byTestId("titlebar.webserver.toggle"));
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopping");
+      expect(byTestId("titlebar.webserver.button").getAttribute("data-ac-state")).toBe(
+        "ambiguous",
+      );
+      const toggle = byTestId<HTMLButtonElement>("titlebar.webserver.toggle");
+      expect(toggle.textContent).toContain("Stop Server");
+      expect(toggle.disabled).toBe(false);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.editAddr").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.editPort").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.restart").disabled).toBe(true);
+      expect(byTestId<HTMLButtonElement>("titlebar.webserver.open").disabled).toBe(true);
+    });
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+
+    mounted.queueStatus(stoppedStatus());
+    stop.resolve(true);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerEnabled: false });
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopped");
+    });
+  });
+
+  it("keeps stopping fail-closed after timeout and lets a later Stop join", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true },
+      status: stoppingStatus(),
+      stopWebServer: () => Promise.reject(new Error("Timed out waiting for web server stop")),
+    });
+
+    await openWebServerMenu(mounted);
+    const toggle = byTestId<HTMLButtonElement>("titlebar.webserver.toggle");
+    expect(toggle.textContent).toContain("Stop Server");
+    expect(toggle.disabled).toBe(false);
+    expect(byTestId<HTMLButtonElement>("titlebar.webserver.restart").disabled).toBe(true);
+    expect(byTestId<HTMLButtonElement>("titlebar.webserver.open").disabled).toBe(true);
+
+    mounted.modules.click(toggle);
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.error").textContent).toContain(
+        "Timed out waiting for web server stop",
+      );
+    }, 2500);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+    expect(mounted.fake.callsFor("start_web_server")).toHaveLength(0);
+
+    mounted.modules.click(toggle);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(2);
+    });
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.webserver.error").textContent).toContain(
+        "Timed out waiting for web server stop",
+      );
+    }, 2500);
+    expect(mounted.getSavedDrafts()).toHaveLength(0);
+    expect(mounted.fake.callsFor("start_web_server")).toHaveLength(0);
+  });
+
+  it("an active port edit saves, waits through Stopping, then starts", async () => {
+    const stop = deferred<boolean>();
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerPort: 8765 },
+      status: ownedStatus({ port: 8765 }),
+      stopWebServer: (control) => {
+        control.queueStatus(stoppingStatus({ port: 8765 }));
+        return stop.promise;
+      },
+      startWebServer: (control) => {
+        const port = control.getSettings().webServerPort;
+        control.queueStatus(startingStatus({ port }), ownedStatus({ port }));
+        return true;
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    const edit = byTestId<HTMLButtonElement>("titlebar.webserver.editPort");
+    expect(edit.disabled).toBe(false);
+    mounted.modules.click(edit);
+    await mounted.modules.waitFor(() => {
+      expect(byTestId<HTMLInputElement>("titlebar.webserver.portInput").hidden).toBe(false);
+    });
+    mounted.modules.input(byTestId("titlebar.webserver.portInput"), "9001");
+    const save = byTestId<HTMLButtonElement>("titlebar.webserver.savePort");
+    expect(save.disabled).toBe(false);
+    mounted.modules.click(save);
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerPort: 9001 });
+      expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Stopping");
+    });
+    expect(mounted.fake.callsFor("start_web_server")).toHaveLength(0);
+    expect(byTestId<HTMLInputElement>("titlebar.webserver.portInput").hidden).toBe(false);
+
+    mounted.queueStatus(stoppedStatus({ port: 9001 }));
+    stop.resolve(true);
+    await mounted.modules.waitFor(() => {
+      expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+      expect(byTestId<HTMLInputElement>("titlebar.webserver.portInput").hidden).toBe(true);
+    });
+  });
+
+  it("an active bind edit never starts or collapses when Stop fails in Stopping", async () => {
+    const mounted = await mountTitlebar({
+      settings: { webServerEnabled: true, webServerBind: "127.0.0.1" },
+      status: ownedStatus({ bind: "127.0.0.1" }),
+      stopWebServer: (control) => {
+        control.queueStatus(stoppedStatus({ bind: "192.168.1.9" }));
+        return Promise.reject(new Error("Stop failed before terminal confirmation"));
+      },
+    });
+
+    await openWebServerMenu(mounted);
+    const edit = byTestId<HTMLButtonElement>("titlebar.webserver.editAddr");
+    expect(edit.disabled).toBe(false);
+    mounted.modules.click(edit);
+    await mounted.modules.waitFor(() => {
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+    });
+    const option = byAddr("192.168.1.9");
+    expect(option.disabled).toBe(false);
+    mounted.modules.click(option);
+
+    await mounted.modules.waitFor(() => {
+      expect(mounted.getSavedDrafts()).toHaveLength(1);
+      expect(mounted.getSavedDrafts()[0]).toMatchObject({ webServerBind: "192.168.1.9" });
+      expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.error").textContent).toContain(
+        "Stop failed before terminal confirmation",
+      );
+    });
+    expect(mounted.fake.callsFor("start_web_server")).toHaveLength(0);
+    expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeTruthy();
+  });
+
   // ---------------------------------------------------------------------------
   // #1453 - bind address chooser and bind-failure surfacing.
   // ---------------------------------------------------------------------------
@@ -627,6 +985,10 @@ describe("Titlebar webserver menu", () => {
     const mounted = await mountTitlebar({
       settings: { webServerEnabled: true, webServerBind: "192.168.1.12", webServerPort: 8888 },
       status: stoppedStatus({ bind: "192.168.1.12", port: 8888, bindFailure: BIND_FAILURE }),
+      startWebServer: (control) => {
+        control.setStatus(ownedStatus({ bind: "192.168.1.12", port: 8888 }));
+        return true;
+      },
     });
 
     await openWebServerMenu(mounted);
@@ -647,6 +1009,7 @@ describe("Titlebar webserver menu", () => {
     mounted.modules.click(toggle);
     await mounted.modules.waitFor(() => {
       expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
     });
     expect(mounted.fake.callsFor("stop_web_server")).toHaveLength(0);
   });
@@ -673,6 +1036,8 @@ describe("Titlebar webserver menu", () => {
         webServerBind: "0.0.0.0",
       });
       expect(enabled.fake.callsFor("start_web_server")).toHaveLength(1);
+      expect(byTestId("titlebar.webserver.menu").textContent).toContain("Running");
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeNull();
     });
     cleanups.pop()?.();
     document.body.innerHTML = "";
@@ -695,6 +1060,7 @@ describe("Titlebar webserver menu", () => {
       expect(disabled.fake.lastCall("save_settings_draft")?.args.draft).toMatchObject({
         webServerBind: "0.0.0.0",
       });
+      expect(maybeByTestId("titlebar.webserver.bindPanel")).toBeNull();
     });
     expect(disabled.fake.callsFor("start_web_server")).toHaveLength(0);
   });
