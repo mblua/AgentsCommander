@@ -1268,6 +1268,13 @@ fn validate_row(row: &PublishedManifestRow) -> Result<(), SeedManifestError> {
             let expected_scope = match row.path.serialized.as_str() {
                 ".ac/Context.AgentsCommander.md" => "context:agentscommander",
                 ".ac/Context.coordinator.md" => "context:coordinator",
+                // #1605: the per-platform `{{HOST_PLATFORM_RULES}}` files join the
+                // project-context scope set (mirrors
+                // `manifest_scope_for_project_context_filename` in session_context.rs;
+                // literals kept here to avoid a new module arc).
+                ".ac/Context.platform.windows.md" => "context:platform",
+                ".ac/Context.platform.linux.md" => "context:platform",
+                ".ac/Context.platform.macos.md" => "context:platform",
                 _ => {
                     return Err(SeedManifestError::Validation(format!(
                         "unsupported project context path {}",
