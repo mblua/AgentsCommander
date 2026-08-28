@@ -5736,9 +5736,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
             &no_skill_section(),
         );
-        assert!(out.contains(
-            "list the containing workspace root only to discover `repo-*` folder names"
-        ));
+        assert!(out
+            .contains("list the containing workspace root only to discover `repo-*` folder names"));
         assert!(out.contains("that grants no access to other contents there"));
     }
 
@@ -6113,9 +6112,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::write(
@@ -6184,9 +6181,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
 
@@ -6299,9 +6294,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
 
@@ -6508,9 +6501,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::create_dir_all(&ac_root).expect("create workspace dir");
         std::fs::write(
@@ -6631,9 +6622,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
 
@@ -6644,11 +6633,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&matrix_root),
             &no_skill_section(),
         );
-        std::fs::write(
-            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            &legacy,
-        )
-        .expect("write legacy rendered template");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &legacy)
+            .expect("write legacy rendered template");
 
         let rendered = resolve_agent_context(
             &agent_root,
@@ -6670,12 +6656,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -6693,11 +6675,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
-        std::fs::write(
-            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            &legacy,
-        )
-        .expect("write stale generated default");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &legacy)
+            .expect("write stale generated default");
 
         let materialized = materialize_agent_context_file(
             &path_string(&new_replica),
@@ -6722,12 +6701,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -6750,11 +6725,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             Some(&path_string(&old_matrix)),
             &old_skills_section,
         );
-        std::fs::write(
-            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            &legacy,
-        )
-        .expect("write stale generated default");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &legacy)
+            .expect("write stale generated default");
 
         let materialized = materialize_agent_context_file(
             &path_string(&new_replica),
@@ -6781,12 +6753,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -6838,12 +6806,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -6901,12 +6865,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -6953,12 +6913,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -7020,11 +6976,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
             &old_skills_section,
         );
-        std::fs::write(
-            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            &legacy,
-        )
-        .expect("write stale generated default");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), &legacy)
+            .expect("write stale generated default");
 
         let materialized = materialize_agent_context_file(
             &path_string(&target_matrix),
@@ -7062,12 +7015,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -7148,12 +7097,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix_root = ac_root.join("_agent_dev-rust");
         let new_matrix_root = ac_root.join("_agent_tech-lead");
-        let old_replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica_root = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
         std::fs::create_dir_all(&new_matrix_root).expect("create new matrix root");
         std::fs::create_dir_all(&old_replica_root).expect("create old replica root");
@@ -7200,12 +7145,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let old_matrix_root = ac_root.join("_agent_dev-rust");
-        let old_replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica_root = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix_root).expect("create old matrix root");
         std::fs::create_dir_all(&old_replica_root).expect("create old replica root");
         std::fs::create_dir_all(&new_replica_root).expect("create new replica root");
@@ -7244,9 +7185,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
 
@@ -7532,12 +7471,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -7668,12 +7603,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
@@ -7691,9 +7622,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // Make the context dir read-only so the atomic temp-create fails and the
         // heal cannot publish.
-        let mut perms = std::fs::metadata(&ac_root)
-            .expect("metadata")
-            .permissions();
+        let mut perms = std::fs::metadata(&ac_root).expect("metadata").permissions();
         perms.set_mode(0o555);
         std::fs::set_permissions(&ac_root, perms).expect("set read-only");
 
@@ -7707,9 +7636,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
 
         // Restore write perms before any assertion so tempdir cleanup works.
-        let mut perms = std::fs::metadata(&ac_root)
-            .expect("metadata")
-            .permissions();
+        let mut perms = std::fs::metadata(&ac_root).expect("metadata").permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&ac_root, perms).expect("restore perms");
 
@@ -7728,9 +7655,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
@@ -7770,9 +7695,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
@@ -7815,9 +7738,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
@@ -7864,9 +7785,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         let repo_dir = ac_root.join("wg-19-dev-team").join("repo-Example");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
@@ -7942,9 +7861,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         let skills_section =
@@ -7976,9 +7893,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         std::fs::write(
@@ -8770,11 +8685,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        std::fs::write(
-            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
-            [0xff, 0xfe],
-        )
-        .expect("write invalid utf8 template");
+        std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), [0xff, 0xfe])
+            .expect("write invalid utf8 template");
 
         let err = materialize_agent_context_file(
             &path_string(&matrix_root),
@@ -9365,9 +9277,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_dev-rust");
-        let replica_root = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let replica_root = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&replica_root).expect("create replica root");
         write_skill(
             &matrix_root,
@@ -10108,12 +10018,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
         let new_matrix = ac_root.join("_agent_tech-lead");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
-        let new_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_tech-lead");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
+        let new_replica = ac_root.join("wg-19-dev-team").join("__agent_tech-lead");
         std::fs::create_dir_all(&new_matrix).expect("create new matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
         std::fs::create_dir_all(&new_replica).expect("create new replica");
@@ -10191,9 +10097,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let old_matrix = ac_root.join("_agent_dev-rust");
-        let old_replica = ac_root
-            .join("wg-19-dev-team")
-            .join("__agent_dev-rust");
+        let old_replica = ac_root.join("wg-19-dev-team").join("__agent_dev-rust");
         std::fs::create_dir_all(&old_matrix).expect("create old matrix");
         std::fs::create_dir_all(&old_replica).expect("create old replica");
 

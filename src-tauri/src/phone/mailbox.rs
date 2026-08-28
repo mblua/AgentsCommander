@@ -3164,7 +3164,10 @@ impl MailboxPoller {
                     error
                 );
             } else {
-                log::warn!("[mailbox] #1399 returned unowned claim {} to the outbox", id);
+                log::warn!(
+                    "[mailbox] #1399 returned unowned claim {} to the outbox",
+                    id
+                );
             }
         }
     }
@@ -3734,10 +3737,7 @@ impl MailboxPoller {
                     if rejected {
                         self.retry_tracker.remove(&path);
                     } else {
-                        log::error!(
-                            "Failed to reject outbox message {:?}; will retry",
-                            path
-                        );
+                        log::error!("Failed to reject outbox message {:?}; will retry", path);
                     }
                 }
             }
@@ -9444,12 +9444,13 @@ impl MailboxPoller {
             }
             paths
         };
-        let wg =
-            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
-            {
-                Some(wg) => wg,
-                None => {
-                    return self
+        let wg = match crate::config::teams::verified_wg_coordinator_target(
+            &msg.from,
+            &effective_paths,
+        ) {
+            Some(wg) => wg,
+            None => {
+                return self
                         .reject_message(
                             path,
                             msg,
@@ -9459,8 +9460,8 @@ impl MailboxPoller {
                         ),
                         )
                         .await;
-                }
-            };
+            }
+        };
 
         // 3. --wg assertion (§3.6: interlock, not selector).
         if let Some(ref t) = msg.target {
@@ -11242,9 +11243,7 @@ impl MailboxPoller {
                     }
 
                     for dir in dirs_to_check {
-                        let Some(ac_root) =
-                            crate::config::ac_root::existing_ac_root(&dir)
-                        else {
+                        let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
                             continue;
                         };
                         let candidate = ac_root.join(wg_name).join(&replica_dir);
@@ -21752,7 +21751,10 @@ mod tests {
         let origin = Path::new("outbox-dir/abc.json");
         let claim = wake_claim_path(origin);
         assert_eq!(claim, PathBuf::from("outbox-dir/abc.json.in-flight"));
-        assert_eq!(claim.extension().and_then(|s| s.to_str()), Some("in-flight"));
+        assert_eq!(
+            claim.extension().and_then(|s| s.to_str()),
+            Some("in-flight")
+        );
         assert_eq!(claim.parent(), origin.parent());
         assert_eq!(wake_claim_origin(&claim), Some(origin.to_path_buf()));
         // An id containing a dot survives the round trip (with_extension would
@@ -22015,11 +22017,8 @@ mod tests {
             ));
         }
 
-        let capped_handoff = capped_poller.claim_and_spawn_wake(
-            &app,
-            &capped_source,
-            wake_message_to_target(),
-        );
+        let capped_handoff =
+            capped_poller.claim_and_spawn_wake(&app, &capped_source, wake_message_to_target());
 
         assert!(matches!(capped_handoff, WakeHandoff::LaneBusy));
         assert_eq!(capped_poller.wake_workers.len(), 0);
@@ -22360,13 +22359,8 @@ mod tests {
         // by default, so the uppercased final component resolves to the same
         // physical directory on every standard Windows host, while the raw
         // `OsStr` is guaranteed distinct from the canonical spelling.
-        let escaped_alias = outbox.with_file_name(
-            outbox
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .to_uppercase(),
-        );
+        let escaped_alias =
+            outbox.with_file_name(outbox.file_name().unwrap().to_string_lossy().to_uppercase());
         assert_ne!(escaped_alias.as_os_str(), canonical_outbox.as_os_str());
         assert_eq!(
             crate::path_identity::verify_directory(&escaped_alias)
@@ -22430,7 +22424,10 @@ mod tests {
         let mut next_cycle_candidates = vec![canonical_outbox.clone(), escaped_alias.clone()];
         dedup_outbox_dirs_by_object_id(&mut next_cycle_candidates);
         assert_eq!(next_cycle_candidates.len(), 1);
-        assert_eq!(next_cycle_candidates[0].as_os_str(), canonical_outbox.as_os_str());
+        assert_eq!(
+            next_cycle_candidates[0].as_os_str(),
+            canonical_outbox.as_os_str()
+        );
         let claims: Vec<PathBuf> = std::fs::read_dir(&next_cycle_candidates[0])
             .unwrap()
             .filter_map(|e| e.ok())
@@ -22449,11 +22446,8 @@ mod tests {
     #[tokio::test]
     async fn ten_guard_drops_reach_terminal_rejection() {
         let temp = tempfile::TempDir::new().unwrap();
-        let origin = write_wake_message(
-            temp.path(),
-            "ten-guard-drops",
-            "2026-07-15T00:00:03+00:00",
-        );
+        let origin =
+            write_wake_message(temp.path(), "ten-guard-drops", "2026-07-15T00:00:03+00:00");
         let expected: OutboxMessage = serde_json::from_str(
             &std::fs::read_to_string(&origin).expect("read token-bearing source"),
         )
@@ -22479,8 +22473,7 @@ mod tests {
             assert!(!origin.exists());
             assert!(claim.exists());
 
-            let report =
-                WakeOutcomeReport::new(poller.wake_outcomes_tx.clone(), origin.clone());
+            let report = WakeOutcomeReport::new(poller.wake_outcomes_tx.clone(), origin.clone());
             drop(report);
             poller.drain_wake_outcomes().await;
 
@@ -22509,10 +22502,9 @@ mod tests {
                 assert!(rejected_payload.exists());
                 assert!(rejected_reason.exists());
 
-                let rejected: OutboxMessage = serde_json::from_str(
-                    &std::fs::read_to_string(&rejected_payload).unwrap(),
-                )
-                .unwrap();
+                let rejected: OutboxMessage =
+                    serde_json::from_str(&std::fs::read_to_string(&rejected_payload).unwrap())
+                        .unwrap();
                 assert_eq!(rejected.id, expected.id);
                 assert_eq!(rejected.from, expected.from);
                 assert_eq!(rejected.to, expected.to);
@@ -22709,11 +22701,10 @@ mod tests {
             shutdown.token().clone(),
         );
         let output_senders = Arc::new(Mutex::new(HashMap::new()));
-        let telegram: crate::telegram::manager::TelegramBridgeState = Arc::new(
-            tokio::sync::Mutex::new(
+        let telegram: crate::telegram::manager::TelegramBridgeState =
+            Arc::new(tokio::sync::Mutex::new(
                 crate::telegram::manager::TelegramBridgeManager::new(output_senders),
-            ),
-        );
+            ));
         let store_dir = tempfile::TempDir::new().expect("create target-gate store");
         let message_store = Arc::new(
             crate::api::message_store::MessageStore::open(
@@ -22745,7 +22736,9 @@ mod tests {
             .manage(std::sync::Arc::new(
                 crate::session::purge_guard::PurgeGuard::default(),
             ))
-            .manage(Arc::new(crate::resource_monitor::ResourceMonitorState::new()))
+            .manage(Arc::new(
+                crate::resource_monitor::ResourceMonitorState::new(),
+            ))
             .manage(coordinator.clone())
             .manage(target_gate_state.clone())
             .manage(shutdown)
@@ -22846,15 +22839,8 @@ mod tests {
         MailboxPoller::new().poll_session_requests(&app).await;
 
         let result = read_session_request_result_json(&request.id);
-        assert_eq!(
-            result["status"], "created",
-            "unexpected result: {}",
-            result
-        );
-        let session_id = result["sessionId"]
-            .as_str()
-            .expect("sessionId")
-            .to_string();
+        assert_eq!(result["status"], "created", "unexpected result: {}", result);
+        let session_id = result["sessionId"].as_str().expect("sessionId").to_string();
         assert!(!session_id.is_empty());
         assert!(
             !session_request_file_for(&request.id).exists(),

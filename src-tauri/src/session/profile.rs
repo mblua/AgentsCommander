@@ -799,7 +799,10 @@ impl CodingAgentKind {
             Some(CodingAgentKind::Claude)
         } else if basenames.iter().any(|b| b.starts_with("codex")) {
             Some(CodingAgentKind::Codex)
-        } else if basenames.iter().any(|b| matches!(b.as_str(), "agy" | "antigravity")) {
+        } else if basenames
+            .iter()
+            .any(|b| matches!(b.as_str(), "agy" | "antigravity"))
+        {
             Some(CodingAgentKind::Antigravity)
         } else {
             None
@@ -1038,7 +1041,13 @@ mod tests {
 
     #[test]
     fn detect_antigravity_stems_and_wrapper_exclusions() {
-        for shell in ["agy", "agy.exe", "agy.cmd", "antigravity", r"C:\tools\agy.exe"] {
+        for shell in [
+            "agy",
+            "agy.exe",
+            "agy.cmd",
+            "antigravity",
+            r"C:\tools\agy.exe",
+        ] {
             assert_eq!(
                 CodingAgentKind::detect(shell, &[]),
                 Some(CodingAgentKind::Antigravity),
@@ -1047,19 +1056,18 @@ mod tests {
         }
         // Tokenized cmd form.
         assert_eq!(
-            CodingAgentKind::detect(
-                "cmd.exe",
-                &strings(&["/C", "agy", "--effort", "high"])
-            ),
+            CodingAgentKind::detect("cmd.exe", &strings(&["/C", "agy", "--effort", "high"])),
             Some(CodingAgentKind::Antigravity)
         );
         // Exact-stem only: prefix wrappers are NOT inferred.
-        for shell in ["agy-proxy", "my-agy", "antigravity-pro", "agyctl", "antigravityctl"] {
-            assert_eq!(
-                CodingAgentKind::detect(shell, &[]),
-                None,
-                "shell={shell:?}"
-            );
+        for shell in [
+            "agy-proxy",
+            "my-agy",
+            "antigravity-pro",
+            "agyctl",
+            "antigravityctl",
+        ] {
+            assert_eq!(CodingAgentKind::detect(shell, &[]), None, "shell={shell:?}");
         }
         // `--model antigravity` as a VALUE for claude still detects Claude
         // (prefix precedence wins); a gemini* executable is no longer a kind.
@@ -1887,11 +1895,7 @@ mod tests {
             Some(PtySubmissionAgent::Antigravity)
         );
         assert_eq!(
-            detect_pty_submission_agent(
-                "antigravity.exe",
-                &[],
-                Some(CodingAgentKind::Antigravity)
-            ),
+            detect_pty_submission_agent("antigravity.exe", &[], Some(CodingAgentKind::Antigravity)),
             Some(PtySubmissionAgent::Antigravity)
         );
         assert_eq!(

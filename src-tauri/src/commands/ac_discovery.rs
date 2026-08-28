@@ -7,11 +7,11 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::config::settings::SettingsState;
 use crate::config::ac_root::{
-    canonical_ac_root_label, existing_ac_root, find_ac_root_segment,
-    has_ac_root, ac_root_for_project,
+    ac_root_for_project, canonical_ac_root_label, existing_ac_root, find_ac_root_segment,
+    has_ac_root,
 };
+use crate::config::settings::SettingsState;
 use crate::pty::manager::{PendingSpawn, PtyManager};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionInfo, SessionRepo, SessionStatus};
@@ -1269,8 +1269,7 @@ pub async fn discover_ac_agents(
                                 // teams::tests::is_any_coordinator_requires_qualified_fqn.
                                 let is_coordinator =
                                     crate::config::teams::resolve_wg_coordinator_replica(
-                                        &ac_root,
-                                        &path,
+                                        &ac_root, &path,
                                     )
                                     .map(|resolved| resolved.agent_name == replica_name)
                                     .unwrap_or(false);
@@ -1628,16 +1627,12 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
         let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());
         #[cfg(test)]
         let activation: Option<crate::config::seed_manifest::ManifestActivationToken> = None;
-        create_ac_project_impl(
-            &path,
-            activation.as_ref(),
-            |ac_root, on_publication| {
-                crate::config::session_context::create_default_context_templates_with_publications(
-                    ac_root,
-                    on_publication,
-                )
-            },
-        )?;
+        create_ac_project_impl(&path, activation.as_ref(), |ac_root, on_publication| {
+            crate::config::session_context::create_default_context_templates_with_publications(
+                ac_root,
+                on_publication,
+            )
+        })?;
         // #1318 - a fresh `.ac` root seeds the catalog + masters immediately
         // (no restart needed). INSIDE this blocking closure, so the gate acquire
         // runs on the blocking thread. Fail-soft: any error is logged and the
@@ -1724,8 +1719,8 @@ where
                 error
             )
         })?;
-    let pinned_ac_root = crate::config::seed_manifest::PinnedDirectory::open(&ac_root)
-        .map_err(|error| {
+    let pinned_ac_root =
+        crate::config::seed_manifest::PinnedDirectory::open(&ac_root).map_err(|error| {
             format!(
                 "Failed to pin {} directory {}: {}",
                 canonical_ac_root_label(),
@@ -4152,8 +4147,7 @@ mod tests {
 
         let first_result = create_ac_project_impl(&path, None, |ac_root, _on_publication| {
             std::fs::write(
-                ac_root
-                    .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+                ac_root.join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME),
                 crate::config::session_context::get_default_agent_template(),
             )
             .expect("write partial agent context");
@@ -4424,8 +4418,7 @@ mod tests {
             std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
         let hooks = NewProjectTransactionHooks {
             before_final_revalidation: Some(std::sync::Arc::new(|ac_root| {
-                let lock =
-                    ac_root.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+                let lock = ac_root.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
                 let detached = ac_root.join(".seed-manifest.lock-detached-after-save");
                 std::fs::rename(&lock, &detached).expect("detach held lock identity");
                 std::fs::write(&lock, b"").expect("install replacement lock identity");
@@ -4526,8 +4519,7 @@ mod tests {
 
         ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
-        let content =
-            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
             "workspace .gitignore must ignore workgroup delete sentinel directories"
@@ -4568,8 +4560,7 @@ mod tests {
 
         ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
-        let content =
-            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let block =
             "# AgentsCommander: exclude team-config coordination files.\n/.team-config-write.lock";
         assert_eq!(
@@ -4596,8 +4587,7 @@ mod tests {
 
         ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
-        let content =
-            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let count = content
             .lines()
             .filter(|line| line.trim() == ".deleting-*/")
@@ -5072,8 +5062,8 @@ mod tests {
     }
 
     #[test]
-    fn ensure_ac_root_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent(
-    ) {
+    fn ensure_ac_root_gitignore_appends_team_config_lock_block_preserving_bytes_and_is_idempotent()
+    {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
@@ -5617,14 +5607,20 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
-        std::fs::write(ac_root.join(".gitignore"), "wg-*/
-").expect("write .gitignore");
+        std::fs::write(
+            ac_root.join(".gitignore"),
+            "wg-*/
+",
+        )
+        .expect("write .gitignore");
         ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
 
-        let content =
-            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert_eq!(
-            content.lines().filter(|line| line.trim() == "wg-*/").count(),
+            content
+                .lines()
+                .filter(|line| line.trim() == "wg-*/")
+                .count(),
             1,
             "the pre-existing wg-*/ line must survive exactly once"
         );
@@ -5638,7 +5634,10 @@ mod tests {
             "_agent_*/**/*.pyc",
         ] {
             assert_eq!(
-                content.lines().filter(|line| line.trim() == pattern).count(),
+                content
+                    .lines()
+                    .filter(|line| line.trim() == pattern)
+                    .count(),
                 1,
                 "pattern {pattern} must be appended exactly once"
             );
@@ -5660,11 +5659,8 @@ mod tests {
             "_agent_*/**/__pycache__/",
             "_agent_*/**/*.pyc",
         ];
-        std::fs::write(
-            ac_root.join(".gitignore"),
-            seven_patterns.join("\n") + "\n",
-        )
-        .expect("write .gitignore");
+        std::fs::write(ac_root.join(".gitignore"), seven_patterns.join("\n") + "\n")
+            .expect("write .gitignore");
         let replica = ".ac/wg-1/__agent_replica/rtk_ignored_tools.md";
         let path = project.join(replica);
         std::fs::create_dir_all(path.parent().expect("fixture has a parent"))
@@ -5687,6 +5683,9 @@ mod tests {
             .status()
             .expect("git check-ignore")
             .success();
-        assert!(!ignored, "{replica} must not be ignored by the 7 patterns alone");
+        assert!(
+            !ignored,
+            "{replica} must not be ignored by the 7 patterns alone"
+        );
     }
 }

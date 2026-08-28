@@ -1507,11 +1507,10 @@ fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
             Ok(result) => result,
             Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
         };
-    let identity_ac_root =
-        match canonical_real_directory(&identity.ac_root, "Identity workspace") {
-            Ok(path) => path,
-            Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
-        };
+    let identity_ac_root = match canonical_real_directory(&identity.ac_root, "Identity workspace") {
+        Ok(path) => path,
+        Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
+    };
     let matrix_dir = match canonical_real_directory(&identity.matrix_dir, "Agent Matrix") {
         Ok(path) => path,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
@@ -1690,8 +1689,7 @@ fn validate_attempt_guard<R: tauri::Runtime>(
     }
     let (_, identity) =
         crate::config::replica_identity::read_wg_replica_config_read_only(&replica)?;
-    let identity_ac_root =
-        canonical_real_directory(&identity.ac_root, "Identity workspace")?;
+    let identity_ac_root = canonical_real_directory(&identity.ac_root, "Identity workspace")?;
     let identity_matrix = canonical_real_directory(&identity.matrix_dir, "Agent Matrix")?;
     if identity.agent_name != fingerprint.member
         || identity_ac_root != fingerprint.ac_root

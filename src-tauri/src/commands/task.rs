@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::cli::task_ops::{self, TaskOp};
-use crate::config::settings::SettingsState;
 use crate::config::ac_root::is_ac_root_name; // gate 5 (path-based clean, #545)
+use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 use crate::session::session::find_workgroup_task_path_for_cwd;
 
@@ -351,7 +351,11 @@ pub async fn task_set_title_at(
 
     let outcome =
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
-    log::info!("[task] set_title_at for {} -> {:?}", workgroup_root, outcome);
+    log::info!(
+        "[task] set_title_at for {} -> {:?}",
+        workgroup_root,
+        outcome
+    );
 
     let (content, task_title) = match &outcome {
         task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),

@@ -4036,7 +4036,10 @@ mod tests {
         // `-c` and `--conversation <ID>` / `--conversation=<ID>` are
         // user-authored resume forms: they must survive stripping verbatim.
         for (shell, args) in [
-            ("agy", vec!["-c".to_string(), "-m".to_string(), "gpt-5".to_string()]),
+            (
+                "agy",
+                vec!["-c".to_string(), "-m".to_string(), "gpt-5".to_string()],
+            ),
             (
                 "agy",
                 vec![
