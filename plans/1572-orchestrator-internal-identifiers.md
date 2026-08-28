@@ -4,7 +4,11 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 7. Supersedes the round-6 candidate
+Author: ac-architect-v3. Consensus round 8. Supersedes the round-7 candidate
+`0DEB35F2108AE4E417CEB100FEFAC0D943E2C5C903BBFE32930B67B86818519F` (one `PLAN_APPROVED` and two
+`CHANGES_REQUIRED`, one blocker each, and both blockers the same defect: a counted enumeration
+edited on one side only. Every gate round 7 added was reproduced by compilation, twice and by two
+reviewers, and none is reopened here). Before it the round-6 candidate
 `31AB7193D79D48D608A9E57C00DE575A5562BCA46FB5DFD112C86C9B1113CFC2` (three `CHANGES_REQUIRED`, every
 one of them on the **wording** of the gates round 6 added and none on their measurement: the boundary
 sets and the boundary table were reproduced independently, by compilation, by two reviewers). Before
@@ -19,20 +23,21 @@ green and the run stopped at C2 on a blocker from `ac-dev-rust-v3`. Before it th
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-6 finding to the section that closes
-it. Round 7 changes the drift paragraph of 1.1, the entry ritual of 1.2, the job table of 3.8, one
-row of 6.1, item 6 of section 7, the new decision 10.1.16, section 12.1 (the new commit **C1b**, the
-Gate column, and the C5 Content cell's word "12"), the three gate definitions and one line citation
-of 12.1a, two rows of 13.2, one row of 13.3, section 13.5, item 10 of section 14 and its new item 11,
-this authorship block and section 15.
+`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-7 finding to the section that closes
+it. Round 8 changes the drift bullet of 1.1 and its closing clause, one row of 6.1, two sentences of
+decision 10.1.16, one line citation of 12.1a, the FN6 and FN12 cells and one sentence of the round-6
+prose, this authorship block and section 15. **Every one of those is a number, or a sentence about a
+number, on text this plan already carried; nothing measured, gated, pinned or frozen moves.**
 
-**Two byte changes fall outside the "Gate cells only" discipline round 6 held to, and both are named
-here rather than left to be found.** The C5 Content cell's "12 production files" becomes "**11**",
+**Two byte changes fell outside the "Gate cells only" discipline round 6 held to, and both are named
+here rather than left to be found.** The C5 Content cell's "12 production files" became "**11**",
 which is what 5.2 enumerates and 6.3 assigns and what all three reviewers measured; and the 6.1 row
-for `orchestrator-close.ts` loses the clause "and the local `isCoordinator` uses that are not wire
-members", because there are none. Both are factual corrections a reviewer raised, not scope. Beyond
-them, no pin, no rule, no criterion, no allowlist entry, no digest, no boundary set, no path table,
-and no row of section 3.3, 5, 6.3, 6.4, 6.5, 9 or 11 changed.
+for `orchestrator-close.ts` lost the clause "and the local `isCoordinator` uses that are not wire
+members", because there are none. **Round 8 finishes the second of those two edits**: that row went
+on declaring eleven symbols while listing ten, and now declares ten. All three are factual
+corrections a reviewer raised, not scope. Beyond them, no pin, no rule, no criterion, no allowlist
+entry, no digest, no boundary set, no path table, and no row of section 3.3, 5, 6.3, 6.4, 6.5, 9 or
+11 changed.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -71,12 +76,33 @@ measured here at `147ad4ef` against `d7008b34`:
   `use super::ac_root::{...}` in `config/projects.rs`: same source module, same target module, same
   arc. `src-tauri/module-arcs.txt` is not in the drift at all, so 1.2's baseline digest
   `A93ED10E...` and section 3.6 both hold.
-- **It does move 13 line citations, in 5 files.** Of the 92 resolvable `path:line` citations this
-  plan makes into Rust files, **78 are byte-identical at `d7008b34`** and 13 are not:
-  `commands/ac_discovery.rs:1826`; `commands/session.rs:1432`, `:2573`, `:3406`, `:4582`;
-  `config/seed_manifest.rs:3279`, `:5913`; `config/teams.rs:1038`, `:1619`, `:1626`, `:1636`,
-  `:2328`, `:2360`. Every identifier they name still exists, in the same file, under the same rule.
-  Every citation the **gate machinery** depends on is in the 78: `config/mod.rs:12`,
+- **It does move 24 line citations, in 8 files, and the list below is complete.** Every
+  `path:line` citation this plan makes into a Rust file and that is **not** in this list is
+  byte-identical at `d7008b34`. The 24 were re-counted by program for this edition, by reading each
+  cited line at `147ad4ef` and locating that exact text at `d7008b34`; they are grouped by file,
+  with the shift that file's citations take:
+  `commands/ac_discovery.rs` **-5**: `:1826`, `:2208-2209`.
+  `commands/session.rs` **+9**: `:1432`, `:2573`, `:3406`, `:4582`.
+  `config/seed_manifest.rs` **-1**: `:3279`, `:3279-3281`, `:5913`, `:5913-5915`.
+  `config/teams.rs` **-1**: `:1038`, `:1234`, `:1619`, `:1626`, `:1636`, `:2302`, `:2328`, `:2346`,
+  `:2360`.
+  `lib.rs` **+3**: `:3370`, `:3899-3900`.
+  `agent_update.rs` **+14**: `:2772`.
+  `cli/send.rs` **+1**: `:755`.
+  `tests/cli_project_registration.rs` **-1**: `:602`.
+  Every identifier they name still exists, in the same file, under the same rule. **One of the 24 is
+  an insertion point rather than a reference, and it is the expensive one.** `lib.rs:3899-3900` is
+  the existing `#[cfg(test)] mod tests` that 5.9's site table sends C6b's
+  `wire_keys_are_stable_for_every_renamed_serialised_member` into; after C1b that module header sits
+  **three lines lower**. A test inserted at the cited line lands **outside** that module and can still
+  compile, and no C6b gate would catch it, so C6b locates the module by its `#[cfg(test)] mod tests`
+  header and never by the number. The other `lib.rs` coordinate, `:3370`, is the `close_coordinator`
+  entry of `generate_handler!` that 6.3 and item 7 of section 14 declare unchanged; it takes the same
+  **+3**. Of the five negative-control scans of 3.5, three do not
+  move (`pty/watchers/mod.rs:2470`, `tests/cli_project_registration.rs:563`,
+  `tests/cli_workgroup_team.rs:1854`) and two are in the list above (`agent_update.rs:2772`,
+  `tests/cli_project_registration.rs:602`).
+  Every citation the **gate machinery** depends on is byte-identical: `config/mod.rs:12`,
   `config/session_context.rs:13`, `tests/cli_project_registration.rs:514` (all of **B4**),
   `tests/pty_lifecycle_regression.rs:25`, `tests/pty_powershell_managed_native.rs:50`,
   `tests/wake_consumption_measure.rs:65` (all of **B5**) and `tests/cli_workgroup_team.rs:1811` with
@@ -85,9 +111,11 @@ measured here at `147ad4ef` against `d7008b34`:
   which is where the drift is absorbed, by the new merge commit **C1b**.
 
 `147ad4ef` therefore **stays** the coordinate base. Moving it would force a re-measurement of the
-entire plan to buy 13 line numbers, and after C1b those 13 are the plan's known and enumerated cost,
-not a surprise: a reviewer who finds one of them off by a few lines after C1b is reading a citation
-this paragraph already declares moved, and should locate the site by its identifier.
+entire plan to buy 24 line numbers, and after C1b those 24 are the plan's known and enumerated cost,
+not a surprise: a citation that is off by a few lines after C1b is one the list above names, and the
+site is to be located by its identifier. **The list is exhaustive, which is what makes this clause
+falsifiable**: a citation that moves and is not in the list is a defect in this plan, not an
+application of this clause.
 
 Codebase Memory gate for `repo-AgentsCommander`: `status: ready`,
 project `D-0_repos-AgentsCommander_iac-.ac-wg-13-ac-dev-team-v3-repo-AgentsCommander`,
@@ -1156,7 +1184,7 @@ its old name and in ADDED under its new name; the old path never appears in MODI
 | `src/shared/orchestrator-badge.test.ts` | `git mv` of `shared/coordinator-badge.test.ts`, then Rule A plus the L1 specifier. |
 | `src/sidebar/components/orchestrator-badge-class.ts` | `git mv`, then Rule A over `CoordinatorIdleLevel` plus the L2 specifier and the file-name reference in its own comment at line 6. |
 | `src/sidebar/components/orchestrator-badge-class.test.ts` | `git mv`, then Rule A plus the L2 and L3 specifiers. |
-| `src/sidebar/stores/orchestrator-close.ts` | `git mv`, then Rule A over the 11 store symbols (`PendingCoordinatorClose`, `pendingCoordinatorClose`, `setPendingCoordinatorClose`, `confirmPendingCoordinatorClose`, `requestCoordinatorClose`, `requestCoordinatorCloseById`, `registerCoordinatorCloseModalHost`, `__resetCoordinatorCloseModalHostForTests`, `coordinatorCloseModalHostAvailable` and `closeCoordinator`). The file's `isCoordinator` tokens are **not** in that list: every one of them reads a wire member and is frozen by Rule K, exactly as B7 records. |
+| `src/sidebar/stores/orchestrator-close.ts` | `git mv`, then Rule A over the **10** store symbols (`PendingCoordinatorClose`, `pendingCoordinatorClose`, `setPendingCoordinatorClose`, `confirmPendingCoordinatorClose`, `requestCoordinatorClose`, `requestCoordinatorCloseById`, `registerCoordinatorCloseModalHost`, `__resetCoordinatorCloseModalHostForTests`, `coordinatorCloseModalHostAvailable` and `closeCoordinator`) - ten names, counted against the list. The file holds **11** distinct identifiers carrying `Coordinator`; the eleventh is `isCoordinator`, at `:53` and `:83`, and it is **not** in the list: both tokens read a wire member and are frozen by Rule K, exactly as B7 records. The `close_coordinator` text at `:75` and `:104` is inside a `console.error` string, and the other `coordinator` occurrences are comment prose; neither is an identifier. The 10 close against **B7** from the other side: the **9** symbols this file itself declares, plus `closeCoordinator`, which `src/shared/ipc.ts:213` declares and B7 owns, is the same set. |
 | `src/sidebar/stores/orchestrator-close.test.ts` | `git mv`, then Rule A plus the L4 specifier. Its `describe("coordinator-close helper (#588)")` title is a literal and stays frozen (phase 4). |
 
 ### 6.2 `repo-AgentsCommander`: REMOVED (7)
@@ -1801,14 +1829,14 @@ missing pin is invisible to the compiler, to criterion 6 and to the frontend sui
     - **The merge costs no measurement.** The 12.1a census is `files=61 distinct=221` at both SHAs
       with identical sets, and the 1095 internal arc declarations are identical but for one reordered
       brace list (1.1). **B2**, **B3**, **B4**, **B5**, **B7**, the boundary table, section 3.6 and
-      1.2's `module-arcs.txt` digest all stand. The price is 13 line citations in 5 files, enumerated
+      1.2's `module-arcs.txt` digest all stand. The price is 24 line citations in 8 files, enumerated
       in 1.1.
 
     **The alternatives, and why each loses.** *Rebase the branch onto `d7008b34`*: forbidden by the
     repository's landing rule (a branch is updated by merge, never by rebase) and it would rewrite
     `3e88cdc6`, the landed C1 whose pure-rename gate is what criterion 5 rests on. *Re-base the plan's
     coordinates at `d7008b34`*: a full re-measurement of every count, set and citation in the plan, to
-    buy 13 line numbers that 1.1 can simply name. *Skip `cargo fmt` and let the PR merge sort it out*:
+    buy 24 line numbers that 1.1 can simply name. *Skip `cargo fmt` and let the PR merge sort it out*:
     `actions/checkout` on a `pull_request` event does check out the merge ref, so the PR twin of
     `rust-fmt` would pass, but the workflow also fires `on: push`, and the push twin checks out the
     branch tip and would be red on every push of the run. *Run `cargo fmt --all` once at the tip*:
@@ -2144,7 +2172,7 @@ implementer decides pass or fail without applying any criterion of their own.
    **Why the second half exists, measured.** C3 renames `coordinator_cwd` at `commands/pty.rs:187`
    and `:412` while `session/manager.rs` still declares the old method until C4. rustc emits the
    expected `E0599`, which names a member of **B3**, and then, with the receiver's type unknown,
-   **six `E0277` lines** at `:187`, `:190` (twice) and `:412` (three times) that name no renamed
+   **six `E0277` lines** at `commands/pty.rs:187`, `:190` (twice), `:412` and `:415` (twice) that name no renamed
    identifier at all. No correct implementation of C3 can avoid them: the crossing is what defines
    **B3**. Round 6's condition 2 required *every* error line to match the regex, so it went red on
    correct work at the second content commit. Those six are cascades in a path that carries a
@@ -2650,13 +2678,13 @@ and no boundary set, pin, rule, criterion, allowlist entry, digest or path table
 | # | Finding | Closed in |
 | --- | --- | --- |
 | FN5 | `G-bound` condition 4 said "take **every** backtick-quoted identifier on those lines" and required all of them to map into the boundary set. rustc quotes the type and module context as well as the unresolvable name, so a **correct** run fails it at the first content commit. Found independently by both Rust reviewers, and `ac-dev-webpage-ui-v3` found the same defect in `G-bound-ts` without having read either. Measured on the real C2 capture: more than 30 quoted tokens are not members of **B2** (`AppSettings`, `LoopPolicy`, `LoopUpdatePatch`, `LoopAuditEntry`, `SessionInfo`, `Session`, `PersistedSession`, `DiscoveredTeam`, `PtyInputAuthorityKind`, `ResolvedLoopTarget`, `TerminalSnapshotTargetIdentity`, `VerifiedPtyInputIdentity`, `tokio::sync::RwLockReadGuard`, the full module path of every `E0432`); in C4 and C5 the same happens with `agentscommander_lib::config::session_context`. The plan's own sentence "a correct run cannot produce a name outside them" was **false under the letter of its own condition 4** | condition 4 of **G-bound** in 12.1a, rewritten as three mechanical steps: keep only tokens matching `coordinat\|orchestrat\|arbiter`, reduce a path-shaped token to its last `::` segment, then invert Rules A and B. An empty surviving set on a primary line is explicitly **not** a failure, because condition 2 already carries that line. The paragraph after it records the measurement, states why the filter costs the gate nothing, and restates the false sentence correctly. Both Rust reviewers measured **zero violations** in C2, C3, C4 and C5 under this reading. **The boundary sets themselves are untouched**: the defect was in what the membership test was applied to |
-| FN6 | `G-bound` condition 2 required **every** error line to match `coordinat\|orchestrat\|arbiter`, and is red at C3 under **any** reading, so unlike FN5 it could not be fixed by narrowing a set. Found only by `ac-dev-rust-grinch-v3`, by compiling. C3 renames `coordinator_cwd` at `commands/pty.rs:187` and `:412` while `session/manager.rs` declares the old method until C4; besides the expected `E0599`, which does name a member of **B3**, rustc emits **six `E0277` cascade lines** at `:187`, `:190` (x2) and `:412` (x3) that name no renamed identifier. No correct implementation of C3 can avoid them: the crossing is what defines B3, and the plan's "counted, not judged" forbids the implementer from excusing them | the **primary/cascade partition** added before the four conditions of **G-bound** in 12.1a, by error code alone (the eleven name-resolution codes are listed, and the six codes measured in C2 are all primary), and condition 2 rewritten in two halves: every **primary** line matches the regex, and every **cascade** line must sit in a path that also carries a primary line in the same capture. The six `E0277`s are admitted because `commands/pty.rs` carries the primary; the same six in a file this commit never touched are not. Stated as a count, with the measurement, so no criterion of the implementer's own enters |
+| FN6 | `G-bound` condition 2 required **every** error line to match `coordinat\|orchestrat\|arbiter`, and is red at C3 under **any** reading, so unlike FN5 it could not be fixed by narrowing a set. Found only by `ac-dev-rust-grinch-v3`, by compiling. C3 renames `coordinator_cwd` at `commands/pty.rs:187` and `:412` while `session/manager.rs` declares the old method until C4; besides the expected `E0599`, which does name a member of **B3**, rustc emits **six `E0277` cascade lines** at `commands/pty.rs:187`, `:190` (x2), `:412` and `:415` (x2) that name no renamed identifier. No correct implementation of C3 can avoid them: the crossing is what defines B3, and the plan's "counted, not judged" forbids the implementer from excusing them | the **primary/cascade partition** added before the four conditions of **G-bound** in 12.1a, by error code alone (the eleven name-resolution codes are listed, and the six codes measured in C2 are all primary), and condition 2 rewritten in two halves: every **primary** line matches the regex, and every **cascade** line must sit in a path that also carries a primary line in the same capture. The six `E0277`s are admitted because `commands/pty.rs` carries the primary; the same six in a file this commit never touched are not. Stated as a count, with the measurement, so no criterion of the implementer's own enters |
 | FN7 | `G-bound-ts` described an output that does not occur. `ac-dev-webpage-ui-v3` did not judge it by reading: it materialised C7 and ran `npm run typecheck`. The gate said the two call sites report that `closeCoordinator` is not a property of `SessionAPI`. The real diagnostics report **`closeOrchestrator`** (in C7 the call sites are already rewritten, and `closeCoordinator` is the name that still exists, because `ipc.ts` is C8), and never print the token `SessionAPI` at all, because `src/shared/ipc.ts:187` declares `export const SessionAPI = {` **unannotated**, so `tsc` prints the inferred object type structurally with a `... 7 more ...` elision. They are `TS2339` with no "Did you mean" clause. Of the 16 quoted identifiers on those two lines only 2 are in **B7** | **G-bound-ts** in 12.1a, replaced with the reviewer's drafted three conditions, adopted as written and attributed: a definition of what a diagnostic is (and that the two `npm run` banner lines are not), an exact count of **two** diagnostics at `orchestrator-close.ts(57` and `(102`, and a check that each names the property `closeOrchestrator`, with the structural type explicitly outside the check. The observed run is recorded: TypeScript 5.9.3, two `TS2339` at `(57,38)` and `(102,22)`. A closing paragraph states what round 6 got wrong and why, because the shape of the error is what the implementer compares against |
 | FN8 | The entry ritual of 1.2 invalidated itself for the **second** consecutive round. Round 6's FN3 changed it to expect HEAD `3e88cdc6` with parent `30bfc405`; round 6's own plan commit `a7e6f20c` then landed on top, so HEAD became `a7e6f20c` and the resumed run stops at the ritual's second command. Found by `ac-dev-rust-v3`. Naming the new SHA would have set the same trap for round 7 | 1.2, rewritten so that **no SHA equality on HEAD appears at all**. It asserts the two properties that a plan-only commit cannot break: `git merge-base --is-ancestor` returns 0 for both the coordinate base `147ad4ef` and C1 `3e88cdc6`, and `git diff --name-only 3e88cdc6 HEAD` lists only paths under `plans/` or paths that a **prior row of 12.1** declares. Six numbered conditions, and an explicit resume rule: the run resumes at the first row of 12.1 whose subject is absent from the log. The web repo's check is restated the same way |
 | FN9 | **Not a reviewer finding about the plan: the target branch moved, and unlike every previous drift this one is not inert.** `origin/main` went from `147ad4ef` to `d7008b34` (#1602, #1603, #1608, #1609, #1610). It cleaned up `src-tauri`'s formatting drift, added a **required `rust-fmt` job** running `cargo fmt --all -- --check`, and pinned every toolchain action to a full commit SHA. A rename changes identifier length and so changes where rustfmt wraps, so a pure rename can make a file non-conforming; this plan had **no `cargo fmt` step in any commit** and, as written, would fail a required check. Raised by `ac-dev-rust-v3`, investigated by `ac-tech-lead-v3`, dimensioned here | the new decision **10.1.16**, the new commit **C1b** and the new gates **G-merge** and **G-fmt** in 12.1a; the re-derived job table of **3.8** with its measured formatting table; the new toolchain row of item 6 of section 7; gates 1 and 2 of **13.2**; the new `cargo fmt` row of **13.3**; the exercised classification and the new absorption clause of **13.5**; and the drift paragraph of **1.1**, which enumerates exactly what moves and what does not |
 | FN10 | The C5 Content cell said "Rule B across the **12** production files"; 5.2 enumerates 11 and 6.3 assigns 11. Inherited from round 5 and frozen since. Raised by `ac-dev-rust-grinch-v3` and forwarded by the tech lead | the cell now reads **11**. This is the one word of a Content cell round 7 changes, and the authorship block names it. The authoritative enumerations in 5.2 and 6.3 were re-read and both give 11; the implementer derives G-scope's path list from those, never from the number |
 | FN11 | The authorship block said round 6 touched "two items of section 14"; it touched three (items 1 and 9 modified, item 10 added). Raised by `ac-dev-rust-grinch-v3` | superseded: the authorship block is rewritten for round 7 and enumerates this round's changes, including the two that fall outside the Gate-cells-only discipline, explicitly rather than by count |
-| FN12 | The 6.1 row for `orchestrator-close.ts` listed "the local `isCoordinator` uses that are not wire members" among the 11 store symbols Rule A rewrites. **There are none.** All 8 `isCoordinator` tokens across the 6 renamed modules are wire-member reads, frozen by Rule K, exactly as **B7** already records. Raised by `ac-dev-rust-grinch-v3`, whose reproduction of B7 (102 tokens, 16 distinct, 12 own to C7, 3 frozen, 1 external) was exact | the 6.1 row, which now lists the 11 symbols and then states that the file's `isCoordinator` tokens are **not** among them and are frozen by Rule K. The count of 11 store symbols is unchanged; the parenthetical was describing a twelfth thing that does not exist |
+| FN12 | The 6.1 row for `orchestrator-close.ts` listed "the local `isCoordinator` uses that are not wire members" among the 11 store symbols Rule A rewrites. **There are none.** All 8 `isCoordinator` tokens across the 6 renamed modules are wire-member reads, frozen by Rule K, exactly as **B7** already records. Raised by `ac-dev-rust-grinch-v3`, whose reproduction of B7 (102 tokens, 16 distinct, 12 own to C7, 3 frozen, 1 external) was exact | the 6.1 row, which now lists the 11 symbols and then states that the file's `isCoordinator` tokens are **not** among them and are frozen by Rule K. **Corrected in round 8 as GN2 and GN3:** the parenthetical was not describing a twelfth thing, it was describing the **eleventh**, `isCoordinator`, which does exist at `:53` and `:83` and is simply not renamable. Removing it from a Rule A list of eleven leaves **ten**, and round 7 left the digit at eleven |
 | FN13 | 12.1a and both tables of 9.2 cited the scrape function at `tests/cli_workgroup_team.rs:1810`. At `147ad4ef` the `#[test]` attribute is at `:1810` and the `fn` is at `:1811`. Raised by `ac-dev-rust-v3`, which also confirmed the assertion range `:1836-1838` is correct | all three citations read `:1811`. The assertion range, allowlist entry **L8** and the C4-to-C6 gate movement that rests on them are untouched, and `d7008b34` does not touch this file at all |
 
 **One reviewer measurement did not hold, and the correction matters because a decision rested on it.**
@@ -2669,8 +2697,38 @@ which are rows of table 6.4 rather than the one reported; and **52** added-or-re
 renames, so the **conclusion** was right; the evidence offered for it was not, and the correct
 evidence is different in kind. What actually establishes that no coordinate moves is the **census
 equality** of 1.1 (identical file and identifier sets at both SHAs, with 61/221 on the base as the
-control) plus the **explicit enumeration of the 13 line citations that do move**. A line-matching
+control) plus the **explicit enumeration of the line citations that do move** (13 at the time, 24
+after the round-8 recount of 1.1). A line-matching
 count could not have established it either way.
+
+### Round-7 findings, and where each one is closed
+
+Round 7 (`0DEB35F2108AE4E417CEB100FEFAC0D943E2C5C903BBFE32930B67B86818519F`, plan commit `29377c3a`)
+drew `PLAN_APPROVED` from `ac-dev-rust-v3` and `CHANGES_REQUIRED` from `ac-dev-rust-grinch-v3` and
+`ac-dev-webpage-ui-v3`, one blocker each. Everything round 7 measured was reproduced rather than
+argued: `ac-dev-rust-v3` materialised the whole chain twice, once on `147ad4ef` and once on the
+merged tree, and compiled at every frontier, returning zero violations of the four **G-bound**
+conditions and zero appeals to implementer judgement at C2, C3, C4 and C5, with C3's six `E0277`
+admitted by the cascade half; both Rust reviewers reproduced the 61/221 census with byte-identical
+sets at both SHAs; Grinch reproduced all five formatting measurements and re-read every coordinate
+of the gate machinery one by one. **Both blockers are the same defect, and it is a defect of
+editing, not of measurement: a counted enumeration changed on one side only.** In one, the round-7
+recount extended a list without extending the count; in the other, it removed an item without
+lowering the count.
+
+**The rule this plan now follows, written down because it has failed twice in one round.** Removing
+an item from a counted list, or adding one, is a two-part edit, and the part that gets forgotten is
+the number. Any edition of this plan that touches an enumeration re-counts that enumeration **by
+program** and compares the result against the declared digit, rather than carrying the digit
+forward. Both enumerations below were closed that way.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| GN1 | 1.1 declared "13 line citations, in 5 files". The 13 it enumerated are in **4** files, so the digit contradicted its own list; and **11 further citations move that it did not name**, in 4 further files. The costly one is `lib.rs:3899-3900`, the `#[cfg(test)] mod tests` that 5.9's site table sends C6b's new test into: it sits three lines lower on the merged tree, so an implementer following the coordinate inserts the test **outside** the module, which can still compile and which no C6b gate detects. 1.1's own safety clause ("a reviewer who finds one of them off ... is reading a citation this paragraph already declares moved") was therefore false for exactly the citations where being wrong is expensive. Raised by `ac-dev-rust-grinch-v3`, which compared every `path:line` citation in the plan against both trees | the drift bullet of **1.1**, re-counted by program: **24 citations in 8 files**, grouped by file with each file's shift, the statement that the list is complete, and the two `lib.rs` sites called out by name with their shift stated rather than a post-merge coordinate written down, since 1.1 reads every coordinate at `147ad4ef`. The closing clause of 1.1 now says the list is exhaustive and that a citation which moves and is not in it is a defect in this plan rather than an instance of the clause. The two restatements of the old number inside decision **10.1.16**, and the one in the round-6 prose of this section, follow it |
+| GN2 | The 6.1 row for `orchestrator-close.ts` declared "Rule A over the **11** store symbols" and enumerated **10**. Round 7 removed the eleventh item (the `isCoordinator` clause, per FN12) and did not lower the digit. Raised by `ac-dev-webpage-ui-v3`, which tokenised the file rather than reading the row | the row now declares **10**, which is what it lists, and carries the measurement: the file holds 11 distinct identifiers carrying `Coordinator`, the eleventh being `isCoordinator` at `:53` and `:83`, frozen by Rule K; the `close_coordinator` text at `:75` and `:104` is string content and the remaining `coordinator` occurrences are comment prose. It closes against **B7** from the other side: the **9** symbols the file declares, plus `closeCoordinator`, which `ipc.ts` declares and B7 owns, is the same 10 |
+| GN3 | The FN12 cell explained that the clause round 7 removed "was describing a twelfth thing that does not exist". It was describing the **eleventh**, `isCoordinator`, which does exist, at `:53` and `:83`; what it is not is renamable. That false explanation is precisely what licensed leaving the `11` of GN2 in place. Raised by `ac-dev-webpage-ui-v3` | the **FN12** cell, which now records that the parenthetical named the eleventh identifier, that Rule K freezes it, and that removing it from a list of eleven leaves ten |
+| GN4 | **Descriptive, not a gate condition.** 12.1a and FN6 cite C3's six cascade `E0277` lines as `:187`, `:190` (x2) and `:412` (x3). `ac-dev-rust-v3`'s capture has the second batch at `:412` and `:415` (x2). The count of six, and the two primary lines at `:187` and `:412`, are exact and unchanged | both citations now read `commands/pty.rs:187`, `:190` (twice), `:412` and `:415` (twice), with the file named so the bare offsets cannot be read against `session/manager.rs`, which the previous clause of the same sentence mentions. No condition of **G-bound** reads these numbers |
+| GN5 | **Not a reviewer finding about the plan: the target drifted again, and this time the plan absorbs it with no edit.** `origin/main` moved from `d7008b34` to `bc249e45`, two commits touching only `.github/workflows/*` and `plans/`. `git rev-parse d7008b34:src-tauri` and `bc249e45:src-tauri` return the **same tree**, `10589d8e0ae37d032abb3487b795e0a62e00567c`, so every measurement in this plan that reads `src-tauri` at `d7008b34` reads the identical bytes at the live target, the 24 citations of 1.1 included | nothing changes. Round 7's decision that **G-merge** re-measures against `origin/main` as fetched by the run, rather than against a SHA frozen at authoring, is what makes this cost no round; the sentence in 1.2 that says so is unmodified |
 
 ### Tech lead's ruling, recorded
 
