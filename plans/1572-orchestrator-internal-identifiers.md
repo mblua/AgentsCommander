@@ -4,14 +4,16 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 4. Supersedes the round-3 candidate
+Author: ac-architect-v3. Consensus round 5. Supersedes the round-4 candidate
+`5000B632BC8E04F3118FAFF92606320A2E309950C00484E03A01BE2CB16E5A58` (two `PLAN_APPROVED`, one
+`CHANGES_REQUIRED`), before it the round-3 candidate
 `08A46CDCAC4279F9BE08B8D98AE7A0FEBDC7325C7E36CB21F2243A2D31D2962A` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), before it the round-2 candidate
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1, round-2 and round-3 finding to the section that
-closes it.
+`CHANGES_REQUIRED`. Section 15 maps every round-1, round-2, round-3 and round-4 finding to the
+section that closes it.
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -1982,6 +1984,19 @@ section 6.5, no rule and no criterion changed.
 | DN2 | 5.5's "the nine non-test files among the 39" is arithmetically false: seven of the nine carry `coordinator` only in a comment or a literal, so the blanking pass that defines the census erases them and they are in neither the 73 nor the 39. Inherited round-2 prose, not a round-3 regression | 5.5 now states that **exactly two** of the 39 are non-test files, names them, and lists the seven comment-and-literal-only files separately with what each one carries. Re-measured: 73 files with a code token, 34 in section 6's tables, 39 remaining with 130 occurrences, of which 2 are non-test |
 | DN3 | Section 15's round-2 header says no row of section 6.5 changed, contradicting its own C-C row, which changed the `App.tsx` reference from `:801` to `:800` | the header now names **both rows that changed**, `ipc.ts` (BN1) and `App.tsx` (C-C), and keeps the rest of the claim |
 | DN4 | **Not a reviewer finding; caught while making the three above.** Decision 10.1.5 still called the Rule P allowlist "the nine-entry allowlist", the round-1 size. Finding B1a grew it to 14 in round 2 and 5.4 has said 14 ever since, so the decision contradicted the number it depends on | decision 10.1.5 reads **the 14-entry allowlist of 5.4**. The allowlist itself, its 14 entries, its 23 distinct literals and its 22 expected `<=` rows are untouched |
+
+### Round-4 findings, and where each one is closed
+
+Round 4 (`5000B632BC8E04F3118FAFF92606320A2E309950C00484E03A01BE2CB16E5A58`) drew `PLAN_APPROVED`
+from `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`, and `CHANGES_REQUIRED` from
+`ac-dev-webpage-ui-v3` on a single finding. All three reviewers audited the round-4 delta hunk by
+hunk, agreed on its seven prose hunks, and found nothing frozen inside it. Round 5 changes prose
+only, in two places: the authorship block at the top of this plan and section 15. No pin, no gate
+digest, no gate command, no rule, no criterion and no row of section 6.5 changed.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| EN1 | The round-2 header rewritten in round 4 to close DN3 reads "Exactly one row of section 6.5 changed: the `App.tsx` row ... and nothing else ... and no other 6.5 row changed". Two rows changed, not one. Extracting the 28 rows of section 6.5 from the blobs of `398dba63` and `dcf25a37` and comparing them row by row: `src/shared/ipc.ts` and `src/sidebar/App.tsx` differ and the other 26 are byte-identical, and the `ipc.ts` row is BN1's own deliverable rather than housekeeping, since it goes from freezing the `:1114`/`:1134` parameters and the `:1122`/`:1142` shorthands to declaring that the parameters rename and the shorthands expand. The header therefore also contradicted the BN1 row of its own table, which lists "the 6.5 `ipc.ts` row" among the places BN1 is closed. Raised by `ac-dev-webpage-ui-v3`, measured independently from the same two blobs by `ac-tech-lead-v3` and by the author | the round-2 header names **both rows that changed**, `ipc.ts` as BN1 and `App.tsx` as C-C, and keeps the rest of the claim; DN3's "Closed in" cell is updated to match. No other row of section 15, and no row of section 6.5, was touched |
 
 ### Tech lead's ruling, recorded
 
