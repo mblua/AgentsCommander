@@ -4,7 +4,12 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 8. Supersedes the round-7 candidate
+Author: ac-architect-v3. Consensus round 9. Supersedes the round-8 candidate
+`432FD5F2635A1592002729FC0D725AC2C5C4A5EABC054C59CC6DC160264A9341` (one `PLAN_APPROVED` and two
+`CHANGES_REQUIRED`, two blockers: the enumeration of 1.1 was missing one citation, refuted by the
+very clause round 8 made falsifiable; and the instruction to locate a `mod tests` by its header
+was absent from both of its points of use. All three reviewers confirmed round 8 moved nothing
+frozen, and nothing it settled is reopened here). Before it the round-7 candidate
 `0DEB35F2108AE4E417CEB100FEFAC0D943E2C5C903BBFE32930B67B86818519F` (one `PLAN_APPROVED` and two
 `CHANGES_REQUIRED`, one blocker each, and both blockers the same defect: a counted enumeration
 edited on one side only. Every gate round 7 added was reproduced by compilation, twice and by two
@@ -23,11 +28,15 @@ green and the run stopped at C2 on a blocker from `ac-dev-rust-v3`. Before it th
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-7 finding to the section that closes
-it. Round 8 changes the drift bullet of 1.1 and its closing clause, one row of 6.1, two sentences of
-decision 10.1.16, one line citation of 12.1a, the FN6 and FN12 cells and one sentence of the round-6
-prose, this authorship block and section 15. **Every one of those is a number, or a sentence about a
-number, on text this plan already carried; nothing measured, gated, pinned or frozen moves.**
+`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-8 finding to the section that closes
+it. Round 9 changes four things and nothing else: the `commands/session.rs` entry of 1.1 gains the
+citation `:2573-2575` and the count becomes **25**, with the four restatements of that number in
+1.1, decision 10.1.16, the round-6 prose of section 15 and the GN5 cell following it; the `lib.rs`
+row of 5.9's site table gains the instruction to locate the module by its `#[cfg(test)] mod tests`
+header and never by the coordinate; the C6b row of 12.1 gains a pointer to that row and to 1.1;
+and this authorship block and section 15 record the round. **Nothing measured, gated, pinned or
+frozen moves: no rule, no criterion, no allowlist entry, no digest, no boundary set, no member or
+experiment count, and no other row of any table.**
 
 **Two byte changes fell outside the "Gate cells only" discipline round 6 held to, and both are named
 here rather than left to be found.** The C5 Content cell's "12 production files" became "**11**",
@@ -76,13 +85,13 @@ measured here at `147ad4ef` against `d7008b34`:
   `use super::ac_root::{...}` in `config/projects.rs`: same source module, same target module, same
   arc. `src-tauri/module-arcs.txt` is not in the drift at all, so 1.2's baseline digest
   `A93ED10E...` and section 3.6 both hold.
-- **It does move 24 line citations, in 8 files, and the list below is complete.** Every
+- **It does move 25 line citations, in 8 files, and the list below is complete.** Every
   `path:line` citation this plan makes into a Rust file and that is **not** in this list is
-  byte-identical at `d7008b34`. The 24 were re-counted by program for this edition, by reading each
+  byte-identical at `d7008b34`. The 25 were re-counted by program for this edition, by reading each
   cited line at `147ad4ef` and locating that exact text at `d7008b34`; they are grouped by file,
   with the shift that file's citations take:
   `commands/ac_discovery.rs` **-5**: `:1826`, `:2208-2209`.
-  `commands/session.rs` **+9**: `:1432`, `:2573`, `:3406`, `:4582`.
+  `commands/session.rs` **+9**: `:1432`, `:2573`, `:2573-2575`, `:3406`, `:4582`.
   `config/seed_manifest.rs` **-1**: `:3279`, `:3279-3281`, `:5913`, `:5913-5915`.
   `config/teams.rs` **-1**: `:1038`, `:1234`, `:1619`, `:1626`, `:1636`, `:2302`, `:2328`, `:2346`,
   `:2360`.
@@ -90,7 +99,7 @@ measured here at `147ad4ef` against `d7008b34`:
   `agent_update.rs` **+14**: `:2772`.
   `cli/send.rs` **+1**: `:755`.
   `tests/cli_project_registration.rs` **-1**: `:602`.
-  Every identifier they name still exists, in the same file, under the same rule. **One of the 24 is
+  Every identifier they name still exists, in the same file, under the same rule. **One of the 25 is
   an insertion point rather than a reference, and it is the expensive one.** `lib.rs:3899-3900` is
   the existing `#[cfg(test)] mod tests` that 5.9's site table sends C6b's
   `wire_keys_are_stable_for_every_renamed_serialised_member` into; after C1b that module header sits
@@ -111,7 +120,7 @@ measured here at `147ad4ef` against `d7008b34`:
   which is where the drift is absorbed, by the new merge commit **C1b**.
 
 `147ad4ef` therefore **stays** the coordinate base. Moving it would force a re-measurement of the
-entire plan to buy 24 line numbers, and after C1b those 24 are the plan's known and enumerated cost,
+entire plan to buy 25 line numbers, and after C1b those 25 are the plan's known and enumerated cost,
 not a surprise: a citation that is off by a few lines after C1b is one the list above names, and the
 site is to be located by its identifier. **The list is exhaustive, which is what makes this clause
 falsifiable**: a citation that moves and is not in the list is a defect in this plan, not an
@@ -1103,7 +1112,7 @@ It is a `Deserialize` member and is asserted in that direction, which sidesteps 
 
 | Site | Members | Why there |
 | --- | --- | --- |
-| `src-tauri/src/lib.rs`, inside the existing `#[cfg(test)] mod tests` at `:3899-3900`, test named `wire_keys_are_stable_for_every_renamed_serialised_member` | 25 (rows 4-28) | every owning type is `pub` or `pub(crate)`, so all are reachable from the crate root by a fully-qualified `crate::` path |
+| `src-tauri/src/lib.rs`, inside the existing `#[cfg(test)] mod tests` at `:3899-3900`, test named `wire_keys_are_stable_for_every_renamed_serialised_member`. **Locate that module by its `#[cfg(test)] mod tests` header and never by this number.** It is the one citation in 1.1's list whose cost is invisible: after C1b the header sits three lines lower, and a test inserted at the cited line lands outside the module, still compiles, and no gate of C6b detects it. The `cli/team.rs` coordinate below does not move, and is to be located the same way regardless | 25 (rows 4-28) | every owning type is `pub` or `pub(crate)`, so all are reachable from the crate root by a fully-qualified `crate::` path |
 | `src-tauri/src/cli/team.rs`, inside the existing `#[cfg(test)] mod tests` at `:579-580` (which opens with `use super::*;`, so the three private types are already in scope), test named `team_cli_wire_keys_are_stable` | 3 (rows 1-3) | `TeamListItem`, `TeamCreateResult` and `AddMemberResult` are private to `cli::team` and are visible nowhere else |
 
 Two sites, not twelve, because splitting per owning module would force a new `#[cfg(test)]` module
@@ -1829,14 +1838,14 @@ missing pin is invisible to the compiler, to criterion 6 and to the frontend sui
     - **The merge costs no measurement.** The 12.1a census is `files=61 distinct=221` at both SHAs
       with identical sets, and the 1095 internal arc declarations are identical but for one reordered
       brace list (1.1). **B2**, **B3**, **B4**, **B5**, **B7**, the boundary table, section 3.6 and
-      1.2's `module-arcs.txt` digest all stand. The price is 24 line citations in 8 files, enumerated
+      1.2's `module-arcs.txt` digest all stand. The price is 25 line citations in 8 files, enumerated
       in 1.1.
 
     **The alternatives, and why each loses.** *Rebase the branch onto `d7008b34`*: forbidden by the
     repository's landing rule (a branch is updated by merge, never by rebase) and it would rewrite
     `3e88cdc6`, the landed C1 whose pure-rename gate is what criterion 5 rests on. *Re-base the plan's
     coordinates at `d7008b34`*: a full re-measurement of every count, set and citation in the plan, to
-    buy 24 line numbers that 1.1 can simply name. *Skip `cargo fmt` and let the PR merge sort it out*:
+    buy 25 line numbers that 1.1 can simply name. *Skip `cargo fmt` and let the PR merge sort it out*:
     `actions/checkout` on a `pull_request` event does check out the merge ref, so the PR twin of
     `rust-fmt` would pass, but the workflow also fires `on: push`, and the push twin checks out the
     branch tip and would be red on every push of the run. *Run `cargo fmt --all` once at the tip*:
@@ -1952,7 +1961,7 @@ commit; none of them could have been green earlier.
 | C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S1 on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs`, and **Rule S2 on `cli/team.rs:49-53`, `:84-85` and `cli/workgroup.rs:48-49`** | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**, which is the first commit at which it can be; then **G-bound** against **B4** of 12.1a. Clippy and the `cli_workgroup_team` run move to **C6**, which is the first commit at which either can be green: 12.1a gives the two independent reasons |
 | C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 11 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**; then **G-bound** against **B5** of 12.1a |
 | C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | **G-fmt**, then **G-scope**, and then the first commit at which the Rust tree compiles at all: `cargo check --all-targets` with **zero errors**; `cargo clippy --workspace --all-targets -- -D warnings` with zero warnings; `cargo test --lib --bins --tests` (redirect stdout to a file, it is swallowed otherwise) all green, **including `cli_workgroup_team` with its `--coordinator` invocations unedited (criterion 8c)** |
-| C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit | **G-fmt**, then **G-scope**; criterion 8a green; **and each test proved real**: see the note below |
+| C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit. **Read the `lib.rs` row of 5.9's site table with 1.1's drift bullet in hand: both `mod tests` are located by their `#[cfg(test)] mod tests` header and never by the coordinate, because the `lib.rs` header sits three lines lower after C1b and an insertion at the cited line compiles outside the module and reddens nothing.** | **G-fmt**, then **G-scope**; criterion 8a green; **and each test proved real**: see the note below |
 | C7 | `refactor(1572): rewrite the 6 renamed TypeScript modules` | contents of the **6 TypeScript** files ADDED in 6.1 (**not** `config/orchestrator_clocks.rs`: that is the seventh renamed file, it is Rust, and 6.1 assigns its content commit to C2), plus the 10 module specifiers L1 to L6 in their importers and the renamed store and badge symbols at those importers' call sites. This closes `src/sidebar/components/SessionItem.tsx` and `src/shared/shortcuts.ts` **completely**, since the renamed-store import is their only in-scope content; `ProjectPanel.tsx` is only partly closed and returns in C8 | **G-scope**, then **G-bound-ts** against **B7** of 12.1a. No **G-fmt**: `rust-fmt` is `working-directory: src-tauri` and C7 touches no Rust |
 | C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining **25** files of section 6.5, including `ProjectPanel.raise-hand.test.tsx`, the two `ipc.ts` parameter renames at `:1114`/`:1134`, and all four shorthand expansions (`ipc.ts:1081`, `:1122`, `:1142`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts`. **Derivation of the 25**, written out because gate 5 of 13.2 counts this commit's paths against it: section 6.5 has **28** rows; subtract `ProjectPanel.regex-filter.test.tsx` (**1**), whose only change is the new `it(...)` and which is therefore C9; subtract `SessionItem.tsx` and `shared/shortcuts.ts` (**2**), which C7 closes completely. 28 − 1 − 2 = **25**. The 6 renamed TypeScript files are **not** subtracted: they live in 6.1/6.2, not 6.5, per the section 6 header. `ProjectPanel.tsx` is touched by both C7 and C8 and is counted here | **the first commit at which either can be green.** `npm run typecheck` with **zero diagnostics**, and `npm test` green |
 | C9 | `test(1572): pin the sidebar orchestrator filter token (R11)` | the one new `it(...)` of section 5.8 | `npm test -- ProjectPanel.regex-filter` green, and green only with the production token present |
@@ -2697,8 +2706,8 @@ which are rows of table 6.4 rather than the one reported; and **52** added-or-re
 renames, so the **conclusion** was right; the evidence offered for it was not, and the correct
 evidence is different in kind. What actually establishes that no coordinate moves is the **census
 equality** of 1.1 (identical file and identifier sets at both SHAs, with 61/221 on the base as the
-control) plus the **explicit enumeration of the line citations that do move** (13 at the time, 24
-after the round-8 recount of 1.1). A line-matching
+control) plus the **explicit enumeration of the line citations that do move** (13 at the time, 25
+after the round-8 and round-9 recounts of 1.1). A line-matching
 count could not have established it either way.
 
 ### Round-7 findings, and where each one is closed
@@ -2728,7 +2737,37 @@ forward. Both enumerations below were closed that way.
 | GN2 | The 6.1 row for `orchestrator-close.ts` declared "Rule A over the **11** store symbols" and enumerated **10**. Round 7 removed the eleventh item (the `isCoordinator` clause, per FN12) and did not lower the digit. Raised by `ac-dev-webpage-ui-v3`, which tokenised the file rather than reading the row | the row now declares **10**, which is what it lists, and carries the measurement: the file holds 11 distinct identifiers carrying `Coordinator`, the eleventh being `isCoordinator` at `:53` and `:83`, frozen by Rule K; the `close_coordinator` text at `:75` and `:104` is string content and the remaining `coordinator` occurrences are comment prose. It closes against **B7** from the other side: the **9** symbols the file declares, plus `closeCoordinator`, which `ipc.ts` declares and B7 owns, is the same 10 |
 | GN3 | The FN12 cell explained that the clause round 7 removed "was describing a twelfth thing that does not exist". It was describing the **eleventh**, `isCoordinator`, which does exist, at `:53` and `:83`; what it is not is renamable. That false explanation is precisely what licensed leaving the `11` of GN2 in place. Raised by `ac-dev-webpage-ui-v3` | the **FN12** cell, which now records that the parenthetical named the eleventh identifier, that Rule K freezes it, and that removing it from a list of eleven leaves ten |
 | GN4 | **Descriptive, not a gate condition.** 12.1a and FN6 cite C3's six cascade `E0277` lines as `:187`, `:190` (x2) and `:412` (x3). `ac-dev-rust-v3`'s capture has the second batch at `:412` and `:415` (x2). The count of six, and the two primary lines at `:187` and `:412`, are exact and unchanged | both citations now read `commands/pty.rs:187`, `:190` (twice), `:412` and `:415` (twice), with the file named so the bare offsets cannot be read against `session/manager.rs`, which the previous clause of the same sentence mentions. No condition of **G-bound** reads these numbers |
-| GN5 | **Not a reviewer finding about the plan: the target drifted again, and this time the plan absorbs it with no edit.** `origin/main` moved from `d7008b34` to `bc249e45`, two commits touching only `.github/workflows/*` and `plans/`. `git rev-parse d7008b34:src-tauri` and `bc249e45:src-tauri` return the **same tree**, `10589d8e0ae37d032abb3487b795e0a62e00567c`, so every measurement in this plan that reads `src-tauri` at `d7008b34` reads the identical bytes at the live target, the 24 citations of 1.1 included | nothing changes. Round 7's decision that **G-merge** re-measures against `origin/main` as fetched by the run, rather than against a SHA frozen at authoring, is what makes this cost no round; the sentence in 1.2 that says so is unmodified |
+| GN5 | **Not a reviewer finding about the plan: the target drifted again, and this time the plan absorbs it with no edit.** `origin/main` moved from `d7008b34` to `bc249e45`, two commits touching only `.github/workflows/*` and `plans/`. `git rev-parse d7008b34:src-tauri` and `bc249e45:src-tauri` return the **same tree**, `10589d8e0ae37d032abb3487b795e0a62e00567c`, so every measurement in this plan that reads `src-tauri` at `d7008b34` reads the identical bytes at the live target, the 25 citations of 1.1 included | nothing changes. Round 7's decision that **G-merge** re-measures against `origin/main` as fetched by the run, rather than against a SHA frozen at authoring, is what makes this cost no round; the sentence in 1.2 that says so is unmodified |
+
+### Round-8 findings, and where each one is closed
+
+Round 8 (`432FD5F2635A1592002729FC0D725AC2C5C4A5EABC054C59CC6DC160264A9341`, plan commit `52513296`)
+drew `PLAN_APPROVED` from `ac-dev-webpage-ui-v3` and `CHANGES_REQUIRED` from `ac-dev-rust-v3` and
+`ac-dev-rust-grinch-v3`, two blockers between them. All three reviewers confirmed that round 8 moved
+nothing frozen. The 24 citations were reproduced by program by both Rust reviewers with their exact
+shifts, the two that round 8 added to Grinch's own list (`config/teams.rs:2302` and `:2346`)
+included; both re-confirmed byte by byte that none of them is a gate coordinate, **B4**, **B5** and
+the **L8** scrape being identical between the two trees; and Grinch ratified all three of round 8's
+editorial decisions. `ac-dev-webpage-ui-v3` closed its own blocker by set equality rather than by
+cardinality and then swept its whole surface for another enumeration with the same defect, finding
+none.
+
+**Both blockers are consequences of round 8's own improvements, which is the useful thing about
+them.** HN1 exists *because* round 8 replaced an unfalsifiable clause with a falsifiable one: the
+old text said a shifted citation was "already declared moved", which no reading can refute, and the
+new text claims the list is exhaustive, which a reviewer can and did refute. HN2 is the round-7
+finding GN1 identified, closed in the one place round 8 did not put it.
+
+| # | Finding | Closed in |
+| --- | --- | --- |
+| HN1 | The enumeration of 1.1 is **not** exhaustive, and the counterexample is a citation the same round's own prose makes: the Concept B clause of 5.2 cites the `tokio::select!` arm it guards at `commands/session.rs:2573-2575`, which is `_ = coordinator_shutdown.cancelled() =>` and the frozen `"selectionCoordinatorUnavailable"` at `147ad4ef`, and which takes the same **+9** as the rest of that file, leaving unrelated code at the old coordinates. This cell states the shift and never the post-merge coordinate, per round 8's ratified decision. The entry for `commands/session.rs` listed `:1432`, `:2573`, `:3406` and `:4582` and not the range, while the list's own counting convention counts a range as a citation distinct from its start line: the `config/seed_manifest.rs` entry lists `:3279` **and** `:3279-3281` as two. Under the closing clause round 8 itself wrote, that is a defect in this plan rather than an application of the clause. Raised by `ac-dev-rust-grinch-v3`, which also recorded the degree as minimal: the start of the range is listed, the sentence anchors the site textually by `selectionCoordinatorUnavailable`, and nothing mechanical reads the coordinate | the `commands/session.rs` entry of **1.1**, which now reads `:1432`, `:2573`, `:2573-2575`, `:3406`, `:4582`, and the count, which reads **25 citations in 8 files**. Re-counted by program over the committed blob rather than carried forward, per the two-part-edit rule above: **25 moved tokens in 8 distinct files**, `:2573-2575` the only addition. The round-8 tool under-counted for a mechanical reason now recorded so it cannot recur: it attributes a bare `:N` citation to the last file named within 700 characters, and 838 characters separate this one from its `commands/session.rs` antecedent. Re-run with that window at 4000 it returns 25 and nothing else new, and of the five other citations it had dropped for the same reason, exactly one is into a Rust file, `config/settings.rs:7068`, which is byte-identical at `d7008b34` and so correctly absent from the list; the other four are TypeScript coordinates, which this list is not about. The shifts, the exclusions, the two `lib.rs` sites and the gate-coordinate re-confirmation are untouched |
+| HN2 | The instruction that C6b's `mod tests` is located by its `#[cfg(test)] mod tests` header and **never** by the number appeared once, in 1.1, and nowhere on the path an implementer actually walks to C6b: the C6b row of 12.1 carried neither the instruction nor a pointer, and the `lib.rs` row of 5.9's site table still presented the bare `:3899-3900` as the localiser. An implementer following 12.1, then 5.9, then the coordinate, without returning to 1.1, lands in exactly the failure GN1 named. Raised independently and without contact by `ac-dev-rust-v3` and `ac-dev-rust-grinch-v3`. `ac-dev-rust-v3`, which is the agent that writes this test, supplied the argument that settles why one mention is not enough: of the citations in 1.1's list every other one fails **autocorrectively**, because the identifier it names is not on the shifted line and the implementer searches for it, whereas this one fails **in silence**; and the two-part-edit rule of this section condemns relying on a number carried in memory across C1b through C6 | the `lib.rs` row of **5.9**'s site table, which now instructs that the module be located by its header and never by the number and states the cost, and the C6b row of **12.1**, which now points at that row and at 1.1's drift bullet. Consistent with the document's existing habit of putting an essential cross-reference at the point of use, as 12.1 already does with "Read 12.1a before this table". No test, member count, experiment, constraint or gate of 5.9 or 12.1 C6b changes |
+
+**One number this round deliberately does not touch.** The GN1 cell above records the round-7 remedy
+as "**24 citations in 8 files**", which is what round 8 wrote and is therefore the correct history;
+HN1 is where the count becomes 25. The GN5 cell's "the 25 citations of 1.1" is a live
+cross-reference to the list rather than a record of what a past round did, so it follows 1.1 like
+the restatements in 10.1.16 and in the round-6 prose above.
 
 ### Tech lead's ruling, recorded
 
