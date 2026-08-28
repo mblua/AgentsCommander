@@ -206,10 +206,7 @@ impl AgentUpdateGate {
     }
 
     pub fn mark_started(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .started = true;
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).started = true;
     }
 
     /// Register the prompt for `command` and return the answer channel. The
@@ -221,7 +218,10 @@ impl AgentUpdateGate {
         label: &str,
     ) -> tokio::sync::oneshot::Receiver<bool> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        debug_assert!(!state.pending.contains_key(command), "duplicate prompt for {command}");
+        debug_assert!(
+            !state.pending.contains_key(command),
+            "duplicate prompt for {command}"
+        );
         state.prompted.insert(command.to_string());
         let (tx, rx) = tokio::sync::oneshot::channel();
         state.pending.insert(
@@ -447,7 +447,12 @@ impl AgentUpdateGate {
     pub async fn wait_until_done(&self) {
         loop {
             let notified = self.release.notified();
-            if self.state.lock().unwrap_or_else(|e| e.into_inner()).finished {
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finished
+            {
                 return;
             }
             notified.await;
@@ -901,15 +906,15 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
             Ok(Ok(status)) => {
                 // The parent exited. Join the readers bounded; a descendant
                 // (npm -> node) can hold the pipe open past the parent exit.
-                let joined =
-                    tokio::time::timeout(READER_JOIN_TIMEOUT, collect(&mut stdout_rx, &mut stderr_rx))
-                        .await;
+                let joined = tokio::time::timeout(
+                    READER_JOIN_TIMEOUT,
+                    collect(&mut stdout_rx, &mut stderr_rx),
+                )
+                .await;
                 let (stdout, stderr) = match joined {
                     Ok((out, err)) => (out, err),
                     Err(_) => {
-                        log::warn!(
-                            "[agent-update] output truncated: descendant holds the pipe"
-                        );
+                        log::warn!("[agent-update] output truncated: descendant holds the pipe");
                         // Kill the tree BEFORE joining again so the readers EOF:
                         // Windows KILL_ON_JOB_CLOSE reaps the lingering tree
                         // member, Unix the process-group kill. The detached
@@ -942,9 +947,7 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
                         {
                             Ok((out, err)) => (out, err),
                             Err(_) => {
-                                log::warn!(
-                                    "[agent-update] output still truncated after tree kill"
-                                );
+                                log::warn!("[agent-update] output still truncated after tree kill");
                                 (Vec::new(), Vec::new())
                             }
                         }
@@ -997,12 +1000,13 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
                 unsafe {
                     libc::kill(-(pid as i32), libc::SIGKILL);
                 }
-                let _ =
-                    tokio::time::timeout(READER_JOIN_TIMEOUT, child.wait()).await;
-                let (stdout, stderr) =
-                    tokio::time::timeout(READER_JOIN_TIMEOUT, collect(&mut stdout_rx, &mut stderr_rx))
-                        .await
-                        .unwrap_or_default();
+                let _ = tokio::time::timeout(READER_JOIN_TIMEOUT, child.wait()).await;
+                let (stdout, stderr) = tokio::time::timeout(
+                    READER_JOIN_TIMEOUT,
+                    collect(&mut stdout_rx, &mut stderr_rx),
+                )
+                .await
+                .unwrap_or_default();
                 let reason = format!("timed out after {}s (killed)", step_timeout.as_secs());
                 log::warn!(
                     "[agent-update] step TIMED OUT for {} ({}): {reason}\n{}",
@@ -1395,7 +1399,11 @@ mod tests {
     fn build_plan_dedupes_by_command_first_entry_wins() {
         let catalog = vec![
             entry("claude", "Claude (primary)", vec!["claude --update"]),
-            entry("claude", "Claude (secondary)", vec!["claude --update --beta"]),
+            entry(
+                "claude",
+                "Claude (secondary)",
+                vec!["claude --update --beta"],
+            ),
             entry("codex", "Codex", vec!["codex update"]),
         ];
         let answers = BTreeMap::new();
@@ -1545,10 +1553,16 @@ mod tests {
         assert!(gate.was_prompted("claude"));
         let snap = gate.snapshot();
         assert!(snap.in_progress);
-        assert_eq!(snap.prompt.as_ref().map(|p| p.command.as_str()), Some("claude"));
+        assert_eq!(
+            snap.prompt.as_ref().map(|p| p.command.as_str()),
+            Some("claude")
+        );
 
         assert!(gate.resolve_answer("claude", true));
-        assert!(!gate.resolve_answer("claude", true), "second resolve must fail");
+        assert!(
+            !gate.resolve_answer("claude", true),
+            "second resolve must fail"
+        );
         assert!(rx.await.expect("answer delivered"));
         assert!(gate.snapshot().prompt.is_none(), "resolved prompt cleared");
 
@@ -1631,10 +1645,7 @@ mod tests {
                 label: "Test".to_string(),
                 commands: vec![
                     "exit 3".to_string(),
-                    format!(
-                        "echo x > {}",
-                        marker.to_string_lossy().replace('\\', "/")
-                    ),
+                    format!("echo x > {}", marker.to_string_lossy().replace('\\', "/")),
                 ],
                 cwd: dir.path().to_path_buf(),
             },
@@ -1792,7 +1803,10 @@ mod tests {
             let gate = Arc::clone(&gate);
             async move {
                 tokio::time::sleep(Duration::from_millis(25)).await;
-                assert!(gate.resolve_answer("claude", false), "prompt must still be pending");
+                assert!(
+                    gate.resolve_answer("claude", false),
+                    "prompt must still be pending"
+                );
                 gate.mark_finished(vec![]);
             }
         });

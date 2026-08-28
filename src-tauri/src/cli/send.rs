@@ -37,7 +37,8 @@ handshake, not delivery itself: on confirmation timeout the CLI exits 1, but the
 durably queued in the outbox and is typically still delivered afterwards (e.g. when wake must \
 cold-spawn an idle peer). Exit 1 on confirmation timeout does NOT mean the message was lost; \
 verify the outbox instead of re-sending. --confirm-timeout is distinct from --timeout, which \
-bounds only the --get-output response wait.")]
+bounds only the --get-output response wait. On enqueue, the CLI prints `Queued: <message-id>` to \
+stdout; a missing `Queued:` line means the message was NOT enqueued.")]
 pub struct SendArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
@@ -1108,6 +1109,10 @@ pub fn execute(args: SendArgs) -> i32 {
         eprintln!("Error: failed to write outbox file: {}", e);
         return 1;
     }
+    // #1596: enqueue receipt on stdout — the only observable signal when the
+    // caller cannot see the GUI-subsystem binary's exit code (PowerShell
+    // direct capture). A missing `Queued:` line means NOT enqueued.
+    crate::cli_println!("Queued: {msg_id}");
     log::info!(
         "[send] queued message {} to '{}' in {}",
         msg_id,
@@ -1158,6 +1163,30 @@ pub fn execute(args: SendArgs) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_after_help_documents_enqueue_receipt() {
+        // #1596: the after_help must document the `Queued:` enqueue receipt so
+        // callers know a missing receipt line means NOT enqueued.
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let send = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "send")
+            .expect("send subcommand");
+        let after = send
+            .get_after_help()
+            .expect("after_help present")
+            .to_string();
+        assert!(
+            after.contains("On enqueue, the CLI prints `Queued: <message-id>` to stdout"),
+            "after_help missing enqueue-receipt sentence"
+        );
+        assert!(
+            after.contains("a missing `Queued:` line means the message was NOT enqueued"),
+            "after_help missing NOT-enqueued sentence"
+        );
+    }
 
     fn make_verified_coordinator_fixture() -> (tempfile::TempDir, Vec<String>) {
         let temp = tempfile::TempDir::new().unwrap();

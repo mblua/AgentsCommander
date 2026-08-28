@@ -307,7 +307,9 @@ fn codex_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
 fn antigravity_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
     tokens[start..].iter().any(|t| {
         let lower = t.to_lowercase();
-        lower == "--continue" || lower == "-c" || lower == "--conversation"
+        lower == "--continue"
+            || lower == "-c"
+            || lower == "--conversation"
             || lower.starts_with("--conversation=")
     })
 }
@@ -317,7 +319,10 @@ fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String>) -> bool 
     // source of truth). G6: slice-pattern destructure, never index — a future
     // <1-element slice degrades gracefully instead of panicking in release.
     let &[resume_token] = CodingAgentKind::Antigravity.profile().resume_tokens else {
-        debug_assert!(false, "Antigravity resume_tokens must have exactly 1 element");
+        debug_assert!(
+            false,
+            "Antigravity resume_tokens must have exactly 1 element"
+        );
         return false;
     };
     match executable_basename(shell).as_str() {
@@ -333,10 +338,12 @@ fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String>) -> bool 
             // Tokenized and embedded forms, structurally mirroring the deleted
             // inject_gemini_resume cmd arm, but searching for a token whose
             // executable basename is exactly "agy" | "antigravity".
-            let is_antigravity_executable = |arg: &str| {
-                matches!(executable_basename(arg).as_str(), "agy" | "antigravity")
-            };
-            if let Some(idx) = shell_args.iter().position(|arg| is_antigravity_executable(arg)) {
+            let is_antigravity_executable =
+                |arg: &str| matches!(executable_basename(arg).as_str(), "agy" | "antigravity");
+            if let Some(idx) = shell_args
+                .iter()
+                .position(|arg| is_antigravity_executable(arg))
+            {
                 let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
                 if antigravity_tokens_have_resume(&tokens, idx + 1) {
                     return false;
@@ -350,7 +357,9 @@ fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String>) -> bool 
                     .split_whitespace()
                     .map(|token| token.to_string())
                     .collect();
-                if let Some(idx) = tokens.iter().position(|token| is_antigravity_executable(token))
+                if let Some(idx) = tokens
+                    .iter()
+                    .position(|token| is_antigravity_executable(token))
                 {
                     let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
                     if antigravity_tokens_have_resume(&token_refs, idx + 1) {
@@ -6745,7 +6754,8 @@ mod tests {
         let rows = session_mgr.read().await.list_sessions().await;
         assert_eq!(rows.len(), 2, "ancestor + nested sessions both exist");
         assert!(
-            rows.iter().any(|row| row.working_directory == nested_origin),
+            rows.iter()
+                .any(|row| row.working_directory == nested_origin),
             "the nested-project session row must exist"
         );
         let _ = temp;
@@ -6789,9 +6799,7 @@ mod tests {
         )
         .await
         .unwrap_or_else(|e| {
-            panic!(
-                "nested replica create must not race the ancestor session; got Err({e})"
-            )
+            panic!("nested replica create must not race the ancestor session; got Err({e})")
         });
 
         // (b) A live session on the nested replica itself + another Background
@@ -10481,14 +10489,10 @@ mod tests {
         // Drive the resolved-agent path exactly as `create_session` does: the
         // resolved agent stays the command-to-run, and the configured host shell
         // (copied from the same config snapshot) travels separately.
-        let spawn = super::build_configured_agent_spawn_for_cwd(
-            &test_settings(),
-            "claude",
-            &cwd,
-            None,
-        )
-        .expect("resolve claude")
-        .expect("claude is configured in test_settings");
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&test_settings(), "claude", &cwd, None)
+                .expect("resolve claude")
+                .expect("claude is configured in test_settings");
         let host_shell = crate::pty::backend::ResolvedAgentHostShell {
             program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
             args: vec!["-NoProfile".to_string()],
@@ -10555,14 +10559,10 @@ mod tests {
         )));
         let app = session_test_app(settings, Arc::clone(&session_mgr), Arc::clone(&pty_mgr));
 
-        let spawn = super::build_configured_agent_spawn_for_cwd(
-            &test_settings(),
-            "claude",
-            &cwd,
-            None,
-        )
-        .expect("resolve claude")
-        .expect("claude is configured in test_settings");
+        let spawn =
+            super::build_configured_agent_spawn_for_cwd(&test_settings(), "claude", &cwd, None)
+                .expect("resolve claude")
+                .expect("claude is configured in test_settings");
         let host_shell = crate::pty::backend::ResolvedAgentHostShell {
             program: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
             args: vec!["-NoProfile".to_string()],
@@ -10621,7 +10621,10 @@ mod tests {
         {
             let specs = backend.specs.lock().unwrap();
             let spec = specs.last().expect("create reached the backend");
-            assert_eq!(spec.args, effective, "backend args stay the logical agent argv");
+            assert_eq!(
+                spec.args, effective,
+                "backend args stay the logical agent argv"
+            );
             assert_eq!(
                 spec.resolved_agent_host_shell
                     .as_ref()
@@ -10701,7 +10704,10 @@ mod tests {
         .await
         .expect_err("invalid configured host must fail the create");
         assert!(error.contains("conflicting/terminal"), "{error}");
-        assert!(error.contains("agent adapter owns command execution"), "{error}");
+        assert!(
+            error.contains("agent adapter owns command execution"),
+            "{error}"
+        );
 
         assert!(
             session_mgr.read().await.list_sessions().await.is_empty(),
@@ -10750,5 +10756,4 @@ mod tests {
         }
         close_test_coordinator(&app).await;
     }
-
 }

@@ -1737,8 +1737,8 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
         }
     }
 
-    if let Some(antigravity_idx) = find_provider_token(&tokens, "agy")
-        .or_else(|| find_provider_token(&tokens, "antigravity"))
+    if let Some(antigravity_idx) =
+        find_provider_token(&tokens, "agy").or_else(|| find_provider_token(&tokens, "antigravity"))
     {
         if antigravity_has_manual_resume(&tokens, antigravity_idx) {
             return Err(format!(
@@ -4411,44 +4411,31 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<(), SettingsSaveErro
 }
 
 #[cfg(windows)]
-const WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS: [u64; 5] = [15, 30, 60, 120, 240];
-
-#[cfg(windows)]
 fn replace_settings_file_atomic_with_retry<Replace, Sleep>(
-    mut replace: Replace,
-    mut sleep: Sleep,
+    replace: Replace,
+    sleep: Sleep,
 ) -> std::io::Result<()>
 where
     Replace: FnMut() -> std::io::Result<()>,
     Sleep: FnMut(std::time::Duration),
 {
-    let total_attempts = WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS.len() + 1;
-    for (attempt_index, backoff_ms) in WINDOWS_SETTINGS_REPLACE_BACKOFFS_MS
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        match replace() {
-            Ok(()) => return Ok(()),
-            Err(error) if matches!(error.raw_os_error(), Some(5) | Some(32)) => {
-                let failed_attempt = attempt_index + 1;
-                let raw_os_error = error
-                    .raw_os_error()
-                    .expect("retryable Windows errors have a raw OS error");
+    crate::config::retry_transient_io_with(
+        replace,
+        sleep,
+        |failed_attempt, total_attempts, error, delay| {
+            if let Some(delay) = delay {
+                let raw_os_error = error.raw_os_error().unwrap_or_default();
                 log::warn!(
                     "Windows settings atomic replace attempt {} of {} failed with raw OS error {}; retrying in {} ms",
                     failed_attempt,
                     total_attempts,
                     raw_os_error,
-                    backoff_ms
+                    delay.as_millis()
                 );
-                sleep(std::time::Duration::from_millis(backoff_ms));
             }
-            Err(error) => return Err(error),
-        }
-    }
-
-    replace()
+        },
+    )
+    .map_err(|failure| failure.error)
 }
 
 #[cfg(windows)]

@@ -1100,7 +1100,13 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "claude", "codex", "hermes", "cursor", "pi", "opencode", "antigravity"
+                "claude",
+                "codex",
+                "hermes",
+                "cursor",
+                "pi",
+                "opencode",
+                "antigravity"
             ]
         );
         // Antigravity is last, after OpenCode.
@@ -1907,14 +1913,8 @@ mod tests {
 
         let loaded = load_catalog(dir.path());
         assert_eq!(loaded.len(), 2);
-        assert_eq!(
-            loaded[0].update_commands,
-            vec!["pi update".to_string()]
-        );
-        assert_eq!(
-            loaded[1].update_commands,
-            vec!["pi update".to_string()]
-        );
+        assert_eq!(loaded[0].update_commands, vec!["pi update".to_string()]);
+        assert_eq!(loaded[1].update_commands, vec!["pi update".to_string()]);
     }
 
     #[test]
@@ -1936,14 +1936,8 @@ mod tests {
 
         let loaded = load_catalog(dir.path());
         assert_eq!(loaded.len(), 2);
-        assert_eq!(
-            loaded[0].update_commands,
-            vec!["pi update".to_string()]
-        );
-        assert_eq!(
-            loaded[1].update_commands,
-            vec!["pi --custom".to_string()]
-        );
+        assert_eq!(loaded[0].update_commands, vec!["pi update".to_string()]);
+        assert_eq!(loaded[1].update_commands, vec!["pi --custom".to_string()]);
     }
 
     #[test]
@@ -1963,10 +1957,9 @@ mod tests {
                 "claude" => assert_eq!(def.update_commands, vec!["claude --update".to_string()]),
                 "pi" => assert_eq!(def.update_commands, vec!["pi update".to_string()]),
                 "codex" => assert_eq!(def.update_commands, vec!["codex update".to_string()]),
-                "hermes" => assert_eq!(
-                    def.update_commands,
-                    vec!["hermes update --yes".to_string()]
-                ),
+                "hermes" => {
+                    assert_eq!(def.update_commands, vec!["hermes update --yes".to_string()])
+                }
                 "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
                 "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
                 "cursor" => assert!(

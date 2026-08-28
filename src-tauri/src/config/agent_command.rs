@@ -1031,8 +1031,8 @@ mod tests {
         find_opencode_config_dir, is_bare_program_token, is_safe_instructions_filename,
         managed_instructions_filenames, normalize_legacy_agent_command,
         prepare_agent_spawn_command, profile_content_hash, resolve_agent_spawn_command,
-        resolve_instructions_filename, resolve_program, resolve_target_filename,
-        AgentSpawnCommand, OpencodeConfigDirOutcome,
+        resolve_instructions_filename, resolve_program, resolve_target_filename, AgentSpawnCommand,
+        OpencodeConfigDirOutcome,
     };
     use crate::config::coding_agent_profiles::ProfileResolution;
     use crate::config::settings::{
@@ -1735,10 +1735,7 @@ mod tests {
         };
         let mut got = managed_instructions_filenames(&settings);
         got.sort();
-        assert_eq!(
-            got,
-            vec!["AGENTS.md".to_string(), "CLAUDE.md".to_string()]
-        );
+        assert_eq!(got, vec!["AGENTS.md".to_string(), "CLAUDE.md".to_string()]);
     }
 
     #[test]
@@ -2273,10 +2270,7 @@ mod tests {
         ];
         expected.push((
             ConfigSeedTier::CatalogDefault,
-            ac_root
-                .join("coding-agents")
-                .join("_seed")
-                .join(".claude"),
+            ac_root.join("coding-agents").join("_seed").join(".claude"),
         ));
         assert_eq!(seed.candidates, expected);
         assert_eq!(seed.dest, expected_replica.join(".claude"));

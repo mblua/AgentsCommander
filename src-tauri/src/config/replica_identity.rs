@@ -178,15 +178,13 @@ fn validate_local_matrix(
         ));
     }
 
-    let ac_root_abs = std::fs::canonicalize(ac_root)
-        .map(strip_unc)
-        .map_err(|e| {
-            format!(
-                "Failed to canonicalize Project AC Root '{}': {}",
-                display_path(ac_root),
-                e
-            )
-        })?;
+    let ac_root_abs = std::fs::canonicalize(ac_root).map(strip_unc).map_err(|e| {
+        format!(
+            "Failed to canonicalize Project AC Root '{}': {}",
+            display_path(ac_root),
+            e
+        )
+    })?;
     let matrix_abs = std::fs::canonicalize(matrix_dir)
         .map(strip_unc)
         .map_err(|e| {
