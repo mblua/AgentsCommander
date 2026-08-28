@@ -279,6 +279,8 @@ export function resetUiStoresForTests(): void {
   sessionsStore.setRepos([]);
   sessionsStore.setAlwaysShowSelectedWorkgroup(true);
   sessionsStore.setCoordSortByActivity(false);
+  sessionsStore.setSidebarPointerInside(false);
+  sessionsStore.setSidebarMenuOpen(false);
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
   projectCollapseStore.resetForTests();
