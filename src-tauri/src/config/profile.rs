@@ -8,6 +8,7 @@
 //! BUILD_PROFILE (set by build.rs) is the fallback for `cargo run` where the
 //! binary name has no underscore suffix.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 /// Build profile string — "dev", "prod", or "stage".
@@ -16,6 +17,13 @@ pub const BUILD_PROFILE: &str = env!("BUILD_PROFILE");
 
 /// Extract suffix from binary name: `agentscommander_foo` -> Some("foo").
 /// Returns None for plain `agentscommander` (no underscore = prod).
+fn binary_suffix_from_path(path: &Path) -> Option<String> {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .and_then(|name| name.find('_').map(|index| name[index + 1..].to_string()))
+}
+
+/// Extract the suffix from the running executable once per process.
 /// Cached via OnceLock — parsed once at first call.
 fn binary_suffix() -> Option<&'static str> {
     static SUFFIX: OnceLock<Option<String>> = OnceLock::new();
@@ -23,8 +31,7 @@ fn binary_suffix() -> Option<&'static str> {
         .get_or_init(|| {
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                .and_then(|name| name.find('_').map(|i| name[i + 1..].to_string()))
+                .and_then(|path| binary_suffix_from_path(&path))
         })
         .as_deref()
 }
@@ -42,17 +49,23 @@ fn capitalize_suffix(suffix: &str) -> String {
 /// Only "dev" (via suffix or BUILD_PROFILE) gets a separate dir.
 /// Everyone else shares the legacy `.agentscommander-new` data directory for
 /// settings compatibility. This is internal storage, not release identity.
+fn config_dir_name_for_suffix(suffix: Option<&str>) -> &'static str {
+    let is_dev = suffix == Some("dev") || (suffix.is_none() && BUILD_PROFILE == "dev");
+    if is_dev {
+        ".agentscommander-new-dev"
+    } else {
+        ".agentscommander-new"
+    }
+}
+
+pub(super) fn config_dir_name_for_executable(executable: Option<&Path>) -> &'static str {
+    let suffix = executable.and_then(binary_suffix_from_path);
+    config_dir_name_for_suffix(suffix.as_deref())
+}
+
 pub fn config_dir_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
-    NAME.get_or_init(|| {
-        let is_dev =
-            binary_suffix() == Some("dev") || (binary_suffix().is_none() && BUILD_PROFILE == "dev");
-        if is_dev {
-            ".agentscommander-new-dev".to_string()
-        } else {
-            ".agentscommander-new".to_string()
-        }
-    })
+    NAME.get_or_init(|| config_dir_name_for_suffix(binary_suffix()).to_string())
 }
 
 /// Application title for the sidebar window.
@@ -212,6 +225,52 @@ pub fn instance_label() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_1577_binary_suffix_parsing_preserves_first_underscore_behavior() {
+        assert_eq!(
+            binary_suffix_from_path(Path::new("agentscommander.exe")),
+            None
+        );
+        assert_eq!(
+            binary_suffix_from_path(Path::new("agentscommander_stage.exe")),
+            Some("stage".to_string())
+        );
+        assert_eq!(
+            binary_suffix_from_path(Path::new("agentscommander_stage_blue.exe")),
+            Some("stage_blue".to_string())
+        );
+        assert_eq!(
+            binary_suffix_from_path(Path::new("agentscommander_.exe")),
+            Some(String::new())
+        );
+        assert_eq!(
+            binary_suffix_from_path(Path::new("agentscommander_dev.exe")),
+            Some("dev".to_string())
+        );
+    }
+
+    #[test]
+    fn issue_1577_config_name_derivation_preserves_profile_fallback() {
+        let expected_fallback = if BUILD_PROFILE == "dev" {
+            ".agentscommander-new-dev"
+        } else {
+            ".agentscommander-new"
+        };
+        assert_eq!(config_dir_name_for_executable(None), expected_fallback);
+        assert_eq!(
+            config_dir_name_for_executable(Some(Path::new("agentscommander.exe"))),
+            expected_fallback
+        );
+        assert_eq!(
+            config_dir_name_for_executable(Some(Path::new("agentscommander_dev.exe"))),
+            ".agentscommander-new-dev"
+        );
+        assert_eq!(
+            config_dir_name_for_executable(Some(Path::new("agentscommander_stage.exe"))),
+            ".agentscommander-new"
+        );
+    }
 
     #[test]
     fn mutex_name_is_nul_terminated_and_scoped() {
