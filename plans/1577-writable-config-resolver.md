@@ -4,7 +4,7 @@ Status: READY_FOR_IMPLEMENTATION
 
 ## Delivery identity
 
-- Issue: open #1577, approved specification comment #issuecomment-5444596303, and the release-owner round-two through round-five rulings.
+- Issue: open #1577, approved specification comment #issuecomment-5444596303, and the release-owner round-two through round-six rulings.
 - Delivery path: Full.
 - Target: main pinned at 1eee2cd72a0d25095108d92b3f495da84b979d24.
 - Branch: fix/1577-writable-config-resolver, created from that exact target.
@@ -35,6 +35,8 @@ Evidence at the pinned source:
 - src-tauri/src/lib.rs:1823-1870 obtains config_dir and panics when creating <config>/instances/<uuid>/outbox.
 - src-tauri/src/main.rs:5-152 owns process termination and already calls both agentscommander_lib::run and cli::present_fatal_startup_message. Every `Some(cmd)` currently reaches logging::init_logger at line 59 and cli::handle_cli at line 84; only the GUI branch reaches lib::run at line 133.
 - logging::init_logger calls config::instance_gitignore::ensure_instance_gitignore, which creates the selected config directory and .gitignore, then opens <config_dir>/app.log. A CLI gate after logger initialization has already violated the marker hard-stop contract.
+- Existing integration test cli_test_reset::file_target_refuses_and_deletes_nothing writes the executable-adjacent candidate as a regular file, invokes exactly `test-reset --confirm-testeable`, and requires exit 1 with stderr JSON `reset_candidate_not_directory` while leaving both candidates untouched. The frozen write-probe classifier makes that regular-file failure indeterminate, so an unconditional CLI preflight exits before the recovery handler can produce its required result.
+- `test-reset` is doubly unreachable from a normal binary: it requires `--confirm-testeable`, and its handler rejects any current executable whose name is not the exact `TESTABLE_EXE_NAME`. It derives candidates from current_exe().parent(), reports through its existing JSON standard-stream path, and its production call trace performs no config-directory write; the only candidate mutation is remove_dir_all after validation. The apparent fs::write later in reset.rs is inside its #[cfg(test)] module.
 - cli::present_fatal_startup_message already selects stderr when redirected stdout/stderr handles are valid and never opens its modal in that state. The CLI preflight reuses it unchanged rather than adding a second presentation surface.
 - The nine resolver tests at config/mod.rs:208-359 pin every existing override, executable, home, stem, and absolute-only instance-base result.
 - The reported primary failure is Ubuntu with a non-root launch from a root-owned global npm prefix. Locked resolution is dirs 6.0.0. On Linux its home_dir follows HOME, so a child-only HOME value controls the real fallback input without product injection; on Windows it uses FOLDERID_Profile and is deliberately not used for this acceptance seam.
@@ -47,7 +49,7 @@ In scope:
 - A deterministic profile derivation over the resolver’s one captured executable without changing first-underscore parsing or downstream title/mutex/port behavior.
 - One shared Windows retry policy used by settings replacement and the config probe.
 - Typed cached startup failure and fallback diagnostics without changing existing config projections.
-- One public opaque config-startup preflight in lib.rs, called by both the CLI branch before logging and lib::run before GUI logging/state, plus a typed lib::run result and fatal presentation in main.
+- One public opaque config-startup preflight in lib.rs, called by every CLI command except exactly `test-reset` before logging and by lib::run before GUI logging/state, plus a typed lib::run result and fatal presentation in main. Exactly `test-reset` skips both this preflight and logger initialization so it can repair the corrupt candidate that would otherwise block startup.
 - Focused unit tests and one exactly named Linux self-subprocess test over the real instance_location and app-outbox creation seam.
 - Release-build evidence for AGENTSCOMMANDER_CONFIG_DIR through the existing Windows CLI smoke invocations, plus a dedicated copied-release-CLI marker-indeterminate case proving exit 1, stderr-only failure, and zero net filesystem delta across its two observed roots. That delta assertion directly detects the concrete misplaced-preflight defect because the current writers it guards create persistent artifacts, as specified below.
 - The release-owner-supplied exact Linux test step appended verbatim to rust-regression-linux after its existing cargo clippy step.
@@ -55,6 +57,7 @@ In scope:
 Out of scope:
 
 - Any --test-home-dir flag, hidden CLI field, CLI validator, main-to-run test-home argument, public/general home override, shipped test affordance, or src-tauri/src/cli/mod.rs change.
+- Any edit to src-tauri/tests/cli_test_reset.rs. Its existing file-target test is the unchanged acceptance evidence; there is no eighth implementation file.
 - Any Windows ACL, copied-GUI, unmarked home-fallback, or adjacent-writability end-to-end case. Windows raw-5/raw-32 composition is covered only by injected unit tests and settings.rs’s existing tests. The sole Windows marker process case is the narrow copied-release-CLI broken-junction preflight test described below; it does not exercise write-probe classification.
 - #1137’s Linux package classifier, XDG target/input/error, general fallible config projection, and reserved precedence slot 3.5.
 - #1594’s macOS bundle-container target and any genuine portable AppImage rule.
@@ -240,9 +243,13 @@ Exact app-outbox text:
 In main.rs:
 
 - Keep CLI parsing and run’s two arguments unchanged.
-- In the `Some(cmd)` branch, retain console attachment and the existing in-process `AC_MACHINE_OUTPUT` classification, then call `agentscommander_lib::preflight_config_startup()` before `logging::init_logger()`, cached update-notice reads, or `handle_cli`. On Err, call `agentscommander_lib::cli::present_fatal_startup_message(&error.to_string())` exactly once and exit 1. Do not initialize logging and do not call the CLI handler.
+- In the `Some(cmd)` branch, retain console attachment and the existing in-process `AC_MACHINE_OUTPUT` classification. Match exactly `agentscommander_lib::cli::Commands::TestReset(_)` as the sole exception. For every other command, call `agentscommander_lib::preflight_config_startup()` before `logging::init_logger()`, cached update-notice reads, or `handle_cli`; on Err, call `agentscommander_lib::cli::present_fatal_startup_message(&error.to_string())` exactly once and exit 1 without initializing logging or calling the CLI handler. For exactly `TestReset`, call neither `preflight_config_startup()` nor `logging::init_logger()` and continue through the existing cached-notice and `handle_cli` path.
 - Handle run’s Result. On Err, call agentscommander_lib::cli::present_fatal_startup_message(&error.to_string()) exactly once and exit 1.
 - Preserve every other parse, CLI-command, UI-automation, mutex/second-instance, and exit behavior.
+
+This is a closed exception for one command, `test-reset`, not a principle for recovery commands or commands that delete without writing config state. Skipping only the preflight is forbidden: in a marker-indeterminate case with a writable adjacent directory, `init_logger()` would create `.gitignore` and `app.log` in the directory the marker contract forbids. Skipping both is safe and necessary here. `init_logger()` is the sole filesystem writer in the `Some(cmd)` prologue; `AC_MACHINE_OUTPUT` classification mutates only the process environment, `attach_parent_console()` uses console APIs, and `update_check::read_cached_notice()` follows a read-only cache/settings path. The separate `write_cache()` function is not on that read call path. `test-reset` does not need logging or the config resolver because it reports through `error_json`/standard streams and derives its candidates from the executable parent.
+
+Adding any second command to this exception list requires both of these executable facts: (1) the command is structurally unreachable from a normal `agentscommander.exe`, as `test-reset` is through the enforced `TESTABLE_EXE_NAME` gate; and (2) its complete call trace contains no write into the config directory, with every apparent write checked for whether it is confined under `#[cfg(test)]`. That evidence is necessary but not sufficient: adding the command also requires a new release-owner ruling, never architect or implementer inference.
 
 The same cached typed error and Display implementation therefore feed both call sites. For a redirected CLI, stdout and stderr are valid pipe handles, so the existing `present_fatal_startup_message` predicate selects stderr and never a modal; stdout remains empty and the process exits 1. Neither startup error contains panic/backtrace text.
 
@@ -271,7 +278,7 @@ The same cached typed error and Display implementation therefore feed both call 
 4. src-tauri/src/lib.rs
    - StartupError, the sole public shared config-startup preflight, retained fallback warning, private shared app-outbox preparation, fallible run, and the Linux self-subprocess test inside the existing tests module.
 5. src-tauri/src/main.rs
-   - CLI preflight before logger/handler plus GUI Result handling, both using existing fatal presentation and exit 1.
+   - CLI preflight before logger/handler for every command except exactly `test-reset`; that one recovery command skips both preflight and logger. GUI Result handling still uses existing fatal presentation and exit 1.
 6. scripts/smoke-cli-release-windows.ps1
    - Scoped environment guard around the existing release CLI smoke invocations, public-override assertions, and one isolated copied-release-CLI broken-junction case with before/after filesystem inventory.
 7. .github/workflows/pr-regression-gates.yml
@@ -287,7 +294,7 @@ No module/file move, new source/test file, dependency, lockfile, frontend, IPC, 
 4. Add marker tri-state, write probe, final classification, cleanup/debris data, and retained diagnostic.
 5. Extend InstanceLocation and the pure resolver; preserve all nine old results and implement the decisive-state table.
 6. Make instance_location perform the one resolver capture, short-circuit I/O, run real adapters once, and cache the result.
-7. Add the sole public lib.rs config-startup preflight; call it before CLI logging/dispatch and as lib::run’s first operation. Make run fallible, extract private app-outbox preparation, and keep presentation/termination in main.
+7. Add the sole public lib.rs config-startup preflight; call it before CLI logging/dispatch for every command except exactly `test-reset`, which skips both preflight and logger initialization, and as lib::run’s first operation. Make run fallible, extract private app-outbox preparation, and keep presentation/termination in main.
 8. Add focused unit tests, the exactly named Linux self-subprocess test, the existing-smoke public-override assertions, and the dedicated Windows release-CLI marker-indeterminate zero-delta case.
 9. Append the release-owner’s workflow step verbatim after rust-regression-linux’s existing cargo clippy step. Do not add another build/check step.
 10. Format, validate locally, rerun dependency/scope gates, and deliver through the issue PR with exact-head CI.
@@ -316,6 +323,13 @@ No module/file move, new source/test file, dependency, lockfile, frontend, IPC, 
 - Marker tests cover absent, empty file, arbitrary file, directory, valid symlink, Windows raw-32-then-success metadata retry, persistent metadata permission error, ambiguous entry, and broken symlink.
 - Exact formatter tests compare marker-present, marker-indeterminate, unmarked-indeterminate, cleanup/debris, retained-warning, and outbox strings byte-for-byte.
 - Windows raw-5/raw-32 behavior is tested only through injected error kinds. No Windows ACL or adjacent-writability end-to-end #1577 case is permitted; the release smoke separately covers the public override and marker-indeterminate pre-logger CLI behavior.
+
+### Exact test-reset recovery boundary
+
+- Keep cli_test_reset::file_target_refuses_and_deletes_nothing byte-for-byte unchanged. With its executable-adjacent candidate as a regular file, `test-reset --confirm-testeable` must reach the existing handler, return exit 1 with stderr JSON `reset_candidate_not_directory`, and leave that file plus the other candidate untouched.
+- Prove a normal executable name still receives `refusing_non_testeable_binary` and omission of `--confirm-testeable` still receives `missing_confirm_testeable`; the exception does not weaken either existing gate.
+- Prove the `TestReset` main-path match bypasses both `preflight_config_startup()` and `logging::init_logger()`, not either one alone. No app.log or .gitignore assertion is added to the integration file because the unchanged regular-file case already makes logger directory creation fail; the implementation boundary and existing suite own this regression without an eighth file.
+- Do not add another enum variant to the bypass by analogy. The two call-trace criteria and a release-owner ruling are mandatory before this list can change.
 
 ### Windows release smoke: public override and pre-logger CLI gate
 
@@ -477,7 +491,7 @@ Planned new/removed unique production Rust module pairs: zero.
 - config/mod.rs continues to reference its existing profile child; replacing config_dir_name with the pure path-derived helper changes the item, not the source/target module relationship.
 - config::settings -> config already exists at settings.rs:1775, 2163, 4191, and 4502. Delegating to the shared retry helper adds a site on that pair.
 - lib -> config already exists. Reading startup diagnostics and calling existing config projections adds sites only.
-- main’s binary-to-library calls to run and cli already exist; Cargo crate dependencies cannot be cyclic. No new crate dependency is added.
+- main’s binary-to-library calls to run and cli already exist; Cargo crate dependencies cannot be cyclic. The exact `Commands::TestReset(_)` guard conditions existing preflight/logger calls and adds no module pair. No new crate dependency is added.
 - The Linux test is inline under lib.rs’s existing #[cfg(test)] tests module, adds no source module/file, and follows the already-existing lib -> config direction. Test-only code is excluded from the production detector by contract.
 - Profile extraction, probe/error logic, and private app-outbox extraction are intra-module.
 - No lower layer gains CLI, Tauri, AppHandle, or UI transport. Config owns filesystem selection; lib/main own presentation and termination.
@@ -532,6 +546,6 @@ No enhanced signing, binary-provenance hash, helper inventory, hostile-parent qu
 
 ## Ready/acceptance verdict
 
-Implementation is accepted only when the precedence/cache contract, one-capture pure derivation, unchanged first-underscore/profile behavior, shared #1436 retry schedule, closed conclusive allowlist, marker-indeterminate hard error, explicitly inverted broken-link assertion, cleanup/debris diagnostic, exact messages, CLI-before-logger exit 1 with empty stdout and zero net filesystem delta sufficient to detect the current persistent logger writers, nine legacy outcomes, seven-path implementation scope, both release-smoke cases, exact Linux subprocess evidence, dependency criterion, all Windows-local checks, the verbatim workflow step, and exact-PR-head CI all pass.
+Implementation is accepted only when the precedence/cache contract, one-capture pure derivation, unchanged first-underscore/profile behavior, shared #1436 retry schedule, closed conclusive allowlist, marker-indeterminate hard error, explicitly inverted broken-link assertion, cleanup/debris diagnostic, exact messages, CLI-before-logger exit 1 with empty stdout and zero net filesystem delta sufficient to detect the current persistent logger writers, the exact `test-reset` skip of both preflight and logger with its existing file-target test unchanged, nine legacy outcomes, seven-path implementation scope, both release-smoke cases, exact Linux subprocess evidence, dependency criterion, all Windows-local checks, the verbatim workflow step, and exact-PR-head CI all pass.
 
 Any request to add a shipped test-home seam, silently relocate on an unknown error, coerce marker ambiguity to absent, duplicate the retry policy, change suffix parsing, restore a Windows ACL end-to-end case, add #1137/#1594/AppImage behavior, or weaken bounded cleanup is a blocker back to the release owner.
