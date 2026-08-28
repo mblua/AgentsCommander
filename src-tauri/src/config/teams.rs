@@ -34,9 +34,9 @@ pub struct DiscoveredTeam {
     /// `None` entries mean the directory was not found on disk.
     pub agent_paths: Vec<Option<PathBuf>>,
     /// Coordinator display name
-    pub coordinator_name: Option<String>,
+    pub orchestrator_name: Option<String>,
     /// Absolute path to coordinator directory
-    pub coordinator_path: Option<PathBuf>,
+    pub orchestrator_path: Option<PathBuf>,
 }
 
 /// Derive agent name (parent/folder) from a path, stripping `__agent_`/`_agent_` prefixes.
@@ -328,7 +328,7 @@ fn enumerate_project_dirs_strict(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WgCoordinatorReplica {
+pub struct WgOrchestratorReplica {
     pub project: String,
     pub team: String,
     pub wg_name: String,
@@ -439,10 +439,10 @@ fn identity_compare_key(path: &Path) -> String {
     normalize_path_for_compare(&raw)
 }
 
-pub fn resolve_wg_coordinator_replica(
+pub fn resolve_wg_orchestrator_replica(
     ac_root: &Path,
     wg_dir: &Path,
-) -> Option<WgCoordinatorReplica> {
+) -> Option<WgOrchestratorReplica> {
     let project = ac_root.parent()?.file_name()?.to_str()?.to_string();
     let wg_name = wg_dir.file_name()?.to_str()?.to_string();
     let team = wg_name
@@ -453,10 +453,10 @@ pub fn resolve_wg_coordinator_replica(
     let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())?;
-    let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
-    let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
+    let orchestrator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
+    let orchestrator_name = agent_bare_name_from_ref(orchestrator_ref).ok()?;
     if !ac_root
-        .join(format!("_agent_{}", coordinator_name))
+        .join(format!("_agent_{}", orchestrator_name))
         .is_dir()
     {
         return None;
@@ -476,8 +476,8 @@ pub fn resolve_wg_coordinator_replica(
         else {
             continue;
         };
-        if identity.agent_name == coordinator_name {
-            return Some(WgCoordinatorReplica {
+        if identity.agent_name == orchestrator_name {
+            return Some(WgOrchestratorReplica {
                 project,
                 team,
                 wg_name,
@@ -490,10 +490,10 @@ pub fn resolve_wg_coordinator_replica(
     None
 }
 
-pub fn verified_wg_coordinator_target(
+pub fn verified_wg_orchestrator_target(
     target: &str,
     project_paths: &[String],
-) -> Option<WgCoordinatorReplica> {
+) -> Option<WgOrchestratorReplica> {
     let (Some(project), local) = split_project_prefix(target) else {
         return None;
     };
@@ -513,7 +513,7 @@ pub fn verified_wg_coordinator_target(
         if !wg_dir.is_dir() {
             continue;
         }
-        if let Some(resolved) = resolve_wg_coordinator_replica(&ac_root, &wg_dir) {
+        if let Some(resolved) = resolve_wg_orchestrator_replica(&ac_root, &wg_dir) {
             if resolved.agent_name == agent_name {
                 return Some(resolved);
             }
@@ -528,7 +528,7 @@ pub fn verified_wg_coordinator_target(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PtyInputAuthorityKind {
-    Coordinator,
+    Orchestrator,
     Root,
 }
 
@@ -540,7 +540,7 @@ pub struct VerifiedPtyInputIdentity {
     pub agent: String,
     pub replica_root: PathBuf,
     pub matrix_root: PathBuf,
-    pub is_coordinator: bool,
+    pub is_orchestrator: bool,
     pub project_identity: crate::path_identity::VerifiedPathIdentity,
     pub ac_root_identity: crate::path_identity::VerifiedPathIdentity,
     pub workgroup_identity: crate::path_identity::VerifiedPathIdentity,
@@ -564,7 +564,7 @@ pub struct VerifiedPtyInputRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSnapshotAuthorityKind {
-    Coordinator,
+    Orchestrator,
     Root,
 }
 
@@ -580,8 +580,8 @@ impl std::fmt::Debug for VerifiedTerminalSnapshotRoute {
         formatter
             .debug_struct("VerifiedTerminalSnapshotRoute")
             .field("kind", &self.kind)
-            .field("sender_is_coordinator", &self.sender.is_coordinator)
-            .field("target_is_coordinator", &self.target.is_coordinator)
+            .field("sender_is_coordinator", &self.sender.is_orchestrator)
+            .field("target_is_coordinator", &self.target.is_orchestrator)
             .finish_non_exhaustive()
     }
 }
@@ -593,14 +593,14 @@ pub(crate) struct TerminalSnapshotTargetIdentity {
     pub project: String,
     pub workgroup: String,
     pub team: String,
-    pub is_coordinator: bool,
+    pub is_orchestrator: bool,
 }
 
 impl std::fmt::Debug for TerminalSnapshotTargetIdentity {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("TerminalSnapshotTargetIdentity")
-            .field("is_coordinator", &self.is_coordinator)
+            .field("is_coordinator", &self.is_orchestrator)
             .finish_non_exhaustive()
     }
 }
@@ -780,7 +780,7 @@ fn team_members(
     let team_dir = ac_root.join(format!("_team_{team}"));
     crate::path_identity::verify_directory(&team_dir)?;
     let (value, config_identity) = read_identity_json(&team_dir.join("config.json"))?;
-    let coordinator = value
+    let orchestrator = value
         .get("coordinator")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "sender_identity_invalid".to_string())
@@ -815,12 +815,12 @@ fn team_members(
         // separately and must not also be counted as an ordinary member, so its
         // entry is consumed here instead of rejecting the whole config. `seen`
         // still covers it, so a repeated coordinator entry stays rejected.
-        if !identity_name_eq(&member, &coordinator) {
+        if !identity_name_eq(&member, &orchestrator) {
             members.push(member);
         }
     }
-    crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{coordinator}")))?;
-    Ok((coordinator, members, config_identity))
+    crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{orchestrator}")))?;
+    Ok((orchestrator, members, config_identity))
 }
 
 fn verify_replica(
@@ -883,9 +883,9 @@ fn verify_replica(
     {
         return Err("invalid_target".to_string());
     }
-    let (coordinator, members, team_config_identity) = team_members(ac_root, &parsed.team)?;
-    let is_coordinator = identity_name_eq(&coordinator, &parsed.agent);
-    if !is_coordinator
+    let (orchestrator, members, team_config_identity) = team_members(ac_root, &parsed.team)?;
+    let is_orchestrator = identity_name_eq(&orchestrator, &parsed.agent);
+    if !is_orchestrator
         && !members
             .iter()
             .any(|member| identity_name_eq(member, &parsed.agent))
@@ -910,7 +910,7 @@ fn verify_replica(
         agent: parsed.agent.clone(),
         replica_root,
         matrix_root,
-        is_coordinator,
+        is_orchestrator,
         project_identity,
         ac_root_identity,
         workgroup_identity,
@@ -1034,9 +1034,9 @@ pub(crate) fn verify_pty_input_replica_cwd(
     verify_sender_replica(root)
 }
 
-pub fn verify_pty_input_coordinator_root(root: &Path) -> Result<VerifiedPtyInputIdentity, String> {
+pub fn verify_pty_input_orchestrator_root(root: &Path) -> Result<VerifiedPtyInputIdentity, String> {
     let identity = verify_sender_replica(root)?;
-    if !identity.is_coordinator {
+    if !identity.is_orchestrator {
         return Err("sender_not_coordinator".to_string());
     }
     Ok(identity)
@@ -1167,7 +1167,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
                     project: identity.project,
                     workgroup: identity.workgroup,
                     team: parsed.team,
-                    is_coordinator: identity.is_coordinator,
+                    is_orchestrator: identity.is_orchestrator,
                 });
                 if targets.len() > TARGET_CAP {
                     return Err("target_limit".to_string());
@@ -1190,7 +1190,7 @@ pub(crate) fn verify_terminal_snapshot_root_identity(
         agent: "root-agent".to_string(),
         replica_root: root_identity.canonical_path.clone(),
         matrix_root: root_identity.canonical_path.clone(),
-        is_coordinator: false,
+        is_orchestrator: false,
         project_identity: root_identity.clone(),
         ac_root_identity: root_identity.clone(),
         workgroup_identity: root_identity.clone(),
@@ -1212,7 +1212,7 @@ pub fn verify_pty_input_route(
     if sender_is_root {
         let sender = verify_terminal_snapshot_root_identity(sender_cwd)?;
         let target = resolve_pty_input_target(target_fqn, project_paths)?;
-        if !target.is_coordinator {
+        if !target.is_orchestrator {
             return Err("target_out_of_scope".to_string());
         }
         return Ok(VerifiedPtyInputRoute {
@@ -1224,12 +1224,12 @@ pub fn verify_pty_input_route(
 
     // Prove coordinator authority before any target hierarchy lookup. Negative
     // senders therefore cannot use this resolver as a privileged target oracle.
-    let sender = verify_pty_input_coordinator_root(sender_cwd)?;
+    let sender = verify_pty_input_orchestrator_root(sender_cwd)?;
     let target = resolve_pty_input_target(target_fqn, project_paths)?;
     if sender.project != target.project || sender.workgroup != target.workgroup {
         return Err("target_out_of_scope".to_string());
     }
-    if target.is_coordinator {
+    if target.is_orchestrator {
         return Err("target_is_coordinator".to_string());
     }
     if sender.canonical_fqn == target.canonical_fqn {
@@ -1238,7 +1238,7 @@ pub fn verify_pty_input_route(
     Ok(VerifiedPtyInputRoute {
         sender,
         target,
-        kind: PtyInputAuthorityKind::Coordinator,
+        kind: PtyInputAuthorityKind::Orchestrator,
     })
 }
 
@@ -1266,14 +1266,14 @@ pub(crate) fn verify_terminal_snapshot_route(
 
     // Prove the Coordinator before any target identity walk. This preserves the
     // no-oracle ordering for workers and origin senders.
-    let sender = verify_pty_input_coordinator_root(sender_cwd)?;
+    let sender = verify_pty_input_orchestrator_root(sender_cwd)?;
     if syntax != TerminalSnapshotTargetSyntax::Workgroup {
         return Err("target_out_of_scope".to_string());
     }
     let target = resolve_verified_wg_target(target_fqn, project_paths)?;
     if sender.project != target.project
         || sender.workgroup != target.workgroup
-        || target.is_coordinator
+        || target.is_orchestrator
         || sender.canonical_fqn == target.canonical_fqn
     {
         return Err("target_out_of_scope".to_string());
@@ -1281,7 +1281,7 @@ pub(crate) fn verify_terminal_snapshot_route(
     Ok(VerifiedTerminalSnapshotRoute {
         sender,
         target,
-        kind: TerminalSnapshotAuthorityKind::Coordinator,
+        kind: TerminalSnapshotAuthorityKind::Orchestrator,
     })
 }
 
@@ -1303,9 +1303,9 @@ pub fn resolve_agent_target(
 ) -> Result<String, ResolutionError> {
     // Canonical Root Agent reply target. Symmetric with `ROOT_AGENT_SENDER`
     // appearing as `msg.from` on root-originated messages. See #293.
-    // Identity-verified-coordinator gating happens later (CLI:
-    // `coordinator_to_root_target_allowed`; mailbox:
-    // `validate_coordinator_to_root_route`).
+    // Identity-verified-orchestrator gating happens later (CLI:
+    // `orchestrator_to_root_target_allowed`; mailbox:
+    // `validate_orchestrator_to_root_route`).
     if crate::config::root_agent::is_root_agent_target(target) {
         return Ok(target.to_string());
     }
@@ -1503,15 +1503,15 @@ pub fn is_in_team(agent_name: &str, team: &DiscoveredTeam) -> bool {
         }
     }
     // Check coordinator
-    if let Some(ref coord_name) = team.coordinator_name {
-        if agent_matches_member(agent_name, coord_name, team.coordinator_path.as_ref()) {
+    if let Some(ref coord_name) = team.orchestrator_name {
+        if agent_matches_member(agent_name, coord_name, team.orchestrator_path.as_ref()) {
             return true;
         }
     }
     // WG-aware: if agent is a WG replica belonging to this team, match by suffix.
     // §DR8/§5.3: lenient `None => true` tolerance — unqualified agent_name matches
     // any project's team of the same name (transition aid for Decision 3's
-    // tolerate-on-read). Strict semantics live in `is_coordinator` only.
+    // tolerate-on-read). Strict semantics live in `is_orchestrator` only.
     if let Some(wg_team) = extract_wg_team(agent_name) {
         let (agent_project, _) = split_project_prefix(agent_name);
         let project_matches = match agent_project {
@@ -1525,7 +1525,7 @@ pub fn is_in_team(agent_name: &str, team: &DiscoveredTeam) -> bool {
                     return true;
                 }
             }
-            if let Some(ref coord_name) = team.coordinator_name {
+            if let Some(ref coord_name) = team.orchestrator_name {
                 if suffix == agent_suffix(coord_name) {
                     return true;
                 }
@@ -1542,9 +1542,9 @@ pub fn is_in_team(agent_name: &str, team: &DiscoveredTeam) -> bool {
 /// coordinator authority — the authorization gate for destructive operations
 /// must not tolerate legacy names. `is_in_team` and `can_communicate` remain
 /// lenient for display/reachability paths (§DR8).
-fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
-    if let Some(ref coord_name) = team.coordinator_name {
-        if agent_matches_member(agent_name, coord_name, team.coordinator_path.as_ref()) {
+fn is_orchestrator(agent_name: &str, team: &DiscoveredTeam) -> bool {
+    if let Some(ref coord_name) = team.orchestrator_name {
+        if agent_matches_member(agent_name, coord_name, team.orchestrator_path.as_ref()) {
             log::trace!(
                 "[teams] is_coordinator: direct-match → true — agent='{}' team='{}/{}' coord='{}'",
                 agent_name,
@@ -1615,26 +1615,26 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
 }
 
 /// Check if sender is a coordinator of any team that contains target as a member.
-pub fn is_coordinator_of(sender: &str, target: &str, teams: &[DiscoveredTeam]) -> bool {
+pub fn is_orchestrator_of(sender: &str, target: &str, teams: &[DiscoveredTeam]) -> bool {
     teams
         .iter()
-        .any(|team| is_coordinator(sender, team) && is_in_team(target, team))
+        .any(|team| is_orchestrator(sender, team) && is_in_team(target, team))
 }
 
 /// Check if an agent is a coordinator of ANY discovered team.
-pub fn is_any_coordinator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
-    teams.iter().any(|t| is_coordinator(agent_name, t))
+pub fn is_any_orchestrator(agent_name: &str, teams: &[DiscoveredTeam]) -> bool {
+    teams.iter().any(|t| is_orchestrator(agent_name, t))
 }
 
 /// Resolve whether the agent running at `working_directory` is a coordinator of any discovered team.
-/// Thin wrapper so call sites don't have to duplicate the `agent_fqn_from_path` + `is_any_coordinator` pair.
+/// Thin wrapper so call sites don't have to duplicate the `agent_fqn_from_path` + `is_any_orchestrator` pair.
 ///
 /// §DR2: uses `agent_fqn_from_path` so WG replicas get project-precise
-/// coordinator checks. `is_coordinator` is strict (§AR2-strict) — the FQN
+/// coordinator checks. `is_orchestrator` is strict (§AR2-strict) — the FQN
 /// here ensures cross-project coordinator flags never leak.
-pub fn is_coordinator_for_cwd(working_directory: &str, teams: &[DiscoveredTeam]) -> bool {
+pub fn is_orchestrator_for_cwd(working_directory: &str, teams: &[DiscoveredTeam]) -> bool {
     let agent_name = agent_fqn_from_path(working_directory);
-    is_any_coordinator(&agent_name, teams)
+    is_any_orchestrator(&agent_name, teams)
 }
 
 /// Check if two agents can communicate based on discovery-based team routing rules.
@@ -1671,9 +1671,9 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
     }
 
     // Rule 3: Coordinator-to-coordinator (any teams)
-    let from_is_coordinator = teams.iter().any(|t| is_coordinator(from, t));
-    let to_is_coordinator = teams.iter().any(|t| is_coordinator(to, t));
-    if from_is_coordinator && to_is_coordinator {
+    let from_is_orchestrator = teams.iter().any(|t| is_orchestrator(from, t));
+    let to_is_orchestrator = teams.iter().any(|t| is_orchestrator(to, t));
+    if from_is_orchestrator && to_is_orchestrator {
         return true;
     }
 
@@ -1850,16 +1850,16 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             .unzip();
 
         // Resolve coordinator
-        let coordinator_ref = parsed
+        let orchestrator_ref = parsed
             .get("coordinator")
             .and_then(|c| c.as_str())
             .map(String::from);
 
-        let coordinator_name = coordinator_ref
+        let orchestrator_name = orchestrator_ref
             .as_ref()
             .map(|r| resolve_agent_ref(&project_folder, r));
 
-        let coordinator_path = coordinator_ref
+        let orchestrator_path = orchestrator_ref
             .as_ref()
             .and_then(|r| resolve_agent_path(&ac_root, r));
 
@@ -1868,16 +1868,16 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             project: project_folder.clone(),
             agent_names,
             agent_paths,
-            coordinator_name,
-            coordinator_path,
+            orchestrator_name,
+            orchestrator_path,
         });
         let pushed = teams.last().expect("just pushed");
         log::debug!(
             "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} agent_count={}",
             pushed.project,
             pushed.name,
-            pushed.coordinator_name,
-            pushed.coordinator_path.as_ref().map(|p| p.display().to_string()),
+            pushed.orchestrator_name,
+            pushed.orchestrator_path.as_ref().map(|p| p.display().to_string()),
             pushed.agent_names.len()
         );
     }
@@ -2110,7 +2110,9 @@ mod tests {
         (tmp, paths)
     }
 
-    fn make_coordinator_fixture(spoofed_coordinator_identity: bool) -> (FixtureRoot, Vec<String>) {
+    fn make_orchestrator_fixture(
+        spoofed_orchestrator_identity: bool,
+    ) -> (FixtureRoot, Vec<String>) {
         let tmp = FixtureRoot::new("teams-coord-fixture");
         let project = tmp.path().join("proj-a");
         let ac_root = project.join(".ac");
@@ -2136,7 +2138,7 @@ mod tests {
             r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
         )
         .unwrap();
-        let tech_lead_identity = if spoofed_coordinator_identity {
+        let tech_lead_identity = if spoofed_orchestrator_identity {
             "../../_agent_dev-rust"
         } else {
             "../../_agent_tech-lead"
@@ -2159,7 +2161,7 @@ mod tests {
     /// #1245: the team-config shape the application's writer actually produces,
     /// with the coordinator listed inside `agents`. A third member exists so the
     /// surviving member order can be pinned once the coordinator entry is
-    /// consumed; `make_coordinator_fixture` has only one ordinary member.
+    /// consumed; `make_orchestrator_fixture` has only one ordinary member.
     fn make_writer_shaped_team_fixture() -> (FixtureRoot, Vec<String>) {
         let tmp = FixtureRoot::new("teams-writer-shape-fixture");
         let ac_root = tmp.path().join("proj-a").join(".ac");
@@ -2188,7 +2190,8 @@ mod tests {
     }
 
     #[test]
-    fn team_config_with_coordinator_in_agents_verifies_and_excludes_the_coordinator_from_members() {
+    fn team_config_with_orchestrator_in_agents_verifies_and_excludes_the_orchestrator_from_members()
+    {
         let (fixture, paths) = make_writer_shaped_team_fixture();
         let ac_root = fixture.path().join("proj-a").join(".ac");
         let wg_dir = ac_root.join("wg-1-dev-team");
@@ -2199,7 +2202,7 @@ mod tests {
             verify_pty_input_route(&tech_lead, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
                 .unwrap();
         assert_eq!(route.sender.canonical_fqn, "proj-a:wg-1-dev-team/tech-lead");
-        assert!(route.sender.is_coordinator);
+        assert!(route.sender.is_orchestrator);
 
         assert!(
             verify_pty_input_route(&dev_rust, false, "proj-a:wg-1-dev-team/dev-ts", &paths)
@@ -2214,12 +2217,12 @@ mod tests {
             &paths,
         )
         .unwrap();
-        assert_eq!(snapshot.kind, TerminalSnapshotAuthorityKind::Coordinator);
+        assert_eq!(snapshot.kind, TerminalSnapshotAuthorityKind::Orchestrator);
 
         // The coordinator is still not a valid capture target even though it now
         // appears in `agents`. This guards the authorization matrix. It cannot
         // observe the member exclusion: `verify_replica` derives
-        // `is_coordinator` from the `coordinator` key and short-circuits the
+        // `is_orchestrator` from the `coordinator` key and short-circuits the
         // `target_not_member` gate, so it holds for any `members` content.
         assert!(verify_terminal_snapshot_route(
             &tech_lead,
@@ -2232,13 +2235,13 @@ mod tests {
         // Only a direct call can pin the exclusion. Asserting the whole vector
         // also pins that consuming the coordinator entry leaves the order and
         // the count of the remaining members untouched.
-        let (coordinator, members, _) = team_members(&ac_root, "dev-team").unwrap();
-        assert_eq!(coordinator, "tech-lead");
+        let (orchestrator, members, _) = team_members(&ac_root, "dev-team").unwrap();
+        assert_eq!(orchestrator, "tech-lead");
         assert_eq!(members, vec!["dev-rust".to_string(), "dev-ts".to_string()]);
     }
 
     #[test]
-    fn team_config_rejects_repeated_agent_and_repeated_coordinator_entries() {
+    fn team_config_rejects_repeated_agent_and_repeated_orchestrator_entries() {
         let (fixture, paths) = make_writer_shaped_team_fixture();
         let ac_root = fixture.path().join("proj-a").join(".ac");
         let team_config = ac_root.join("_team_dev-team").join("config.json");
@@ -2298,18 +2301,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_snapshot_coordinator_policy_is_distinct_from_pty_input() {
-        let (fixture, paths) = make_coordinator_fixture(false);
+    fn terminal_snapshot_orchestrator_policy_is_distinct_from_pty_input() {
+        let (fixture, paths) = make_orchestrator_fixture(false);
         let ac_root = fixture.path().join("proj-a").join(".ac");
-        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let orchestrator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let route = verify_terminal_snapshot_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
         )
         .unwrap();
-        assert_eq!(route.kind, TerminalSnapshotAuthorityKind::Coordinator);
+        assert_eq!(route.kind, TerminalSnapshotAuthorityKind::Orchestrator);
         assert_eq!(route.target.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
         let diagnostic = format!("{route:?}");
         let sender_path = route.sender.replica_root.to_string_lossy().into_owned();
@@ -2326,14 +2329,14 @@ mod tests {
         }
         assert!(diagnostic.contains("kind: Coordinator"));
         assert!(verify_terminal_snapshot_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/tech-lead",
             &paths,
         )
         .is_err());
         assert!(verify_terminal_snapshot_route(
-            &coordinator,
+            &orchestrator,
             false,
             crate::config::root_agent::ROOT_AGENT_SENDER,
             &paths,
@@ -2351,7 +2354,7 @@ mod tests {
             project: AUTH_CANARY.to_string(),
             workgroup: AUTH_CANARY.to_string(),
             team: AUTH_CANARY.to_string(),
-            is_coordinator: true,
+            is_orchestrator: true,
         };
         let diagnostic = format!("{target:?}");
         assert!(!diagnostic.contains(AUTH_CANARY));
@@ -2361,33 +2364,37 @@ mod tests {
 
     #[test]
     fn privileged_route_is_exact_and_uses_duplicate_free_identity_snapshots() {
-        let (fixture, mut paths) = make_coordinator_fixture(false);
+        let (fixture, mut paths) = make_orchestrator_fixture(false);
         let ac_root = fixture.path().join("proj-a").join(".ac");
-        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
-        let route =
-            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
-                .unwrap();
+        let orchestrator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let route = verify_pty_input_route(
+            &orchestrator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .unwrap();
         assert_eq!(route.sender.canonical_fqn, "proj-a:wg-1-dev-team/tech-lead");
         assert_eq!(route.target.canonical_fqn, "proj-a:wg-1-dev-team/dev-rust");
-        assert_eq!(route.kind, PtyInputAuthorityKind::Coordinator);
+        assert_eq!(route.kind, PtyInputAuthorityKind::Orchestrator);
 
         paths.push(paths[0].clone());
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
         )
         .is_ok());
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "Proj-a:wg-1-dev-team/dev-rust",
             &paths,
         )
         .is_err());
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/tech-lead",
             &paths,
@@ -2400,7 +2407,7 @@ mod tests {
         )
         .unwrap();
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
@@ -2410,15 +2417,19 @@ mod tests {
 
     #[test]
     fn sender_incarnation_survives_benign_config_content_changes() {
-        let (fixture, paths) = make_coordinator_fixture(false);
+        let (fixture, paths) = make_orchestrator_fixture(false);
         let ac_root = fixture.path().join("proj-a").join(".ac");
-        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
-        let first =
-            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
-                .unwrap();
+        let orchestrator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let first = verify_pty_input_route(
+            &orchestrator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .unwrap();
 
         std::fs::write(
-            coordinator.join("config.json"),
+            orchestrator.join("config.json"),
             r#"{"identity":"../../_agent_tech-lead","benign":"changed"}"#,
         )
         .unwrap();
@@ -2427,9 +2438,13 @@ mod tests {
             r#"{"agents":["../_agent_dev-rust","../_agent_tech-lead"],"coordinator":"../_agent_tech-lead","benign":"changed"}"#,
         )
         .unwrap();
-        let second =
-            verify_pty_input_route(&coordinator, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
-                .unwrap();
+        let second = verify_pty_input_route(
+            &orchestrator,
+            false,
+            "proj-a:wg-1-dev-team/dev-rust",
+            &paths,
+        )
+        .unwrap();
 
         assert_eq!(
             first.sender.incarnation_fingerprint, second.sender.incarnation_fingerprint,
@@ -2443,17 +2458,17 @@ mod tests {
 
     #[test]
     fn privileged_route_rejects_noncanonical_identity_and_broken_project_roots() {
-        let (fixture, mut paths) = make_coordinator_fixture(false);
+        let (fixture, mut paths) = make_orchestrator_fixture(false);
         let ac_root = fixture.path().join("proj-a").join(".ac");
-        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
-        let coordinator_config = coordinator.join("config.json");
+        let orchestrator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let orchestrator_config = orchestrator.join("config.json");
         std::fs::write(
-            &coordinator_config,
+            &orchestrator_config,
             r#"{"identity":"elsewhere/_agent_tech-lead"}"#,
         )
         .unwrap();
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
@@ -2461,7 +2476,7 @@ mod tests {
         .is_err());
 
         std::fs::write(
-            &coordinator_config,
+            &orchestrator_config,
             r#"{"identity":"../../_agent_tech-lead"}"#,
         )
         .unwrap();
@@ -2473,7 +2488,7 @@ mod tests {
                 .to_string(),
         );
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
@@ -2483,9 +2498,9 @@ mod tests {
 
     #[test]
     fn privileged_route_rejects_duplicate_replica_identity_and_worker_sender() {
-        let (fixture, paths) = make_coordinator_fixture(false);
+        let (fixture, paths) = make_orchestrator_fixture(false);
         let ac_root = fixture.path().join("proj-a").join(".ac");
-        let coordinator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        let orchestrator = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
         let worker = ac_root.join("wg-1-dev-team").join("__agent_dev-rust");
         assert!(
             verify_pty_input_route(&worker, false, "proj-a:wg-1-dev-team/tech-lead", &paths,)
@@ -2497,7 +2512,7 @@ mod tests {
         )
         .unwrap();
         assert!(verify_pty_input_route(
-            &coordinator,
+            &orchestrator,
             false,
             "proj-a:wg-1-dev-team/dev-rust",
             &paths,
@@ -2505,8 +2520,8 @@ mod tests {
         .is_err());
     }
 
-    fn make_portable_coordinator_fixture(
-        spoofed_coordinator_identity: bool,
+    fn make_portable_orchestrator_fixture(
+        spoofed_orchestrator_identity: bool,
     ) -> (FixtureRoot, PathBuf, PathBuf, Vec<String>) {
         let tmp = FixtureRoot::new("teams-portable-coord-fixture");
         let project = tmp.path().join("proj-a");
@@ -2539,7 +2554,7 @@ mod tests {
         )
         .unwrap();
 
-        let tech_lead_identity = if spoofed_coordinator_identity {
+        let tech_lead_identity = if spoofed_orchestrator_identity {
             &origin_dev_rust
         } else {
             &origin_tech_lead
@@ -2564,12 +2579,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_wg_coordinator_replica_uses_identity_not_dir_name() {
-        let (tmp, _paths) = make_coordinator_fixture(false);
+    fn resolve_wg_orchestrator_replica_uses_identity_not_dir_name() {
+        let (tmp, _paths) = make_orchestrator_fixture(false);
         let ac_root = tmp.path().join("proj-a").join(".ac");
         let wg_dir = ac_root.join("wg-1-dev-team");
 
-        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir).expect("coordinator");
+        let resolved = resolve_wg_orchestrator_replica(&ac_root, &wg_dir).expect("coordinator");
 
         assert_eq!(resolved.project, "proj-a");
         assert_eq!(resolved.team, "dev-team");
@@ -2582,19 +2597,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_wg_coordinator_replica_rejects_spoofed_name() {
-        let (tmp, _paths) = make_coordinator_fixture(true);
+    fn resolve_wg_orchestrator_replica_rejects_spoofed_name() {
+        let (tmp, _paths) = make_orchestrator_fixture(true);
         let ac_root = tmp.path().join("proj-a").join(".ac");
         let wg_dir = ac_root.join("wg-1-dev-team");
 
-        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
+        assert!(resolve_wg_orchestrator_replica(&ac_root, &wg_dir).is_none());
     }
 
     #[test]
-    fn resolve_wg_coordinator_replica_accepts_portable_ref_with_external_identity() {
-        let (_tmp, ac_root, wg_dir, _paths) = make_portable_coordinator_fixture(false);
+    fn resolve_wg_orchestrator_replica_accepts_portable_ref_with_external_identity() {
+        let (_tmp, ac_root, wg_dir, _paths) = make_portable_orchestrator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
+        let resolved = resolve_wg_orchestrator_replica(&ac_root, &wg_dir)
             .expect("portable coordinator ref should match declared identity agent");
 
         assert_eq!(resolved.project, "proj-a");
@@ -2604,10 +2619,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_wg_coordinator_replica_rejects_portable_ref_with_spoofed_identity() {
-        let (_tmp, ac_root, wg_dir, _paths) = make_portable_coordinator_fixture(true);
+    fn resolve_wg_orchestrator_replica_rejects_portable_ref_with_spoofed_identity() {
+        let (_tmp, ac_root, wg_dir, _paths) = make_portable_orchestrator_fixture(true);
 
-        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
+        assert!(resolve_wg_orchestrator_replica(&ac_root, &wg_dir).is_none());
     }
 
     /// Build a fixture where both team config and replica configs reference
@@ -2615,7 +2630,7 @@ mod tests {
     /// Mirrors the post-workspace-rename state from #299: persisted refs are
     /// stale, but the same-workspace local matrices exist and are the only valid
     /// authority targets.
-    fn make_stale_coordinator_fixture(
+    fn make_stale_orchestrator_fixture(
         replica_spoofs_identity: bool,
     ) -> (FixtureRoot, PathBuf, PathBuf) {
         let tmp = FixtureRoot::new("teams-stale-coord-fixture");
@@ -2692,10 +2707,10 @@ mod tests {
     /// Stale absolute identity refs are accepted only by repairing them
     /// to the same-workspace local matrix with the same agent basename.
     #[test]
-    fn resolve_wg_coordinator_replica_repairs_stale_absolute_refs() {
-        let (_tmp, ac_root, wg_dir) = make_stale_coordinator_fixture(false);
+    fn resolve_wg_orchestrator_replica_repairs_stale_absolute_refs() {
+        let (_tmp, ac_root, wg_dir) = make_stale_orchestrator_fixture(false);
 
-        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
+        let resolved = resolve_wg_orchestrator_replica(&ac_root, &wg_dir)
             .expect("same-workspace repair should resolve coordinator with stale refs");
 
         assert_eq!(resolved.agent_name, "test-alpha");
@@ -2713,20 +2728,20 @@ mod tests {
     /// replica that declares a stale identity ref naming a DIFFERENT matrix
     /// (e.g. `_agent_test-beta`) must not be accepted as coordinator.
     #[test]
-    fn resolve_wg_coordinator_replica_rejects_spoofed_stale_identity() {
-        let (_tmp, ac_root, wg_dir) = make_stale_coordinator_fixture(true);
+    fn resolve_wg_orchestrator_replica_rejects_spoofed_stale_identity() {
+        let (_tmp, ac_root, wg_dir) = make_stale_orchestrator_fixture(true);
 
         // The test-alpha replica has been spoofed to claim the test-beta matrix.
         // The test-beta replica claims the test-beta matrix too. Neither matches
         // the team's coordinator ref (`_agent_test-alpha`), so no coordinator
         // is resolved.
-        assert!(resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none());
+        assert!(resolve_wg_orchestrator_replica(&ac_root, &wg_dir).is_none());
     }
 
     /// Relative identity traversing out of the workspace must be repaired
     /// to the same-workspace local matrix, not compared against the stale target.
     #[test]
-    fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
+    fn resolve_wg_orchestrator_replica_repairs_stale_relative_identity() {
         let tmp = FixtureRoot::new("teams-stale-rel-fixture");
         let project = tmp.path().join("proj-a");
         let ac_root = project.join(".ac");
@@ -2764,7 +2779,7 @@ mod tests {
         )
         .unwrap();
 
-        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir)
+        let resolved = resolve_wg_orchestrator_replica(&ac_root, &wg_dir)
             .expect("same-workspace repair should resolve stale relative identity");
         assert_eq!(resolved.agent_name, "test-alpha");
     }
@@ -2826,24 +2841,24 @@ mod tests {
     }
 
     #[test]
-    fn verified_wg_coordinator_target_rejects_origin_coordinator() {
-        let (_tmp, paths) = make_coordinator_fixture(false);
+    fn verified_wg_orchestrator_target_rejects_origin_orchestrator() {
+        let (_tmp, paths) = make_orchestrator_fixture(false);
 
-        assert!(verified_wg_coordinator_target("proj-a/tech-lead", &paths).is_none());
+        assert!(verified_wg_orchestrator_target("proj-a/tech-lead", &paths).is_none());
     }
 
     #[test]
-    fn verified_wg_coordinator_target_rejects_wrong_wg_member() {
-        let (_tmp, paths) = make_coordinator_fixture(false);
+    fn verified_wg_orchestrator_target_rejects_wrong_wg_member() {
+        let (_tmp, paths) = make_orchestrator_fixture(false);
 
-        assert!(verified_wg_coordinator_target("proj-a:wg-1-dev-team/dev-rust", &paths).is_none());
+        assert!(verified_wg_orchestrator_target("proj-a:wg-1-dev-team/dev-rust", &paths).is_none());
     }
 
     #[test]
-    fn verified_wg_coordinator_target_accepts_identity_verified_coordinator() {
-        let (_tmp, paths) = make_coordinator_fixture(false);
+    fn verified_wg_orchestrator_target_accepts_identity_verified_orchestrator() {
+        let (_tmp, paths) = make_orchestrator_fixture(false);
 
-        let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
+        let resolved = verified_wg_orchestrator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
             .expect("verified coordinator");
 
         assert_eq!(resolved.agent_name, "tech-lead");
@@ -2851,10 +2866,10 @@ mod tests {
     }
 
     #[test]
-    fn verified_wg_coordinator_target_accepts_portable_ref_with_external_identity() {
-        let (_tmp, _ac_root, _wg_dir, paths) = make_portable_coordinator_fixture(false);
+    fn verified_wg_orchestrator_target_accepts_portable_ref_with_external_identity() {
+        let (_tmp, _ac_root, _wg_dir, paths) = make_portable_orchestrator_fixture(false);
 
-        let resolved = verified_wg_coordinator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
+        let resolved = verified_wg_orchestrator_target("proj-a:wg-1-dev-team/tech-lead", &paths)
             .expect("portable verified coordinator");
 
         assert_eq!(resolved.agent_name, "tech-lead");
@@ -3009,39 +3024,39 @@ mod tests {
         ));
     }
 
-    /// Validation #16: `is_coordinator_for_cwd` correctness guard.
+    /// Validation #16: `is_orchestrator_for_cwd` correctness guard.
     /// Live sessions always run inside WG replica dirs (`wg-*/__agent_*`); the function
-    /// consumes those via `agent_name_from_path` + WG-aware `is_coordinator`.
+    /// consumes those via `agent_name_from_path` + WG-aware `is_orchestrator`.
     #[test]
-    fn is_coordinator_for_cwd_matches_wg_replica() {
+    fn is_orchestrator_for_cwd_matches_wg_replica() {
         let teams = vec![DiscoveredTeam {
             name: "dev-team".into(),
             project: "foo".into(),
             agent_names: vec!["foo/dev-rust".into()],
             agent_paths: vec![None],
-            coordinator_name: Some("foo/tech-lead".into()),
-            coordinator_path: None,
+            orchestrator_name: Some("foo/tech-lead".into()),
+            orchestrator_path: None,
         }];
 
         // Coordinator replica (any WG of the same team) resolves true.
         let coord_cwd = "C:/repos/foo/.ac/wg-4-dev-team/__agent_tech-lead";
-        assert!(is_coordinator_for_cwd(coord_cwd, &teams));
+        assert!(is_orchestrator_for_cwd(coord_cwd, &teams));
 
         // Non-coordinator member of the team → false.
         let member_cwd = "C:/repos/foo/.ac/wg-4-dev-team/__agent_dev-rust";
-        assert!(!is_coordinator_for_cwd(member_cwd, &teams));
+        assert!(!is_orchestrator_for_cwd(member_cwd, &teams));
 
         // Unrelated agent outside any team → false.
         let other_cwd = "C:/repos/foo/.ac/wg-9-other-team/__agent_dev-rust";
-        assert!(!is_coordinator_for_cwd(other_cwd, &teams));
+        assert!(!is_orchestrator_for_cwd(other_cwd, &teams));
     }
 
     /// Empty teams list → nothing is a coordinator.
     #[test]
-    fn is_coordinator_for_cwd_empty_teams() {
+    fn is_orchestrator_for_cwd_empty_teams() {
         let teams: Vec<DiscoveredTeam> = vec![];
         let cwd = "C:/repos/foo/.ac/wg-1-dev-team/__agent_tech-lead";
-        assert!(!is_coordinator_for_cwd(cwd, &teams));
+        assert!(!is_orchestrator_for_cwd(cwd, &teams));
     }
 
     // ── Team-membership tests (AR2-tests 8-11) ──
@@ -3052,8 +3067,8 @@ mod tests {
             project: project.into(),
             agent_names: vec![format!("{}/dev-rust", project)],
             agent_paths: vec![None],
-            coordinator_name: Some(format!("{}/tech-lead", project)),
-            coordinator_path: None,
+            orchestrator_name: Some(format!("{}/tech-lead", project)),
+            orchestrator_path: None,
         }
     }
 
@@ -3090,49 +3105,49 @@ mod tests {
         assert!(can_communicate(from, to, &teams));
     }
 
-    /// §DR7: `is_coordinator_for_cwd` resolves project from the CWD so
+    /// §DR7: `is_orchestrator_for_cwd` resolves project from the CWD so
     /// coordinators in different projects with same-named teams are isolated.
     #[test]
-    fn is_coordinator_for_cwd_project_qualified() {
+    fn is_orchestrator_for_cwd_project_qualified() {
         let teams = vec![dev_team("proj-a"), dev_team("proj-b")];
         // tech-lead of proj-a's dev-team.
         let coord_a_cwd = "C:/repos/proj-a/.ac/wg-1-dev-team/__agent_tech-lead";
         // tech-lead of proj-b's dev-team.
         let coord_b_cwd = "C:/repos/proj-b/.ac/wg-1-dev-team/__agent_tech-lead";
-        assert!(is_coordinator_for_cwd(coord_a_cwd, &teams));
-        assert!(is_coordinator_for_cwd(coord_b_cwd, &teams));
+        assert!(is_orchestrator_for_cwd(coord_a_cwd, &teams));
+        assert!(is_orchestrator_for_cwd(coord_b_cwd, &teams));
     }
 
-    /// Issue #77 regression guard: `is_any_coordinator` is the hot path used by
+    /// Issue #77 regression guard: `is_any_orchestrator` is the hot path used by
     /// `commands::ac_discovery` to populate `AcAgentReplica.isCoordinator`. The
-    /// §AR2-strict gate in `is_coordinator` requires a project-qualified FQN —
+    /// §AR2-strict gate in `is_orchestrator` requires a project-qualified FQN —
     /// callers that pass an unqualified WG-local name will silently get `false`
     /// (which is exactly the bug fixed in #77). This test pins the contract so
     /// no future refactor can re-introduce the regression.
     #[test]
-    fn is_any_coordinator_requires_qualified_fqn() {
+    fn is_any_orchestrator_requires_qualified_fqn() {
         let teams = vec![dev_team("foo")];
 
         // 1. Project-qualified WG replica matching the team's project → true.
-        assert!(is_any_coordinator("foo:wg-1-dev-team/tech-lead", &teams));
+        assert!(is_any_orchestrator("foo:wg-1-dev-team/tech-lead", &teams));
 
         // 2. Unqualified WG replica (legacy shape) → false. §AR2-strict guard.
-        assert!(!is_any_coordinator("wg-1-dev-team/tech-lead", &teams));
+        assert!(!is_any_orchestrator("wg-1-dev-team/tech-lead", &teams));
 
         // 3. Cross-project qualified → false (project mismatch).
-        assert!(!is_any_coordinator("bar:wg-1-dev-team/tech-lead", &teams));
+        assert!(!is_any_orchestrator("bar:wg-1-dev-team/tech-lead", &teams));
     }
 
     /// §AR2-strict: unqualified `from` (legacy) MUST NOT grant coordinator
     /// authority even if the local part matches. Locks in the §DR8/§G13 call.
     #[test]
-    fn is_coordinator_rejects_legacy_unqualified_from() {
+    fn is_orchestrator_rejects_legacy_unqualified_from() {
         let teams = [dev_team("proj-a")];
         // Legacy-unqualified name — local part matches the team coordinator, but
         // with no project prefix the strict rule rejects.
-        assert!(!is_coordinator("wg-1-dev-team/tech-lead", &teams[0]));
+        assert!(!is_orchestrator("wg-1-dev-team/tech-lead", &teams[0]));
         // For completeness, the fully-qualified form DOES grant authority.
-        assert!(is_coordinator("proj-a:wg-1-dev-team/tech-lead", &teams[0]));
+        assert!(is_orchestrator("proj-a:wg-1-dev-team/tech-lead", &teams[0]));
     }
 
     /// #280 §3.4 — `note_missing_team_config` is a process-local one-shot

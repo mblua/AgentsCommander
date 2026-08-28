@@ -126,12 +126,12 @@ pub(crate) const CODEX_HOME_DIR_NAME: &str = "codex-home";
 /// rule, the same stance `harness.log` gets under the `logs` row.
 pub(crate) const CODING_AGENT_REQUESTS_DIR_NAME: &str = "coding-agent-requests";
 pub(crate) const CONTEXT_CACHE_DIR_NAME: &str = "context-cache";
-pub(crate) const COORDINATOR_CLOCKS_FILE_NAME: &str = "coordinator_clocks.json";
+pub(crate) const ORCHESTRATOR_CLOCKS_FILE_NAME: &str = "coordinator_clocks.json";
 /// The clocks writer names its temporary by replacing the extension with
 /// `json.{pid}.{seq}.tmp`, so the name has no leading dot and the atomic-write
 /// glob cannot match it. A registry test derives this glob from
-/// `COORDINATOR_CLOCKS_FILE_NAME`.
-pub(crate) const COORDINATOR_CLOCKS_TMP_GLOB: &str = "coordinator_clocks.json.*.tmp";
+/// `ORCHESTRATOR_CLOCKS_FILE_NAME`.
+pub(crate) const ORCHESTRATOR_CLOCKS_TMP_GLOB: &str = "coordinator_clocks.json.*.tmp";
 pub(crate) const DEBUG_LOGS_FILE_NAME: &str = "debug-logs.txt";
 pub(crate) const TELEGRAM_DIAG_RAW_LOG_FILE_NAME: &str = "diag-raw.log";
 pub(crate) const TELEGRAM_DIAG_SENT_LOG_FILE_NAME: &str = "diag-sent.log";
@@ -293,13 +293,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: regenerable per-session combined-context cache",
     },
     InstanceArtifact {
-        name: COORDINATOR_CLOCKS_FILE_NAME,
+        name: ORCHESTRATOR_CLOCKS_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: coordinator idle-clock runtime state",
     },
     InstanceArtifact {
-        name: COORDINATOR_CLOCKS_TMP_GLOB,
+        name: ORCHESTRATOR_CLOCKS_TMP_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient coordinator-clock write temporaries",
@@ -614,10 +614,10 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_clocks_tmp_glob_derives_from_the_clocks_file_name() {
+    fn orchestrator_clocks_tmp_glob_derives_from_the_clocks_file_name() {
         assert_eq!(
-            COORDINATOR_CLOCKS_TMP_GLOB,
-            format!("{COORDINATOR_CLOCKS_FILE_NAME}.*.tmp")
+            ORCHESTRATOR_CLOCKS_TMP_GLOB,
+            format!("{ORCHESTRATOR_CLOCKS_FILE_NAME}.*.tmp")
         );
     }
 

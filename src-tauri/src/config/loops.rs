@@ -22,7 +22,8 @@ pub enum LoopTriggerKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum LoopTargetKind {
-    WorkgroupCoordinator,
+    #[serde(rename = "workgroupCoordinator")]
+    WorkgroupOrchestrator,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -34,7 +35,7 @@ pub enum MissedWhileClosedPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub enum BusyCoordinatorPolicy {
+pub enum BusyOrchestratorPolicy {
     #[default]
     WaitUntilIdle,
     ForceInject,
@@ -58,7 +59,7 @@ pub struct LoopUpdatePatch {
     pub expr: Option<String>,
     pub workgroup: Option<String>,
     pub prompt_body: Option<String>,
-    pub busy_coordinator: Option<BusyCoordinatorPolicy>,
+    pub busy_orchestrator: Option<BusyOrchestratorPolicy>,
     pub enabled: Option<bool>,
 }
 
@@ -94,15 +95,15 @@ pub struct LoopPrompt {
 pub struct LoopPolicy {
     #[serde(default)]
     pub missed_while_closed: MissedWhileClosedPolicy,
-    #[serde(default)]
-    pub busy_coordinator: BusyCoordinatorPolicy,
+    #[serde(default, rename = "busyCoordinator")]
+    pub busy_orchestrator: BusyOrchestratorPolicy,
 }
 
 impl Default for LoopPolicy {
     fn default() -> Self {
         Self {
             missed_while_closed: MissedWhileClosedPolicy::Notify,
-            busy_coordinator: BusyCoordinatorPolicy::WaitUntilIdle,
+            busy_orchestrator: BusyOrchestratorPolicy::WaitUntilIdle,
         }
     }
 }
@@ -150,7 +151,8 @@ pub struct LoopAuditEntry {
     pub completed_at: Option<DateTime<Utc>>,
     pub target: Option<String>,
     pub session_id: Option<Uuid>,
-    pub busy_coordinator_policy: BusyCoordinatorPolicy,
+    #[serde(rename = "busyCoordinatorPolicy")]
+    pub busy_orchestrator_policy: BusyOrchestratorPolicy,
     pub error: Option<String>,
     pub prompt_snapshot: Option<String>,
 }
@@ -166,7 +168,8 @@ pub struct AcLoopSummary {
     pub target_kind: LoopTargetKind,
     pub workgroup: String,
     pub prompt_preview: String,
-    pub busy_coordinator: BusyCoordinatorPolicy,
+    #[serde(rename = "busyCoordinator")]
+    pub busy_orchestrator: BusyOrchestratorPolicy,
     pub path: String,
     pub config_path: String,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -191,8 +194,8 @@ pub struct ResolvedLoopTarget {
     pub project_dir: PathBuf,
     pub ac_root: PathBuf,
     pub wg_dir: PathBuf,
-    pub coordinator_replica_dir: PathBuf,
-    pub coordinator_agent_name: String,
+    pub orchestrator_replica_dir: PathBuf,
+    pub orchestrator_agent_name: String,
 }
 
 fn default_enabled() -> bool {
@@ -287,7 +290,7 @@ pub fn loop_delivery_config_matches(current: &LoopConfigToml, expected: &LoopCon
         && current.target.workgroup == expected.target.workgroup
         && current.prompt.body == expected.prompt.body
         && current.policy.missed_while_closed == expected.policy.missed_while_closed
-        && current.policy.busy_coordinator == expected.policy.busy_coordinator
+        && current.policy.busy_orchestrator == expected.policy.busy_orchestrator
 }
 
 pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<PathBuf, String> {
@@ -470,7 +473,7 @@ pub fn resolve_loop_target(
             project_dir.display()
         ));
     }
-    let resolved = crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
+    let resolved = crate::config::teams::resolve_wg_orchestrator_replica(&ac_root, &wg_dir)
         .ok_or_else(|| {
             format!(
                 "Workgroup '{}' has no identity-verified orchestrator",
@@ -486,8 +489,8 @@ pub fn resolve_loop_target(
         project_dir: project_dir.to_path_buf(),
         ac_root,
         wg_dir,
-        coordinator_replica_dir: resolved.replica_dir,
-        coordinator_agent_name: resolved.agent_name,
+        orchestrator_replica_dir: resolved.replica_dir,
+        orchestrator_agent_name: resolved.agent_name,
     })
 }
 
@@ -580,9 +583,9 @@ pub fn apply_loop_update_patch(
             reset_schedule = true;
         }
     }
-    if let Some(policy) = patch.busy_coordinator {
-        if config.policy.busy_coordinator != policy {
-            config.policy.busy_coordinator = policy;
+    if let Some(policy) = patch.busy_orchestrator {
+        if config.policy.busy_orchestrator != policy {
+            config.policy.busy_orchestrator = policy;
             reset_schedule = true;
         }
     }
@@ -606,7 +609,7 @@ pub fn summary_from_parts(dir: &Path, config: &LoopConfigToml, state: &LoopState
         target_kind: config.target.kind.clone(),
         workgroup: config.target.workgroup.clone(),
         prompt_preview: prompt_preview(&config.prompt.body),
-        busy_coordinator: config.policy.busy_coordinator.clone(),
+        busy_orchestrator: config.policy.busy_orchestrator.clone(),
         path: dir.to_string_lossy().to_string(),
         config_path: dir.join(LOOP_CONFIG_FILE).to_string_lossy().to_string(),
         last_checked_at: state.last_checked_at,
@@ -723,7 +726,7 @@ mod tests {
                 timezone: LOOP_TIMEZONE_LOCAL.to_string(),
             },
             target: LoopTarget {
-                kind: LoopTargetKind::WorkgroupCoordinator,
+                kind: LoopTargetKind::WorkgroupOrchestrator,
                 workgroup: "wg-1-dev-team".to_string(),
             },
             prompt: LoopPrompt {
@@ -747,7 +750,7 @@ mod tests {
     #[test]
     fn loop_policy_serializes_camel_case_keys() {
         let mut config = sample_config();
-        config.policy.busy_coordinator = BusyCoordinatorPolicy::ForceInject;
+        config.policy.busy_orchestrator = BusyOrchestratorPolicy::ForceInject;
         let toml = toml::to_string(&config).expect("toml");
         assert!(toml.contains("missedWhileClosed = \"notify\""), "{toml}");
         assert!(toml.contains("busyCoordinator = \"forceInject\""), "{toml}");
@@ -805,7 +808,7 @@ mod tests {
                 expr: Some("0 9 * * 1-5".to_string()),
                 workgroup: Some("wg-1-dev-team".to_string()),
                 prompt_body: Some("Summarize status".to_string()),
-                busy_coordinator: Some(BusyCoordinatorPolicy::WaitUntilIdle),
+                busy_orchestrator: Some(BusyOrchestratorPolicy::WaitUntilIdle),
                 enabled: Some(true),
                 ..LoopUpdatePatch::default()
             },
@@ -853,7 +856,7 @@ mod tests {
             completed_at: None,
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
-            busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
+            busy_orchestrator_policy: BusyOrchestratorPolicy::WaitUntilIdle,
             error: None,
             prompt_snapshot: None,
         };
@@ -883,7 +886,7 @@ mod tests {
             completed_at: None,
             target: Some("proj:wg-1-dev-team/tech-lead".to_string()),
             session_id: None,
-            busy_coordinator_policy: BusyCoordinatorPolicy::WaitUntilIdle,
+            busy_orchestrator_policy: BusyOrchestratorPolicy::WaitUntilIdle,
             error: None,
             prompt_snapshot: None,
         };

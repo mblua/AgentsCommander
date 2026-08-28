@@ -2141,9 +2141,9 @@ mod tests {
         let global_template_path = temp
             .path()
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let coordinator_template_path = temp
+        let orchestrator_template_path = temp
             .path()
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         // #979: Root provisioning seeds ONLY the Root supplement. It never creates a
         // standalone global or coordinator template; the one editable global is
         // project-scoped and lives in `<project>/.ac`.
@@ -2153,7 +2153,7 @@ mod tests {
             "Root provisioning must not create a standalone global context template"
         );
         assert!(
-            !coordinator_template_path.exists(),
+            !orchestrator_template_path.exists(),
             "Root provisioning must not create a coordinator context template"
         );
         assert_eq!(
@@ -2187,15 +2187,15 @@ mod tests {
         let global_template_path = temp
             .path()
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let coordinator_template_path = temp
+        let orchestrator_template_path = temp
             .path()
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         let custom_template = "# Custom Root Template\n\nUse this exact seed.\n";
         let custom_global = "# Custom Global Template\n\nKeep global.\n";
-        let custom_coordinator = "# Custom Coordinator Template\n\nKeep coordinator.\n";
+        let custom_orchestrator = "# Custom Coordinator Template\n\nKeep coordinator.\n";
         std::fs::write(&template_path, custom_template).expect("write template");
         std::fs::write(&global_template_path, custom_global).expect("write global template");
-        std::fs::write(&coordinator_template_path, custom_coordinator)
+        std::fs::write(&orchestrator_template_path, custom_orchestrator)
             .expect("write coordinator template");
 
         ensure_root_agent_dir_at(&root).expect("ensure root");
@@ -2211,8 +2211,8 @@ mod tests {
         // #979: an unused custom coordinator file is outside this issue and is left
         // exactly as it is.
         assert_eq!(
-            std::fs::read_to_string(coordinator_template_path).expect("read coordinator template"),
-            custom_coordinator
+            std::fs::read_to_string(orchestrator_template_path).expect("read coordinator template"),
+            custom_orchestrator
         );
         // ...while the standalone global is retired: the ACTIVE name is gone, and the
         // custom bytes survive in exactly one inert timestamped backup.
@@ -2970,7 +2970,7 @@ mod tests {
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(ac_root
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(!ac_root
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)

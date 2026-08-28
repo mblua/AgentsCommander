@@ -91,8 +91,12 @@ impl AgentTooling {
 pub struct AgentDarkFactory {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub teams: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub is_coordinator_of: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "isCoordinatorOf"
+    )]
+    pub is_orchestrator_of: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supervises: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -102,7 +106,7 @@ pub struct AgentDarkFactory {
 impl AgentDarkFactory {
     pub fn is_empty(&self) -> bool {
         self.teams.is_empty()
-            && self.is_coordinator_of.is_empty()
+            && self.is_orchestrator_of.is_empty()
             && self.supervises.is_empty()
             && self.reports_to.is_empty()
     }

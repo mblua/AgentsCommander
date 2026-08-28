@@ -73,7 +73,7 @@ Per-user instantiation state next to the binary. Everything in this tree is per-
 | `settings.pre-384-v1.json` | Pre-v384 settings backup taken during the settings migration | `config/settings.rs` |
 | `sessions.json` | Session registry | `config/sessions_persistence.rs` |
 | `activity.jsonl` | Activity log, see [Activity log](../features/activity-log.md) | `config/activity_log.rs` |
-| `coordinator_clocks.json` | Orchestrator clock state | `config/coordinator_clocks.rs` |
+| `coordinator_clocks.json` | Orchestrator clock state | `config/orchestrator_clocks.rs` |
 | `daemon.pid` | PID of the running daemon; the CLI uses it to detect stale sessions | `config/daemon_pid.rs` |
 | `master-token.txt` | CLI master token | `lib.rs` boot |
 | `web-token.txt` | Web access token, separate from the master token | `lib.rs` boot |

@@ -373,8 +373,8 @@ pub struct PersistedSession {
     #[serde(default)]
     pub git_repos: Vec<crate::session::session::SessionRepo>,
     /// Recomputed on restore; persisted for forward-compat only.
-    #[serde(default)]
-    pub is_coordinator: bool,
+    #[serde(default, rename = "isCoordinator")]
+    pub is_orchestrator: bool,
     /// True for the global Root Agent session. Defaults false for old sessions.json.
     #[serde(default)]
     pub is_root_agent: bool,
@@ -1672,7 +1672,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             working_directory: s.working_directory.clone(),
             was_active: active_id.as_deref() == Some(&s.id),
             git_repos: s.git_repos.clone(),
-            is_coordinator: s.is_coordinator,
+            is_orchestrator: s.is_orchestrator,
             is_root_agent: s.is_root_agent,
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
@@ -2384,7 +2384,7 @@ mod tests {
             working_directory: r"C:\proj\.ac\wg-1-devs\__agent_alice".into(),
             was_active: false,
             git_repos: vec![],
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             agent_id: Some("aid-1".into()),
             agent_label: Some("Claude Code".into()),
@@ -2448,7 +2448,7 @@ mod tests {
             working_directory: "C:/x".into(),
             was_active: false,
             git_repos: vec![],
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
@@ -3390,14 +3390,14 @@ mod tests {
     }
 
     #[test]
-    fn filter_sessions_for_project_paths_drops_coordinator_and_non_coordinator_orphans() {
+    fn filter_sessions_for_project_paths_drops_orchestrator_and_non_orchestrator_orphans() {
         let project_paths = vec!["C:/projects/current".to_string()];
         let sessions = vec![
             PersistedSession {
                 last_prompt: None,
                 name: "kept-coordinator".into(),
                 working_directory: "C:/projects/current/.ac/wg-1/__agent_tech-lead".into(),
-                is_coordinator: true,
+                is_orchestrator: true,
                 status: Some(SessionStatus::Running),
                 ..Default::default()
             },
@@ -3405,7 +3405,7 @@ mod tests {
                 last_prompt: None,
                 name: "orphan-coordinator".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_tech-lead".into(),
-                is_coordinator: true,
+                is_orchestrator: true,
                 status: Some(SessionStatus::Running),
                 ..Default::default()
             },
@@ -3413,7 +3413,7 @@ mod tests {
                 last_prompt: None,
                 name: "orphan-member".into(),
                 working_directory: "C:/projects/removed/.ac/wg-1/__agent_dev-rust".into(),
-                is_coordinator: false,
+                is_orchestrator: false,
                 status: Some(SessionStatus::Exited(0)),
                 ..Default::default()
             },
@@ -3821,7 +3821,7 @@ mod tests {
         let kept = PersistedSession {
             name: "keep".into(),
             working_directory: current_agent.to_string_lossy().to_string(),
-            is_coordinator: true,
+            is_orchestrator: true,
             status: Some(SessionStatus::Running),
             ..Default::default()
         };
@@ -4391,7 +4391,7 @@ mod tests {
             working_directory: "C:/x".into(),
             was_active: false,
             git_repos: vec![],
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             agent_id: None,
             agent_label: None,
@@ -4445,7 +4445,7 @@ mod tests {
                 working_directory: "C:/proj/.ac/_agent_architect".into(),
                 was_active: true,
                 git_repos: vec![],
-                is_coordinator: true,
+                is_orchestrator: true,
                 is_root_agent: false,
                 agent_id: Some("aid-arch".into()),
                 agent_label: Some("Architect".into()),
@@ -4532,7 +4532,7 @@ mod tests {
             working_directory: "C:/x".into(),
             was_active: false,
             git_repos: vec![],
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             agent_id: None,
             agent_label: None,

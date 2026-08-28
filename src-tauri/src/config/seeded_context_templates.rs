@@ -77,7 +77,7 @@ pub(crate) struct TemplateSyncOutcome {
     pub(crate) target_outcome: TemplatePublication,
 }
 
-const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str = "You are the coordinator for your team. You must:\n\
+const OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str = "You are the coordinator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests.\n\
      - Clarify scope, outcome, constraints, and acceptance criteria.\n\
@@ -201,16 +201,16 @@ You are running inside an AgentsCommander session - a terminal session manager c
 {{INTER_AGENT_MESSAGING}}
 "#;
 
-/// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
+/// #1005 S4: `get_default_orchestrator_template()` exactly as it shipped from
 /// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
 /// recognized and auto-upgraded after the v3 token-minimization rewrite.
 /// Never edit. Provenance (G3): one-off run of the shipped accessor at
 /// 1dd0b58 printed len 2403, sha256
 /// 92f3abfc108147b07f1c4a49e7062c0f4d0d9aae570b7e5195852c31bb8b0d02; pinned by
-/// `coordinator_pre_token_minimization_snapshot_is_byte_exact` against those
+/// `orchestrator_pre_token_minimization_snapshot_is_byte_exact` against those
 /// externally captured values, never against this const itself.
-const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
+const ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
     "You are the coordinator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests.\n\
@@ -239,16 +239,16 @@ const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
          \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
 
-/// #1030: `get_default_coordinator_template()` exactly as it shipped through
+/// #1030: `get_default_orchestrator_template()` exactly as it shipped through
 /// base commit 4acadfe5, frozen as the third legacy snapshot so a pristine v3
 /// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
 /// after the v4 rewrite that adds the cross-workgroup rule.
 /// Never edit. Provenance (E2): one-off run of the shipped accessor at
 /// 4acadfe5 printed len 2296, sha256
 /// 9f72fa83ac2fafc73565f975a2bec936a09d0e6a410b1ee1a4a13952e694ec84; pinned by
-/// `coordinator_pre_cross_workgroup_snapshot_is_byte_exact` against those
+/// `orchestrator_pre_cross_workgroup_snapshot_is_byte_exact` against those
 /// externally captured values, never against this const itself.
-const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
+const ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
     "You are the coordinator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
@@ -270,16 +270,16 @@ const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str =
          \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the user interacts with your session.\n";
 
-/// #1571: `get_default_coordinator_template()` exactly as it shipped through
+/// #1571: `get_default_orchestrator_template()` exactly as it shipped through
 /// base commit ecc6527b, frozen as the fourth legacy snapshot so a pristine v4
 /// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
 /// after the v5 Coordinator-to-Orchestrator rename.
 /// Never edit. Provenance (plan #1571 3.6): the shipped accessor measured at
 /// base commit ecc6527b printed len 2509, sha256
 /// f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6; pinned by
-/// `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact` against those
+/// `orchestrator_pre_orchestrator_rename_snapshot_is_byte_exact` against those
 /// externally captured values, never against this const itself.
-const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
+const ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
     "You are the coordinator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
@@ -488,11 +488,11 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
         },
         SeededContextTemplateSpec {
             id: "coordinator",
-            filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            filename: crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Orchestrator context",
             current_version: 5,
-            current_content: crate::config::session_context::get_default_coordinator_template,
-            is_known_generated: is_known_generated_coordinator_template,
+            current_content: crate::config::session_context::get_default_orchestrator_template,
+            is_known_generated: is_known_generated_orchestrator_template,
             project_actionable: true,
             suppress_unknown_without_state: false,
         },
@@ -558,12 +558,12 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
 }
 
-fn is_known_generated_coordinator_template(content: &str) -> bool {
-    content == crate::config::session_context::get_default_coordinator_template()
-        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
-        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
-        || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
-        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+fn is_known_generated_orchestrator_template(content: &str) -> bool {
+    content == crate::config::session_context::get_default_orchestrator_template()
+        || content == ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+        || content == ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        || content == OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        || content == ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1997,8 +1997,8 @@ pub fn dedupe_context_template_updates(updates: &mut Vec<ContextTemplateUpdate>)
 mod tests {
     use super::*;
     use crate::config::session_context::{
-        get_default_coordinator_template, COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
-        GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+        get_default_orchestrator_template, GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+        ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
     };
 
     // Stage E (#1064) recognized-predecessor exhaustiveness sentinel (plan
@@ -2008,20 +2008,20 @@ mod tests {
     // custom content; the global recognizer stays narrower (never a coordinator
     // snapshot). A mutation that recognizes only one generation fails here.
     #[test]
-    fn stage_e_all_recognized_coordinator_predecessors_are_generated_and_custom_is_not() {
-        assert!(is_known_generated_coordinator_template(
-            get_default_coordinator_template()
+    fn stage_e_all_recognized_orchestrator_predecessors_are_generated_and_custom_is_not() {
+        assert!(is_known_generated_orchestrator_template(
+            get_default_orchestrator_template()
         ));
-        assert!(is_known_generated_coordinator_template(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+        assert!(is_known_generated_orchestrator_template(
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
         ));
-        assert!(is_known_generated_coordinator_template(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        assert!(is_known_generated_orchestrator_template(
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         ));
-        assert!(is_known_generated_coordinator_template(
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        assert!(is_known_generated_orchestrator_template(
+            OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
         ));
-        assert!(!is_known_generated_coordinator_template(
+        assert!(!is_known_generated_orchestrator_template(
             "custom operator-authored coordinator content"
         ));
 
@@ -2045,7 +2045,7 @@ mod tests {
         ));
         assert!(
             !is_known_generated_global_template(
-                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+                ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
             ),
             "the global recognizer must not widen to a coordinator snapshot"
         );
@@ -2053,7 +2053,7 @@ mod tests {
 
     #[test]
     fn project_specs_bump_only_the_global_template_to_v4() {
-        let [global, coordinator] = project_specs();
+        let [global, orchestrator] = project_specs();
         assert_eq!(global.id, "global");
         assert_eq!(global.current_version, 4);
         assert_eq!(
@@ -2064,16 +2064,16 @@ mod tests {
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
 
-        assert_eq!(coordinator.id, "coordinator");
-        assert_eq!(coordinator.current_version, 5);
+        assert_eq!(orchestrator.id, "coordinator");
+        assert_eq!(orchestrator.current_version, 5);
         assert_eq!(
-            (coordinator.current_content)(),
-            get_default_coordinator_template()
+            (orchestrator.current_content)(),
+            get_default_orchestrator_template()
         );
-        assert!((coordinator.is_known_generated)(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+        assert!((orchestrator.is_known_generated)(
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
         ));
-        assert!(!(coordinator.is_known_generated)(
+        assert!(!(orchestrator.is_known_generated)(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
     }
@@ -2165,14 +2165,14 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_v3_to_v4_update_records_to_the_seed_manifest_under_the_gate() {
+    fn orchestrator_v3_to_v4_update_records_to_the_seed_manifest_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
         let ac_root = project.join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
 
@@ -2192,7 +2192,7 @@ mod tests {
             };
             sync_project_context_template_for_read_with_clock(
                 &ac_root,
-                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
                 &mut clock,
                 &mut on_publication,
             )
@@ -2213,18 +2213,17 @@ mod tests {
     }
 
     #[test]
-    fn old_coordinator_default_is_known_generated_without_raise_hand() {
+    fn old_orchestrator_default_is_known_generated_without_raise_hand() {
         assert!(
-            !OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Raising Your Hand")
+            !OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Raising Your Hand")
         );
         assert!(
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Sending Screenshots")
+            OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("## Sending Screenshots")
         );
-        assert!(
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.contains("names can be misleading.")
-        );
-        assert!(is_known_generated_coordinator_template(
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+        assert!(OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
+            .contains("names can be misleading."));
+        assert!(is_known_generated_orchestrator_template(
+            OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
         ));
     }
 
@@ -2232,14 +2231,14 @@ mod tests {
     /// #684..1dd0b58 builds shipped. Expected values captured by a one-off run of
     /// the shipped accessor AT base commit 1dd0b58, never from this const.
     #[test]
-    fn coordinator_pre_token_minimization_snapshot_is_byte_exact() {
+    fn orchestrator_pre_token_minimization_snapshot_is_byte_exact() {
         assert_eq!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION.len(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION.len(),
             2403,
             "frozen v2 coordinator snapshot must be the 1dd0b58 bytes"
         );
         assert_eq!(
-            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
+            hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION),
             "92f3abfc108147b07f1c4a49e7062c0f4d0d9aae570b7e5195852c31bb8b0d02",
             "frozen v2 coordinator snapshot changed; it must stay byte-identical to what shipped"
         );
@@ -2249,14 +2248,14 @@ mod tests {
     /// what shipped at base commit 4acadfe5. Expected values captured by a one-off
     /// run of the shipped accessor AT 4acadfe5 (plan E2), never from this const.
     #[test]
-    fn coordinator_pre_cross_workgroup_snapshot_is_byte_exact() {
+    fn orchestrator_pre_cross_workgroup_snapshot_is_byte_exact() {
         assert_eq!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE.len(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE.len(),
             2296,
             "frozen v3 coordinator snapshot must be the 4acadfe5 bytes"
         );
         assert_eq!(
-            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE),
+            hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE),
             "9f72fa83ac2fafc73565f975a2bec936a09d0e6a410b1ee1a4a13952e694ec84",
             "frozen v3 coordinator snapshot changed; it must stay byte-identical to what shipped"
         );
@@ -2266,34 +2265,34 @@ mod tests {
     /// what shipped at base commit ecc6527b. Expected values captured by a one-off
     /// run of the shipped accessor AT ecc6527b (plan 3.6), never from this const.
     #[test]
-    fn coordinator_pre_orchestrator_rename_snapshot_is_byte_exact() {
+    fn orchestrator_pre_orchestrator_rename_snapshot_is_byte_exact() {
         assert_eq!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME.len(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME.len(),
             2509,
             "frozen v4 coordinator snapshot must be the ecc6527b bytes"
         );
         assert_eq!(
-            hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME),
+            hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME),
             "f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6",
             "frozen v4 coordinator snapshot changed; it must stay byte-identical to what shipped"
         );
     }
 
     /// #1571 T5: the frozen v1 coordinator snapshot had no byte pin, and the
-    /// existing `old_coordinator_default_is_known_generated_without_raise_hand`
+    /// existing `old_orchestrator_default_is_known_generated_without_raise_hand`
     /// cannot detect an edit to it: its recognizer assertion is self-referential
     /// and its three `contains()` assertions do not cover the first line, which is
     /// the very sentence the #1571 rename rewrites elsewhere. Expected values
     /// captured by a one-off run AT ecc6527b (plan 9.1), never from this const.
     #[test]
-    fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
+    fn old_orchestrator_raise_hand_snapshot_is_byte_exact() {
         assert_eq!(
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.len(),
+            OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND.len(),
             2066,
             "frozen v1 coordinator snapshot must be the ecc6527b bytes"
         );
         assert_eq!(
-            hash_text(OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND),
+            hash_text(OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND),
             "31d49d02c12fcc8cd2d5277455074dcae3fbc1a84f1f1a0cf0f37828e03f792f",
             "frozen v1 coordinator snapshot changed; it must stay byte-identical to what shipped"
         );
@@ -2303,40 +2302,40 @@ mod tests {
     /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
     /// proves a pristine v2 file on disk auto-upgrades to the current default.
     #[test]
-    fn read_sync_updates_pre_token_minimization_coordinator_template() {
+    fn read_sync_updates_pre_token_minimization_orchestrator_template() {
         assert_ne!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
-            get_default_coordinator_template(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            get_default_orchestrator_template(),
             "v3 rewrite must actually change the template or the freeze is pointless"
         );
-        assert!(is_known_generated_coordinator_template(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+        assert!(is_known_generated_orchestrator_template(
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         ));
 
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write pristine v2 coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
-        assert_eq!(content, get_default_coordinator_template());
+        assert_eq!(content, get_default_orchestrator_template());
     }
 
     /// #1571 T2, failing-first migration proof for the fifth recognizer arm: the
@@ -2351,10 +2350,10 @@ mod tests {
     /// behavior first makes the probe prove that the sync path actually consumes
     /// the recognizer, which is the silent-half-migration risk it exists to close.
     #[test]
-    fn read_sync_updates_pre_orchestrator_rename_coordinator_template() {
+    fn read_sync_updates_pre_orchestrator_rename_orchestrator_template() {
         assert_ne!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
-            get_default_coordinator_template(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+            get_default_orchestrator_template(),
             "the #1571 rename must actually change the template or the freeze is pointless"
         );
 
@@ -2362,29 +2361,29 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,
         )
         .expect("write pristine v4 coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
-        assert_eq!(content, get_default_coordinator_template());
+        assert_eq!(content, get_default_orchestrator_template());
 
-        assert!(is_known_generated_coordinator_template(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+        assert!(is_known_generated_orchestrator_template(
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
         ));
     }
 
@@ -2974,7 +2973,9 @@ mod tests {
 
         assert!(updates.is_empty());
         assert!(!ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
-        assert!(!ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).exists());
+        assert!(!ac_root
+            .join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
     }
 
     #[test]
@@ -3005,13 +3006,13 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        let path = ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let path = ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(
             &path,
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write generated coordinator");
-        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+        let spec = project_spec_by_filename(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("coordinator spec");
         let mut clock_calls = 0_u32;
         let mut clock = || {
@@ -3030,21 +3031,21 @@ mod tests {
         assert_eq!(clock_calls, 0);
         assert_eq!(
             std::fs::read_to_string(path).expect("read preserved target"),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         );
     }
 
     #[test]
     fn generated_update_publish_failure_has_no_publication() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let path = temp.path().join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(
             &path,
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write generated coordinator");
-        let expected_hash = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
-        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+        let expected_hash = hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
+        let spec = project_spec_by_filename(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("coordinator spec");
         let mut clock = || fixed_publication_time();
 
@@ -3065,7 +3066,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(path).expect("read preserved target"),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         );
     }
 
@@ -3073,20 +3074,20 @@ mod tests {
     #[test]
     fn readonly_generated_update_has_no_publication_or_clock_sample() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let path = temp.path().join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         std::fs::write(
             &path,
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION,
         )
         .expect("write generated coordinator");
-        let expected_hash = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
+        let expected_hash = hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION);
         let original_permissions = std::fs::metadata(&path)
             .expect("read target metadata")
             .permissions();
         let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions).expect("make target read-only");
-        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+        let spec = project_spec_by_filename(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("coordinator spec");
         let mut clock_calls = 0_u32;
         let mut clock = || {
@@ -3102,7 +3103,7 @@ mod tests {
         assert_eq!(clock_calls, 0);
         assert_eq!(
             std::fs::read_to_string(path).expect("read preserved target"),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         );
     }
 
@@ -3134,7 +3135,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        std::fs::create_dir(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        std::fs::create_dir(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("block coordinator target with directory");
         let published_at = fixed_publication_time();
         let mut clock = || published_at;
@@ -3161,7 +3162,7 @@ mod tests {
     }
 
     #[test]
-    fn read_sync_creates_missing_coordinator_template() {
+    fn read_sync_creates_missing_orchestrator_template() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -3169,63 +3170,63 @@ mod tests {
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
-        assert_eq!(content, get_default_coordinator_template());
+        assert_eq!(content, get_default_orchestrator_template());
     }
 
     #[test]
-    fn read_sync_updates_old_generated_coordinator_template() {
+    fn read_sync_updates_old_generated_orchestrator_template() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            OLD_ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND,
         )
         .expect("write old coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
-        assert_eq!(content, get_default_coordinator_template());
+        assert_eq!(content, get_default_orchestrator_template());
     }
 
     /// #1030 failing-first migration proof for the STATELESS population (E4 row 4):
     /// the assert_ne is the only check that fails if the v4 rule edit is skipped
     /// while the freeze lands, and the assert! is the only one that fails if the
-    /// const is never wired into `is_known_generated_coordinator_template`. The
+    /// const is never wired into `is_known_generated_orchestrator_template`. The
     /// sync half proves a pristine v3 body with no state file auto-upgrades.
     #[test]
-    fn read_sync_updates_pristine_v3_coordinator_template() {
+    fn read_sync_updates_pristine_v3_orchestrator_template() {
         assert_ne!(
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
-            get_default_coordinator_template(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+            get_default_orchestrator_template(),
             "the v4 edit must actually change the template or the freeze is pointless"
         );
         assert!(
-            is_known_generated_coordinator_template(
-                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            is_known_generated_orchestrator_template(
+                ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
             ),
             "the recognizer must accept the frozen v3 bytes"
         );
@@ -3234,26 +3235,26 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
 
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
-        assert_eq!(content, get_default_coordinator_template());
+        assert_eq!(content, get_default_orchestrator_template());
     }
 
     /// #1030: the SEEDED population (E4 row 3), which is the branch every existing
@@ -3261,13 +3262,13 @@ mod tests {
     /// the migration actually reaches them. A pristine v3 body whose
     /// lastSeededSha256 equals the file hash auto-updates and persists the bump.
     #[test]
-    fn read_sync_updates_seeded_v3_coordinator_and_bumps_version() {
+    fn read_sync_updates_seeded_v3_orchestrator_and_bumps_version() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
         )
         .expect("write pristine v3 coordinator");
         std::fs::write(
@@ -3279,7 +3280,7 @@ mod tests {
                     r#""lastSeededSha256":"{}","lastObservedSha256":null,"#,
                     r#""ignoredDefaultSha256":null,"ignoredObservedSha256":null}}}}}}"#
                 ),
-                hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE)
+                hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE)
             ),
         )
         .expect("write seeded v3 state");
@@ -3289,14 +3290,14 @@ mod tests {
         // when there is no entry at all, and `load_state` (:552-565) turns an unparseable
         // fixture into a trusted empty map rather than an error. So without this block a
         // fixture that never parses still leaves the test green while exercising row 4.
-        let spec = project_spec_by_filename(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+        let spec = project_spec_by_filename(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .expect("coordinator spec by filename");
         let pre_sync = load_state(&ac_root, true).expect("load the hand-written v3 state");
         let entry = pre_sync
             .trusted_entry(spec)
             .expect("the v3 fixture must parse into a trusted coordinator entry (row 3)");
-        let v3_sha256 = hash_text(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
-        let v4_sha256 = hash_text(get_default_coordinator_template());
+        let v3_sha256 = hash_text(ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE);
+        let v4_sha256 = hash_text(get_default_orchestrator_template());
         assert_eq!(
             entry.current_version, 3,
             "row 3 requires the fixture to describe a seeded v3 coordinator"
@@ -3311,8 +3312,8 @@ mod tests {
             "row 3 requires the seeded hash to differ from the current v4 default"
         );
         assert!(
-            is_known_generated_coordinator_template(
-                COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
+            is_known_generated_orchestrator_template(
+                ORCHESTRATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
             ),
             "row 3 requires the pristine v3 body to be recognized as generated"
         );
@@ -3320,20 +3321,20 @@ mod tests {
         let published_at = fixed_publication_time();
         let publications = sync_for_read_at(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
         assert_one_publication(
             &publications,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             published_at,
         );
 
-        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+        let content = std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
             .expect("read coordinator");
         assert_eq!(
             content,
-            get_default_coordinator_template(),
+            get_default_orchestrator_template(),
             "a seeded pristine v3 body must auto-upgrade to the v4 default"
         );
 
@@ -3348,18 +3349,18 @@ mod tests {
             parsed["templates"]["coordinator"]["lastSeededSha256"]
                 .as_str()
                 .expect("lastSeededSha256 is a string"),
-            hash_text(get_default_coordinator_template()),
+            hash_text(get_default_orchestrator_template()),
             "the seeded hash must record the new v4 default"
         );
     }
 
     #[test]
-    fn custom_coordinator_is_preserved_and_reported() {
+    fn custom_orchestrator_is_preserved_and_reported() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+        std::fs::write(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME), custom)
             .expect("write custom coordinator");
 
         let mut clock = || fixed_publication_time();
@@ -3377,9 +3378,9 @@ mod tests {
             publications.is_empty(),
             "observing custom content must not produce publication evidence"
         );
-        assert_eq!(updates[0].filename, COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        assert_eq!(updates[0].filename, ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
             custom
         );
@@ -3408,7 +3409,7 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator with forged seeded hash";
-        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+        std::fs::write(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME), custom)
             .expect("write custom coordinator");
         let mut state = SeededContextTemplateState::default();
         state.templates.insert(
@@ -3429,7 +3430,7 @@ mod tests {
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
             custom
         );
@@ -3441,7 +3442,7 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+        std::fs::write(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME), custom)
             .expect("write custom coordinator");
         let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
@@ -3631,7 +3632,7 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+        std::fs::write(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME), custom)
             .expect("write custom coordinator");
         std::fs::write(
             ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
@@ -3641,9 +3642,9 @@ mod tests {
 
         dismiss_context_template_update(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             &hash_text(custom),
-            &hash_text(get_default_coordinator_template()),
+            &hash_text(get_default_orchestrator_template()),
         )
         .expect("dismiss with invalid state");
 
@@ -3661,7 +3662,7 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+        std::fs::write(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME), custom)
             .expect("write custom coordinator");
         let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
@@ -3677,9 +3678,9 @@ mod tests {
         .expect("overwrite");
 
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator"),
-            get_default_coordinator_template()
+            get_default_orchestrator_template()
         );
         assert_eq!(
             std::fs::read_to_string(result.backup_path).expect("read backup"),
@@ -3692,7 +3693,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        let path = ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let path = ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         let custom = "custom coordinator guidance";
         std::fs::write(&path, custom).expect("write custom coordinator");
         let update = scan_project_context_template_updates(temp.path(), &ac_root)
@@ -3710,13 +3711,13 @@ mod tests {
             &update.current_default_sha256,
             &mut clock,
             &mut |filename, publication| {
-                assert_eq!(filename, COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+                assert_eq!(filename, ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
                 handled_publication.set(Some(publication));
             },
             |_, _| {
                 assert_eq!(
                     std::fs::read_to_string(&path).expect("read target before state save"),
-                    get_default_coordinator_template(),
+                    get_default_orchestrator_template(),
                     "the physical replacement must precede specialized state persistence"
                 );
                 assert_eq!(
@@ -3740,7 +3741,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(path).expect("read surviving published target"),
-            get_default_coordinator_template()
+            get_default_orchestrator_template()
         );
     }
 
@@ -3773,7 +3774,7 @@ mod tests {
 
         let err = dismiss_context_template_update(
             &ac_root,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
             "file",
             "default",
         )
@@ -3789,7 +3790,7 @@ mod tests {
                 project_path: "project".to_string(),
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
-                filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
+                filename: ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-a".to_string(),
                 current_default_sha256: "default".to_string(),
@@ -3799,7 +3800,7 @@ mod tests {
                 project_path: "project".to_string(),
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
-                filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
+                filename: ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-a".to_string(),
                 current_default_sha256: "default".to_string(),
@@ -3809,7 +3810,7 @@ mod tests {
                 project_path: "project".to_string(),
                 workspace_path: "workspace".to_string(),
                 file_path: "workspace/Context.coordinator.md".to_string(),
-                filename: COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
+                filename: ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
                 label: "Orchestrator context".to_string(),
                 current_file_sha256: "file-b".to_string(),
                 current_default_sha256: "default".to_string(),

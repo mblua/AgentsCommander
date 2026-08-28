@@ -2081,7 +2081,7 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(!fix.path().join(".ac").join("templates").exists());
     }
@@ -2122,9 +2122,9 @@ mod tests {
         let ac_root = fix.path().join(".ac");
         std::fs::create_dir_all(&ac_root).unwrap();
         let agent_template = ac_root.join("Context.AgentsCommander.md");
-        let coordinator_template = ac_root.join("Context.coordinator.md");
+        let orchestrator_template = ac_root.join("Context.coordinator.md");
         std::fs::write(&agent_template, "CUSTOM_AGENT").unwrap();
-        std::fs::write(&coordinator_template, "CUSTOM_COORDINATOR").unwrap();
+        std::fs::write(&orchestrator_template, "CUSTOM_COORDINATOR").unwrap();
 
         let mut s = AppSettings::default();
         let r = register_new_project(&mut s, fix.path().to_str().unwrap()).unwrap();
@@ -2135,7 +2135,7 @@ mod tests {
             "CUSTOM_AGENT"
         );
         assert_eq!(
-            std::fs::read_to_string(coordinator_template).unwrap(),
+            std::fs::read_to_string(orchestrator_template).unwrap(),
             "CUSTOM_COORDINATOR"
         );
     }
@@ -2181,7 +2181,7 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
     }
 
@@ -2229,7 +2229,7 @@ mod tests {
         assert!(fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
 
         release_tx.send(()).expect("release creator");
@@ -2291,15 +2291,15 @@ mod tests {
             .path()
             .join(".ac")
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let coordinator_template = fix
+        let orchestrator_template = fix
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         assert!(agent_template.is_file());
-        assert!(coordinator_template.is_file());
+        assert!(orchestrator_template.is_file());
         let agent_bytes = std::fs::read(&agent_template).expect("read contender agent template");
-        let coordinator_bytes =
-            std::fs::read(&coordinator_template).expect("read contender coordinator template");
+        let orchestrator_bytes =
+            std::fs::read(&orchestrator_template).expect("read contender coordinator template");
 
         // Release the creator; it acquires the now-free gate and then fails.
         release_tx.send(()).expect("release creator");
@@ -2323,7 +2323,7 @@ mod tests {
             "contender agent template must survive creator failure"
         );
         assert!(
-            coordinator_template.is_file(),
+            orchestrator_template.is_file(),
             "contender coordinator template must survive creator failure"
         );
         assert_eq!(
@@ -2332,8 +2332,8 @@ mod tests {
             "contender agent template bytes must be untouched"
         );
         assert_eq!(
-            std::fs::read(&coordinator_template).expect("re-read coordinator template"),
-            coordinator_bytes,
+            std::fs::read(&orchestrator_template).expect("re-read coordinator template"),
+            orchestrator_bytes,
             "contender coordinator template bytes must be untouched"
         );
 

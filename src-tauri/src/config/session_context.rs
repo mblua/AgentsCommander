@@ -10,7 +10,7 @@ use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
 pub const GLOBAL_CONTEXT_TEMPLATE_FILENAME: &str =
     crate::config::instance_artifacts::GLOBAL_CONTEXT_TEMPLATE_FILENAME;
 const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
-pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
+pub const ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =
     crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME;
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -29,7 +29,7 @@ pub(crate) enum CreateOnlyPublication {
 pub(crate) fn manifest_scope_for_project_context_filename(filename: &str) -> Option<&'static str> {
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
         Some("context:agentscommander")
-    } else if filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME {
+    } else if filename == ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME {
         Some("context:coordinator")
     } else {
         None
@@ -1220,7 +1220,7 @@ where
         migrate_legacy_agent_context_template(&context_dir)?;
     }
     let is_managed_project_template = filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME
-        || filename == COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+        || filename == ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME;
     if is_managed_project_template {
         if let Err(e) = synchronize(&context_dir, filename, on_publication) {
             log::warn!(
@@ -2091,13 +2091,13 @@ fn build_direct_matrix_context(
 #[cfg(test)]
 fn resolve_session_context_content(
     cwd: &str,
-    is_coordinator: bool,
+    is_orchestrator: bool,
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
     resolve_session_context_content_with_activation(
         cwd,
-        is_coordinator,
+        is_orchestrator,
         auto_self_clear,
         repo_mounts,
         None,
@@ -2106,7 +2106,7 @@ fn resolve_session_context_content(
 
 fn resolve_session_context_content_with_activation(
     cwd: &str,
-    is_coordinator: bool,
+    is_orchestrator: bool,
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
@@ -2151,24 +2151,24 @@ fn resolve_session_context_content_with_activation(
     // `read_or_create_context_template`. That call resolves its directory through
     // `resolve_ac_root_context_dir`, so with a `.ac`-ancestor config dir (the dev
     // and workgroup layouts) a Root would CREATE and SYNC the *project's*
-    // `Context.coordinator.md`. `is_coordinator` is false for Root today
-    // (`is_coordinator_for_cwd` derives an FQN from the cwd and checks team
+    // `Context.coordinator.md`. `is_orchestrator` is false for Root today
+    // (`is_orchestrator_for_cwd` derives an FQN from the cwd and checks team
     // membership, teams.rs:802-805); this guard makes a wrong caller flag harmless.
-    if is_coordinator && !super::root_agent::is_root_agent_dir_name(cwd) {
-        let coordinator_body = read_or_create_context_recorded(
+    if is_orchestrator && !super::root_agent::is_root_agent_dir_name(cwd) {
+        let orchestrator_body = read_or_create_context_recorded(
             cwd,
-            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
-            get_default_coordinator_template(),
+            ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
+            get_default_orchestrator_template(),
             activation,
         )?
-        .unwrap_or_else(|| get_default_coordinator_template().to_string());
-        if !coordinator_body.trim().is_empty() {
+        .unwrap_or_else(|| get_default_orchestrator_template().to_string());
+        if !orchestrator_body.trim().is_empty() {
             content.push_str("\n\n---\n\n# Orchestrator Context\n\n");
-            content.push_str(&coordinator_body);
+            content.push_str(&orchestrator_body);
         }
-        if crate::config::teams::verify_pty_input_coordinator_root(Path::new(cwd)).is_ok() {
+        if crate::config::teams::verify_pty_input_orchestrator_root(Path::new(cwd)).is_ok() {
             content.push_str("\n\n");
-            content.push_str(PTY_INPUT_COORDINATOR_CONTEXT);
+            content.push_str(PTY_INPUT_ORCHESTRATOR_CONTEXT);
         }
     }
 
@@ -2202,7 +2202,7 @@ pub fn materialize_agent_context_file_with_filename(
     cwd: &str,
     target_filename: &str,
     extra_managed_filenames: &[String],
-    is_coordinator: bool,
+    is_orchestrator: bool,
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
 ) -> Result<Option<String>, String> {
@@ -2210,7 +2210,7 @@ pub fn materialize_agent_context_file_with_filename(
         cwd,
         target_filename,
         extra_managed_filenames,
-        is_coordinator,
+        is_orchestrator,
         auto_self_clear,
         repo_mounts,
         None,
@@ -2226,14 +2226,14 @@ pub(crate) fn materialize_agent_context_file_with_filename_activated(
     cwd: &str,
     target_filename: &str,
     extra_managed_filenames: &[String],
-    is_coordinator: bool,
+    is_orchestrator: bool,
     auto_self_clear: bool,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<Option<String>, String> {
     let content = match resolve_session_context_content_with_activation(
         cwd,
-        is_coordinator,
+        is_orchestrator,
         auto_self_clear,
         repo_mounts,
         activation,
@@ -2359,7 +2359,7 @@ fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 pub fn materialize_agent_context_file(
     cwd: &str,
     target: ManagedContextTarget,
-    is_coordinator: bool,
+    is_orchestrator: bool,
 ) -> Result<Option<String>, String> {
     // #640 test-only wrapper: the sole production caller is
     // materialize_agent_context_file_with_filename in session.rs, which resolves
@@ -2369,7 +2369,7 @@ pub fn materialize_agent_context_file(
         cwd,
         target.filename(),
         &[],
-        is_coordinator,
+        is_orchestrator,
         false,
         None,
     )
@@ -2492,7 +2492,7 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 "#
 }
 
-pub(crate) const PTY_INPUT_COORDINATOR_CONTEXT: &str = r#"## Privileged PTY Input
+pub(crate) const PTY_INPUT_ORCHESTRATOR_CONTEXT: &str = r#"## Privileged PTY Input
 
 This capability is present only because this session is an identity-verified workgroup orchestrator replica. You may ask AgentsCommander to submit validated text to exactly one non-orchestrator member in this same project and workgroup. Resolve the exact target with `list-peers-lean`. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
 
@@ -2505,7 +2505,7 @@ Container session with `AGENTSCOMMANDER_TRANSPORT=api`:
 
 Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported operation ID and inspect its status; do not create a new operation to retry it."#;
 
-pub fn get_default_coordinator_template() -> &'static str {
+pub fn get_default_orchestrator_template() -> &'static str {
     "You are the orchestrator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\
      - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
@@ -5516,7 +5516,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn default_context_root_agent_documents_verified_wg_coordinators_only() {
+    fn default_context_root_agent_documents_verified_wg_orchestrators_only() {
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
 
         assert!(out.contains("verified WG orchestrator replicas only"));
@@ -7956,63 +7956,63 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn custom_coordinator_template_appends_only_for_coordinator() {
+    fn custom_orchestrator_template_appends_only_for_orchestrator() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_COORDINATOR_BODY",
         )
         .expect("write custom coordinator template");
 
-        let non_coordinator = materialize_agent_context_file(
+        let non_orchestrator = materialize_agent_context_file(
             &path_string(&matrix_root),
             ManagedContextTarget::Codex,
             false,
         )
         .expect("materialize non-coordinator")
         .expect("context path");
-        let non_coordinator_content =
-            std::fs::read_to_string(non_coordinator).expect("read non-coordinator context");
-        assert!(!non_coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
-        assert!(!non_coordinator_content.contains("# Orchestrator Context"));
+        let non_orchestrator_content =
+            std::fs::read_to_string(non_orchestrator).expect("read non-coordinator context");
+        assert!(!non_orchestrator_content.contains("CUSTOM_COORDINATOR_BODY"));
+        assert!(!non_orchestrator_content.contains("# Orchestrator Context"));
 
-        let coordinator = materialize_agent_context_file(
+        let orchestrator = materialize_agent_context_file(
             &path_string(&matrix_root),
             ManagedContextTarget::Codex,
             true,
         )
         .expect("materialize coordinator")
         .expect("context path");
-        let coordinator_content =
-            std::fs::read_to_string(coordinator).expect("read coordinator context");
-        assert!(coordinator_content.contains("# Orchestrator Context"));
-        assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BODY"));
+        let orchestrator_content =
+            std::fs::read_to_string(orchestrator).expect("read coordinator context");
+        assert!(orchestrator_content.contains("# Orchestrator Context"));
+        assert!(orchestrator_content.contains("CUSTOM_COORDINATOR_BODY"));
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read coordinator template"),
             "CUSTOM_COORDINATOR_BODY"
         );
     }
 
     #[test]
-    fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
+    fn privileged_pty_context_is_added_only_to_verified_workgroup_orchestrator() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("project-a");
         let ac_root = project.join(".ac");
         let team = ac_root.join("_team_dev-team");
         let workgroup = ac_root.join("wg-1-dev-team");
-        let coordinator_matrix = ac_root.join("_agent_tech-lead");
+        let orchestrator_matrix = ac_root.join("_agent_tech-lead");
         let member_matrix = ac_root.join("_agent_dev-rust");
-        let coordinator = workgroup.join("__agent_tech-lead");
+        let orchestrator = workgroup.join("__agent_tech-lead");
         let member = workgroup.join("__agent_dev-rust");
         for directory in [
             &team,
-            &coordinator_matrix,
+            &orchestrator_matrix,
             &member_matrix,
-            &coordinator,
+            &orchestrator,
             &member,
         ] {
             std::fs::create_dir_all(directory).expect("create fixture directory");
@@ -8023,7 +8023,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write team config");
         std::fs::write(
-            coordinator.join("config.json"),
+            orchestrator.join("config.json"),
             r#"{"identity":"../../_agent_tech-lead","context":["$AGENTSCOMMANDER_CONTEXT"]}"#,
         )
         .expect("write coordinator config");
@@ -8033,22 +8033,22 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write member config");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
             "CUSTOM_COORDINATOR_BYTES",
         )
         .expect("write custom coordinator template");
 
-        let coordinator_content =
-            resolve_session_context_content(&path_string(&coordinator), true, false, None)
+        let orchestrator_content =
+            resolve_session_context_content(&path_string(&orchestrator), true, false, None)
                 .expect("resolve coordinator context")
                 .expect("coordinator context");
         assert_eq!(
-            coordinator_content
+            orchestrator_content
                 .matches("## Privileged PTY Input")
                 .count(),
             1
         );
-        assert!(coordinator_content.contains("CUSTOM_COORDINATOR_BYTES"));
+        assert!(orchestrator_content.contains("CUSTOM_COORDINATOR_BYTES"));
 
         let member_content =
             resolve_session_context_content(&path_string(&member), true, false, None)
@@ -8056,19 +8056,19 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 .expect("member context");
         assert!(!member_content.contains("## Privileged PTY Input"));
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read custom template"),
             "CUSTOM_COORDINATOR_BYTES"
         );
     }
 
     #[test]
-    fn coordinator_template_no_longer_carries_inline_self_maintenance() {
+    fn orchestrator_template_no_longer_carries_inline_self_maintenance() {
         // #640: the coordinator's self-maintenance directive moved OUT of the raw
         // template into the gated SELF_MAINTENANCE_AUTO_SECTION (single source).
         // The raw template must no longer carry it, must keep the screenshot
         // guidance that preceded the removed block, and stay em-dash-free.
-        let tpl = get_default_coordinator_template();
+        let tpl = get_default_orchestrator_template();
         assert!(!tpl.contains("## Self-Maintenance"));
         assert!(!tpl.contains("self-handoff-and-clear"));
         // Screenshot guidance (the content immediately before the removed block)
@@ -8082,14 +8082,14 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn coordinator_template_carries_raise_hand_guidance_and_shared_template_does_not() {
+    fn orchestrator_template_carries_raise_hand_guidance_and_shared_template_does_not() {
         // #684: the coordinator template gains a short raise-hand usage guide
         // beside the screenshot guidance. It must be coordinator-only, so the
         // shared agent template (every non-coordinator agent) must NOT carry it.
-        let coordinator = get_default_coordinator_template();
-        assert!(coordinator.contains("## Raising Your Hand"));
-        assert!(coordinator.contains("raise-hand --token <AGENTSCOMMANDER_TOKEN>"));
-        assert!(coordinator.contains("Sidebar raised-hand indicator for your orchestrator row"));
+        let orchestrator = get_default_orchestrator_template();
+        assert!(orchestrator.contains("## Raising Your Hand"));
+        assert!(orchestrator.contains("raise-hand --token <AGENTSCOMMANDER_TOKEN>"));
+        assert!(orchestrator.contains("Sidebar raised-hand indicator for your orchestrator row"));
 
         let shared = get_default_agent_template();
         assert!(!shared.contains("## Raising Your Hand"));
@@ -8097,7 +8097,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn coordinator_template_carries_cross_workgroup_rule() {
+    fn orchestrator_template_carries_cross_workgroup_rule() {
         // #1030: the user-approved cross-workgroup bullet, verbatim. Asserted as
         // ONE exact string rather than fragments: a body keeping the routing and
         // reply fragments but dropping the "only when your role, the user, or the
@@ -8106,7 +8106,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // point. The looser anchor count rejects a second, differently worded
         // variant, which the exact count alone accepts.
         const RULE: &str = "- To reach another workgroup, message its orchestrator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to an orchestrator who messaged you first is always authorized.\n";
-        let tpl = get_default_coordinator_template();
+        let tpl = get_default_orchestrator_template();
         assert_eq!(
             tpl.matches(RULE).count(),
             1,
@@ -8164,7 +8164,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn coordinator_on_disk_legacy_self_maintenance_is_stripped_and_replaced() {
+    fn orchestrator_on_disk_legacy_self_maintenance_is_stripped_and_replaced() {
         // #640 M1: an existing workgroup froze the OLD `## Self-Maintenance` block
         // into its persisted Context.coordinator.md on disk. The render-time strip
         // must remove it so the materialized context has EXACTLY ONE such section
@@ -8175,7 +8175,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let matrix_root = ac_root.join("_agent_tech-lead");
         std::fs::create_dir_all(&matrix_root).expect("create matrix root");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
             "COORD BODY\n\n## Self-Maintenance\n\nLEGACY_SENTINEL old qualitative trigger.\n",
         )
         .expect("write legacy coordinator template");
@@ -8259,8 +8259,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn root_never_appends_creates_or_rewrites_a_coordinator_template() {
-        // #979 G.7. `is_coordinator` is false for Root today, but the coordinator
+    fn root_never_appends_creates_or_rewrites_a_orchestrator_template() {
+        // #979 G.7. `is_orchestrator` is false for Root today, but the coordinator
         // branch calls `read_or_create_context_template`, which resolves through the
         // same `resolve_ac_root_context_dir`: with a `.ac`-ancestor config dir an
         // incorrect flag would CREATE and SYNC the *project's* Context.coordinator.md.
@@ -8274,9 +8274,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::write(root_dir.join("config.json"), r#"{"context":["base.md"]}"#)
             .expect("write root config");
 
-        let coordinator_path = ac_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        let orchestrator_path = ac_dir.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME);
         let sentinel = "COORDINATOR_SENTINEL_BODY\n";
-        std::fs::write(&coordinator_path, sentinel).expect("write coordinator sentinel");
+        std::fs::write(&orchestrator_path, sentinel).expect("write coordinator sentinel");
 
         let content = resolve_session_context_content(&path_string(&root_dir), true, false, None)
             .expect("resolve as coordinator")
@@ -8286,18 +8286,18 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!content.contains("# Orchestrator Context"));
         assert!(content.contains("# AgentsCommander Root Runtime Context"));
         assert_eq!(
-            std::fs::read(&coordinator_path).expect("read coordinator sentinel"),
+            std::fs::read(&orchestrator_path).expect("read coordinator sentinel"),
             sentinel.as_bytes()
         );
 
         // ...and with the coordinator template ABSENT, a Root flagged as coordinator
         // creates none.
-        std::fs::remove_file(&coordinator_path).expect("remove coordinator sentinel");
+        std::fs::remove_file(&orchestrator_path).expect("remove coordinator sentinel");
         resolve_session_context_content(&path_string(&root_dir), true, false, None)
             .expect("resolve as coordinator")
             .expect("root content");
         assert!(
-            !coordinator_path.exists(),
+            !orchestrator_path.exists(),
             "Root must never create a coordinator context template"
         );
     }
@@ -8441,9 +8441,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             get_default_agent_template()
         );
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read created coordinator template"),
-            get_default_coordinator_template()
+            get_default_orchestrator_template()
         );
     }
 
@@ -8460,8 +8460,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 get_default_agent_template(),
             ),
             (
-                COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
-                get_default_coordinator_template(),
+                ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME,
+                get_default_orchestrator_template(),
             ),
         ] {
             let path = ac_root.join(filename);
@@ -8521,9 +8521,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             get_default_agent_template()
         );
         assert_eq!(
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            std::fs::read_to_string(ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read retried coordinator template"),
-            get_default_coordinator_template()
+            get_default_orchestrator_template()
         );
     }
 
@@ -8635,7 +8635,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         std::fs::write(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME), "")
             .expect("write empty agent template");
         std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
+            ac_root.join(ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME),
             "COORDINATOR_ONLY",
         )
         .expect("write coordinator template");
@@ -10351,18 +10351,18 @@ mod token_accounting {
         );
         print_row(
             "block: coordinator template (A9)",
-            super::get_default_coordinator_template().len(),
+            super::get_default_orchestrator_template().len(),
         );
 
         // Profiles.
         let replica = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
-        let coordinator = format!(
+        let orchestrator = format!(
             "{}\n\n---\n\n# Orchestrator Context\n\n{}",
             replica,
-            super::get_default_coordinator_template()
+            super::get_default_orchestrator_template()
         );
-        let coordinator_auto_clear =
-            format!("{}{}", coordinator, super::SELF_MAINTENANCE_AUTO_SECTION);
+        let orchestrator_auto_clear =
+            format!("{}{}", orchestrator, super::SELF_MAINTENANCE_AUTO_SECTION);
         let root_skills = root_skills_section_fixed();
         let root = super::render_root_runtime_prologue_inner(
             FAKE_ROOT_AGENT,
@@ -10375,10 +10375,10 @@ mod token_accounting {
         let root_auto_clear = format!("{}{}", root, super::SELF_MAINTENANCE_AUTO_SECTION);
 
         print_row("profile: WG replica", replica.len());
-        print_row("profile: coordinator", coordinator.len());
+        print_row("profile: coordinator", orchestrator.len());
         print_row(
             "profile: coordinator + auto_self_clear",
-            coordinator_auto_clear.len(),
+            orchestrator_auto_clear.len(),
         );
         print_row("profile: Root Agent", root.len());
         print_row(
@@ -10399,7 +10399,7 @@ mod token_accounting {
 
         for (label, value) in [
             ("replica", replica.as_str()),
-            ("coordinator", coordinator.as_str()),
+            ("coordinator", orchestrator.as_str()),
             ("root", root.as_str()),
             ("b1", b1),
             ("b3", b3.as_str()),

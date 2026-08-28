@@ -290,10 +290,10 @@ pub struct AppSettings {
     /// Coordinators that were asleep at shutdown remain asleep. Non-coordinator
     /// team members are never auto-woken on startup (the user must click their
     /// replica in the sidebar to wake them). Issue #248.
-    #[serde(default)]
-    pub restore_coordinator_wake_state: bool,
+    #[serde(default, rename = "restoreCoordinatorWakeState")]
+    pub restore_orchestrator_wake_state: bool,
     /// Migration carrier: legacy field name from before issue #248. Read on
-    /// deserialization, then translated into `restore_coordinator_wake_state` by
+    /// deserialization, then translated into `restore_orchestrator_wake_state` by
     /// `apply_issue_248_migration`. `skip_serializing_if = "Option::is_none"`
     /// elides it on the next save once the migration has run.
     ///
@@ -307,7 +307,7 @@ pub struct AppSettings {
         skip_serializing_if = "Option::is_none",
         rename = "startOnlyCoordinators"
     )]
-    pub legacy_start_only_coordinators: Option<bool>,
+    pub legacy_start_only_orchestrators: Option<bool>,
     /// Keep sidebar window always on top
     #[serde(default)]
     pub sidebar_always_on_top: bool,
@@ -523,23 +523,32 @@ pub struct AppSettings {
     #[serde(default = "default_resource_backoff_polling")]
     pub resource_backoff_polling: bool,
     /// #552 badge color thresholds (minutes). green < yellow <= value < red <= value.
-    #[serde(default = "default_coord_badge_yellow_minutes")]
-    pub coordinator_idle_badge_yellow_minutes: u32,
-    #[serde(default = "default_coord_badge_red_minutes")]
-    pub coordinator_idle_badge_red_minutes: u32,
+    #[serde(
+        default = "default_coord_badge_yellow_minutes",
+        rename = "coordinatorIdleBadgeYellowMinutes"
+    )]
+    pub orchestrator_idle_badge_yellow_minutes: u32,
+    #[serde(
+        default = "default_coord_badge_red_minutes",
+        rename = "coordinatorIdleBadgeRedMinutes"
+    )]
+    pub orchestrator_idle_badge_red_minutes: u32,
     /// #552 auto-close lifecycle clock.
-    #[serde(default = "default_true")]
-    pub coordinator_auto_close_enabled: bool,
-    #[serde(default = "default_coord_auto_close_minutes")]
-    pub coordinator_auto_close_minutes: u32,
+    #[serde(default = "default_true", rename = "coordinatorAutoCloseEnabled")]
+    pub orchestrator_auto_close_enabled: bool,
+    #[serde(
+        default = "default_coord_auto_close_minutes",
+        rename = "coordinatorAutoCloseMinutes"
+    )]
+    pub orchestrator_auto_close_minutes: u32,
     /// #817 When true, auto-close skips sessions with a persisted Telegram bot
     /// assignment. Default false preserves legacy auto-close behavior.
-    #[serde(default)]
-    pub coordinator_auto_close_skip_telegram_assigned: bool,
+    #[serde(default, rename = "coordinatorAutoCloseSkipTelegramAssigned")]
+    pub orchestrator_auto_close_skip_telegram_assigned: bool,
     /// #588 When true, manually closing a coordinator also closes its team
     /// agents (cascade). When false, only the coordinator closes. Default true.
-    #[serde(default = "default_true")]
-    pub coordinator_cascade_close_enabled: bool,
+    #[serde(default = "default_true", rename = "coordinatorCascadeCloseEnabled")]
+    pub orchestrator_cascade_close_enabled: bool,
     /// #609 When true, check npm on startup (<=1x/24h) and notify in-app when
     /// a newer published version is available. Default true.
     #[serde(default = "default_true")]
@@ -848,8 +857,8 @@ impl Default for AppSettings {
             coding_agent_profiles: CodingAgentProfilesConfig::default(),
             telegram_bots: vec![],
             telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
-            restore_coordinator_wake_state: false,
-            legacy_start_only_coordinators: None,
+            restore_orchestrator_wake_state: false,
+            legacy_start_only_orchestrators: None,
             sidebar_always_on_top: false,
             team_idle_beep_enabled: true,
             sounds_enabled: true,
@@ -906,12 +915,12 @@ impl Default for AppSettings {
             agent_process_kill_private_bytes: default_agent_process_kill_private_bytes(),
             resource_keep_last_snapshot: default_resource_keep_last_snapshot(),
             resource_backoff_polling: default_resource_backoff_polling(),
-            coordinator_idle_badge_yellow_minutes: default_coord_badge_yellow_minutes(),
-            coordinator_idle_badge_red_minutes: default_coord_badge_red_minutes(),
-            coordinator_auto_close_enabled: true,
-            coordinator_auto_close_minutes: default_coord_auto_close_minutes(),
-            coordinator_auto_close_skip_telegram_assigned: false,
-            coordinator_cascade_close_enabled: true,
+            orchestrator_idle_badge_yellow_minutes: default_coord_badge_yellow_minutes(),
+            orchestrator_idle_badge_red_minutes: default_coord_badge_red_minutes(),
+            orchestrator_auto_close_enabled: true,
+            orchestrator_auto_close_minutes: default_coord_auto_close_minutes(),
+            orchestrator_auto_close_skip_telegram_assigned: false,
+            orchestrator_cascade_close_enabled: true,
             npm_update_notifications_enabled: true,
             auto_self_clear_enabled: true,
             auto_self_clear_by_agent: std::collections::BTreeMap::new(),
@@ -1850,7 +1859,7 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
     // at the end of the function (Grinch Z3 — without this, upgrade users
     // with an existing root_token never persist the migration and the legacy
     // key lingers in settings.json, spamming the migration log on every launch).
-    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
+    let issue_248_migrated = settings.legacy_start_only_orchestrators.is_some();
     apply_issue_248_migration(&mut settings);
 
     // Auto-generate root token if missing.
@@ -2049,7 +2058,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
 
 /// One-shot migration for issue #248: translate the legacy
 /// `startOnlyCoordinators` field into the new state-sensitive
-/// `restore_coordinator_wake_state`. Idempotent — once the legacy carrier is
+/// `restore_orchestrator_wake_state`. Idempotent — once the legacy carrier is
 /// cleared (`.take()`), subsequent calls see `None` and do nothing.
 ///
 /// Translation rules:
@@ -2062,17 +2071,17 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
 /// `warn!` and keep the new field's existing value — never silently overwrite
 /// a deliberate `restoreCoordinatorWakeState` with a stale legacy value.
 fn apply_issue_248_migration(settings: &mut AppSettings) {
-    if let Some(legacy) = settings.legacy_start_only_coordinators.take() {
-        if !settings.restore_coordinator_wake_state {
-            settings.restore_coordinator_wake_state = legacy;
+    if let Some(legacy) = settings.legacy_start_only_orchestrators.take() {
+        if !settings.restore_orchestrator_wake_state {
+            settings.restore_orchestrator_wake_state = legacy;
             log::info!(
                 "[settings-migration] #248 — translated legacy startOnlyCoordinators={} → restoreCoordinatorWakeState={}",
-                legacy, settings.restore_coordinator_wake_state
+                legacy, settings.restore_orchestrator_wake_state
             );
-        } else if legacy != settings.restore_coordinator_wake_state {
+        } else if legacy != settings.restore_orchestrator_wake_state {
             log::warn!(
                 "[settings-migration] #248 — conflicting state on disk: legacy startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; keeping the new value, dropping legacy",
-                legacy, settings.restore_coordinator_wake_state
+                legacy, settings.restore_orchestrator_wake_state
             );
         }
         // else: legacy and new agree → silent drop, no log.
@@ -7028,7 +7037,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_clock_settings_default_when_keys_absent() {
+    fn orchestrator_clock_settings_default_when_keys_absent() {
         // #552: an old settings.json (no coordinator-* keys) must deserialize
         // cleanly to the documented defaults, no migration.
         // Serialize a default, strip ONLY these coordinator keys, deserialize back.
@@ -7044,17 +7053,17 @@ mod tests {
         obj.remove("coordinatorAutoCloseSkipTelegramAssigned");
 
         let back: AppSettings = serde_json::from_value(value).expect("deserialize without keys");
-        assert!(back.coordinator_auto_close_enabled);
-        assert_eq!(back.coordinator_auto_close_minutes, 60);
-        assert!(!back.coordinator_auto_close_skip_telegram_assigned);
-        assert_eq!(back.coordinator_idle_badge_yellow_minutes, 30);
-        assert_eq!(back.coordinator_idle_badge_red_minutes, 60);
+        assert!(back.orchestrator_auto_close_enabled);
+        assert_eq!(back.orchestrator_auto_close_minutes, 60);
+        assert!(!back.orchestrator_auto_close_skip_telegram_assigned);
+        assert_eq!(back.orchestrator_idle_badge_yellow_minutes, 30);
+        assert_eq!(back.orchestrator_idle_badge_red_minutes, 60);
     }
 
     #[test]
-    fn coordinator_auto_close_skip_telegram_assigned_round_trips() {
+    fn orchestrator_auto_close_skip_telegram_assigned_round_trips() {
         let s = AppSettings {
-            coordinator_auto_close_skip_telegram_assigned: true,
+            orchestrator_auto_close_skip_telegram_assigned: true,
             ..AppSettings::default()
         };
 
@@ -7065,7 +7074,7 @@ mod tests {
         );
 
         let back: AppSettings = serde_json::from_value(json).expect("deserialize settings");
-        assert!(back.coordinator_auto_close_skip_telegram_assigned);
+        assert!(back.orchestrator_auto_close_skip_telegram_assigned);
     }
 
     #[test]
@@ -8255,13 +8264,13 @@ mod tests {
         }"#;
         let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
         // Pre-migration: legacy field is parsed, new field is at its default.
-        assert_eq!(s.legacy_start_only_coordinators, Some(true));
-        assert!(!s.restore_coordinator_wake_state);
+        assert_eq!(s.legacy_start_only_orchestrators, Some(true));
+        assert!(!s.restore_orchestrator_wake_state);
 
         super::apply_issue_248_migration(&mut s);
 
-        assert!(s.restore_coordinator_wake_state);
-        assert!(s.legacy_start_only_coordinators.is_none());
+        assert!(s.restore_orchestrator_wake_state);
+        assert!(s.legacy_start_only_orchestrators.is_none());
 
         // Round-trip — the legacy field must NOT reappear on next save.
         let out = serde_json::to_string(&s).expect("serialize");
@@ -8279,8 +8288,8 @@ mod tests {
         }"#;
         let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
         super::apply_issue_248_migration(&mut s);
-        assert!(!s.restore_coordinator_wake_state);
-        assert!(s.legacy_start_only_coordinators.is_none());
+        assert!(!s.restore_orchestrator_wake_state);
+        assert!(s.legacy_start_only_orchestrators.is_none());
     }
 
     #[test]
@@ -8294,8 +8303,8 @@ mod tests {
         }"#;
         let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
         super::apply_issue_248_migration(&mut s);
-        assert!(s.restore_coordinator_wake_state); // untouched
-        assert!(s.legacy_start_only_coordinators.is_none());
+        assert!(s.restore_orchestrator_wake_state); // untouched
+        assert!(s.legacy_start_only_orchestrators.is_none());
     }
 
     #[test]
@@ -8314,13 +8323,13 @@ mod tests {
             "restoreCoordinatorWakeState": true
         }"#;
         let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(s.legacy_start_only_coordinators, Some(false));
-        assert!(s.restore_coordinator_wake_state);
+        assert_eq!(s.legacy_start_only_orchestrators, Some(false));
+        assert!(s.restore_orchestrator_wake_state);
 
         super::apply_issue_248_migration(&mut s);
 
-        assert!(s.restore_coordinator_wake_state); // preserved
-        assert!(s.legacy_start_only_coordinators.is_none()); // dropped
+        assert!(s.restore_orchestrator_wake_state); // preserved
+        assert!(s.legacy_start_only_orchestrators.is_none()); // dropped
     }
 
     #[test]

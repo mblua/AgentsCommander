@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::instance_artifacts::COORDINATOR_CLOCKS_FILE_NAME;
+use crate::config::instance_artifacts::ORCHESTRATOR_CLOCKS_FILE_NAME;
 
 /// Minimum gap between two recorded user-message timestamps for the same
 /// coordinator. Keystroke bursts inside this window are coalesced to one
@@ -84,14 +84,14 @@ impl ClockEntry {
 /// (see save/load). `save_map`/`load` stay symmetric (the B1/H1 fix); only the
 /// value type grew from a bare timestamp to `ClockEntry`.
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct CoordinatorClocks {
+pub struct OrchestratorClocks {
     #[serde(default)]
     map: HashMap<String, ClockEntry>,
     #[serde(skip)]
     dirty: bool,
 }
 
-impl CoordinatorClocks {
+impl OrchestratorClocks {
     /// Record a user message for `fqn` at `now`. Coalesces: returns `true`
     /// (caller should emit/flag dirty) only if no value existed or the prior
     /// value is older than COALESCE_SECS. Returns `false` when skipped.
@@ -307,18 +307,18 @@ fn key_has_prefix_ignore_ascii_case(key: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-pub type CoordinatorClocksState = std::sync::Arc<Mutex<CoordinatorClocks>>;
+pub type OrchestratorClocksState = std::sync::Arc<Mutex<OrchestratorClocks>>;
 
 /// `None` when no config dir resolves (no home dir). Callers degrade: load ->
 /// empty default, save -> skip with a warn.
 fn clocks_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join(COORDINATOR_CLOCKS_FILE_NAME))
+    crate::config::config_dir().map(|d| d.join(ORCHESTRATOR_CLOCKS_FILE_NAME))
 }
 
-pub fn load() -> CoordinatorClocks {
+pub fn load() -> OrchestratorClocks {
     let Some(path) = clocks_path() else {
         log::warn!("[coordinator-clocks] no config dir; badge clocks start empty");
-        return CoordinatorClocks::default();
+        return OrchestratorClocks::default();
     };
     let map = match std::fs::read_to_string(&path) {
         Ok(raw) => match serde_json::from_str::<HashMap<String, ClockEntry>>(&raw) {
@@ -335,7 +335,7 @@ pub fn load() -> CoordinatorClocks {
         },
         Err(_) => HashMap::new(), // first run / missing file
     };
-    CoordinatorClocks { map, dirty: false }
+    OrchestratorClocks { map, dirty: false }
 }
 
 /// Atomic save of the flat map. Symmetric with `load`. Reuses the hardened
@@ -374,7 +374,11 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
 /// (#621) GUI-path helper: remove a workgroup's keys from the in-memory store
 /// (authoritative for the running app) and persist iff something changed. Returns
 /// keys removed. Used by `delete_workgroup` and `delete_team`.
-pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
+pub fn remove_workgroup_in_state(
+    state: &OrchestratorClocksState,
+    project: &str,
+    wg: &str,
+) -> usize {
     let removed = {
         let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
         g.remove_workgroup(project, wg)
@@ -417,11 +421,11 @@ pub fn remove_workgroup_on_disk(project: &str, wg: &str) -> Result<usize, String
 ///
 /// (#621 I4) The std `Mutex` is held across the per-key `is_dir` fs-IO inside
 /// `prune_with`/`should_keep_clock_key`. Benign: this runs single-threaded in
-/// `run()` BEFORE `.manage(coordinator_clocks)` and `.setup()`, so nothing else
+/// `run()` BEFORE `.manage(orchestrator_clocks)` and `.setup()`, so nothing else
 /// touches the store yet. Do NOT relocate this onto a hot path / shared-state tick
 /// without moving the fs work out from under the lock.
 pub fn prune_orphaned_workgroups_and_persist(
-    state: &CoordinatorClocksState,
+    state: &OrchestratorClocksState,
     project_paths: &[String],
 ) {
     let candidates =
@@ -458,7 +462,7 @@ fn persisted_session_fqns() -> HashSet<String> {
 /// to a persisted session (MED-1) OR `should_keep_clock_key` keeps it. Split out so
 /// tests can inject `candidates` + `live_fqns` without touching real sessions.json.
 pub fn prune_with(
-    clocks: &mut CoordinatorClocks,
+    clocks: &mut OrchestratorClocks,
     candidates: &[crate::config::projects::ProjectResolution],
     live_fqns: &HashSet<String>,
 ) -> usize {
@@ -499,12 +503,12 @@ fn should_keep_clock_key(
 }
 
 /// Path-explicit load for unit tests, symmetric with `save_map_to`.
-pub fn load_from(path: &Path) -> CoordinatorClocks {
+pub fn load_from(path: &Path) -> OrchestratorClocks {
     let map = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<HashMap<String, ClockEntry>>(&raw).unwrap_or_default(),
         Err(_) => HashMap::new(),
     };
-    CoordinatorClocks { map, dirty: false }
+    OrchestratorClocks { map, dirty: false }
 }
 
 #[cfg(test)]
@@ -519,7 +523,7 @@ mod tests {
 
     #[test]
     fn note_user_message_coalesces_within_window() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         // First message always records.
@@ -535,7 +539,7 @@ mod tests {
 
     #[test]
     fn seed_if_absent_never_overwrites() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         assert!(clocks.seed_if_absent(fqn, ts(0)));
@@ -547,7 +551,7 @@ mod tests {
 
     #[test]
     fn take_dirty_toggles() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         assert!(!clocks.take_dirty(), "fresh store is clean");
         clocks.note_user_message("proj:wg-1-team/coord", ts(0));
         assert!(clocks.take_dirty(), "a recorded message dirties the store");
@@ -556,7 +560,7 @@ mod tests {
 
     #[test]
     fn mark_auto_closed_is_idempotent() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         assert!(
@@ -574,7 +578,7 @@ mod tests {
 
     #[test]
     fn clear_auto_closed_only_on_some_to_none_and_preserves_badge() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         // No entry -> nothing to clear.
@@ -592,7 +596,7 @@ mod tests {
 
     #[test]
     fn mark_manually_closed_is_idempotent() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         assert!(
@@ -610,7 +614,7 @@ mod tests {
 
     #[test]
     fn clear_manually_closed_only_on_some_to_none_and_preserves_badge() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         // No entry -> nothing to clear.
@@ -631,7 +635,7 @@ mod tests {
 
     #[test]
     fn mark_start_fresh_is_idempotent_and_preserves_first_time() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         assert!(
@@ -649,7 +653,7 @@ mod tests {
 
     #[test]
     fn clear_start_fresh_only_on_some_to_none_and_preserves_other_fields() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         // No entry -> nothing to clear.
@@ -674,7 +678,7 @@ mod tests {
         let raw = r#"{ "proj:wg-1-team/coord": { "lastUserMessageAt": "2023-11-14T22:13:20Z" } }"#;
         let map: HashMap<String, ClockEntry> =
             serde_json::from_str(raw).expect("legacy JSON must deserialize");
-        let clocks = CoordinatorClocks { map, dirty: false };
+        let clocks = OrchestratorClocks { map, dirty: false };
         assert_eq!(clocks.start_fresh_at("proj:wg-1-team/coord"), None);
         assert_eq!(
             clocks.last_user_message_at("proj:wg-1-team/coord"),
@@ -684,7 +688,7 @@ mod tests {
 
     #[test]
     fn mark_manually_closed_clears_preset_auto_closed_on_transition() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         clocks.note_user_message(fqn, ts(0));
@@ -705,7 +709,7 @@ mod tests {
 
     #[test]
     fn mark_auto_closed_skips_when_manually_closed() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         clocks.mark_manually_closed(fqn, ts(0));
@@ -724,7 +728,7 @@ mod tests {
 
     #[test]
     fn note_user_message_preserves_auto_closed_marker() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         clocks.mark_auto_closed(fqn, ts(0));
@@ -740,7 +744,7 @@ mod tests {
 
     #[test]
     fn note_activity_advances_monotonic_forward_only() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         // First activity: None -> Some advances and dirties.
@@ -772,7 +776,7 @@ mod tests {
 
     #[test]
     fn note_activity_preserves_user_message_and_auto_closed() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         let fqn = "proj:wg-1-team/coord";
 
         clocks.note_user_message(fqn, ts(0));
@@ -893,7 +897,7 @@ mod tests {
 
     #[test]
     fn remove_workgroup_drops_only_target_prefix() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         for k in [
             "proj:wg-1-team/coord",
             "proj:wg-1-team/dev",    // same wg, second agent
@@ -921,7 +925,7 @@ mod tests {
 
     #[test]
     fn remove_workgroup_trailing_slash_guards_sibling_prefix() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("proj:wg-1/coord", ts(0));
         clocks.note_user_message("proj:wg-12/coord", ts(0)); // wg-1 is a string prefix of wg-12
         assert_eq!(clocks.remove_workgroup("proj", "wg-1"), 1);
@@ -934,7 +938,7 @@ mod tests {
 
     #[test]
     fn remove_workgroup_absent_is_noop_and_clean() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("proj:wg-2-team/coord", ts(0));
         let _ = clocks.take_dirty();
         assert_eq!(clocks.remove_workgroup("proj", "wg-1-team"), 0);
@@ -946,7 +950,7 @@ mod tests {
 
     #[test]
     fn remove_workgroup_is_case_insensitive() {
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("MyProj:WG-1-Team/coord", ts(0)); // key carries spawn case
                                                                    // Caller passes a different case (e.g. project resolved as a read_dir child).
         assert_eq!(clocks.remove_workgroup("myproj", "wg-1-team"), 1);
@@ -1028,7 +1032,7 @@ mod tests {
 
         // Control: with NO keep-set the key WOULD be pruned (one match, wg-5 absent).
         let empty: HashSet<String> = HashSet::new();
-        let mut probe = CoordinatorClocks::default();
+        let mut probe = OrchestratorClocks::default();
         probe.note_user_message("app:wg-5-team/coord", ts(0));
         assert_eq!(
             prune_with(&mut probe, &candidates, &empty),
@@ -1037,7 +1041,7 @@ mod tests {
         );
 
         // With the persisted-session keep-set the live key survives.
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("app:wg-5-team/coord", ts(0)); // live coord of the OTHER "app"
         let live: HashSet<String> = HashSet::from(["app:wg-5-team/coord".to_string()]);
         assert_eq!(

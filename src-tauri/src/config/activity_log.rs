@@ -970,7 +970,7 @@ mod tests {
             agent_id: None,
             agent_label: None,
             git_repos: Vec::new(),
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             git_repos_gen: 0,
             token: Uuid::new_v4(),

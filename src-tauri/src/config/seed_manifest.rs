@@ -3237,11 +3237,11 @@ pub(crate) enum V1CoverageBoundary {
     /// `config::seeded_context_templates::overwrite_context_template_with_default`.
     ContextOverwrite,
     /// Coordinator pristine v2 -> v4 recognized update.
-    CoordinatorStatelessV2ToV4,
+    OrchestratorStatelessV2ToV4,
     /// Coordinator pristine v3 -> v4 recognized update.
-    CoordinatorStatelessV3ToV4,
+    OrchestratorStatelessV3ToV4,
     /// Coordinator seeded v3 -> v4 recognized update with state-version bump.
-    CoordinatorSeededV3ToV4,
+    OrchestratorSeededV3ToV4,
     /// Historical stable coverage-boundary name for exact config publication.
     ConfigExactPublish,
     /// Historical stable coverage-boundary name for over-bound config publication.
@@ -3275,9 +3275,9 @@ pub(crate) const V1_COVERAGE_BOUNDARIES: [V1CoverageBoundary; 17] = [
     V1CoverageBoundary::ContextUpdate,
     V1CoverageBoundary::ContextSelfHeal,
     V1CoverageBoundary::ContextOverwrite,
-    V1CoverageBoundary::CoordinatorStatelessV2ToV4,
-    V1CoverageBoundary::CoordinatorStatelessV3ToV4,
-    V1CoverageBoundary::CoordinatorSeededV3ToV4,
+    V1CoverageBoundary::OrchestratorStatelessV2ToV4,
+    V1CoverageBoundary::OrchestratorStatelessV3ToV4,
+    V1CoverageBoundary::OrchestratorSeededV3ToV4,
     V1CoverageBoundary::ConfigExactPublish,
     V1CoverageBoundary::ConfigOverBoundPublish,
     V1CoverageBoundary::ConfigFailedRestore,
@@ -5909,9 +5909,9 @@ mod tests {
                 | V1CoverageBoundary::ContextUpdate
                 | V1CoverageBoundary::ContextSelfHeal
                 | V1CoverageBoundary::ContextOverwrite
-                | V1CoverageBoundary::CoordinatorStatelessV2ToV4
-                | V1CoverageBoundary::CoordinatorStatelessV3ToV4
-                | V1CoverageBoundary::CoordinatorSeededV3ToV4
+                | V1CoverageBoundary::OrchestratorStatelessV2ToV4
+                | V1CoverageBoundary::OrchestratorStatelessV3ToV4
+                | V1CoverageBoundary::OrchestratorSeededV3ToV4
                 | V1CoverageBoundary::ConfigExactPublish
                 | V1CoverageBoundary::ConfigOverBoundPublish
                 | V1CoverageBoundary::ConfigFailedRestore
