@@ -248,6 +248,14 @@
       "issue": 1171,
       "reason": "#1171 reference measurement for the watcher read seam, not a behavior test. It prints the three numbers recorded in the module doc comment (the full read, the unchanged read and the changed read) via println and asserts nothing, so as a standard cargo test lane member it would be a timing gate with no pass criterion and would go flaky under parallel load. The behavior these numbers exist to justify is pinned by the type instead, in an_unchanged_frame_returns_unchanged_and_carries_no_rows (plan section 7.3, acceptance criterion A10).",
       "resolution": "Stays ignored by design as a measurement. Re-take the numbers by hand with cargo test --config profile.dev.opt-level=2 --lib read_seam_timing -- --ignored --nocapture and update the module doc comment when the read seam changes."
+    },
+    {
+      "id": "rust:src-tauri/tests/cli_test_reset.rs::windows::reset_test_coordinator_child",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1343,
+      "reason": "Not deferred debt. This is the child half of the #1343 private-mutex handoff regression and it does execute on every run, as a spawned process: reset_test_coordinator_private_handoff launches the current test executable with --ignored --exact windows::reset_test_coordinator_child and asserts the child's exit status, stdout envelope and stderr records. It carries #[ignore] only so the libtest harness does not also run it in-process, where it would contend for the same named mutex as its own parent and make the handoff nondeterministic, which is the exact failure mode #1343 exists to remove.",
+      "resolution": "Stays ignored by design. Its coverage is asserted through the parent, so it needs no separate lane: run cargo test --test cli_test_reset reset_test_coordinator_private_handoff and the child runs with it. Remove this entry only if the handoff regression itself is removed."
     }
   ]
 }
