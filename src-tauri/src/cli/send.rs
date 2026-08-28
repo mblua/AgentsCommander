@@ -1174,7 +1174,10 @@ mod tests {
             .get_subcommands()
             .find(|c| c.get_name() == "send")
             .expect("send subcommand");
-        let after = send.get_after_help().expect("after_help present").to_string();
+        let after = send
+            .get_after_help()
+            .expect("after_help present")
+            .to_string();
         assert!(
             after.contains("On enqueue, the CLI prints `Queued: <message-id>` to stdout"),
             "after_help missing enqueue-receipt sentence"
