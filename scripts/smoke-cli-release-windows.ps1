@@ -34,6 +34,22 @@ function Convert-ToSafeName {
     $Name -replace '[^A-Za-z0-9_.-]', '_'
 }
 
+function Get-Issue1577FileSha256 {
+    param([Parameter(Mandatory=$true)] [string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            [System.BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "")
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-Issue1577TreeSnapshot {
     param(
         [Parameter(Mandatory=$true)] [hashtable]$Roots
@@ -90,7 +106,7 @@ function Get-Issue1577TreeSnapshot {
                         kind = "file"
                         target = $null
                         length = [int64]$item.Length
-                        sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash
+                        sha256 = (Get-Issue1577FileSha256 -Path $fullPath)
                     }) | Out-Null
                 }
             }
