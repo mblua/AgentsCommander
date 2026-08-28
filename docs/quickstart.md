@@ -66,7 +66,7 @@ Behind the scenes AC creates agent matrices under `.ac/_agent_tech-lead/` and `.
 
 ## 4. Write a brief and launch the orchestrator
 
-Activate the team for a task and give the workgroup a title. AC creates `.ac/wg-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the orchestrator will expand it.
+Activate the team for a task and give the room a title. AC creates `.ac/room-1-<team-name>/`, including `TASK.md`, `messaging/`, and each `__agent_<name>/` replica. Open the new `TASK.md` and write what you want the team to do. One paragraph is enough; the orchestrator will expand it.
 
 Click the orchestrator's session in the sidebar. AC opens a real terminal and prompts you to pick a coding agent (Claude Code, Codex, Antigravity, or Pi). Pick one. AC launches the agent in the orchestrator's directory with the role and brief already loaded.
 
@@ -74,16 +74,16 @@ Click the orchestrator's session in the sidebar. AC opens a real terminal and pr
 
 Ask the orchestrator something like:
 
-> "Send a hello message to `<project>:wg-1-feature-x/dev-rust` and ask them to confirm the role they have."
+> "Send a hello message to `<project>:room-1-feature-x/dev-rust` and ask them to confirm the role they have."
 
-The orchestrator will write a markdown file to `.ac/wg-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
+The orchestrator will write a markdown file to `.ac/room-1-feature-x/messaging/` and run `agentscommander send --to <peer> --send <filename> --mode wake`. In a second or two you will see the worker's session activate, read the file, and reply by writing its own message back.
 
 That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 
 ## Next steps
 
-- [Concepts](concepts.md) — the vocabulary (agent, team, workgroup, orchestrator, brief).
-- [Teams and workgroups](agents/teams-and-workgroups.md) — orchestrator authority, brief writing, recovery.
+- [Concepts](concepts.md) — the vocabulary (agent, team, room, orchestrator, brief).
+- [Teams and rooms](agents/teams-and-workgroups.md) — orchestrator authority, brief writing, recovery.
 - [Inter-agent messaging](agents/inter-agent-messaging.md) — the file protocol and the `send` CLI.
 - [Feature index](features/README.md): every feature page, grouped by what it does.
 - [Use cases](use-cases.md) — recipes other people are running.

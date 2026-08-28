@@ -104,7 +104,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
         Ok(p) => p,
         Err(_) => {
             eprintln!(
-                "Error: --root is not under a wg-<N>-* ancestor; \
+                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
                  cannot locate the room TASK.md."
             );
             return 1;

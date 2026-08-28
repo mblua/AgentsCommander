@@ -2,20 +2,20 @@
 
 For developers who want to read the sidebar rather than click around it. After this page you know what each rail entry, row, badge and indicator means, and which page owns the feature behind it.
 
-The sidebar has three parts: a rail of group entries down one edge, the project panel that lists projects, workgroups, replicas and sessions, and an action bar of toggles across the top. This page is the map. Where a badge belongs to a feature with its own page, this page says what the badge means and sends you there.
+The sidebar has three parts: a rail of group entries down one edge, the project panel that lists projects, rooms, replicas and sessions, and an action bar of toggles across the top. This page is the map. Where a badge belongs to a feature with its own page, this page says what the badge means and sends you there.
 
 Four of the action bar's toggles change what the panel shows, and each tooltip tells you what pressing it will do rather than what is on:
 
 - `Show Home` and `Hide Home` swap the central pane between Home and the terminal.
 - `Show recent orchestrators first` and `Show orchestrators in default order` reorder the orchestrator list. It persists as [`coordSortByActivity`](../reference/settings.md#window--ui).
 - `Show category sections` and `Hide category sections` toggle the panel's category grouping.
-- `Always keep selected workgroup visible` pins the selected workgroup in view. It persists as [`alwaysShowSelectedWorkgroup`](../reference/settings.md#window--ui).
+- `Always keep selected room visible` pins the selected room in view. It persists as [`alwaysShowSelectedWorkgroup`](../reference/settings.md#window--ui).
 
-## The workgroup rail
+## The room rail
 
-The rail shows one entry per group. An entry stands for a **set of workgroups**, not a single one: selecting it shows the workgroups that belong to that group.
+The rail shows one entry per group. An entry stands for a **set of rooms**, not a single one: selecting it shows the rooms that belong to that group.
 
-Each entry has two lines. The first carries the group's name, preceded by a raise-hand indicator when one applies. The second carries a counter, preceded by a running dot when something in the group is working. Hovering an entry shows a tooltip naming the project folder and the workgroups the entry covers.
+Each entry has two lines. The first carries the group's name, preceded by a raise-hand indicator when one applies. The second carries a counter, preceded by a running dot when something in the group is working. Hovering an entry shows a tooltip naming the project folder and the rooms the entry covers.
 
 Entries you created are draggable, so you can reorder them; the built-in ones are not. Right-clicking an entry opens its context menu, and the selected entry is marked as pressed for assistive technology.
 
@@ -23,9 +23,9 @@ The rail collapses by section. Clicking a project section header collapses it, a
 
 ## Favorites and groups
 
-A **group** is a named set of workgroups. You edit groups in the `Edit groups` modal, where each group has two fields: `Group name`, and `Group regex`, the pattern that decides which workgroups belong to it. A new group starts named `Group 1`, `Group 2` and so on. A group can also carry a sound alert, whose length is set in seconds.
+A **group** is a named set of rooms. You edit groups in the `Edit groups` modal, where each group has two fields: `Group name`, and `Group regex`, the pattern that decides which rooms belong to it. A new group starts named `Group 1`, `Group 2` and so on. A group can also carry a sound alert, whose length is set in seconds.
 
-Because membership is a pattern rather than a list, a workgroup created later joins the group on its own if its name matches. That is the point of the regex, and it is also the thing to check when a workgroup shows up in a group you did not expect.
+Because membership is a pattern rather than a list, a room created later joins the group on its own if its name matches. That is the point of the regex, and it is also the thing to check when a room shows up in a group you did not expect.
 
 **Favorites** is the rail's own cross-project section, listed above the project sections and collapsible independently. Its collapsed state is `railFavoritesCollapsed`.
 
@@ -49,7 +49,7 @@ The daemon accepts it only when the caller's token belongs to a **live orchestra
 
 ## The project panel
 
-The panel is a tree. Projects contain workgroups and teams; those contain agents and replicas; a replica contains its sessions.
+The panel is a tree. Projects contain rooms and teams; those contain agents and replicas; a replica contains its sessions.
 
 A replica row shows the replica's path as its tooltip and carries the indicators and controls for that replica: the idle badge, the repo badges from branch discovery, and the per-session controls for voice, detaching and Telegram. The Telegram control opens its own bot menu.
 
@@ -61,7 +61,7 @@ Right-clicking a row opens a context menu, and AC builds a different one dependi
 
 `Clear task title` is disabled when there is nothing to clear, and says which case you are in through its tooltip: `Clear task title`, or `Nothing to clear`.
 
-- `Edit TASK title` (pencil) opens an inline editor inside the menu, prefilled with the current title. Save writes the title — through the session-based command when the workgroup has a live session, through the path-based command otherwise — closes the menu, and the sidebar row updates; Cancel (or Escape) closes the editor and keeps the menu open.
+- `Edit TASK title` (pencil) opens an inline editor inside the menu, prefilled with the current title. Save writes the title — through the session-based command when the room has a live session, through the path-based command otherwise — closes the menu, and the sidebar row updates; Cancel (or Escape) closes the editor and keeps the menu open.
 
 Right-clicking a project row instead gives you the project's own menu, which is where `Archive Project` lives. See [Project archiving](project-archiving.md).
 
@@ -89,7 +89,7 @@ AC polls each session's repository in the background and shows the branch on the
 
 A repository in a state with no branch name, such as a detached `HEAD` or a rebase in progress, shows no branch rather than a guess.
 
-Two settings shape the polling. `gitSweepConcurrency` is how many repositories the sweeper inspects at once, clamped to 1 through 4; `1`, the default, is strictly sequential and is what bounds concurrent `git.exe` processes. `gitSweepMinIntervalSecs` is a lower bound on one sweeper round, clamped to 1 through 3600. The effective period is the larger of that bound and the round's own duration, so on a large set of workgroups the round duration dominates and the setting never fires.
+Two settings shape the polling. `gitSweepConcurrency` is how many repositories the sweeper inspects at once, clamped to 1 through 4; `1`, the default, is strictly sequential and is what bounds concurrent `git.exe` processes. `gitSweepMinIntervalSecs` is a lower bound on one sweeper round, clamped to 1 through 3600. The effective period is the larger of that bound and the round's own duration, so on a large set of rooms the round duration dominates and the setting never fires.
 
 Both are manual-only, with no UI, and take effect on the next restart.
 
@@ -97,7 +97,7 @@ Both are manual-only, with no UI, and take effect on the next restart.
 
 The picker opens for one target and is titled `Assign profile for <target>`, naming the replica or session it will act on. Despite the name, it is the coding-agent **profile assignment** dialog: it lists your configured coding agents, sorted by label, and assigns a profile letter to the target.
 
-The apply scope decides how far the assignment reaches: this replica, every replica of the same kind, or the whole workgroup. A wider scope shows a preview of how many targets it would overwrite and requires you to confirm in as many words, for example `I understand this overwrites 4 replicas of this kind`. You can also ask AC to restart the matching sessions after writing the selection.
+The apply scope decides how far the assignment reaches: this replica, every replica of the same kind, or the whole room. A wider scope shows a preview of how many targets it would overwrite and requires you to confirm in as many words, for example `I understand this overwrites 4 replicas of this kind`. You can also ask AC to restart the matching sessions after writing the selection.
 
 See [Coding Agent Profiles](coding-agent-profiles.md) for what a profile is and how the letters resolve.
 
@@ -109,7 +109,7 @@ It writes the same coding agent catalog as the Settings `Coding Agents` tab; the
 
 ## Branch and repo discovery
 
-For a workgroup replica, AC discovers the repositories inside it and shows one badge per repository. The badge text is the repository's label, and its branch when one is known, as `label/branch`.
+For a room replica, AC discovers the repositories inside it and shows one badge per repository. The badge text is the repository's label, and its branch when one is known, as `label/branch`.
 
 The badge's tooltip carries the repository's source path plus its status. When the repository is dirty it reads `<path> (local work not confirmed by cached origin tracking)`, and when AC could not determine the status it reads `<path> (status unknown)`.
 
@@ -132,7 +132,7 @@ See [Settings reference](../reference/settings.md#git-status-sweeper) for both, 
 
 ## Troubleshooting
 
-**"A workgroup appeared in a group I did not put it in."** Group membership is a regex over workgroup names, not a list. Check the group's `Group regex` in the `Edit groups` modal against the new workgroup's name.
+**"A room appeared in a group I did not put it in."** Group membership is a regex over room names, not a list. Check the group's `Group regex` in the `Edit groups` modal against the new room's name.
 
 **"The raise-hand indicator will not go away."** It is cleared by real user input to that session and survives restarts. Clicking or selecting the row is not input; send the session something.
 
@@ -147,5 +147,5 @@ See [Settings reference](../reference/settings.md#git-status-sweeper) for both, 
 ## See also
 
 - [App windows](app-windows.md) - the windows the sidebar opens beside itself
-- [Concepts](../concepts.md) - project, workgroup, replica, session and orchestrator
+- [Concepts](../concepts.md) - project, room, replica, session and orchestrator
 - [Coding agents](../integrations/coding-agents.md) - the catalog the picker and the quick panel write

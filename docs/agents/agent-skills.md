@@ -31,10 +31,10 @@ such as `inbox/`, `outbox/`, and `config.json`, are omitted here.
         +-- skills/
 ```
 
-When that agent runs inside a workgroup replica, the generated
+When that agent runs inside a room replica, the generated
 AgentsCommander context allows writes to the origin Agent Matrix `skills/`
 folder. That keeps skills canonical across replicas instead of copying them
-into one temporary workgroup session.
+into one temporary room session.
 
 Standalone agent folders can also contain a local `skills/` folder, but
 AgentsCommander runtime discovery does not scan standalone local skills unless
@@ -108,7 +108,7 @@ The agent no longer needs the user to name every skill. The generated context
 includes a metadata index, and the agent should inspect `SKILL.md` when the
 task matches `description` / `when_to_use`, or when the user names a skill.
 
-When the agent is running from a workgroup replica, resolve `skills/...`
+When the agent is running from a room replica, resolve `skills/...`
 against the origin Agent Matrix directory named in the session context, not
 against the replica's current working directory.
 

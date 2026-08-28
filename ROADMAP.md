@@ -6,7 +6,7 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ## Shipped (highlights)
 
-- Multi-agent workgroups with file-based inter-agent messaging
+- Multi-agent rooms with file-based inter-agent messaging
 - Cross-coding-agent profiles: Claude Code · Codex · Pi · Antigravity
 - OpenCode usable today via the custom coding-agent path (provider-agnostic: point it at any provider or model, including OpenRouter Fusion)
 - Agents Agency role-template picker (explicit downloaded cache from [@msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents))
@@ -25,22 +25,22 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Per-agent configuration
 
-- **Per-agent model + effort-level selection** - pin a specific model (e.g. Opus 4.7 vs Sonnet 4.6) and a thinking-effort tier (low / medium / high / ultra) to each agent independently. Today the choice is per-session at launch time; this would persist per `_agent_<name>` in the matrix and survive across workgroups. ([#329](https://github.com/mblua/AgentsCommander/issues/329))
+- **Per-agent model + effort-level selection** - pin a specific model (e.g. Opus 4.7 vs Sonnet 4.6) and a thinking-effort tier (low / medium / high / ultra) to each agent independently. Today the choice is per-session at launch time; this would persist per `_agent_<name>` in the matrix and survive across rooms. ([#329](https://github.com/mblua/AgentsCommander/issues/329))
 
 ### Organigram & scaling
 
-- **Build the company - multi-level orchestrator hierarchies** - A workgroup today is one layer. The next step layers them: level-A orchestrator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
+- **Build the company - multi-level orchestrator hierarchies** - A room today is one layer. The next step layers them: level-A orchestrator talks to its level-B reports; B talks to C; A never reaches C directly. Skip-levels flow through the chain, like in any sane org. The result: a real organigram, enforced by the messaging topology instead of by convention. Cascade decisions down, roll status up, hold accountability at 5, 50, or 500 agents the same way. ([#330](https://github.com/mblua/AgentsCommander/issues/330))
 - **Curated role-team library** - ship a base catalog of task-ready teams, not just isolated roles. Each template defines the orchestrator, specialist roles, task decomposition pattern, role boundaries, quality gates, and handoff contracts so a user can delegate a goal to a pre-curated team that can execute end to end with predictable accountability.
 - **Orchestrator auto-handoff for context management** - when an orchestrator reaches a configurable context threshold, it can write a compact handoff of active continuity state and continue fresh. Forgettable or exclude-from-handoff details stay out. ([#349](https://github.com/mblua/AgentsCommander/issues/349))
-- **Telegram conversation routing between orchestrators** - transfer a Telegram conversation from one orchestrator/workgroup to another without manual bot or channel reconfiguration. ([#350](https://github.com/mblua/AgentsCommander/issues/350))
+- **Telegram conversation routing between orchestrators** - transfer a Telegram conversation from one orchestrator/room to another without manual bot or channel reconfiguration. ([#350](https://github.com/mblua/AgentsCommander/issues/350))
 
 ### CLI capabilities
 
-- **`create-workgroup` / `create-team` / `create-project`** - non-interactive equivalents of the existing `create-agent` flow for headless / script-driven setup. ([#317](https://github.com/mblua/AgentsCommander/issues/317))
+- **`create-room` / `create-team` / `create-project`** - non-interactive equivalents of the existing `create-agent` flow for headless / script-driven setup. ([#317](https://github.com/mblua/AgentsCommander/issues/317))
 
 ### Automation
 
-- **Cron-based scheduled executions** - define explicit, inspectable, and auditable cron schedules that regularly trigger events for an orchestrator, workgroup, agent, or workflow target, supporting recurring status checks, reports, maintenance tasks, and scheduled workgroup runs. ([#354](https://github.com/mblua/AgentsCommander/issues/354))
+- **Cron-based scheduled executions** - define explicit, inspectable, and auditable cron schedules that regularly trigger events for an orchestrator, room, agent, or workflow target, supporting recurring status checks, reports, maintenance tasks, and scheduled room runs. ([#354](https://github.com/mblua/AgentsCommander/issues/354))
 
 ### Execution determinism
 

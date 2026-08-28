@@ -34,7 +34,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Toggle orchestrator sort | `actionBar.sortCoordinators` | `click` |
 | Toggle sounds | `actionBar.sounds` | `click` |
 | Toggle category visibility | `actionBar.categories` | `click` |
-| Toggle selected workgroup pin | `actionBar.pinSelectedWorkgroup` | `click` |
+| Toggle selected room pin | `actionBar.pinSelectedWorkgroup` | `click` |
 | Open guide | `actionBar.guide` | `click` |
 | Open spec board when enabled | `actionBar.specBoard` | `click` |
 | Detect terminal empty state | `terminal.empty` | `query` |
@@ -93,7 +93,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Context menus | Use `contextClick` on the owning row/header selector, then `query`/`click` the mounted action selector. Project Loops selectors include `project.loops.header.<projectId>`, `loop.row.<projectId>.<loopId>`, `loop.action.new.<projectId>`, `loop.action.runNow.<projectId>.<loopId>`, `loop.action.edit.<projectId>.<loopId>`, `loop.action.toggle.<projectId>.<loopId>`, and `loop.action.delete.<projectId>.<loopId>`. Loop delete uses an in-app confirmation with `loop.delete.confirm.<projectId>.<loopId>` and `loop.delete.cancel.<projectId>.<loopId>`. Disabled Loop rows use `data-ac-state="loop-disabled"` so their context menus remain actionable; reserve `data-ac-state="disabled"` for controls that automation should reject for non-query actions. |
 | Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
 | New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, orchestrator radio buttons, repo input, create/back/next buttons |
-| New Workgroup modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
+| New Room modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
 | Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |
 | Drag/hold gestures | Future pointer actions for splitters and hold-to-record. `hover` shipped in #944 and deliberately dispatches no `pointermove` |

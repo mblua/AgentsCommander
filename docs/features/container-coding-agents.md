@@ -31,7 +31,7 @@ First-run stamping means AC pre-accepts Claude Code's **"do you trust this folde
 
 ## Terminal snapshots from a container Orchestrator
 
-An automatically bound live container Orchestrator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Orchestrator member in the same exact physical project and workgroup. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
+An automatically bound live container Orchestrator receives the distinct `terminal-snapshot` API scope in addition to its ordinary bridge scopes. It can read one verified non-Orchestrator member in the same exact physical project and room. A worker token never receives the scope, and a manual API client remains unauthorized even if its registry entry lists the string.
 
 Enable the default-off **Settings > General > Terminal snapshots** gate first. The screen can contain credentials, source, prompts, and personal data, and AgentsCommander does not redact it.
 
@@ -39,14 +39,14 @@ Use the helper with the automatically injected environment:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 ```
 
 For PNG:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member" \
+  --to "project:room-1-team/member" \
   --format png \
   --output "/workspace/evidence/snapshot.png" \
   --timeout 15
@@ -66,7 +66,7 @@ All of the following are current. Host login reuse does not fix any of them.
 
 ### 1. Container agents cannot reach their repos ([#935](https://github.com/mblua/AgentsCommander/issues/935))
 
-**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your workspace repos (`repo-*`) are siblings of the replica inside the workgroup directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
+**This is the blocker.** The container bind mount exposes **only the agent's replica root**. Your workspace repos (`repo-*`) are siblings of the replica inside the room directory, so they fall **outside the mount**. From inside the container the agent sees its own replica root and `.agentscommander_ac`, and nothing else.
 
 The injected "Workspace Repos" context makes it worse: it hands the agent Windows host paths (`C:\Users\...`) that do not exist inside the container, and promises read/write access the agent does not have.
 
@@ -91,7 +91,7 @@ For Pi, AC also does not copy or map host `~/.pi/agent/` state, translate `PI_CO
 
 ### 5. No shared team container ([#936](https://github.com/mblua/AgentsCommander/issues/936), paused)
 
-One container per session today, each mounting only its own agent's replica. One shared container for the whole workgroup is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
+One container per session today, each mounting only its own agent's replica. One shared container for the whole room is a recorded requirement, not a shipped feature, and its feasibility analysis is paused.
 
 ## What the copied file actually is
 

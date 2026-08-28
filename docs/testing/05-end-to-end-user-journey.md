@@ -1,6 +1,6 @@
 # 05 End-To-End User Journey
 
-This suite stitches the earlier functional suites into a single user-style path. It is intended for baseline seeding and future selective reruns when a change affects first-run setup, project registration, agent creation, team creation, workgroup activation, or session launch.
+This suite stitches the earlier functional suites into a single user-style path. It is intended for baseline seeding and future selective reruns when a change affects first-run setup, project registration, agent creation, team creation, room activation, or session launch.
 
 Run this only in a disposable testable app identity and a disposable project. Product actions must be performed through the GUI. CLI is allowed only for harness control, semantic UI automation, screenshots, logs, and read-only verification.
 
@@ -12,7 +12,7 @@ Date: 2026-06-13
 
 Tester: ac-cli-and-gui-tester
 
-Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
 
 Result: PARTIAL. This run seeds useful baseline evidence for onboarding, project creation, and agent creation, but it is not a baseline PASS.
 
@@ -23,14 +23,14 @@ Summary:
 - Project creation loaded directly from an empty selected folder; no create-confirm modal appeared in the clean no-Project-AC-Root path.
 - Two project agents were created through the GUI after one focus-contaminated attempt.
 - Team creation was blocked before valid team/member completion.
-- Workgroup creation and final full-state restart persistence were not reached.
+- Room creation and final full-state restart persistence were not reached.
 - `screenshots\41-new-team-real-step2.png` is preserved as invalid New Team evidence: target metadata matched the testable app, but visible content was first-run onboarding and the screenshot was partly obscured by a foreground terminal.
 
-### E2E-001: Clean user creates a project team workgroup
+### E2E-001: Clean user creates a project team room
 
 Purpose:
 
-Validate the core new-user path from clean app launch to an active workgroup.
+Validate the core new-user path from clean app launch to an active room.
 
 Preconditions:
 
@@ -48,24 +48,24 @@ Steps:
 5. Confirm both agents appear under Agents.
 6. Create a team from the UI using those agents.
 7. Mark one agent as orchestrator.
-8. Create or activate a workgroup from that team through the UI.
-9. Confirm the workgroup appears in the sidebar with replica entries.
-10. Launch or focus the orchestrator session from the workgroup.
+8. Create or activate a room from that team through the UI.
+9. Confirm the room appears in the sidebar with replica entries.
+10. Launch or focus the orchestrator session from the room.
 11. Close and relaunch the app.
-12. Confirm the project, agents, team, and workgroup remain visible.
+12. Confirm the project, agents, team, and room remain visible.
 
 Expected Result:
 
-A clean user can configure a coding agent, create a project, create agents, compose a team, activate a workgroup, and return to the same state after restart.
+A clean user can configure a coding agent, create a project, create agents, compose a team, activate a room, and return to the same state after restart.
 
 Evidence Required:
 
 - `window-info` before interaction and after relaunch.
-- Screenshot for each major UI stage: onboarding, project created, agents created, team created, workgroup created, orchestrator launched, post-restart state.
+- Screenshot for each major UI stage: onboarding, project created, agents created, team created, room created, orchestrator launched, post-restart state.
 - Semantic `ui-query` or `ui-wait` results for every available selector used.
-- Read-only filesystem snapshots for the disposable project `.ac/`, agent directories, team config, workgroup directory, `TASK.md`, and messaging directory.
+- Read-only filesystem snapshots for the disposable project `.ac/`, agent directories, team config, room directory, `TASK.md`, and messaging directory.
 - A selector gap report listing each action that required coordinates, keyboard navigation, native picker automation, or visual-only confirmation.
-- Negative diagnostic evidence for canceled project creation, invalid agent names, incomplete team creation, and incomplete workgroup creation.
+- Negative diagnostic evidence for canceled project creation, invalid agent names, incomplete team creation, and incomplete room creation.
 
 Pass/Fail Criteria:
 
@@ -73,7 +73,7 @@ Pass if all user-visible milestones and mandatory negative diagnostics succeed t
 
 Current baseline note:
 
-As of the 2026-06-13 run, E2E-001 must not be reported as PASS until onboarding dismissal persistence, team creation, workgroup creation, final restart persistence, and unobscured target-window evidence are all verified.
+As of the 2026-06-13 run, E2E-001 must not be reported as PASS until onboarding dismissal persistence, team creation, room creation, final restart persistence, and unobscured target-window evidence are all verified.
 
 ### E2E-002: Rerun only affected journey segment
 
@@ -92,7 +92,7 @@ Steps:
    - Onboarding or coding agents: rerun `02-onboarding-and-coding-agents.md`.
    - Project registration: rerun the relevant `PRJ-###` cases.
    - Agent creation: rerun the relevant `AGT-###` cases.
-   - Team or workgroup activation: rerun the relevant `WGP-###` cases.
+   - Team or room activation: rerun the relevant `WGP-###` cases.
    - Cross-surface persistence: rerun E2E-001 from the first affected milestone forward.
 2. Start from clean disposable runtime state unless the contract explicitly requires continuity.
 3. Preserve prior evidence read-only and create a new evidence directory for the rerun.

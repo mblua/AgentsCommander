@@ -955,7 +955,7 @@ pub fn execute(args: SendArgs) -> i32 {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!(
-                        "Error: --send requires --root under a wg-<N>-* ancestor unless --root is the canonical Root Agent directory; {}",
+                        "Error: --send requires --root under a `room-*` or legacy `wg-*` Room directory unless --root is the canonical Root Agent directory; {}",
                         e
                     );
                     return 1;

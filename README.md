@@ -57,7 +57,7 @@ Prefer a desktop installer or a manual download? Get the Windows installer, Linu
 > **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: bring any coding agent at full power, put a Fusion team of cheaper models on a **Loop**, and let scheduled runs compound toward the best answer. We only add, never subtract.
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
-- **Direct multiple workgroups from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to workgroup orchestrators, send work to different teams, and keep initiatives aligned across parallel workgroups.
+- **Direct multiple rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to room orchestrators, send work to different teams, and keep initiatives aligned across parallel rooms.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
@@ -90,7 +90,7 @@ You bring the coding agents. AgentsCommander coordinates them.
 
    Prefer a desktop installer or portable binary? Use [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
 2. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates a Project AC Root (`.ac/`) there.
-3. **Create a Team**: add an orchestrator and one worker agent, each with a role prompt. [Teams and workgroups](docs/agents/teams-and-workgroups.md) walks through this.
+3. **Create a Team**: add an orchestrator and one worker agent, each with a role prompt. [Teams and rooms](docs/agents/teams-and-workgroups.md) walks through this.
 4. **Launch the orchestrator**: pick Claude Code, Codex, Antigravity, Pi, or OpenCode from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 
 Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
@@ -134,8 +134,8 @@ These are not accidents.
 ## Documentation
 
 - [Quickstart](docs/quickstart.md): 60-second install to first running agent
-- [Concepts](docs/concepts.md): agent, team, workgroup, orchestrator, brief
-- [Teams and workgroups](docs/agents/teams-and-workgroups.md): orchestrators, members, briefs, messaging
+- [Concepts](docs/concepts.md): agent, team, room, orchestrator, brief
+- [Teams and rooms](docs/agents/teams-and-workgroups.md): orchestrators, members, briefs, messaging
 - [Features](docs/features/): [Coding Agent Profiles](docs/features/coding-agent-profiles.md), [Session auto-close](docs/features/session-auto-close.md), [Config seed](docs/features/config-seed.md), [Seed manifest](docs/features/seed-manifest.md), [Container coding agents](docs/features/container-coding-agents.md), Telegram bridge with image and screenshot sends, voice-to-text, portable instances
 - [Reference](docs/reference/): full CLI, `settings.json` schema, architecture, log filtering
 - [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Docs style guide](docs/style-guide.md)

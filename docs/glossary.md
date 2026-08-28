@@ -2,6 +2,8 @@
 
 Quick alphabetical reference. For richer explanations of how the pieces fit together, see [Concepts](concepts.md).
 
+A note on one renamed term: what these docs call a **Room** was called a Workgroup. New entities are created as `room-<N>-<team>`; existing `wg-*` directories keep their name and stay fully supported; and `workgroup`, `purge-wg`, `--wg` and `--workgroup` are still accepted as deprecated CLI aliases until a later release removes them.
+
 ## Activity log
 
 An append-only JSONL file recording when each session started working and when it went idle, plus app start, heartbeat and stop records. Off by default, and it holds no terminal content. See [Activity log](features/activity-log.md).
@@ -20,7 +22,7 @@ A project AC still has registered but hides from the sidebar. Archiving moves th
 
 ## Brief
 
-The plain-language description of a workgroup's goal. Lives at `<workgroup>/TASK.md` with YAML frontmatter title + freeform body.
+The plain-language description of a room's goal. Lives at `<room>/TASK.md` with YAML frontmatter title + freeform body.
 
 ## Coding agent
 
@@ -36,7 +38,7 @@ Windows' native PTY API. AC uses ConPTY via [portable-pty](https://github.com/we
 
 ## Context alert
 
-A notice AC injects into a workgroup's orchestrator when a member's context usage crosses a threshold the team configured. It fires once per crossing and takes no action on the session. See [Context tracking](features/context-tracking.md).
+A notice AC injects into a room's orchestrator when a member's context usage crosses a threshold the team configured. It fires once per crossing and takes no action on the session. See [Context tracking](features/context-tracking.md).
 
 ## Context badge
 
@@ -64,15 +66,15 @@ Per-replica directories where an agent receives (`inbox/`) and stages outbound (
 
 ## Loop (Project Loop)
 
-A scheduled prompt delivered to a workgroup's orchestrator on a cron expression. See [Concepts](concepts.md#project-loop).
+A scheduled prompt delivered to a room's orchestrator on a cron expression. See [Concepts](concepts.md#project-loop).
 
 ## Messaging directory
 
-`<workgroup>/messaging/`. Every inter-agent message in a workgroup lives here as a UTC-timestamped markdown file. Never auto-purged.
+`<room>/messaging/`. Every inter-agent message in a room lives here as a UTC-timestamped markdown file. Never auto-purged.
 
 ## Non-stop mode
 
-A per-project group of workgroups AC watches, alerting you when one stops working. See [Concepts](concepts.md#non-stop-mode).
+A per-project group of rooms AC watches, alerting you when one stops working. See [Concepts](concepts.md#non-stop-mode).
 
 ## Orchestrator
 
@@ -92,7 +94,7 @@ The grid of profiles: one row per coding agent, one column per letter, each cell
 
 ## Project (AC project)
 
-A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, and workgroups under that root.
+A folder containing a Project AC Root (`.ac/`). AC manages all agents, teams, and rooms under that root.
 
 ## Project AC Root
 
@@ -108,7 +110,7 @@ An orchestrator's request for your attention, raised by the agent itself through
 
 ## Replica
 
-A working copy of an agent inside a workgroup at `wg-<N>-<team>/__agent_<name>/`. Replicas share the canonical agent matrix's `memory/`, `plans/`, `skills/`, and `Role.md`, but have their own scratch space, inbox, outbox, and session artifacts.
+A working copy of an agent inside a room at `room-<N>-<team>/__agent_<name>/`. Replicas share the canonical agent matrix's `memory/`, `plans/`, `skills/`, and `Role.md`, but have their own scratch space, inbox, outbox, and session artifacts.
 
 ## Resource watchdog
 
@@ -120,7 +122,7 @@ A reusable agent definition (prompt + optional skills) that AC clones when you c
 
 ## Root Agent
 
-A Project AC Root-level orchestrator that can route messages between orchestrators of different teams. Identity-verified WG orchestrators see it as a synthetic `agentscommander://root-agent` peer.
+A Project AC Root-level orchestrator that can route messages between orchestrators of different teams. Identity-verified Room orchestrators see it as a synthetic `agentscommander://root-agent` peer.
 
 ## Session
 
@@ -170,10 +172,10 @@ Three "workspace" spellings survive the rename to **Project AC Root** on purpose
 - **`workspace-write`, the Codex CLI's vocabulary** (#1373). A value of Codex's `--sandbox` flag, as in `codex --sandbox workspace-write`. AC only passes it through: it arrives in a coding agent's profile command, and AC's own UI shows it just as an example placeholder in Settings. Renaming the value breaks the flag.
 - **`/workspace`, the container ecosystem's convention** (#1371). The path inside AC's Docker container where the replica root is bind-mounted, defined as `DEFAULT_CONTAINER_WORKDIR` in `src-tauri/src/pty/container_runtime.rs`. Docker does not impose the path, but Cloud Build and GitPod both mount the checkout at `/workspace`, and tools running inside a container expect to find it there. Kept by user decision of 2026-08-19.
 
-## Workgroup
+## Room
 
-A team's activation for a specific task. Lives at `.ac/wg-<N>-<team>/` with replicas of every team member.
+A team's activation for a specific task. Lives at `.ac/room-<N>-<team>/` with replicas of every team member.
 
-## `wg-<N>-<team>`
+## `room-<N>-<team>`
 
-The on-disk name of a workgroup directory. The integer `<N>` is sequential per project; `<team>` is the team's display name.
+The on-disk name of a room directory. The integer `<N>` is sequential per project; `<team>` is the team's display name.

@@ -8,7 +8,7 @@ The Resource Monitor samples every agent session and its child processes, shows 
 
 The unit of measurement is the **agent group**: one agent session plus the processes it spawned. AC reports per group:
 
-- Its identity: the session name, and the project, workgroup and agent role it belongs to.
+- Its identity: the session name, and the project, room and agent role it belongs to.
 - Its state, and the last error if the group has one.
 - How many processes it contains, and whether AC could observe the descendants at all.
 - Private bytes, working set bytes and CPU percent.
@@ -39,7 +39,7 @@ A strip of four tiles summarizes the whole app:
 | `App Private` | AC's own private bytes, with the working set alongside. |
 | `Network` | The network state and its summary line. |
 
-Below that, the `Agents` section lists the groups. A filter bar narrows the list by status (all, active or inactive), by project, by workgroup and by agent role; while any filter is on, the header reads `Showing <n> of <total>`. The header also carries `Last update <time>`. Selecting a group row expands it to the processes inside that group, and a group whose kill is allowed can be terminated from here after a confirmation.
+Below that, the `Agents` section lists the groups. A filter bar narrows the list by status (all, active or inactive), by project, by room and by agent role; while any filter is on, the header reads `Showing <n> of <total>`. The header also carries `Last update <time>`. Selecting a group row expands it to the processes inside that group, and a group whose kill is allowed can be terminated from here after a confirmation.
 
 The list refreshes on a timer: every 2 seconds while active and every 10 seconds when idle, dropping to 15 seconds when `resourceBackoffPolling` is on. When a sample fails, the window shows `Snapshot failed: <error>`; with `resourceKeepLastSnapshot` on it keeps the previous reading on screen under `Showing last snapshot from <time>.` instead of blanking.
 

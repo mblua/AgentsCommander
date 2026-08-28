@@ -103,17 +103,17 @@ AC derives the agent's name from its filesystem path:
 | Path shape | Canonical name |
 |---|---|
 | `<project>/.ac/_agent_<name>/` | `<project>/<name>` |
-| `<project>/.ac/wg-<N>-<team>/__agent_<name>/` (replica) | `<project>:wg-<N>-<team>/<name>` |
+| `<project>/.ac/room-<N>-<team>/__agent_<name>/` (replica) | `<project>:room-<N>-<team>/<name>` |
 
 Use this name verbatim with `send --to`. The CLI's `list-peers-lean` always emits the canonical form.
 
 ## Updating an agent
 
-To edit a role, edit `Role.md` in the canonical agent matrix at `.ac/_agent_<name>/`. AC regenerates `CLAUDE.md` from it. Never edit `CLAUDE.md` directly on a workgroup replica; the next sync will overwrite your changes.
+To edit a role, edit `Role.md` in the canonical agent matrix at `.ac/_agent_<name>/`. AC regenerates `CLAUDE.md` from it. Never edit `CLAUDE.md` directly on a room replica; the next sync will overwrite your changes.
 
 ## See also
 
-- [Teams and workgroups](teams-and-workgroups.md) — group agents into teams
+- [Teams and rooms](teams-and-workgroups.md) — group agents into teams
 - [Inter-agent messaging](inter-agent-messaging.md) — how agents talk
 - [Agent skills](agent-skills.md) — reusable per-agent workflows
 - [Coding agents](../integrations/coding-agents.md) — picking and configuring the CLI behind each agent

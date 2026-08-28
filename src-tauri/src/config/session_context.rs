@@ -949,7 +949,7 @@ fn resolve_replica_matrix_root(replica_root: &str) -> Result<Option<String>, Str
     .map(|(_, identity)| Some(display_path(&canonical_or_original(&identity.matrix_dir))))
     .map_err(|e| {
         format!(
-            "Invalid WG replica identity for '{}': {}",
+            "Invalid Room replica identity for '{}': {}",
             replica_path.display(),
             e
         )
@@ -9406,7 +9406,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let err = ensure_session_context(&path_string(&replica_root))
             .expect_err("unrepairable identity must fail context generation");
 
-        assert!(err.contains("Invalid WG replica identity"), "{err}");
+        assert!(err.contains("Invalid Room replica identity"), "{err}");
         assert!(err.contains("_agent_architect"), "{err}");
         assert!(err.contains("_agent_tech-lead"), "{err}");
     }

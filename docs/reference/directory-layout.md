@@ -2,6 +2,8 @@
 
 For anyone who needs to know where AgentsCommander keeps its on-disk data, which files are shared with the team, and which are per-instance state you must never share.
 
+A new entity directory is always `room-<N>-<team>`. Every `wg-*` directory that already exists keeps its name and stays fully supported; nothing on disk is renamed or converted. The CLI names `room`, `purge-room` and `--room` are canonical, and `workgroup`, `purge-wg`, `--wg` and `--workgroup` remain accepted as deprecated aliases that a later release will remove.
+
 AgentsCommander keeps its on-disk data in two distinct trees:
 
 | Tree | Location | Scope |
@@ -23,11 +25,11 @@ C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 - The stem comes from the running executable only. Renaming the binary gives you a fresh, isolated instance; see [Portable instances](../features/portable-instances.md).
 - If `current_exe()` is unavailable, AC falls back to `$HOME/<config-dir-name>`.
 - Debug builds honor the `AGENTSCOMMANDER_TEST_CONFIG_DIR` override.
-- Replica agent directories inside workgroups follow the same naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`).
+- Replica agent directories inside rooms follow the same naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`).
 
 The rule has two consequences:
 
-- `.ac/` is shared: commit it to the project's git so the team gets the same agents, teams, workgroups, and tool configuration.
+- `.ac/` is shared: commit it to the project's git so the team gets the same agents, teams, rooms, and tool configuration.
 - The instance dir is per-instance: never commit or share it. It holds tokens, sessions, logs, and machine-local state. AC writes a `.gitignore` inside it so those files stay out of git when the binary runs inside a repository.
 
 ## `.ac/` (shared, tracked in the project git)
@@ -44,7 +46,7 @@ The project-scoped tree. AC creates and maintains it, and the project commits it
 | `.agentscommander-context-templates.json` | Seeded-template state: per-template version and content hashes | Written by AC |
 | `seed-manifest.toml` | Seed manifest: inventory of every file AC last seeded into `.ac` | Written by AC; see [Seed manifest](../features/seed-manifest.md) |
 | `.seed-manifest.lock` | Write lock for the seed manifest | Written by AC; gitignored |
-| `.gitignore` | AC-maintained ignore rules for this tree (`wg-*/`, lock files; un-ignores `seed-manifest.toml`) | Written by AC at project discovery |
+| `.gitignore` | AC-maintained ignore rules for this tree (`room-*/`, lock files; un-ignores `seed-manifest.toml`) | Written by AC at project discovery |
 | `project-settings.json` | Project settings: agent catalog overrides, groups, and project-level configuration | Written by AC |
 | `default.claude/`, `default.codex/` | Default config-folder masters (`default` + the tool's dotfolder) that config seed copies into replicas | Written by AC; see [Config seed](../features/config-seed.md) |
 | `default.claude.archived-20260710-000519/` | Timestamped archive of a previous `default.claude` master | No writer in the current source; treat as legacy or hand-placed |
@@ -56,7 +58,7 @@ The project-scoped tree. AC creates and maintains it, and the project commits it
 |---|---|
 | `_agent_<name>/` | Agent matrix: one directory per agent, holding `Role.md`, `config.json`, `memory/`, `memory_YYYYMMDD_hhmmss/` (rotated memory archives), `plans/`, and `skills/`. See [Agent Matrix conventions](../agent-matrix-conventions.md), and see [Agent Matrix conventions §11](../agent-matrix-conventions.md#11-agent-memory-rotation-at-spawn) for how the archives are made |
 | `_team_<name>/` | Team definitions: `config.json` (members, orchestrator, repos) and `conventions.md` |
-| `wg-<N>-<name>/` | Workgroups: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` workgroup clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`wg-*/`) because the `repo-*` folders are their own git repositories |
+| `room-<N>-<name>/` | Rooms: `__agent_<name>/` replica directories, `messaging/` (inter-agent message files), `repo-*/` room clones, `TASK*.md` briefs. Project-scoped and shared, but gitignored (`room-*/`) because the `repo-*` folders are their own git repositories |
 | `coding-agents/` | Coding-agent catalog: `agents.json` (manifest) and `_seed/` (per-tool default config-folder masters). Seeded per registered project; this is the copy AC reads and writes |
 | `competitions/` | Competition packages, one folder per competition with a `MANIFEST.md`. No writer in the current source; treat as hand-managed |
 
@@ -121,5 +123,5 @@ The manifest never tracks the per-instance dir: that state is outside `.ac` by c
 - [Config seed](../features/config-seed.md): how replica config folders are seeded from the masters
 - [Portable instances](../features/portable-instances.md): the config-dir rule and instance isolation
 - [Settings reference](settings.md): the per-instance `settings.json`
-- [Agent Matrix conventions](../agent-matrix-conventions.md): the `_agent_*` and `wg-*` layout
+- [Agent Matrix conventions](../agent-matrix-conventions.md): the `_agent_*` and `room-*` layout
 - [Architecture map](architecture.md): where the code that manages these trees lives

@@ -95,7 +95,7 @@ When the cell that wins is not the letter that was requested, AC marks the resul
 
 ## Assigning and defaulting a profile
 
-**Make a profile the one new sessions start on (tier 1 — the practical default).** In the launch picker, pick the Coding Agent and Profile, then choose **Assign to this replica**. This writes the replica's `tooling.profile` (the instance override), which beats the lower default tiers, so new sessions on that replica start on that letter until you change it. The picker previews the exact composed command before you launch. From a workgroup replica, the picker's **Apply to** control widens the same write to more replicas: **This replica**, **All replicas of this kind**, or **Entire workgroup** (each target replica gets its own instance override).
+**Make a profile the one new sessions start on (tier 1 — the practical default).** In the launch picker, pick the Coding Agent and Profile, then choose **Assign to this replica**. This writes the replica's `tooling.profile` (the instance override), which beats the lower default tiers, so new sessions on that replica start on that letter until you change it. The picker previews the exact composed command before you launch. From a room replica, the picker's **Apply to** control widens the same write to more replicas: **This replica**, **All replicas of this kind**, or **Entire room** (each target replica gets its own instance override).
 
 **Pick a profile for a single launch (tier 2).** Choosing a different letter at launch time, without assigning it to the replica, applies only to that launch.
 

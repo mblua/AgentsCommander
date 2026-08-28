@@ -63,7 +63,7 @@ probing.
     "message": { "inline": "message text", "contentType": "text/markdown" } }
   ```
   Compatibility `message.send` is also accepted as a bare filename in the
-  sender's workgroup `messaging/` directory, but the daemon reads the file once
+  sender's room `messaging/` directory, but the daemon reads the file once
   and stores its content inline. It never stores or injects the host path as the
   payload. Exactly one of `message.inline` or `message.send` is required.
   `contentType` defaults to `text/markdown`. Inline payloads are capped at 256
@@ -78,7 +78,7 @@ probing.
   {
     "apiVersion": "1",
     "opId": "<canonical UUID v4>",
-    "to": "<exact canonical same-workgroup member FQN>",
+    "to": "<exact canonical same-room member FQN>",
     "ptyInput": {
       "version": 1,
       "text": "exact UTF-8 text",
@@ -132,12 +132,12 @@ probing.
   {
     "apiVersion": "1",
     "requestId": "22222222-2222-4222-8222-222222222222",
-    "to": "project:wg-1-team/member",
+    "to": "project:room-1-team/member",
     "format": "json"
   }
   ```
   `format` is `json` or `png`. The target must be a verified non-Coordinator
-  member in the requester's same exact physical project and workgroup. Requester
+  member in the requester's same exact physical project and room. Requester
   and route identity are proven before target session, backend, parser, or
   liveness lookup. A shape-valid unauthorized target therefore cannot act as a
   target-liveness oracle.

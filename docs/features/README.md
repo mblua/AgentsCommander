@@ -19,8 +19,8 @@ For developers looking for the page that covers one AgentsCommander feature. Eve
 
 | Page | What it covers |
 |---|---|
-| [Non-stop mode](non-stop-mode.md) | Watch a group of workgroups and get a Telegram message or a sound when one stops working. |
-| [Project Loops](project-loops.md) | Send a scheduled prompt to a workgroup orchestrator on a cron expression, waking or respawning the session. |
+| [Non-stop mode](non-stop-mode.md) | Watch a group of rooms and get a Telegram message or a sound when one stops working. |
+| [Project Loops](project-loops.md) | Send a scheduled prompt to a room orchestrator on a cron expression, waking or respawning the session. |
 | [Spec Board](spec-board.md) | Edit a Mermaid file in its own window with a live preview, snapshots, and an agent handoff. |
 | [Watchers](watchers.md) | Match a pattern against every agent terminal at once and read the hits in the activity window. |
 

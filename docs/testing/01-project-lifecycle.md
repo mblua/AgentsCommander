@@ -16,7 +16,7 @@ Tester: ac-cli-and-gui-tester
 
 App under test: `target\release\agentscommander_testeable.exe --app --ui-automation`
 
-Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
 
 Result summary:
 
@@ -33,9 +33,9 @@ App under test: `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe -
 
 Target window: `AC [STANDALONE_WG-1]`
 
-Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1`
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1`
 
-Test project: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1\ac-regression-prj-20260611-020008`
+Test project: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1\ac-regression-prj-20260611-020008`
 
 | Case | Result | Evidence | Notes |
 | --- | --- | --- | --- |
@@ -49,27 +49,27 @@ Test project: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-1-dev-team\__age
 
 Residual test data:
 
-- The disposable project folder remains at `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1\ac-regression-prj-20260611-020008`.
+- The disposable project folder remains at `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1\ac-regression-prj-20260611-020008`.
 - The folder contains a generated `.ac/` Project AC Root.
 - The project remains registered in `C:\Users\maria\0_mmb\0_AC\.agentscommander_standalone_wg-1\settings.json`.
 - No cleanup was performed because the current app has no safe reset command for normal binaries; planned support is tracked by #475.
 
 Automation gaps observed:
 
-- Window placement is not deterministic in the current wg-specific app. The first target window was on a negative-coordinate monitor and produced a bad crop.
+- Window placement is not deterministic in the current room-specific app. The first target window was on a negative-coordinate monitor and produced a bad crop.
 - Moving/restoring the Tauri window can leave the webview/capture geometry inconsistent.
 - Native folder picker automation is unstable without deterministic placement and a resettable test app identity.
 - Sidebar verification needs either deterministic window sizing or an app-level test hook to query loaded project UI state.
 
-### PRJ-001: App launches and target wg-1 window is identifiable
+### PRJ-001: App launches and target room-1 window is identifiable
 
 Purpose:
 
-Verify that the workgroup-specific app instance is running, visually identifiable, and ready for GUI validation.
+Verify that the room-specific app instance is running, visually identifiable, and ready for GUI validation.
 
 Preconditions:
 
-- App wg-1 is open or launchable with `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`.
+- App room-1 is open or launchable with `C:\Users\maria\0_mmb\0_AC\agentscommander_standalone_wg-1.exe --app`.
 - Window title `AC [STANDALONE_WG-1]` is detectable.
 - Window is maximized on the monitor designated by the user for visual validation.
 - Initial capture is saved as evidence.
@@ -85,7 +85,7 @@ Steps:
 
 Expected Result:
 
-The target wg-1 window is uniquely identifiable, maximized on the intended monitor, and visually readable.
+The target room-1 window is uniquely identifiable, maximized on the intended monitor, and visually readable.
 
 Evidence Required:
 
@@ -94,7 +94,7 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-Pass if the correct window is detected, maximized, and the screenshot clearly shows the wg-1 UI. Partial if the app is detected but required repositioning/relaunch to become capturable. Fail if the app cannot be launched or identified.
+Pass if the correct window is detected, maximized, and the screenshot clearly shows the room-1 UI. Partial if the app is detected but required repositioning/relaunch to become capturable. Fail if the app cannot be launched or identified.
 
 ### PRJ-002: Create a new test project from UI
 
@@ -147,7 +147,7 @@ Steps:
 1. Inspect the sidebar project list.
 2. Locate the project entry matching the disposable folder name.
 3. Expand the project entry if needed.
-4. Confirm project sections such as workgroups, agents, or teams are visible.
+4. Confirm project sections such as rooms, agents, or teams are visible.
 
 Expected Result:
 

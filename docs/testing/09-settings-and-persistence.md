@@ -1,8 +1,8 @@
 # 09 Settings And Persistence
 
-These cases validate settings surfaces and durable state across app restart, including harmless setting changes, project/workgroup registration, window geometry, test reset boundaries, and recovery from invalid or missing disposable settings.
+These cases validate settings surfaces and durable state across app restart, including harmless setting changes, project/room registration, window geometry, test reset boundaries, and recovery from invalid or missing disposable settings.
 
-Use clearly disposable test projects, workgroups, settings values, sessions, and app identity state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
+Use clearly disposable test projects, rooms, settings values, sessions, and app identity state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. SET-001 captures target-window identity explicitly; later cases inherit it.
 
@@ -30,7 +30,7 @@ Test data: TBD
 | --- | --- | --- | --- |
 | SET-001 | NOT RUN | No evidence because NOT RUN. | Settings target readiness not executed in this run. |
 | SET-002 | NOT RUN | No evidence because NOT RUN. | Settings save checks not executed in this run. |
-| SET-003 | NOT RUN | No evidence because NOT RUN. | Project/workgroup persistence checks not executed in this run. |
+| SET-003 | NOT RUN | No evidence because NOT RUN. | Project/room persistence checks not executed in this run. |
 | SET-004 | NOT RUN | No evidence because NOT RUN. | Window geometry persistence checks not executed in this run. |
 | SET-005 | NOT RUN | No evidence because NOT RUN. | Test reset boundary checks not executed in this run. |
 | SET-006 | NOT RUN | No evidence because NOT RUN. | Invalid/missing settings recovery not executed in this run. |
@@ -122,31 +122,31 @@ Pass/Fail Criteria:
 
 PASS if only the chosen harmless setting changes and persists after restart. PARTIAL if persistence is visible but JSON snapshots are unavailable. FAIL if the setting does not persist, unrelated settings change, or a live identity is affected. BLOCKED if no safe harmless setting can be changed.
 
-### SET-003: Project and workgroup registrations persist across restart
+### SET-003: Project and room registrations persist across restart
 
 Purpose:
 
-Verify that disposable project/workgroup registrations remain coherent after a normal testable app restart.
+Verify that disposable project/room registrations remain coherent after a normal testable app restart.
 
 Preconditions:
 
 - Depends on SET-001.
-- A disposable project and optional disposable workgroup have been created or opened in the testable identity.
+- A disposable project and optional disposable room have been created or opened in the testable identity.
 - No live project registration is being modified for this case.
 
 Steps:
 
-1. Capture the project/workgroup list before restart.
+1. Capture the project/room list before restart.
 2. Save any available settings or project registration snapshot for the testable identity.
 3. Close `AC [TESTEABLE]` normally.
 4. Relaunch `agentscommander_testeable.exe --app` with deterministic placement.
 5. Run `agentscommander_testeable.exe window-info` and save the output.
-6. Capture the project/workgroup list after restart.
-7. Compare registration count, visible names, selected project/workgroup, and duplicate state.
+6. Capture the project/room list after restart.
+7. Compare registration count, visible names, selected project/room, and duplicate state.
 
 Expected Result:
 
-The disposable project/workgroup registration persists or restores according to documented behavior without duplicates or live-state bleed.
+The disposable project/room registration persists or restores according to documented behavior without duplicates or live-state bleed.
 
 Evidence Required:
 
@@ -158,7 +158,7 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-PASS if registration state after restart is coherent and duplicate-free. PARTIAL if UI state is correct but one optional JSON snapshot is unavailable. FAIL if registrations disappear unexpectedly, duplicate, or include unintended live projects. BLOCKED if no disposable project/workgroup registration exists.
+PASS if registration state after restart is coherent and duplicate-free. PARTIAL if UI state is correct but one optional JSON snapshot is unavailable. FAIL if registrations disappear unexpectedly, duplicate, or include unintended live projects. BLOCKED if no disposable project/room registration exists.
 
 ### SET-004: Window geometry persistence is observable
 

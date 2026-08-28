@@ -412,7 +412,7 @@ pub(crate) mod stage_d_lock_order_child {
 
     /// Frozen child-mode actions (one per helper).
     pub(crate) const MEMBER_ACTION: &str = "cli-member-lock-order";
-    pub(crate) const WORKGROUP_ACTION: &str = "cli-room-lock-order";
+    pub(crate) const WORKGROUP_ACTION: &str = "cli-workgroup-lock-order";
 
     /// Enable flag for the in-process driven-path PROOF tests
     /// (`*_lock_order_inversion_driver`). This is NOT part of the Stage E child-mode

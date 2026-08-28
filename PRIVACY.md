@@ -28,11 +28,11 @@ When the user activates voice recording:
 
 ### Inter-Agent Messaging
 
-The internal messaging system between agents is **local by default**: the file-based path writes Markdown files into `messaging/` directories inside each workgroup and inside the Root Agent directory, and other delivery paths keep message content in queues of their own. AC sends message content to no service of its own. A destination you select yourself, such as `send --outbox`, can place a message outside those locations, including on another machine.
+The internal messaging system between agents is **local by default**: the file-based path writes Markdown files into `messaging/` directories inside each room and inside the Root Agent directory, and other delivery paths keep message content in queues of their own. AC sends message content to no service of its own. A destination you select yourself, such as `send --outbox`, can place a message outside those locations, including on another machine.
 
 ### Terminal Snapshots
 
-Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-workgroup Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG.
+Terminal snapshots are off by default. When the user enables `terminalSnapshotsEnabled`, an identity-authorized Root Agent or same-room Orchestrator can request the current backend terminal viewport as JSON or deterministic PNG.
 
 - **Data processed locally**: Current visible backend rows, cells, text, colors, represented styles, cursor, dimensions, selected session metadata, and fidelity metadata. Terminal content can include passwords, tokens, source code, prompts, and personal data. Agents Commander does not redact it.
 - **Host transport**: A host requester exchanges bounded transient files in dedicated requester-side terminal snapshot directories. Snapshot content does not enter ordinary messages, conversations, delivered or rejected message artifacts, or PTY-input state. The daemon normally removes identity-stable protocol files after use or 60 seconds. A crash plus removal of the only project registration can leave an undiscoverable residual.

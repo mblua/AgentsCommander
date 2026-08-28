@@ -184,7 +184,7 @@ pub enum ResolutionError {
     /// `list-peers` returned empty (Issue #134).
     #[error(
         "target '{0}' looks like a filesystem directory name, not a peer FQN. \
-         Use the 'name' field from `list-peers-lean` (e.g. 'project:wg-N-team/agent' \
+         Use the 'name' field from `list-peers-lean` (e.g. 'project:room-N-team/agent' \
          for Room replicas, 'project/agent' for origin agents). Directory names \
          like '__agent_*' or '_agent_*' are NEVER valid --to values."
     )]

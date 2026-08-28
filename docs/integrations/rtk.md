@@ -36,9 +36,9 @@ Repeat the row for every coding agent whose sessions you want to measure. ENVIRO
 
 | Property | What it buys you |
 |---|---|
-| `%AC_MATRIX_ROOT%` | Resolves to `<project>\.ac\_agent_<name>`, the agent's canonical Agent Matrix. Statistics aggregate **per agent type**, across every workgroup replica that agent ever ran in. |
+| `%AC_MATRIX_ROOT%` | Resolves to `<project>\.ac\_agent_<name>`, the agent's canonical Agent Matrix. Statistics aggregate **per agent type**, across every room replica that agent ever ran in. |
 | Absolute after expansion | RTK opens `RTK_DB_PATH` exactly as given. A relative value resolves against the session's current working directory, which changes as the agent moves between `repo-*` checkouts, so the history scatters into several files. |
-| Outside `wg-*` | Workgroup directories are disposable. A database under the Agent Matrix survives a workgroup purge. |
+| Outside `room-*` | Room directories are disposable. A database under the Agent Matrix survives a room purge. |
 
 The `project_path` column keeps the second dimension. Every row records the working directory the command ran in, so one agent's database still tells you which replica or repository checkout each command came from.
 
@@ -88,7 +88,7 @@ The wrapped command's own exit code does not change any of this. A command that 
 
 ### The hook covers the filtered set, and nothing else
 
-This section is about RTK's own hook, the one `rtk init` installs. AgentsCommander seeds **different** hooks into every workgroup replica: a `PreToolUse` hook for the `Bash` tool and one for the `PowerShell` tool, which also write a log of the commands they declined to rewrite, and a third registered on both `PreToolUse` and `PostToolUse` for the native file tools, which writes its own rows straight into the database. If you run agents in replicas, read [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) before you conclude which hook produced what.
+This section is about RTK's own hook, the one `rtk init` installs. AgentsCommander seeds **different** hooks into every room replica: a `PreToolUse` hook for the `Bash` tool and one for the `PowerShell` tool, which also write a log of the commands they declined to rewrite, and a third registered on both `PreToolUse` and `PostToolUse` for the native file tools, which writes its own rows straight into the database. If you run agents in replicas, read [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) before you conclude which hook produced what.
 
 `rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. This is the excerpt a patched Claude Code `settings.json` holds under `hooks.PreToolUse`, once per shell tool, not a complete settings file:
 
@@ -305,10 +305,10 @@ Only `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are recog
 
 ## When `%AC_MATRIX_ROOT%` does not resolve
 
-`%AC_MATRIX_ROOT%` resolves only for a workgroup replica launch root, that is a `__agent_*` directory under a `wg-*` workgroup. A session launched from a `repo-*` checkout, a bare `wg-*` directory, an `_agent_*` matrix directory or the root agent fails at launch with:
+`%AC_MATRIX_ROOT%` resolves only for a room replica launch root, that is a `__agent_*` directory under a `room-*` room. A session launched from a `repo-*` checkout, a bare `room-*` directory, an `_agent_*` matrix directory or the root agent fails at launch with:
 
 ```text
-%AC_MATRIX_ROOT% requires an AC workgroup replica launch root
+%AC_MATRIX_ROOT% requires an AC room replica launch root
 ```
 
 For those roots use `%AC_WORKSPACE_ROOT%\rtk-history.db` instead, which gives one database per project with no per-agent split, or a literal absolute path. `%AC_WORKSPACE_ROOT%` resolves for any launch root inside a `.ac` workspace; the root agent resolves only `%AC_REPLICA_ROOT%`.

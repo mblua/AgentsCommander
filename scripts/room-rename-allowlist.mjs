@@ -260,8 +260,12 @@ const DOCS_KEEP = {
 
 const blobCache = new Map();
 function blob(rev, path) {
-  const k = `${rev}:${path}`;
-  if (!blobCache.has(k)) blobCache.set(k, git(["cat-file", "blob", k]));
+  // With no rev, read the WORKING TREE, so `sweep` and `moved` are runnable
+  // against the current checkout and not only against a committed revision.
+  const k = `${rev ?? "<worktree>"}:${path}`;
+  if (!blobCache.has(k)) {
+    blobCache.set(k, rev ? git(["cat-file", "blob", `${rev}:${path}`]) : readFileSync(join(REPO, path), "utf8"));
+  }
   return blobCache.get(k);
 }
 
@@ -513,9 +517,12 @@ function loadAllowlist() {
     // would carry a trailing \r and match nothing.
     const line = raw.replace(/\r$/, "");
     if (!line || line.startsWith("#")) continue;
-    const t = line.indexOf("\t");
-    const cls = line.slice(0, t);
-    rows.set(line.slice(t + 1), cls);
+    // Part A rows are <class>\t<path>\t<content>. Part B rows carry a fourth
+    // column, the one-line justification AC1 point 4 requires, which is NOT
+    // part of the key.
+    const f = line.split("\t");
+    if (f.length < 3) continue;
+    rows.set(`${f[1]}\t${f[2]}`, f[0]);
   }
   return rows;
 }
@@ -582,6 +589,18 @@ function main() {
       }
       writeFileSync(TSV, out.join("\n") + "\n");
       console.error(`wrote ${TSV}: ${seen.size} unique rows from ${partA.length} Part A lines`);
+    }
+    return;
+  }
+
+  // Emit every unlisted line with FULL content, for building Part B. The gate's
+  // own output truncates for readability and must never be parsed for this.
+  if (mode === "unlisted") {
+    const allow = loadAllowlist();
+    for (const s of Object.keys(SURFACES)) {
+      for (const r of sweep(s, rev)) {
+        if (!allow.has(key(r))) console.log(`${r.path}\t${r.lineno}\t${r.content}`);
+      }
     }
     return;
   }

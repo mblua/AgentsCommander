@@ -101,7 +101,7 @@ See [Settings reference](../reference/settings.md#window--ui) for both keys in c
 
 **"A toast disappeared before I read it."** Four toasts are visible at once and a fifth evicts the oldest non-error. Errors are protected from that eviction, so what vanished was an info or success message.
 
-**"The idle beep does not fire for the workgroup I am watching."** Expected. AC suppresses the beep for the workgroup whose session currently has your focus, and briefly after you move focus away from one. A workgroup you are not looking at still beeps.
+**"The idle beep does not fire for the room I am watching."** Expected. AC suppresses the beep for the room whose session currently has your focus, and briefly after you move focus away from one. A room you are not looking at still beeps.
 
 **"No sound at all, and `teamIdleBeepEnabled` is `true`."** Check `soundsEnabled`. It is the master switch, and the beep is gated by it.
 

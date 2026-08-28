@@ -8,7 +8,7 @@ AC is one application that opens several windows. One page routes them all: the 
 
 | Window | What it is for | How to open it |
 |---|---|---|
-| Sidebar | Projects, workgroups, replicas and sessions, plus the workgroup rail | Part of the main window; also runs on its own in the browser build |
+| Sidebar | Projects, rooms, replicas and sessions, plus the room rail | Part of the main window; also runs on its own in the browser build |
 | Main | The default window: the sidebar beside a central pane | Starting AC |
 | Terminal | The central pane's terminal, or a detached window locked to one session | Part of the main window; detaching moves one session into its own window |
 | Guide | Hints and a tutorial | A button in the sidebar action bar |
@@ -19,7 +19,7 @@ AC is one application that opens several windows. One page routes them all: the 
 
 ## Sidebar
 
-The sidebar is the navigation surface: the workgroup rail down one edge, and the project panel listing projects, workgroups, replicas and sessions.
+The sidebar is the navigation surface: the room rail down one edge, and the project panel listing projects, rooms, replicas and sessions.
 
 In the desktop app it lives inside the main window. In the browser build it is rendered beside the terminal in the served page, with a draggable divider between them and a toggle to move it to the other side.
 
@@ -49,9 +49,9 @@ Around the terminal itself:
 - **The status bar** carries the session's launch command and its controls, including the microphone button. See [Voice-to-text](voice-to-text.md) for what the mic does and how to cancel a recording.
 - **The last prompt** display shows the most recent command for the session.
 
-**The workgroup task** strip shows the title from the workgroup's `TASK.md`, parsed from the file's frontmatter. You can edit the title in place: `Enter` saves it, `Escape` cancels. The control refuses an empty title with `Title cannot be empty.`, and it stops if the session changed underneath the edit, with `Session changed; cancel and retry.` Both the edit and the clean control are disabled when there is no session or the session is not inside a workgroup.
+**The room task** strip shows the title from the room's `TASK.md`, parsed from the file's frontmatter. You can edit the title in place: `Enter` saves it, `Escape` cancels. The control refuses an empty title with `Title cannot be empty.`, and it stops if the session changed underneath the edit, with `Session changed; cancel and retry.` Both the edit and the clean control are disabled when there is no session or the session is not inside a room.
 
-**Cleaning the task** asks first. The confirmation is titled `Clean TASK?` and states what it will do: it resets the workgroup `TASK.md`, replacing all frontmatter fields and body content with `title: 'Clean'` and the body `Ready to start a new topic`. If a `TASK.md` exists, a timestamped backup is saved alongside it before the reset. The buttons are `Cancel`, which has focus when the dialog opens, and `Clean`. `Escape` cancels, and `Enter` cleans only when `Clean` already has focus.
+**Cleaning the task** asks first. The confirmation is titled `Clean TASK?` and states what it will do: it resets the room `TASK.md`, replacing all frontmatter fields and body content with `title: 'Clean'` and the body `Ready to start a new topic`. If a `TASK.md` exists, a timestamped backup is saved alongside it before the reset. The buttons are `Cancel`, which has focus when the dialog opens, and `Clean`. `Escape` cancels, and `Enter` cleans only when `Clean` already has focus.
 
 ## Guide
 
@@ -75,7 +75,7 @@ The tutorial covers the same ground as [Quickstart](../quickstart.md). Read whic
 
 **"Home says `Could not load Home:` and an error."** The document could not be fetched. `Try again` re-runs the same fetch; the error text names the cause.
 
-**"The task controls are greyed out."** Either no session is selected, or the selected session is not inside a workgroup. `TASK.md` belongs to a workgroup, so a plain shell has nothing to edit.
+**"The task controls are greyed out."** Either no session is selected, or the selected session is not inside a room. `TASK.md` belongs to a room, so a plain shell has nothing to edit.
 
 **"I cleaned the task and lost its content."** The reset is what `Clean` does, and the confirmation says so before you press it. A timestamped backup is written next to `TASK.md` when one existed; look there.
 

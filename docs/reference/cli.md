@@ -4,6 +4,14 @@ For developers scripting AgentsCommander or invoking it from inside an agent ses
 
 The binary doubles as the GUI app (`--app` flag) and as a CLI. When no subcommand is given AC launches the GUI.
 
+## Rooms, and the Workgroup names they replace
+
+AgentsCommander creates Rooms. A new entity directory is always `room-<N>-<team>`.
+
+Every `wg-*` directory that already exists on disk keeps its name. Nothing is renamed, moved, converted or deleted, and a legacy Workgroup is discovered, listed, addressed, operated and deleted exactly as a Room is.
+
+`room`, `purge-room` and `--room` are the canonical CLI names. `workgroup`, `purge-wg`, `--wg` and `--workgroup` remain accepted as deprecated aliases: they parse to the identical value and produce identical side effects, exit codes and output. Help and usage always print the canonical name. The aliases will be removed in a later release.
+
 ## Token model — read this first
 
 `--token <TOKEN>` is required by every verb that touches per-session state. The CLI **shape-validates** the token (UUID, root token, or master token); the daemon mailbox does the authoritative per-session identity check. A valid UUID from a different binary instance passes the CLI's shape check but is rejected by the mailbox at delivery time.
@@ -16,7 +24,7 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-wg` requires the caller to be the identity-verified workgroup orchestrator, and the master/root token does NOT bypass that check (a root token has no workgroup).
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
 
 `terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
@@ -26,9 +34,9 @@ All subcommands return:
 
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
-- `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-wg` when the response is unparseable.
-- `3` — `purge-wg` only: gate rejected (one or more peers are busy)
-- `4` — `purge-wg` only: a destroy failed after the gate passed
+- `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-room` when the response is unparseable.
+- `3` — `purge-room` only: gate rejected (one or more peers are busy)
+- `4` — `purge-room` only: a destroy failed after the gate passed
 
 Exception: `harness` returns `0` for successful `--explain` and `--dry-run`, returns `1` for deny, validation, spawn, or audit-log failures, and propagates the child process exit code when it actually executes a command.
 
@@ -118,9 +126,9 @@ printf '%s' "$PROMPT" | agentscommander send \
 | Flag | Required | Description |
 |---|---|---|
 | `--token` | Yes | Session token. Shape-validated. |
-| `--root` | Yes | Sender's root directory (your CWD inside the workgroup or matrix). Used to derive your canonical name. |
+| `--root` | Yes | Sender's root directory (your CWD inside the room or matrix). Used to derive your canonical name. |
 | `--to` | Yes | Destination peer's canonical FQN. Get this from `list-peers-lean`. |
-| `--send` | * | Filename only, not a path. The file must already exist in `<workgroup-root>/messaging/`. |
+| `--send` | * | Filename only, not a path. The file must already exist in `<room-root>/messaging/`. |
 | `--command` | * | Logical PTY action: `clear` or `compact`. `clear` resolves to `/new` for an exact-stem direct Pi shell and `/clear` for direct Claude/Codex/Antigravity-family or Cursor `agent` shells. Pi compact and outer `cmd`/`pwsh` wrappers are unsupported. The mapped session must be idle. Mutually exclusive with `--send`. |
 | `--pty-input` | * | Exact UTF-8 text argument. Hyphen-leading values are accepted. The caller's shell applies quoting and expansion before AC receives the value. |
 | `--pty-input-stdin` | * | Read exact UTF-8 bytes from stdin. Recommended for multiline, clipboard, hyphen-leading, process-list-sensitive, or otherwise sensitive text. |
@@ -145,11 +153,11 @@ The accepted text is 1 through 65,536 UTF-8 bytes, inclusive. AC preserves accep
 
 Only these routes are authorized:
 
-- A live identity-verified workgroup orchestrator can target one verified non-orchestrator member in the same exact project and workgroup.
-- A live local Root Agent can target one verified workgroup orchestrator.
+- A live identity-verified room orchestrator can target one verified non-orchestrator member in the same exact project and room.
+- A live local Root Agent can target one verified room orchestrator.
 - A container orchestrator uses the dedicated API helper and a live automatically bound container credential.
 
-Workers, origin orchestrators, orchestrator-to-orchestrator requests, cross-workgroup or cross-project requests, Root-to-worker requests, master credentials without a live session, manual API clients, and filesystem requests from container sessions are rejected before target lifecycle mutation or PTY input. `--to` must be the exact canonical name returned by `list-peers-lean`.
+Workers, origin orchestrators, orchestrator-to-orchestrator requests, cross-room or cross-project requests, Root-to-worker requests, master credentials without a live session, manual API clients, and filesystem requests from container sessions are rejected before target lifecycle mutation or PTY input. `--to` must be the exact canonical name returned by `list-peers-lean`.
 
 Target lifecycle is deterministic. One idle supported persistent session is selected. A busy or unsupported live session rejects with zero writes. An exited persistent session may be destroyed and respawned with its validated configured profile; a missing target may be spawned once. A newly spawned session must remain continuously ready before submission. No busy bypass, fan-out, broadcast, or deferred text exists.
 
@@ -194,7 +202,7 @@ agentscommander self-handoff-and-switch --list-coding-agents
 | `--list-coding-agents` | No | Print valid coding-agent ids and profile letters, then exit. Requires neither token nor root. |
 | `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
 
-Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is WG replicas only (`__agent_*` under a `wg-*` workgroup); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
+Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is Room replicas only (`__agent_*` under a `room-*` room); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
 
 ---
 
@@ -257,7 +265,7 @@ agentscommander list-peers-lean \
   --snapshot-targets
 ```
 
-This capability view returns every verified workgroup Orchestrator and member in active registered projects for canonical Root, or same-workgroup non-Orchestrator members for a verified Orchestrator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
+This capability view returns every verified room Orchestrator and member in active registered projects for canonical Root, or same-room non-Orchestrator members for a verified Orchestrator. Workers and origin agents receive `[]`. It reads no session index, reports fixed identity-only runtime fields, creates no peer directories, and grants no authority. `reachable` still means ordinary-message reachability. `--peer` applies its existing exact-FQN filter. Full `list-peers` does not accept `--snapshot-targets`.
 
 ---
 
@@ -270,13 +278,13 @@ Read one authorized live backend terminal viewport as versioned JSON or a determ
 agentscommander terminal-snapshot \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 
 # PNG
 agentscommander terminal-snapshot \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --to "project:wg-1-team/member" \
+  --to "project:room-1-team/member" \
   --format png \
   --output "/absolute/new/snapshot.png" \
   --timeout 15
@@ -301,16 +309,16 @@ terminal_snapshot_error code=<code> detail=<fixed-detail>
 
 Standard `--help` and pre-dispatch Clap syntax failures keep normal Clap output and exit behavior. If an OS failure occurs after a stdout write begins, safe partial ASCII bytes cannot be retracted; the command reports `output_failed` without attempting a second document. See [Terminal snapshots](../features/terminal-snapshots.md#stable-errors) for every stable code, exact detail, and recovery step.
 
-Authorized host routes are canonical live Root to verified workgroup Orchestrators or members in active registered projects, and a live workgroup Orchestrator to a verified non-Orchestrator member in the same exact project and workgroup. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
+Authorized host routes are canonical live Root to verified room Orchestrators or members in active registered projects, and a live room Orchestrator to a verified non-Orchestrator member in the same exact project and room. Root is host-only. The feature must also be enabled by `terminalSnapshotsEnabled`.
 
 A container Orchestrator uses the API helper instead of the host mailbox:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member" \
+  --to "project:room-1-team/member" \
   --format png \
   --output "/workspace/evidence/snapshot.png" \
   --timeout 15
@@ -341,12 +349,12 @@ Each entry contains: `id`, `name`, `workingDirectory`, `status` (`"active" | "ru
 
 ---
 
-## `workgroup list`
+## `room list`
 
-List workgroups in a registered project.
+List rooms in a registered project.
 
 ```bash
-agentscommander workgroup list --project MyProject
+agentscommander room list --project MyProject
 ```
 
 | Flag | Required | Description |
@@ -359,7 +367,7 @@ Output is JSON. Each item includes `name`, `team`, `path`, `hasMessaging`, `hasT
 
 ## `team create`
 
-Create a team configuration in a registered project from existing agent matrices. Create the orchestrator and member agents first, then create the team, then activate it with `workgroup add`.
+Create a team configuration in a registered project from existing agent matrices. Create the orchestrator and member agents first, then create the team, then activate it with `room add`.
 
 ```bash
 agentscommander team create \
@@ -369,7 +377,7 @@ agentscommander team create \
   --agent dev-rust \
   --agent dev-ts
 
-agentscommander workgroup add \
+agentscommander room add \
   --project MyProject \
   --team "Dev Team" \
   --title "Add OAuth2 login flow"
@@ -381,9 +389,9 @@ agentscommander workgroup add \
 | `--team` | Yes | Team name. Sanitized for `_team_<name>`. |
 | `--coordinator` | Yes | Existing agent matrix name or `_agent_<name>` reference. Automatically included in the roster. |
 | `--agent` | No | Existing agent matrix name or `_agent_<name>` reference. Repeat for multiple members. |
-| `--repo` | No | Repo URL assigned to the full final roster when workgroups are created. Repeat for multiple repos. |
-| `--repo-agents` | No | `URL=agent-a,agent-b`; defines repo access for only the listed team agents when workgroups are created. |
-| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; defines repo access for the final team roster except listed agents when workgroups are created. |
+| `--repo` | No | Repo URL assigned to the full final roster when rooms are created. Repeat for multiple repos. |
+| `--repo-agents` | No | `URL=agent-a,agent-b`; defines repo access for only the listed team agents when rooms are created. |
+| `--repo-exclude-agents` | No | `URL=agent-a,agent-b`; defines repo access for the final team roster except listed agents when rooms are created. |
 
 Output is JSON:
 
@@ -401,12 +409,12 @@ Repo include and exclude forms are mutually exclusive for the same URL. `team cr
 
 ---
 
-## `workgroup add`
+## `room add`
 
-Create an auto-numbered workgroup for an existing team.
+Create an auto-numbered room for an existing team.
 
 ```bash
-agentscommander workgroup add \
+agentscommander room add \
   --project MyProject \
   --team "Dev Team" \
   --title "Add OAuth2 login flow"
@@ -415,93 +423,93 @@ agentscommander workgroup add \
 | Flag | Required | Description |
 |---|---|---|
 | `--project` | Yes | Registered project name. |
-| `--team` | Yes | Team name. Sanitized for `_team_<name>` and `wg-<N>-<name>`. |
+| `--team` | Yes | Team name. Sanitized for `_team_<name>` and `room-<N>-<name>`. |
 | `--title` | Yes | Initial `TASK.md` title. |
 
-Workgroup numbers are allocated globally per project as the lowest free positive integer, across all teams. Deleted numbers are reused. There is no `--name` override.
+Room numbers are allocated globally per project as the lowest free positive integer, across all teams. Deleted numbers are reused. There is no `--name` override.
 
-`workgroup add` activates an existing team and refuses to update existing team configuration. Create the agents first, define the team with `team create`, then activate the workgroup with project, team, and title.
+`room add` activates an existing team and refuses to update existing team configuration. Create the agents first, define the team with `team create`, then activate the room with project, team, and title.
 
-Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back workgroup creation.
+Output is JSON `{ path, cloneErrors }`. Clone failures are reported in `cloneErrors` and do not roll back room creation.
 
 ---
 
-## `workgroup remove`
+## `room remove`
 
-Delete a workgroup directory.
+Delete a room directory.
 
 ```bash
-agentscommander workgroup remove --project MyProject --workgroup wg-1-dev-team
+agentscommander room remove --project MyProject --room room-1-dev-team
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--project` | Yes | Registered project name. |
-| `--workgroup` | Yes | Existing `wg-<N>-<team>` directory name. |
+| `--room` | Yes | Existing `room-<N>-<team>` directory name. |
 | `--force-dirty` | No | Bypass dirty repo checks only. Live session checks still apply. |
 
-Removal refuses to continue when any live session exists under the workgroup. Without `--force-dirty`, it also refuses dirty or unpushed repos under the workgroup.
+Removal refuses to continue when any live session exists under the room. Without `--force-dirty`, it also refuses dirty or unpushed repos under the room.
 
 ---
 
 ## `team list`
 
-List team configuration in a project, optionally scoped to one workgroup.
+List team configuration in a project, optionally scoped to one room.
 
 ```bash
 agentscommander team list --project MyProject
-agentscommander team list --project MyProject --workgroup wg-1-dev-team
+agentscommander team list --project MyProject --room room-1-dev-team
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--project` | Yes | Registered project name. |
-| `--workgroup` | No | Existing workgroup name. When provided, the team is derived from the workgroup suffix. |
+| `--room` | No | Existing room name. When provided, the team is derived from the room suffix. |
 
-Output is JSON. Each item includes `team`, `workgroup`, `agents`, `coordinator`, and `repos`.
+Output is JSON. Each item includes `team`, `room`, `agents`, `coordinator`, and `repos`.
 
 ---
 
 ## `team add-member`
 
-Add an agent to a team config and create its physical replica in a workgroup.
+Add an agent to a team config and create its physical replica in a room.
 
 ```bash
 agentscommander team add-member \
   --project MyProject \
-  --workgroup wg-1-dev-team \
+  --room room-1-dev-team \
   --agent qa
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--project` | Yes | Registered project name. |
-| `--workgroup` | Yes | Existing workgroup name. |
+| `--room` | Yes | Existing room name. |
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
 | `--coordinator` | No | Make the added agent the orchestrator. |
 
-The command writes the team config used by the selected workgroup, creates `wg-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into that workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change. Output is JSON.
+The command writes the team config used by the selected room, creates `room-.../__agent_<name>/`, applies replica settings, and clones missing assigned repos into that room. Other existing rooms for the same team are not updated globally; update or recreate them separately when they need the same roster change. Output is JSON.
 
 ---
 
 ## `team remove-member`
 
-Remove a non-orchestrator agent from a team config and delete its workgroup replica.
+Remove a non-orchestrator agent from a team config and delete its room replica.
 
 ```bash
 agentscommander team remove-member \
   --project MyProject \
-  --workgroup wg-1-dev-team \
+  --room room-1-dev-team \
   --agent qa
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | `--project` | Yes | Registered project name. |
-| `--workgroup` | Yes | Existing workgroup name. |
+| `--room` | Yes | Existing room name. |
 | `--agent` | Yes | Existing agent matrix name or `_agent_<name>` reference. |
 
-The command refuses to remove the current orchestrator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config used by the selected workgroup. Other existing workgroups for the same team are not updated globally; update or recreate them separately when they need the same roster change.
+The command refuses to remove the current orchestrator and refuses live sessions under the target replica. It also removes the agent from repo assignments in the team config used by the selected room. Other existing rooms for the same team are not updated globally; update or recreate them separately when they need the same roster change.
 
 ---
 
@@ -650,7 +658,7 @@ Mint, revoke, and list control-plane API client tokens. Every subcommand require
 ```bash
 agentscommander api-client mint \
   --token "$MASTER_TOKEN" \
-  --root "D:\path\to\wg-8-dev-v5-team\__agent_dev-rust" \
+  --root "D:\path\to\room-8-dev-v5-team\__agent_dev-rust" \
   --scopes send,list-peers-lean \
   --label "CI bot"
 
@@ -700,28 +708,28 @@ Only orchestrators of the target's team can close. The master/root token bypasse
 
 ---
 
-## `purge-wg`
+## `purge-room`
 
-Destroy every session of every peer in the caller's OWN workgroup. Orchestrator-only.
+Destroy every session of every peer in the caller's OWN room. Orchestrator-only.
 
 ```bash
-agentscommander purge-wg \
+agentscommander purge-room \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --wg wg-8-dev-v5-team
+  --room room-8-dev-v5-team
 ```
 
 | Flag | Required | Description |
 |---|---|---|
-| `--token` | Yes | Session token. The caller must be the identity-verified orchestrator of its workgroup; the master/root token does NOT bypass this (a root token has no workgroup). |
+| `--token` | Yes | Session token. The caller must be the identity-verified orchestrator of its room; the master/root token does NOT bypass this (a root token has no room). |
 | `--root` | Yes | Orchestrator's root directory. |
-| `--wg` | No | Safety assertion, not a scope selector: fail unless the resolved workgroup has exactly this name. |
+| `--room` | No | Safety assertion, not a scope selector: fail unless the resolved room has exactly this name. |
 | `--graceful` | No | Inject the exit command and wait per session instead of killing immediately. Warning: it stalls ALL inter-agent messaging daemon-wide for the duration of the purge (the message poller is sequential). |
 | `--timeout` | No | Graceful shutdown timeout in seconds per session. Default 5. |
 | `--dry-run` | No | Evaluate the gate and print the per-peer table. Destroy nothing. |
 | `--quiet-period-ms` | No | Printable-silence a peer must show to be purgeable. Clamped daemon-side to a floor of 2500. Default 3000. |
 
-The caller itself and the Root Agent are never purged; cross-workgroup purge is not supported. If ANY in-scope peer has produced printable output within `--quiet-period-ms`, the command purges NOBODY and exits 3.
+The caller itself and the Root Agent are never purged; cross-room purge is not supported. If ANY in-scope peer has produced printable output within `--quiet-period-ms`, the command purges NOBODY and exits 3.
 
 Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcome unknown, `3` gate rejected (a peer is busy), `4` a destroy failed after the gate passed.
 
@@ -729,7 +737,7 @@ Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcom
 
 ## `task-set-title`
 
-Set the YAML-frontmatter `title:` field of the workgroup `TASK.md`. Orchestrator-only.
+Set the YAML-frontmatter `title:` field of the room `TASK.md`. Orchestrator-only.
 
 ```bash
 agentscommander task-set-title \
@@ -770,7 +778,7 @@ Use Clean to reset a user-owned task before orchestrator title updates resume. O
 
 ## `task-append-body`
 
-Append a paragraph to the body of the workgroup `TASK.md`. Orchestrator-only. Frontmatter is never touched.
+Append a paragraph to the body of the room `TASK.md`. Orchestrator-only. Frontmatter is never touched.
 
 ```bash
 agentscommander task-append-body \
@@ -846,7 +854,7 @@ agentscommander loop create \
   --project MyProject \
   --name "Daily sync" \
   --cron "0 9 * * 1-5" \
-  --workgroup wg-1-dev-team \
+  --room room-1-dev-team \
   --prompt "Check status and ask for blockers."
 
 agentscommander loop update \
@@ -863,7 +871,7 @@ agentscommander loop remove  --project MyProject --loop daily-sync
 |---|---|
 | `list` | Print configured Loops and scheduler state for the project. |
 | `create` | Create `_loop_<id>/config.toml` plus initial scheduler state. |
-| `update` | Change metadata, cron, target workgroup, prompt, or busy policy. Name-only and no-op updates preserve pending state. |
+| `update` | Change metadata, cron, target room, prompt, or busy policy. Name-only and no-op updates preserve pending state. |
 | `enable` / `disable` | Toggle a Loop. Repeating the current state is a no-op for scheduler state. |
 | `remove` | Delete the Loop directory. |
 
@@ -874,7 +882,7 @@ agentscommander loop remove  --project MyProject --loop daily-sync
 | `--id` | create | Optional id. Defaults to a sanitized form of `--name`. |
 | `--name` | create, update | Human-readable Loop name. |
 | `--cron` | create, update | Five-field cron expression: minute hour day-of-month month day-of-week. |
-| `--workgroup` | create, update | Target `wg-<N>-<team>` directory whose orchestrator receives the prompt. |
+| `--room` | create, update | Target `room-<N>-<team>` directory whose orchestrator receives the prompt. |
 | `--prompt` / `--prompt-file` | create, update | Prompt text or UTF-8 prompt file. Use exactly one when setting a prompt. |
 | `--busy-coordinator` | create, update | `wait-until-idle`, `force-inject`, or `skip`. |
 | `--force-inject-when-busy` | create, update | Backward-compatible shortcut for `--busy-coordinator force-inject`. |
@@ -982,4 +990,4 @@ If you discover a regression, file an issue with the exact command, the output, 
 - [Inter-agent messaging](../agents/inter-agent-messaging.md)
 - [Terminal snapshots](../features/terminal-snapshots.md)
 - [Window capture](../features/window-capture.md)
-- [Teams and workgroups](../agents/teams-and-workgroups.md)
+- [Teams and rooms](../agents/teams-and-workgroups.md)

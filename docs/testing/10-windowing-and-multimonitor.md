@@ -2,13 +2,13 @@
 
 These cases validate deterministic window placement, multi-monitor capture, modal/menu visibility, detached terminal placement, restart geometry, and capture fallback conventions on Windows.
 
-Use clearly disposable test projects, workgroups, sessions, detached windows, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
+Use clearly disposable test projects, rooms, sessions, detached windows, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. WIN-001 captures target-window identity explicitly; later cases inherit it.
 
 Current deterministic mode: use `agentscommander_testeable.exe` with explicit placement and `window-info` verification. Run `agentscommander_testeable.exe test-reset --confirm-testeable` before cases that require clean disposable state, and only when the testable GUI is not active.
 
-Use only `agentscommander_testeable.exe` placement flags or `AC_TEST_WINDOW_PLACEMENT` for deterministic positioning. Do not use the standalone wg-1 executable baseline from the already-executed project lifecycle suite.
+Use only `agentscommander_testeable.exe` placement flags or `AC_TEST_WINDOW_PLACEMENT` for deterministic positioning. Do not use the standalone room-1 executable baseline from the already-executed project lifecycle suite.
 
 Required evidence categories for this suite: `window-info` JSON, target-window screenshots, virtual desktop or HWND fallback captures when needed, modal/menu captures, detached terminal window state, restart geometry comparisons, and notes identifying the capture method.
 

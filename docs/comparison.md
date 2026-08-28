@@ -35,7 +35,7 @@ LangGraph is a Python DSL for stateful agent workflows. You write the DAG; LangG
 AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational framework. Agents are Python objects that exchange messages.
 
 **Where AC wins**:
-- Heterogeneous coding agents in the same workgroup. Claude Code on architecture, Codex on dev, Antigravity on review — without writing a single adapter.
+- Heterogeneous coding agents in the same room. Claude Code on architecture, Codex on dev, Antigravity on review — without writing a single adapter.
 - Visible, observable, no Python runtime.
 
 **Where AutoGen wins**:

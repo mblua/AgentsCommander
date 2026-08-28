@@ -2,7 +2,7 @@
 
 These cases validate terminal creation, PTY output, keyboard input, terminal resize/reflow, session switching, detached terminal windows, terminal cleanup, and authorized JSON/PNG backend viewport snapshots that do not mutate the target.
 
-Use clearly disposable test projects, workgroups, agents, sessions, terminal commands, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
+Use clearly disposable test projects, rooms, agents, sessions, terminal commands, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. TRM-001 captures target-window identity explicitly; later cases inherit it.
 
@@ -56,7 +56,7 @@ Verify that a terminal pane or terminal window is visible, readable, and associa
 Preconditions:
 
 - `agentscommander_testeable.exe` is launched and verified with `window-info`.
-- A disposable project/workgroup and harmless local shell/no-op session are available.
+- A disposable project/room and harmless local shell/no-op session are available.
 - The tester has not selected a live model-backed session.
 
 Steps:
@@ -308,7 +308,7 @@ Verify that an authorized host requester receives one complete version-1 JSON mo
 Preconditions:
 
 - A disposable local-process or protocol-fake container target has one eligible persistent live session.
-- The requester is either a verified same-workgroup Orchestrator or canonical host Root with a live session UUID-v4 token.
+- The requester is either a verified same-room Orchestrator or canonical host Root with a live session UUID-v4 token.
 - `terminalSnapshotsEnabled` is explicitly enabled for this disposable run.
 - The target viewport contains only harmless deterministic markers and no account-backed or personal content.
 - The evidence directory is private and approved for terminal content.

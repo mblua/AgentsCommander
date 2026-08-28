@@ -20,7 +20,7 @@ Planned scope:
 
 - Stronger command classification.
 - Task and issue aware authorization.
-- Per-agent and per-workgroup policy configuration.
+- Per-agent and per-room policy configuration.
 - Clearer escalation paths when a command needs human approval.
 
 ## Phase 3: Command Optimization

@@ -121,7 +121,7 @@ These are the same tokens documented in [Agent Matrix conventions, section 5](..
 A successful seed logs one `info`-level line. With `logLevel` at `info` (the default) or lower, look in `<config-dir>/app.log` for a line like:
 
 ```text
-[config-seed] seeded 'C:\tools\.ac\wg-1-team\__agent_claude\.claude' into replica from WorkspaceBase source 'C:\tools\.ac\default.claude'
+[config-seed] seeded 'C:\tools\.ac\room-1-team\__agent_claude\.claude' into replica from WorkspaceBase source 'C:\tools\.ac\default.claude'
 ```
 
 The tier in the message (`WorkspaceProfile`, `WorkspaceBase`, `MatrixProfile`, `MatrixBase`, or `CatalogDefault` for the factory default) tells you which source won. If you see no `[config-seed]` line at all, the seed did not run; see [Troubleshooting](#troubleshooting). See [Log filtering](../reference/log-filtering.md#where-logs-go) for where `app.log` lives and how to raise the log level.

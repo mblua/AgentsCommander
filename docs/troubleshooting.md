@@ -96,7 +96,7 @@ Pop the session back in (right-click → **Reattach**) and pop it out again. xte
 
 ### `send: filename contains path separators or traversal`
 
-`--send` takes a **filename only**. Do not pass an absolute path. The CLI resolves the filename against `<workgroup-root>/messaging/`:
+`--send` takes a **filename only**. Do not pass an absolute path. The CLI resolves the filename against `<room-root>/messaging/`:
 
 ```bash
 # bad

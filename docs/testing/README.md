@@ -13,7 +13,7 @@ This directory is the product regression map for acceptance testing. Every user-
 - The app under test should be `agentscommander_testeable.exe` for deterministic GUI regression runs.
 - The testable app uses a disposable config directory next to the binary: `.agentscommander_testeable`.
 - The target window title for the testable app is `AC [TESTEABLE]`.
-- If multiple AgentsCommander windows are open, never assume the active window is the target. Select the window whose title matches the workgroup under test.
+- If multiple AgentsCommander windows are open, never assume the active window is the target. Select the window whose title matches the room under test.
 - For GUI and human-style checks, launch the app at the monitor rectangle designated by the user for visual validation.
 - Current visual-test baseline:
   - Logical display: `\\.\DISPLAY9`
@@ -64,7 +64,7 @@ $env:AC_TEST_WINDOW_PLACEMENT='{"x":-1920,"y":0,"width":1920,"height":1080,"maxi
 .\agentscommander_testeable.exe --app
 ```
 
-Placement flags and `AC_TEST_WINDOW_PLACEMENT` are accepted only by `agentscommander_testeable.exe`. Normal, stage, and workgroup binaries fail closed when they receive test placement input.
+Placement flags and `AC_TEST_WINDOW_PLACEMENT` are accepted only by `agentscommander_testeable.exe`. Normal, stage, and room binaries fail closed when they receive test placement input.
 
 After launch, query the target window from a separate process:
 
@@ -113,7 +113,7 @@ Use a three-letter functional prefix followed by a zero-padded number:
 - `TPL-###`: Agent templates and agency setup.
 - `TRM-###`: Terminal sessions.
 - `MSG-###`: Inter-agent messaging.
-- `WGP-###`: Workgroups and peers.
+- `WGP-###`: Rooms and peers.
 - `SET-###`: Settings and persistence.
 - `WIN-###`: Windowing and multi-monitor behavior.
 - `E2E-###`: Cross-surface user journeys that stitch multiple suites together.
@@ -167,10 +167,10 @@ The 2026-06-13 end-to-end seeding run produced a PARTIAL result, not a baseline 
 Evidence root:
 
 ```text
-C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000
+C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000
 ```
 
-Use that evidence for future targeted reruns of onboarding, project creation, agent creation, team creation, workgroup activation, and restart persistence. Do not treat team/workgroup coverage as passed from that run.
+Use that evidence for future targeted reruns of onboarding, project creation, agent creation, team creation, room activation, and restart persistence. Do not treat team/room coverage as passed from that run.
 
 ## Execution Order
 

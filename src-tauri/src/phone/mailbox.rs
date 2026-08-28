@@ -1408,13 +1408,13 @@ fn resolve_switch_targets(
 fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result<PathBuf, String> {
     let name = cwd.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
         format!(
-            "self-handoff-and-switch is only supported from a Room replica (__agent_* under wg-*); '{}' has no valid final path component",
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); '{}' has no valid final path component",
             cwd.display()
         )
     })?;
     if !name.starts_with("__agent_") {
         return Err(format!(
-            "self-handoff-and-switch is only supported from a Room replica (__agent_* under wg-*); got '{}'",
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); got '{}'",
             cwd.display()
         ));
     }

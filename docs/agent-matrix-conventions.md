@@ -1,6 +1,6 @@
-# Role: AC Builder — Creating Agents, Teams & Workgroups in AgentsCommander
+# Role: AC Builder — Creating Agents, Teams & Rooms in AgentsCommander
 
-This document is the definitive guide for any AI agent tasked with creating or modifying the agent/team/workgroup structure in an AgentsCommander project. It captures the conventions, file formats, and pitfalls learned from building real multi-agent teams.
+This document is the definitive guide for any AI agent tasked with creating or modifying the agent/team/room structure in an AgentsCommander project. It captures the conventions, file formats, and pitfalls learned from building real multi-agent teams.
 
 ---
 
@@ -10,14 +10,14 @@ This document is the definitive guide for any AI agent tasked with creating or m
 |---|---|---|---|
 | **Agent** | `_agent_` | `.ac/_agent_NAME/` | A role definition: who this agent is, what it does, what it must never do |
 | **Team** | `_team_` | `.ac/_team_NAME/` | A grouping of agents that can message each other via `list-peers` / `send` |
-| **Workgroup** | `wg-` | `.ac/wg-N-TEAMNAME/` | An isolated working environment with cloned agents + cloned repo for parallel work |
-| **Workgroup Agent** | `__agent_` | `.ac/wg-N-TEAMNAME/__agent_NAME/` | A replica of a project-level agent inside a workgroup (double underscore) |
+| **Room** | `room-` (legacy: `wg-`) | `.ac/room-N-TEAMNAME/` | An isolated working environment with cloned agents + cloned repo for parallel work |
+| **Room Agent** | `__agent_` | `.ac/room-N-TEAMNAME/__agent_NAME/` | A replica of a project-level agent inside a room (double underscore) |
 
 `.ac/` is the only supported Project AC Root directory.
 
-The team is the logical capability and organization: it defines who can work together, who coordinates, and which repos are available. The workgroup is an operational runtime replica instance of a team for a specific task: it contains replica agents and `repo-*` working repositories.
+The team is the logical capability and organization: it defines who can work together, who coordinates, and which repos are available. The room is an operational runtime replica instance of a team for a specific task: it contains replica agents and `repo-*` working repositories.
 
-**Hierarchy:** Project → Agents + Teams → Workgroups (with replicated agents + repo clones)
+**Hierarchy:** Project → Agents + Teams → Rooms (with replicated agents + repo clones)
 
 ---
 
@@ -31,7 +31,7 @@ Project `.ac` creation seeds the editable global and orchestrator context templa
 └── Context.coordinator.md
 ```
 
-`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md` and `AGENTS.md` for **Agent Matrix agents and workgroup replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and workgroup context only. `.ac/Context.coordinator.md` is appended only for orchestrator sessions. The separator and `# Orchestrator Context` heading are owned by AgentsCommander, so the orchestrator file should contain only the body text.
+`.ac/Context.AgentsCommander.md` is **project-scoped**, and it is the base context used when AgentsCommander materializes managed context files such as `CLAUDE.md` and `AGENTS.md` for **Agent Matrix agents and room replicas only**. The `$AGENTSCOMMANDER_CONTEXT` token that resolves to it is likewise valid for matrix and room context only. `.ac/Context.coordinator.md` is appended only for orchestrator sessions. The separator and `# Orchestrator Context` heading are owned by AgentsCommander, so the orchestrator file should contain only the body text.
 
 ### The Root Agent does not use the global template (#979)
 
@@ -57,7 +57,7 @@ A `Context.AgentsCommander.md` left in the app config directory by an older buil
 
 Existing projects with a legacy `.ac/Context.agent.md` are migrated on demand to `.ac/Context.AgentsCommander.md` when the new file does not already exist. Existing projects that do not have these files keep using the built-in defaults. If the global template file exists and is empty, AgentsCommander still injects the mandatory safety and runtime blocks listed below. If a template exists but cannot be read, is not UTF-8, or is not a regular file, session context generation fails with a path-specific error instead of silently discarding the customization.
 
-The global template must preserve these mandatory runtime tokens for matrix agents and workgroup replicas. If any are missing, AgentsCommander appends them during rendering so critical safety and runtime data is not dropped. (This append fallback governs matrix and workgroup rendering only; the Root Agent's blocks come from the code-owned prologue described above and cannot be dropped at all.)
+The global template must preserve these mandatory runtime tokens for matrix agents and room replicas. If any are missing, AgentsCommander appends them during rendering so critical safety and runtime data is not dropped. (This append fallback governs matrix and room rendering only; the Root Agent's blocks come from the code-owned prologue described above and cannot be dropped at all.)
 
 | Token | Meaning |
 |---|---|
@@ -91,7 +91,7 @@ Removing a token is allowed if you intentionally do not want that dynamic sectio
 
 ## 1. Creating a Project-Level Agent (`_agent_*`)
 
-Project-level agents appear in the **AGENTS** section of the AgentsCommander sidebar. They are the canonical definitions — workgroup agents are replicas of these.
+Project-level agents appear in the **AGENTS** section of the AgentsCommander sidebar. They are the canonical definitions — room agents are replicas of these.
 
 ### Folder Structure
 
@@ -234,7 +234,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 ### Critical Rules for Team Config
 
-1. **Use portable agent references.** The `agents` array and `coordinator` must be `_agent_<name>` or bare `<name>` references to matrices inside the SAME project's `.ac/` directory. **Absolute filesystem paths are rejected** (`team configs must use portable refs like '_agent_name' or 'name', not filesystem paths`), so team configs stay portable across machines and workgroup copies.
+1. **Use portable agent references.** The `agents` array and `coordinator` must be `_agent_<name>` or bare `<name>` references to matrices inside the SAME project's `.ac/` directory. **Absolute filesystem paths are rejected** (`team configs must use portable refs like '_agent_name' or 'name', not filesystem paths`), so team configs stay portable across machines and room copies.
 
 2. **Agents must exist.** Every reference in the `agents` array must resolve to an existing `_agent_<name>` matrix folder with a `Role.md`. If the folder doesn't exist, the agent won't appear.
 
@@ -246,15 +246,15 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 ---
 
-## 3. Workgroup Structure (`wg-*`)
+## 3. Room Structure (`room-*`)
 
-Workgroups are isolated working environments created when a team needs to work on a task in parallel. They contain **replicas** of agents (double underscore `__agent_*`) and **clones** of repositories (`repo-*`).
+Rooms are isolated working environments created when a team needs to work on a task in parallel. They contain **replicas** of agents (double underscore `__agent_*`) and **clones** of repositories (`repo-*`).
 
 ### Folder Structure
 
 ```
-.ac/wg-N-TEAMNAME/
-├── TASK.md                    # Objective, scope, and deliverables for this workgroup
+.ac/room-N-TEAMNAME/
+├── TASK.md                    # Objective, scope, and deliverables for this room
 ├── __agent_NAME/               # Replica of _agent_NAME (double underscore)
 │   ├── config.json             # Points to parent agent's identity + local repo
 │   ├── Role.md                 # Optional override — if absent, uses parent's Role.md via config
@@ -266,11 +266,11 @@ Workgroups are isolated working environments created when a team needs to work o
 │   └── ...
 └── repo-REPONAME/              # Shallow clone of the team's repo
     ├── .git/
-    ├── _plans/                 # Plans created during this workgroup's work
+    ├── _plans/                 # Plans created during this room's work
     └── (repository contents)
 ```
 
-### Workgroup Agent config.json
+### Room Agent config.json
 
 ```json
 {
@@ -287,18 +287,18 @@ Workgroups are isolated working environments created when a team needs to work o
 
 | Field | Description |
 |---|---|
-| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and workgroup context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{AGENT_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
-| `identity` | Path to the parent agent folder. This is the canonical identity — the workgroup agent is a replica of this. |
-| `repos` | Relative paths to the repo clones inside this workgroup. |
+| `context` | Array of context sources. `$AGENTSCOMMANDER_CONTEXT` is the AC-injected global template, and it is valid **only for Agent Matrix and room context**; the Root Agent ignores it (see #979 above) and any occurrence is stripped from the Root `config.json` during provisioning. The Role.md entry defines this agent's personality. `$REPOS_WORKSPACE_INFO` is deprecated; repo context is rendered through `{{AGENT_REPOS}}` inside `$AGENTSCOMMANDER_CONTEXT`. |
+| `identity` | Path to the parent agent folder. This is the canonical identity — the room agent is a replica of this. |
+| `repos` | Relative paths to the repo clones inside this room. |
 
 ### Key Conventions
 
-1. **Naming:** `wg-N-TEAMNAME` where N is sequential (1, 2, 3...) and TEAMNAME matches the team.
-2. **Double underscore:** Workgroup agents use `__agent_` (two underscores) to distinguish from project-level `_agent_` (one underscore).
-3. **Repo prefix:** Cloned repos inside workgroups use `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical — the golden rule allows write access only to `repo-*` folders.
-4. **Context paths:** Use relative paths (`../../_agent_NAME/Role.md`) so the workgroup is portable.
+1. **Naming:** `room-N-TEAMNAME` where N is sequential (1, 2, 3...) and TEAMNAME matches the team.
+2. **Double underscore:** Room agents use `__agent_` (two underscores) to distinguish from project-level `_agent_` (one underscore).
+3. **Repo prefix:** Cloned repos inside rooms use `repo-` prefix (e.g., `repo-AgentsCommander`). This is critical — the golden rule allows write access only to `repo-*` folders.
+4. **Context paths:** Use relative paths (`../../_agent_NAME/Role.md`) so the room is portable.
 5. **Role.md override:** If you place a Role.md inside the `__agent_*` folder, it overrides the parent's role. To use the parent's role, reference it in `context` instead.
-6. **.gitignore:** The `.ac/.gitignore` MUST exclude `wg-*/` to prevent the parent repo's git operations from corrupting workgroup clones.
+6. **.gitignore:** The `.ac/.gitignore` MUST exclude `room-*/` to prevent the parent repo's git operations from corrupting room clones.
 
 ---
 
@@ -334,21 +334,21 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 Coding-agent command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Three command and env value surfaces are expanded: the effective launch command tokens, the coding agent's own ENVIRONMENT rows (`agents[].envs` in `settings.json`, edited in Settings → Coding Agents), and a profile cell's `env` map. The same three tokens are also substituted inside the **content** of seeded files, under different rules; see [Config seed](features/config-seed.md#token-substitution). Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
 
-The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `wg-*` workgroup, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
+The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `room-*` room, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
 
 | Token | Resolves to | Valid when |
 |---|---|---|
-| `%AC_REPLICA_ROOT%` | The **replica** dir — the launch working directory, canonicalized | A WG replica (`__agent_*` under `wg-*`) **or** the `ac-root-agent` launch root |
-| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `wg-*` dir, an `_agent_*` matrix dir) |
-| `%AC_MATRIX_ROOT%` | The **matrix** dir `<workspace>\_agent_<name>` (the agent's canonical Agent Matrix) | **Only** a WG replica launch |
+| `%AC_REPLICA_ROOT%` | The **replica** dir — the launch working directory, canonicalized | A Room replica (`__agent_*` under `room-*`) **or** the `ac-root-agent` launch root |
+| `%AC_WORKSPACE_ROOT%` | The **`.ac` workspace** root (the nearest `.ac` ancestor of the launch root) | Any launch root **inside** a `.ac` workspace — including non-replica roots (a `repo-*` checkout, a bare `room-*` dir, an `_agent_*` matrix dir) |
+| `%AC_MATRIX_ROOT%` | The **matrix** dir `<workspace>\_agent_<name>` (the agent's canonical Agent Matrix) | **Only** a Room replica launch |
 
 ### Example resolutions
 
-For a WG replica launched at `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_tech-lead`:
+For a Room replica launched at `…\AgentsCommander_ac\.ac\room-6-dev-team\__agent_tech-lead`:
 
 | Token | Expands to |
 |---|---|
-| `%AC_REPLICA_ROOT%` | `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_tech-lead` |
+| `%AC_REPLICA_ROOT%` | `…\AgentsCommander_ac\.ac\room-6-dev-team\__agent_tech-lead` |
 | `%AC_WORKSPACE_ROOT%` | `…\AgentsCommander_ac\.ac` |
 | `%AC_MATRIX_ROOT%` | `…\AgentsCommander_ac\.ac\_agent_tech-lead` |
 
@@ -356,16 +356,16 @@ For a WG replica launched at `…\AgentsCommander_ac\.ac\wg-6-dev-team\__agent_t
 
 The three tokens have **different** validity gates. A value is rejected only when it uses a token that does not apply to the current launch root:
 
-- **WG replica** (`__agent_*` under `wg-*`): all three tokens resolve.
+- **Room replica** (`__agent_*` under `room-*`): all three tokens resolve.
 - **Root agent** (`ac-root-agent`): only `%AC_REPLICA_ROOT%` resolves (to the root-agent dir). `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` are unavailable — the root agent has no `.ac` workspace and no Agent Matrix — and error if used.
-- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\wg-6\repo-X`, a bare `wg-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
+- **Non-replica launch root inside a `.ac` workspace** (a `repo-*` checkout at `…\.ac\room-6\repo-X`, a bare `room-*` dir, or an `_agent_*` matrix dir): **only** `%AC_WORKSPACE_ROOT%` resolves (its `.ac` ancestor exists); `%AC_REPLICA_ROOT%` and `%AC_MATRIX_ROOT%` still error there. This "workspace resolves but replica/matrix error" asymmetry is intentional.
 - **Launch root outside any `.ac`** (a normal repo): none of the tokens resolve.
 
 When a token is used where it does not apply, the launch fails with a specific error:
 
 - `%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root`
 - `%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace`
-- `%AC_MATRIX_ROOT% requires an AC workgroup replica launch root`
+- `%AC_MATRIX_ROOT% requires an AC room replica launch root`
 
 ### Breaking change: `%AC_ROOT%` was removed
 
@@ -399,12 +399,12 @@ For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's
 **MANDATORY** at `.ac/.gitignore`:
 
 ```
-# AgentsCommander: exclude workgroup cloned repos from parent git tracking.
+# AgentsCommander: exclude room cloned repos from parent git tracking.
 # Without this, parent repo operations (checkout, reset) corrupt child clones.
-wg-*/
+room-*/
 ```
 
-This is non-negotiable. Without it, `git checkout` or `git reset` on the parent repo will corrupt the workgroup repo clones (which are independent git repositories nested inside the parent).
+This is non-negotiable. Without it, `git checkout` or `git reset` on the parent repo will corrupt the room repo clones (which are independent git repositories nested inside the parent).
 
 ---
 
@@ -416,7 +416,7 @@ When creating a full agent team for a new project:
 
 ```
 .ac/
-├── .gitignore                    # Must exclude wg-*/
+├── .gitignore                    # Must exclude room-*/
 ├── project-settings.json         # Coding agent config
 ├── _agent_ORCHESTRATOR/
 │   └── Role.md
@@ -448,7 +448,7 @@ All references in `_team_*/config.json` must be `_agent_<name>` (or bare `<name>
 
 ### Step 4 — Verify in AgentsCommander
 
-After setup, all agents should appear in the **AGENTS** section of the sidebar (not just under WORKGROUPS). If an agent appears as `@other-project`, its team config is pointing to an external path.
+After setup, all agents should appear in the **AGENTS** section of the sidebar (not just under ROOMS). If an agent appears as `@other-project`, its team config is pointing to an external path.
 
 ### Step 5 — Test peer discovery
 
@@ -470,7 +470,7 @@ This should return all team members. If empty, the team config is misconfigured 
 **Cause:** The calling agent isn't listed in any `_team_*/config.json` `agents` array, OR the team config paths don't match the agent's actual root path.
 **Fix:** Verify the exact absolute path of the agent folder matches what's in the team config. Path mismatches (even trailing slashes or case differences on Windows) can cause failures.
 
-### Mistake: Workgroup agents load wrong Role.md
+### Mistake: Room agents load wrong Role.md
 **Cause:** The `context` array in `__agent_*/config.json` still points to a generic role from another project.
 **Fix:** Update the context path to reference the local project's `_agent_*/Role.md`:
 ```json
@@ -480,17 +480,17 @@ This should return all team members. If empty, the team config is misconfigured 
 ]
 ```
 
-### Mistake: Only creating agents in the workgroup (double underscore)
-**Cause:** Creating `__agent_*` folders inside `wg-*/` but not `_agent_*` at the `.ac/` level.
-**Fix:** Always create `_agent_*` (single underscore) at `.ac/` first. These are the canonical definitions. Workgroup agents are replicas that reference them.
+### Mistake: Only creating agents in the room (double underscore)
+**Cause:** Creating `__agent_*` folders inside `room-*/` but not `_agent_*` at the `.ac/` level.
+**Fix:** Always create `_agent_*` (single underscore) at `.ac/` first. These are the canonical definitions. Room agents are replicas that reference them.
 
 ### Mistake: Agent folder has no Role.md
 **Cause:** Creating the folder manually without the role file (or relying on an older `create-agent` behavior that wrote only `CLAUDE.md`).
 **Fix:** Always create `Role.md` with proper frontmatter. This is the agent's identity. The current `create-agent` CLI creates the full matrix layout including `Role.md`.
 
-### Mistake: Git operations corrupt workgroup repos
-**Cause:** Missing `.gitignore` at `.ac/` level that excludes `wg-*/`.
-**Fix:** Add `.gitignore` with `wg-*/` before creating any workgroups.
+### Mistake: Git operations corrupt room repos
+**Cause:** Missing `.gitignore` at `.ac/` level that excludes `room-*/`.
+**Fix:** Add `.gitignore` with `room-*/` before creating any rooms.
 
 ---
 
@@ -545,7 +545,7 @@ Returns JSON array of team peers with name, status, role, teams, reachability.
 
 ### Send a message
 
-Messaging is file-based. Write your message to `<workgroup-root>/messaging/YYYYMMDD-HHMMSS-<wgN>-<from>-to-<wgN>-<to>-<slug>.md`, then:
+Messaging is file-based. Write your message to `<room-root>/messaging/YYYYMMDD-HHMMSS-<roomN>-<from>-to-<roomN>-<to>-<slug>.md`, then:
 
 ```bash
 "<BINARY>" send --token <TOKEN> --root "<AGENT_ROOT>" --to "<peer_name>" --send <filename> --mode wake
@@ -559,7 +559,7 @@ The peer name comes from `list-peers` output. Use `--mode wake` for fire-and-for
 
 Every agent starts a fresh session with an empty `memory/`. AC does that for you: when it spawns a session for an agent, it rotates that agent's `memory/` directory in the **origin Agent Matrix** to `memory_YYYYMMDD_hhmmss/` and recreates an empty `memory/` next to it. The timestamp is local time.
 
-Rotation always happens in the origin Agent Matrix, never in a workgroup replica. If you launch the session from a replica (`wg-*/__agent_<name>/`), AC reads the replica's own configuration to find the matrix it came from and rotates there. If that lookup lands on anything that is not a canonical Agent Matrix directory, AC rotates nothing and the session still launches.
+Rotation always happens in the origin Agent Matrix, never in a room replica. If you launch the session from a replica (`room-*/__agent_<name>/`), AC reads the replica's own configuration to find the matrix it came from and rotates there. If that lookup lands on anything that is not a canonical Agent Matrix directory, AC rotates nothing and the session still launches.
 
 ### What happens in each case
 

@@ -2,6 +2,8 @@
 
 For developers reading the docs for the first time. Thirteen terms. Once these click, the rest of the docs make sense.
 
+One term changed name: a **Room** is what earlier releases called a Workgroup. AgentsCommander now creates `room-<N>-<team>` directories, every existing `wg-*` directory keeps its name and stays fully supported, and the CLI still accepts `workgroup`, `purge-wg`, `--wg` and `--workgroup` as deprecated aliases of the canonical `room`, `purge-room` and `--room`. They will be removed in a later release.
+
 ## Agent
 
 A directory with a role-prompt file at its root: `CLAUDE.md` or `AGENTS.md` depending on the coding agent. The directory IS the agent's identity. Everything inside is the agent's working context.
@@ -42,22 +44,22 @@ An orchestrator agent plus one or more worker agents working toward a shared goa
 
 The **orchestrator** is the only member that can:
 - send messages to any team member (members can only send to the orchestrator and to peers they share a team with),
-- edit the workgroup `TASK.md` brief through the CLI,
+- edit the room `TASK.md` brief through the CLI,
 - close other members' sessions.
 
-## Workgroup
+## Room
 
-A workgroup is a Team **in action** on a specific task. When the orchestrator decides "we are working on task X," AC creates `.ac/wg-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
+A room is a Team **in action** on a specific task. When the orchestrator decides "we are working on task X," AC creates `.ac/room-<N>-<team>/` and replicates the team's agent directories into it as **replicas** (`__agent_<name>/`). The replicas are isolated working copies — every replica has its own scratch space, inbox, and outbox.
 
-You can run multiple workgroups for the same team in parallel.
+You can run multiple rooms for the same team in parallel.
 
 ## Non-stop mode
 
-A per-project group of workgroups AC watches for you. While the group has at least one member and at least one alert measure turned on, AC compares how many of its workgroups are working against how many there are; a shortfall that lasts longer than the group's tolerance raises one alert. The default name of that group is `Alert me!`. See [Non-stop mode](features/non-stop-mode.md).
+A per-project group of rooms AC watches for you. While the group has at least one member and at least one alert measure turned on, AC compares how many of its rooms are working against how many there are; a shortfall that lasts longer than the group's tolerance raises one alert. The default name of that group is `Alert me!`. See [Non-stop mode](features/non-stop-mode.md).
 
 ## Project Loop
 
-A scheduled prompt. A Loop belongs to one project, targets one workgroup, and carries a cron expression and the text to send. When it comes due, AC delivers that text to the workgroup's orchestrator, waking or respawning the session if it is not running. See [Project Loops](features/project-loops.md).
+A scheduled prompt. A Loop belongs to one project, targets one room, and carries a cron expression and the text to send. When it comes due, AC delivers that text to the room's orchestrator, waking or respawning the session if it is not running. See [Project Loops](features/project-loops.md).
 
 ## Watcher
 
@@ -69,16 +71,16 @@ A separate window holding one Mermaid file: the source on one side, the rendered
 
 ## Brief
 
-The plain-language description of the workgroup's goal. Lives at `.ac/wg-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
+The plain-language description of the room's goal. Lives at `.ac/room-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
 
 The orchestrator is the only agent that should be writing to the brief directly. Workers reference it and update their own outboxes.
 
 ## Messaging
 
-Inter-agent communication is **file-based**. Every message is a markdown file at `.ac/wg-<N>-<team>/messaging/` with a UTC-timestamped filename:
+Inter-agent communication is **file-based**. Every message is a markdown file at `.ac/room-<N>-<team>/messaging/` with a UTC-timestamped filename:
 
 ```
-YYYYMMDD-HHMMSS-wg<N>-<from>-to-wg<N>-<to>-<slug>.md
+YYYYMMDD-HHMMSS-room<N>-<from>-to-room<N>-<to>-<slug>.md
 ```
 
 The sender writes the file, then calls `agentscommander send --to <peer> --send <filename> --mode wake`. The CLI injects a short notification into the recipient's PTY; the recipient reads the file via filesystem. Payload size is unbounded — PTY truncation does not apply.
@@ -95,4 +97,4 @@ The Agency does not run anything — it is a catalog of well-written role prompt
 
 ---
 
-Next: [Teams and workgroups](agents/teams-and-workgroups.md) to see how these pieces compose into real work.
+Next: [Teams and rooms](agents/teams-and-workgroups.md) to see how these pieces compose into real work.

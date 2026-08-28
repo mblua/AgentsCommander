@@ -1,6 +1,6 @@
 # Screenshot capture
 
-In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the workgroup replica that owns the session you are working with, with the saved path already on your clipboard.
+In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the saved path already on your clipboard.
 
 Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture is Windows-only: other targets compile a stub that reports the feature as unsupported and never registers the hotkey.
 
@@ -10,7 +10,7 @@ You need:
 
 - AgentsCommander running on Windows;
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
-- that session's working directory inside a workgroup replica (an `__agent_*` directory), because the replica root is the destination.
+- that session's working directory inside a room replica (an `__agent_*` directory), because the replica root is the destination.
 
 A screenshot records whatever is on your monitors, including passwords, tokens, source code, and personal data. AgentsCommander saves the exact cropped pixels with no redaction, and it copies the file path to your clipboard.
 
@@ -35,7 +35,7 @@ Two behaviors are deliberate and are not failures:
 AgentsCommander walks up from the active session's working directory to its `__agent_*` replica root and writes the file directly in that root:
 
 ```text
-<workgroup-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+<room-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
 ```
 
 The timestamp is local time. The last segment is the first 8 hexadecimal characters of the session id, so two sessions capturing in the same second still get distinct names.
@@ -124,7 +124,7 @@ AgentsCommander reports every failure as an error toast carrying the backend mes
 | `No active session is selected in AgentsCommander` | No session is selected, or the selected session is not displayable. | Select a live session and press the hotkey again. |
 | `The active session could not be found` | The selected session disappeared from the session list between the press and the capture. | Select an existing session and retry. |
 | `Cannot resolve the active session directory: <error>` | The session's working directory cannot be canonicalized (it was deleted, renamed, or is unreachable). | Restore the directory, or point the session at a valid working directory. |
-| `The active session is not inside a workgroup replica directory, so there is no place to save the screenshot` | The session's working directory has no `__agent_*` replica root above it, for example an ad-hoc shell outside a workgroup. | Run the capture from a session that lives inside a workgroup replica. |
+| `The active session is not inside a room replica directory, so there is no place to save the screenshot` | The session's working directory has no `__agent_*` replica root above it, for example an ad-hoc shell outside a room. | Run the capture from a session that lives inside a room replica. |
 | `No monitors were found to capture` | The monitor enumeration returned nothing. | Confirm a display is attached and active, then retry. |
 | `saved file escaped the replica root` | The destination resolved outside the replica root between validation and write. | Do not link or redirect the replica root. Retry from a plain directory. |
 

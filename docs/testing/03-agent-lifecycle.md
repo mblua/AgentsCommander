@@ -12,7 +12,7 @@ Date: 2026-06-13
 
 Tester: ac-cli-and-gui-tester
 
-Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
 
 Result summary:
 
