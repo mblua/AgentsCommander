@@ -15,6 +15,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
+import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";
 import {
   defaultGroupsConfig,
   workgroupGroupsStore,
@@ -77,14 +78,14 @@ function projectDiscovery() {
 function liveSessions() {
   return [
     session({
-      id: "coord-a-session",
+      id: SESSION_A,
       name: "wg-1-dev-team/coord-a",
       workingDirectory: coordAPath,
       status: "running",
       isCoordinator: true,
     }),
     session({
-      id: "coord-b-session",
+      id: SESSION_B,
       name: "wg-2-dev-team/coord-b",
       workingDirectory: coordBPath,
       status: "running",
@@ -174,10 +175,10 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
       sessionsStore.setSidebarPointerInside(false);
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordARowTestId, coordBRowTestId]);
@@ -193,9 +194,9 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordARowTestId, coordBRowTestId]);
@@ -205,7 +206,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(menu()).toBeNull();
       expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordBRowTestId, coordARowTestId]);
@@ -220,9 +221,9 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordARowTestId, coordBRowTestId]);
@@ -232,7 +233,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(menu()).toBeNull();
       expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordBRowTestId, coordARowTestId]);
@@ -247,9 +248,9 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordARowTestId, coordBRowTestId]);
@@ -264,7 +265,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(document.querySelector(".modal-overlay")).not.toBeNull();
       expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordBRowTestId, coordARowTestId]);
@@ -279,7 +280,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
       // The replica menu node is removed and the project menu node inserted in
       // the same task; the observer recomputes presence and stays locked.
@@ -294,7 +295,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(labels.some((label) => label.includes("Restart Session"))).toBe(false);
       expect(sessionsStore.sidebarMenuOpen).toBe(true);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordARowTestId, coordBRowTestId]);
@@ -335,7 +336,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
       sessionsStore.setSidebarPointerInside(false); // the menu alone holds the lock
       mouse(menu()!, "mouseleave"); // arms scheduleReplicaCtxMenuClose (250 ms)
@@ -346,7 +347,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(menu()).toBeNull();
       expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordBRowTestId, coordARowTestId]);
@@ -361,7 +362,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
 
     vi.useFakeTimers();
     try {
-      sessionsStore.markActivity("coord-a-session");
+      sessionsStore.markActivity(SESSION_A);
       vi.advanceTimersByTime(1000);
 
       const trigger = document.querySelector<HTMLElement>(
@@ -385,7 +386,7 @@ describe("ProjectPanel sidebar order lock (#1624)", () => {
       expect(menu()).toBeNull();
       expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-      sessionsStore.markActivity("coord-b-session");
+      sessionsStore.markActivity(SESSION_B);
       vi.advanceTimersByTime(1000);
       await Promise.resolve();
       expect(quickOrder()).toEqual([coordBRowTestId, coordARowTestId]);

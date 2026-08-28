@@ -696,6 +696,10 @@ export const sessionsStore = {
     );
   },
 
+  resetActivityForTests() {
+    setState("lastActivityBySessionId", reconcile({}));
+  },
+
   toggleTeamCollapsed(teamId: string) {
     setCollapsedTeams((prev) => ({ ...prev, [teamId]: !prev[teamId] }));
   },

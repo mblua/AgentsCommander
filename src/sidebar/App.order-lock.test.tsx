@@ -13,7 +13,7 @@ import {
   waitFor,
 } from "../shared/testing/ui-harness";
 import { sessionsStore } from "./stores/sessions";
-import { liveSelection } from "../shared/testing/session-selection";
+import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
 
 // #1624 end-to-end: the full SidebarApp keeps the coordinator tile order frozen
 // while a context menu is open even after the pointer leaves the sidebar, and
@@ -68,14 +68,14 @@ function projectDiscovery() {
 function liveSessions() {
   return [
     session({
-      id: "coord-a-session",
+      id: SESSION_A,
       name: "wg-1-dev-team/coord-a",
       workingDirectory: coordAPath,
       status: "running",
       isCoordinator: true,
     }),
     session({
-      id: "coord-b-session",
+      id: SESSION_B,
       name: "wg-2-dev-team/coord-b",
       workingDirectory: coordBPath,
       status: "running",
@@ -97,7 +97,7 @@ function setupTransport(fake: FakeTransport): void {
   fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", liveSessions());
-  fake.resolve("get_active_session", liveSelection("coord-a-session"));
+  fake.resolve("get_active_session", liveSelection(SESSION_A));
   fake.resolve("list_detached_sessions", []);
   fake.resolve("telegram_list_bridges", []);
 }
@@ -151,7 +151,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
 
       vi.useFakeTimers();
       try {
-        sessionsStore.markActivity("coord-a-session");
+        sessionsStore.markActivity(SESSION_A);
         vi.advanceTimersByTime(1000);
         // jsdom has no PointerEvent ctor; Solid binds pointerenter/pointerleave
         // directly, so a plain Event dispatch reaches the handlers.
@@ -162,7 +162,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
         expect(sessionsStore.sidebarPointerInside).toBe(false);
         expect(sessionsStore.sidebarMenuOpen).toBe(true);
 
-        sessionsStore.markActivity("coord-b-session");
+        sessionsStore.markActivity(SESSION_B);
         vi.advanceTimersByTime(1000);
         await Promise.resolve();
         expect(quickOrder(rendered)).toEqual([coordARowTestId, coordBRowTestId]);
@@ -172,7 +172,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
         expect(menu()).toBeNull();
         expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-        sessionsStore.markActivity("coord-b-session");
+        sessionsStore.markActivity(SESSION_B);
         vi.advanceTimersByTime(1000);
         await Promise.resolve();
         expect(quickOrder(rendered)).toEqual([coordBRowTestId, coordARowTestId]);
@@ -202,9 +202,9 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
 
       vi.useFakeTimers();
       try {
-        sessionsStore.markActivity("coord-a-session");
+        sessionsStore.markActivity(SESSION_A);
         vi.advanceTimersByTime(1000);
-        sessionsStore.markActivity("coord-b-session");
+        sessionsStore.markActivity(SESSION_B);
         vi.advanceTimersByTime(1000);
         await Promise.resolve();
         // The pointer never entered the sidebar; the menu alone holds the lock.
@@ -216,7 +216,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
         expect(menu()).toBeNull();
         expect(sessionsStore.sidebarMenuOpen).toBe(false);
 
-        sessionsStore.markActivity("coord-b-session");
+        sessionsStore.markActivity(SESSION_B);
         vi.advanceTimersByTime(1000);
         await Promise.resolve();
         expect(quickOrder(rendered)).toEqual([coordBRowTestId, coordARowTestId]);

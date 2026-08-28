@@ -281,6 +281,11 @@ export function resetUiStoresForTests(): void {
   sessionsStore.setCoordSortByActivity(false);
   sessionsStore.setSidebarPointerInside(false);
   sessionsStore.setSidebarMenuOpen(false);
+  // #1624 - the activity stamps are module-level store state fed by markActivity
+  // (performance.now) and are deliberately out of setSessions' reach, so without
+  // this a test's markActivity stamps leak into the next test in the same file
+  // and the menu-open order snapshot starts from the previous test's newest row.
+  sessionsStore.resetActivityForTests();
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
   projectCollapseStore.resetForTests();
