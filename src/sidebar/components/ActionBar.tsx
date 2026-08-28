@@ -12,7 +12,7 @@ import { homeStore } from "../../main/stores/home";
 import { centralViewStore } from "../../main/stores/centralView";
 import SettingsModal from "./SettingsModal";
 
-const SELECTED_WORKGROUP_VISIBILITY_LABEL = "Always keep selected workgroup visible";
+const SELECTED_WORKGROUP_VISIBILITY_LABEL = "Always keep selected room visible";
 
 type ResourceBadgeState =
   | "disabled"

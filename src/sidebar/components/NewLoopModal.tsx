@@ -168,7 +168,7 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Workgroup Orchestrator</label>
+            <label class="new-agent-label">Room Orchestrator</label>
             <select
               class="entity-select"
               value={selectedWorkgroup()}
@@ -182,7 +182,7 @@ const NewLoopModal: Component<{
               </For>
             </select>
             <Show when={coordinatorOptions().length === 0}>
-              <div class="new-agent-error">A workgroup with a verified orchestrator is required.</div>
+              <div class="new-agent-error">A room with a verified orchestrator is required.</div>
             </Show>
           </div>
 

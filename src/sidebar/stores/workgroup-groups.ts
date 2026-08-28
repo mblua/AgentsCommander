@@ -584,7 +584,7 @@ export const workgroupGroupsStore = {
 
   async addWorkgroupToGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
-      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const message = `Room id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -594,7 +594,7 @@ export const workgroupGroupsStore = {
     if (!group) throw new Error("Group no longer exists.");
     const nextRegex = appendExactGroupToken(group.regex, wgName);
     if (nextRegex === null) {
-      const message = "Fix this group's regex before adding a workgroup.";
+      const message = "Fix this group's regex before adding a room.";
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -609,7 +609,7 @@ export const workgroupGroupsStore = {
 
   async removeWorkgroupFromGroup(projectPath: string, groupId: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
-      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const message = `Room id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -634,7 +634,7 @@ export const workgroupGroupsStore = {
 
   async createGroupForWorkgroup(projectPath: string, name: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
-      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const message = `Room id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -656,7 +656,7 @@ export const workgroupGroupsStore = {
 
   async addWorkgroupToNonStop(projectPath: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
-      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const message = `Room id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -672,7 +672,7 @@ export const workgroupGroupsStore = {
     }
     const nextRegex = appendExactGroupToken(current.regex, wgName);
     if (nextRegex === null) {
-      const message = "Fix the Alert me! regex before adding a workgroup.";
+      const message = "Fix the Alert me! regex before adding a room.";
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);
@@ -682,7 +682,7 @@ export const workgroupGroupsStore = {
 
   async removeWorkgroupFromNonStop(projectPath: string, wgName: string): Promise<void> {
     if (charLength(wgName) > MAX_GROUP_MATCH_ID_LENGTH) {
-      const message = `Workgroup id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
+      const message = `Room id cannot exceed ${MAX_GROUP_MATCH_ID_LENGTH} characters.`;
       const key = keyFor(projectPath);
       setEntries(key, { ...ensureEntry(projectPath), error: message });
       throw new Error(message);

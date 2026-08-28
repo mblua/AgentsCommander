@@ -135,8 +135,8 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
 
       contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Workgroup"));
-      click(findButton("Delete Workgroup"));
+      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
+      click(findButton("Delete Room"));
 
       await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
       click(findButton("Delete"));
@@ -193,8 +193,8 @@ describe("ProjectPanel workgroup delete diagnostics workflow", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("wg-1-dev-team"));
 
       contextMenu(findWorkgroupHeader(rendered.root));
-      await waitFor(() => expect(document.body.textContent).toContain("Delete Workgroup"));
-      click(findButton("Delete Workgroup"));
+      await waitFor(() => expect(document.body.textContent).toContain("Delete Room"));
+      click(findButton("Delete Room"));
 
       await waitFor(() => expect(document.body.textContent).toContain("This action cannot be undone"));
       click(findButton("Delete"));

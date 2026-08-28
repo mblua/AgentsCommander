@@ -75,8 +75,8 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
         Context usage alerts (optional)
       </h3>
       <p id={helpId()} class="team-context-alert-help">
-        Applies to every workgroup of this team. When a member reaches or crosses a configured
-        percentage, AgentsCommander sends that workgroup&apos;s orchestrator an informational notice
+        Applies to every room of this team. When a member reaches or crosses a configured
+        percentage, AgentsCommander sends that room&apos;s orchestrator an informational notice
         naming the member and observed usage. Readings are best-effort and depend on a working
         contextRegex (Context badge pattern) for the coding agent selected for the session. No
         automatic action is taken: no session is cleared, closed, restarted, handed off,

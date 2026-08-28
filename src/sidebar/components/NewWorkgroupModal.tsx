@@ -33,7 +33,7 @@ const NewWorkgroupModal: Component<{
       // keydown event in the close transition stays guarded.
     } catch (e: any) {
       console.error("create_workgroup failed:", e);
-      setError(typeof e === "string" ? e : e.message || "Failed to create workgroup");
+      setError(typeof e === "string" ? e : e.message || "Failed to create room");
       setCreating(false);
     }
   };
@@ -56,7 +56,7 @@ const NewWorkgroupModal: Component<{
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-agent-modal">
         <div class="agent-modal-header">
-          <span class="agent-modal-title">New Workgroup</span>
+          <span class="agent-modal-title">New Room</span>
         </div>
 
         <div class="new-agent-form">
@@ -92,7 +92,7 @@ const NewWorkgroupModal: Component<{
           </div>
 
           <Show when={creating()}>
-            <div class="wizard-loading">Creating workgroup (cloning repos may take a moment)...</div>
+            <div class="wizard-loading">Creating room (cloning repos may take a moment)...</div>
           </Show>
 
           <Show when={error()}>

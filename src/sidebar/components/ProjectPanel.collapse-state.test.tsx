@@ -144,16 +144,16 @@ describe("ProjectPanel collapse state", () => {
       click(headerByName(rendered.root, "wg-2-dev-team"));
       await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "wg-2-dev-team"))).toBe(true));
 
-      click(headerByName(rendered.root, "Workgroups"));
-      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Workgroups"))).toBe(true));
+      click(headerByName(rendered.root, "Rooms"));
+      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Rooms"))).toBe(true));
 
       const reloaded = await projectStore.reloadProjectIfLoaded("c:/project/");
       expect(reloaded).toBe(true);
       await waitFor(() => expect(fake.callsFor("discover_project")).toHaveLength(2));
-      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Workgroups"))).toBe(true));
+      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Rooms"))).toBe(true));
 
-      click(headerByName(rendered.root, "Workgroups"));
-      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Workgroups"))).toBe(false));
+      click(headerByName(rendered.root, "Rooms"));
+      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, "Rooms"))).toBe(false));
 
       await waitFor(() => {
         expect(rendered.root.textContent).toContain("Reloaded task title");
@@ -271,7 +271,7 @@ describe("ProjectPanel collapse state", () => {
       const projectBPanel = projectBHeader.closest(".project-panel");
       const workgroupsHeaderB = Array.from(
         projectBPanel!.querySelectorAll<HTMLElement>(".ac-wg-header--collapsible")
-      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Workgroups");
+      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Rooms");
       if (!workgroupsHeaderB) throw new Error("Workgroups sub-header not found in ProjectB");
       click(workgroupsHeaderB);
       await waitFor(() =>
