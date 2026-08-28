@@ -35,9 +35,10 @@ RUNNING MORE THAN ONE INSTANCE
   sessions, its own ports, and its own single-instance lock. The suffix shows
   as a badge in the title bar.
 
-  Two copies with the SAME file name are the same instance identity even in
-  different folders, so the second one will not open a second window. Rename
-  it if you want both running at once.
+  Two copies with the SAME file name are the same instance identity, even in
+  different folders. Starting the second one shows a message saying so and
+  then closes it, leaving the first instance untouched. Rename it if you want
+  both running at once.
 
 
 REQUIREMENTS

@@ -33,7 +33,7 @@ If you prefer a desktop installer or manual download, get the latest asset for y
 
 | Platform | Asset |
 |---|---|
-| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` or the portable `agentscommander.exe` |
+| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe`, or `agentscommander-X.Y.Z-windows-x86_64-portable.zip` for a no-install copy |
 | Linux | `agentscommander_*_amd64.AppImage` |
 | macOS | `Agents Commander_*.dmg` (Apple Silicon + Intel) |
 
@@ -43,7 +43,7 @@ Windows code signing is planned through SignPath and pending setup. Current Wind
 Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
 ```
 
-Run the installer, or drop the portable `.exe` into any folder and double-click. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). See [Portable instances](features/portable-instances.md) for the rules.
+Run the installer, or unzip the portable download into any folder and double-click `agentscommander.exe`. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). The zip also carries a `PORTABLE.txt` covering updates, second instances, and the WebView2 requirement. See [Portable instances](features/portable-instances.md) for the rules.
 
 ## 2. Open or create an AC project
 

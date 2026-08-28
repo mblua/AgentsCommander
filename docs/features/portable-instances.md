@@ -43,6 +43,8 @@ Unknown suffixes get a deterministic port in the 9880–9899 range based on a ha
 
 That's it. The instance creates its own config directory on first launch, gets a unique mutex (so it does not conflict with other instances), and shows **[MYTEAM]** in the titlebar.
 
+The rename is what makes the copy independent, not the folder you put it in. Two copies that still share a file name share one instance identity, so starting the second one shows a message explaining the collision and pointing at the rename, then exits without disturbing the first. Before #1592 it exited silently, which looked like nothing happening at all.
+
 ## Why you might want this
 
 - **Stage / prod parity.** Run `agentscommander_stage.exe` against your test repos while the canonical `agentscommander.exe` stays focused on shipping work.
