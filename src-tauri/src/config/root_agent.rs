@@ -289,12 +289,12 @@ pub fn is_root_agent_target(target: &str) -> bool {
 
 const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str = "Direct file-based workgroup messaging is not available from the root-agent directory yet: `send --send` currently requires a workgroup replica root. Do not claim that you can autonomously message workgroup peers until a future root messaging feature adds explicit root-aware send instructions.";
 
-const ROOT_COORDINATION_MESSAGING_PARAGRAPH: &str = r#"You may message verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
+const ROOT_COORDINATION_MESSAGING_PARAGRAPH: &str = r#"You may message verified room orchestrator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
 
 Root messaging is file-based:
 
 1. Write the message to `messaging/` inside this `ac-root-agent` directory.
-2. Use a filename shaped like `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md`.
+2. Use a filename shaped like `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md`.
 3. Send it with:
 
 ```text
@@ -712,7 +712,7 @@ You are the AgentsCommander Root Agent, the top-level orchestrator for this Agen
 
 ## Responsibility
 
-Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
+Act as the top-level planning and oversight agent for sessions, rooms, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
 
 ## State
 
@@ -723,21 +723,21 @@ Your own durable state lives in the canonical `ac-root-agent` directory:
 - `skills/`
 - `Role.md`
 
-You are not a workgroup replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
+You are not a room replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
 
 ## Coordination
 
-Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
+Coordinate across rooms at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
 
-## Team and workgroup setup
+## Team and room setup
 
 When asked to set up a new team for automation, use this order:
 
 1. Create any missing agents with `create-agent-matrix`.
 2. Create the team with `team create`, choosing one orchestrator and the worker agents.
-3. Activate a workgroup with `workgroup add` using only `--project`, `--team`, and `--title`.
+3. Activate a room with `room add` using only `--project`, `--team`, and `--title`.
 
-Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+Agents must exist before team creation. Team creation defines membership and repo access; room activation uses the existing team definition.
 
 ## Governance Boundary Audits
 
@@ -2200,9 +2200,9 @@ mod tests {
         assert!(ROOT_ROLE_MD.contains("skills/agency-agents-roles/SKILL.md"));
         assert!(ROOT_ROLE_MD.contains("create-agent-matrix"));
         assert!(ROOT_ROLE_MD.contains("team create"));
-        assert!(ROOT_ROLE_MD.contains("workgroup add"));
+        assert!(ROOT_ROLE_MD.contains("room add"));
         assert!(ROOT_ROLE_MD.contains("Agents must exist before team creation"));
-        assert!(!ROOT_ROLE_MD.contains("workgroup add --coordinator"));
+        assert!(!ROOT_ROLE_MD.contains("room add --coordinator"));
         assert!(ROOT_ROLE_MD.contains("role-skill-boundary-audit"));
         assert!(ROOT_ROLE_MD.contains("`Role.md` files"));
         assert!(ROOT_ROLE_MD.contains("skills"));
@@ -2417,6 +2417,57 @@ mod tests {
         );
     }
 
+    /// #1614 AC7.9 and AC7.10. ONE fixture (the frozen pre-Room-rename bytes)
+    /// drives BOTH root paths, modelled on
+    /// `frozen_v5_root_context_is_recognized_and_migrated_on_both_paths`, whose
+    /// doc comment says a list edited in only one place cannot pass silently.
+    /// The recognizer list and `migrate_root_role_file`'s independent pristine
+    /// list are separate, and D8a wires the snapshot into both.
+    #[test]
+    fn frozen_pre_room_rename_root_context_migrates_on_the_role_path_too() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(root.join("Role.md"), ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
+            .expect("write pristine pre-Room-rename role");
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
+            .expect("write pristine pre-Room-rename template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD,
+            "a pristine pre-Room-rename Role.md must reduce to the minimal role; this is \
+             migrate_root_role_file's OWN list, not old_generated"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read template"),
+            default_root_context_template(),
+            "a pristine pre-Room-rename Context.root-agent.md must auto-upgrade (recognizer list)"
+        );
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD
+        ));
+    }
+
+    /// #1614 AC7.9 for the root spec.
+    #[test]
+    fn frozen_pre_room_rename_root_context_is_recognized() {
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD
+        ));
+        assert_ne!(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD, ROOT_ROLE_MD,
+            "the Room rename must actually change ROOT_ROLE_MD or the freeze is pointless"
+        );
+        assert!(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.contains("workgroup add"));
+        assert!(!ROOT_ROLE_MD.to_lowercase().contains("workgroup"));
+    }
+
     /// #1614 AC7.3 and AC7.5. Expected values taken from the frozen base and
     /// written into the plan (section 3.12 Table B), never read back from the
     /// constants they check.
@@ -2551,8 +2602,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 7,
-            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 8,
+            "root_spec current_version must be bumped to 8 by the #1614 room rename"
         );
     }
 
@@ -2620,8 +2671,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 7,
-            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 8,
+            "root_spec current_version must be bumped to 8 by the #1614 room rename"
         );
     }
 

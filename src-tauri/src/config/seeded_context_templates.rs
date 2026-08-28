@@ -544,7 +544,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 4,
+            current_version: 5,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -554,7 +554,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Orchestrator context",
-            current_version: 5,
+            current_version: 6,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -568,7 +568,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 7,
+        current_version: 8,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
         project_actionable: false,
@@ -2068,6 +2068,57 @@ mod tests {
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
     };
 
+    /// #1614 AC7.9 and AC7.11 for the two project specs. Each new snapshot is
+    /// accepted by EVERY recognizer it is wired into, and is != the current
+    /// default -- the assert_ne is what proves the rename actually moved the
+    /// default rather than freezing a copy of something unchanged.
+    #[test]
+    fn frozen_pre_room_rename_global_template_is_recognized() {
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            crate::config::session_context::get_default_agent_template(),
+            "the Room rename must actually change the global default or the freeze is pointless"
+        );
+        assert!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("**Workgroup**"));
+        assert!(
+            !crate::config::session_context::get_default_agent_template()
+                .to_lowercase()
+                .contains("workgroup")
+        );
+    }
+
+    #[test]
+    fn frozen_pre_room_rename_coordinator_template_is_recognized() {
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            get_default_coordinator_template(),
+            "the Room rename must actually change the coordinator default"
+        );
+        assert!(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("another workgroup"));
+        assert!(!get_default_coordinator_template()
+            .to_lowercase()
+            .contains("workgroup"));
+    }
+
+    /// #1614 AC7.11 at the SPEC layer. The persisted-state layer is asserted by
+    /// the read_sync tests, so the bump is pinned on both sides.
+    #[test]
+    fn seeded_template_versions_were_bumped() {
+        let [global, coordinator] = project_specs();
+        assert_eq!(global.current_version, 5, "global 4 -> 5");
+        assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
+        assert_eq!(root_spec().current_version, 8, "rootAgent 7 -> 8");
+    }
+
     /// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and
     /// are written into the plan (section 3.12 Table B), NOT read back from the
     /// constants they check. That is what makes this criterion non-self-
@@ -2160,10 +2211,10 @@ mod tests {
     }
 
     #[test]
-    fn project_specs_bump_only_the_global_template_to_v4() {
+    fn project_specs_bump_only_the_global_template_to_v5() {
         let [global, coordinator] = project_specs();
         assert_eq!(global.id, "global");
-        assert_eq!(global.current_version, 4);
+        assert_eq!(global.current_version, 5);
         assert_eq!(
             (global.current_content)(),
             crate::config::session_context::get_default_agent_template()
@@ -2173,7 +2224,7 @@ mod tests {
         ));
 
         assert_eq!(coordinator.id, "coordinator");
-        assert_eq!(coordinator.current_version, 5);
+        assert_eq!(coordinator.current_version, 6);
         assert_eq!(
             (coordinator.current_content)(),
             get_default_coordinator_template()
@@ -2566,8 +2617,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 4,
-            "recognized v1 global content must land on the current v4 default"
+            parsed["templates"]["global"]["currentVersion"], 5,
+            "recognized v1 global content must land on the current v5 default"
         );
     }
 
@@ -2664,7 +2715,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -2723,7 +2774,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -2803,7 +2854,7 @@ mod tests {
                 assert!(scan_publications.is_empty(), "{label}/{trusted_state}");
                 if trusted_state {
                     assert_eq!(updates.len(), 1, "{label}: trusted state must be pending");
-                    assert_eq!(updates[0].current_default_version, 4);
+                    assert_eq!(updates[0].current_default_version, 5);
                     assert_eq!(
                         updates[0].current_default_sha256,
                         hash_text(crate::config::session_context::get_default_agent_template())
@@ -2883,7 +2934,7 @@ mod tests {
                 .expect("scan fine custom global");
             assert_eq!(updates.len(), usize::from(trusted_state));
             if trusted_state {
-                assert_eq!(updates[0].current_default_version, 4);
+                assert_eq!(updates[0].current_default_version, 5);
             }
             assert_eq!(
                 std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -2942,7 +2993,7 @@ mod tests {
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3000,7 +3051,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3043,7 +3094,7 @@ mod tests {
         let v4_sha = hash_text(crate::config::session_context::get_default_agent_template());
         assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(update.current_default_sha256, v4_sha);
-        assert_eq!(update.current_default_version, 4);
+        assert_eq!(update.current_default_version, 5);
 
         let result = overwrite_context_template_with_default(
             &ac_root,
@@ -3068,7 +3119,7 @@ mod tests {
         )
         .expect("parse seeded state");
         assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v4_sha);
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 4);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
     }
 
     #[test]
@@ -3449,8 +3500,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["coordinator"]["currentVersion"], 5,
-            "coordinator current_version must be bumped to 5 by the #1571 orchestrator rename"
+            parsed["templates"]["coordinator"]["currentVersion"], 6,
+            "coordinator current_version must be bumped to 6 by the #1614 room rename"
         );
         assert_eq!(
             parsed["templates"]["coordinator"]["lastSeededSha256"]
@@ -3618,7 +3669,7 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].current_file_sha256, custom_hash);
         assert_eq!(updates[0].current_default_sha256, v4_hash);
-        assert_eq!(updates[0].current_default_version, 4);
+        assert_eq!(updates[0].current_default_version, 5);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read preserved custom global"),
