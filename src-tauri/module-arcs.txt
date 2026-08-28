@@ -215,6 +215,7 @@ agentscommander_lib::cli::list_peers -> agentscommander_lib::cli
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::ac_root
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::agent_config
+agentscommander_lib::cli::list_peers -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::replica_identity
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::list_peers -> agentscommander_lib::config::sessions_persistence
@@ -256,6 +257,7 @@ agentscommander_lib::cli::role_experiment -> agentscommander_lib::cli::session_s
 agentscommander_lib::cli::role_experiment -> agentscommander_lib::cli::workgroup
 agentscommander_lib::cli::role_experiment -> agentscommander_lib::commands::entity_creation
 agentscommander_lib::cli::role_experiment -> agentscommander_lib::commands::role_templates
+agentscommander_lib::cli::role_experiment -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::cli::self_clear -> agentscommander_lib
 agentscommander_lib::cli::self_clear -> agentscommander_lib::cli
 agentscommander_lib::cli::self_clear -> agentscommander_lib::cli::send
@@ -335,6 +337,7 @@ agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::ac_r
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::coordinator_clocks
+agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::local_config_io
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::loops
 agentscommander_lib::commands::ac_discovery -> agentscommander_lib::config::projects
@@ -368,6 +371,7 @@ agentscommander_lib::commands::config -> agentscommander_lib::config
 agentscommander_lib::commands::config -> agentscommander_lib::config::agent_command
 agentscommander_lib::commands::config -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::commands::config -> agentscommander_lib::config::coding_agents_catalog
+agentscommander_lib::commands::config -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::config -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::commands::config -> agentscommander_lib::config::profile
 agentscommander_lib::commands::config -> agentscommander_lib::config::projects
@@ -396,6 +400,7 @@ agentscommander_lib::commands::entity_creation -> agentscommander_lib::commands:
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::ac_root
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::coordinator_clocks
+agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::local_config_io
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::replica_identity
 agentscommander_lib::commands::entity_creation -> agentscommander_lib::config::seed_manifest
@@ -496,6 +501,7 @@ agentscommander_lib::commands::spec_board -> agentscommander_lib
 agentscommander_lib::commands::spec_board -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::cli::task_ops
 agentscommander_lib::commands::task -> agentscommander_lib::config::ac_root
+agentscommander_lib::commands::task -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::commands::task -> agentscommander_lib::config::settings
 agentscommander_lib::commands::task -> agentscommander_lib::session::manager
 agentscommander_lib::commands::task -> agentscommander_lib::session::session
@@ -527,6 +533,7 @@ agentscommander_lib::commands::window -> agentscommander_lib::config::settings
 agentscommander_lib::commands::window -> agentscommander_lib::session::manager
 agentscommander_lib::commands::window -> agentscommander_lib::session::selection
 agentscommander_lib::commands::window -> agentscommander_lib::session::session
+agentscommander_lib::config::ac_root -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::activity_log -> agentscommander_lib::config
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::daemon_pid
 agentscommander_lib::config::activity_log -> agentscommander_lib::config::instance_artifacts
@@ -558,6 +565,7 @@ agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::conf
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::config::settings
 agentscommander_lib::config::coding_agent_mutations -> agentscommander_lib::pty::backend
 agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::coding_agent_profiles -> agentscommander_lib::config::root_agent
@@ -589,8 +597,10 @@ agentscommander_lib::config::injected_messages -> agentscommander_lib::pty::inje
 agentscommander_lib::config::instance_gitignore -> agentscommander_lib::config
 agentscommander_lib::config::instance_gitignore -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::loops -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::loops -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::loops -> agentscommander_lib::config::teams
 agentscommander_lib::config::placeholders -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::placeholders -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::placeholders -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::placeholders -> agentscommander_lib::path_utils
 agentscommander_lib::config::project_settings -> agentscommander_lib::config::ac_root
@@ -603,6 +613,7 @@ agentscommander_lib::config::projects -> agentscommander_lib::config::session_co
 agentscommander_lib::config::projects -> agentscommander_lib::config::settings
 agentscommander_lib::config::projects -> agentscommander_lib::path_utils
 agentscommander_lib::config::replica_identity -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::replica_identity -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::replica_identity -> agentscommander_lib::config::local_config_io
 agentscommander_lib::config::replica_identity -> agentscommander_lib::path_identity
 agentscommander_lib::config::replica_identity -> agentscommander_lib::path_utils
@@ -656,6 +667,7 @@ agentscommander_lib::config::settings -> agentscommander_lib::screenshot
 agentscommander_lib::config::settings -> agentscommander_lib::session::profile
 agentscommander_lib::config::settings -> agentscommander_lib::telegram::types
 agentscommander_lib::config::teams -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::teams -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::teams -> agentscommander_lib::config::replica_identity
 agentscommander_lib::config::teams -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::teams -> agentscommander_lib::config::settings
@@ -707,6 +719,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::config::agent_comman
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::agent_config
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_mutations
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::coding_agent_profiles
+agentscommander_lib::phone::mailbox -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::injected_messages
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::phone::mailbox -> agentscommander_lib::config::root_agent
@@ -731,6 +744,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::session::purge_guard
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::selection
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::session
 agentscommander_lib::phone::mailbox -> agentscommander_lib::shutdown
+agentscommander_lib::phone::messaging -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::phone::messaging -> agentscommander_lib::config::root_agent
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib
 agentscommander_lib::phone::terminal_snapshot -> agentscommander_lib::api::audit
@@ -778,8 +792,10 @@ agentscommander_lib::pty::container_backend -> agentscommander_lib::telegram::ma
 agentscommander_lib::pty::container_backend -> agentscommander_lib::web::broadcast
 agentscommander_lib::pty::container_credentials -> agentscommander_lib::session::profile
 agentscommander_lib::pty::container_paths -> agentscommander_lib::config::ac_root
+agentscommander_lib::pty::container_paths -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::pty::container_paths -> agentscommander_lib::config::settings
 agentscommander_lib::pty::container_repos -> agentscommander_lib::config::ac_root
+agentscommander_lib::pty::container_repos -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::pty::container_repos -> agentscommander_lib::path_utils
 agentscommander_lib::pty::container_repos -> agentscommander_lib::pty::container_paths
 agentscommander_lib::pty::container_runtime -> agentscommander_lib::errors
@@ -891,6 +907,7 @@ agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_
 agentscommander_lib::resource_monitor::windows -> agentscommander_lib::resource_monitor::types
 agentscommander_lib::screenshot::unsupported -> agentscommander_lib::screenshot
 agentscommander_lib::screenshot::windows -> agentscommander_lib::api
+agentscommander_lib::screenshot::windows -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::screenshot::windows -> agentscommander_lib::config::replica_identity
 agentscommander_lib::screenshot::windows -> agentscommander_lib::path_utils
 agentscommander_lib::screenshot::windows -> agentscommander_lib::screenshot
@@ -942,6 +959,7 @@ agentscommander_lib::session::selection -> agentscommander_lib::session::session
 agentscommander_lib::session::selection -> agentscommander_lib::session::warnings
 agentscommander_lib::session::selection -> agentscommander_lib::web::broadcast
 agentscommander_lib::session::session -> agentscommander_lib::config::agent_command
+agentscommander_lib::session::session -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::session::session -> agentscommander_lib::config::settings
 agentscommander_lib::session::session -> agentscommander_lib::pty::backend
 agentscommander_lib::session::session -> agentscommander_lib::session::profile
