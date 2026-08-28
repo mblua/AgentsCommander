@@ -10144,6 +10144,65 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "edited legacy file must be preserved, never healed"
         );
     }
+
+    /// #1614 (plan section 3.12 Table C, section 12 step 0): the two legacy
+    /// reconstructions the Room rename must not move, pinned by values captured
+    /// with a one-off run of the shipped functions AT base commit
+    /// d7008b34e155a8bd6481be5feecfc7d96575328f, read out of a deliberately
+    /// failing assertion and never read back from the functions themselves.
+    /// That is what makes this criterion non-self-referential: a later
+    /// coordinated rename that moved both the functions and this test would
+    /// change their output and these hard-coded values would fail.
+    ///
+    /// The inputs are fixed synthetic constants rather than a `tempfile` path,
+    /// because a digest taken over a real temporary directory is not
+    /// reproducible: the path varies per run and is interpolated into the
+    /// output. Neither directory needs to exist. `workgroup_root` is a pure
+    /// path walk with no filesystem touch (`phone/messaging.rs`), so the agent
+    /// root below reaches the Workgroup messaging mode regardless, and
+    /// `root_agency_cache_guidance` returns "" for a non-root root.
+    ///
+    /// A reviewer checks this by checking out d7008b34, applying only this test
+    /// and running it: both values must be green on the base tree.
+    #[test]
+    fn legacy_rendered_default_context_is_frozen() {
+        use sha2::{Digest, Sha256};
+
+        const AGENT_ROOT: &str = "C:/fake/.ac/wg-7-dev-team/__agent_architect";
+        const MATRIX_ROOT: &str = "C:/fake/.ac/_agent_architect";
+
+        // C1: the current-generation reconstruction, the `Current` arm's input.
+        let c1 = legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
+        assert_eq!(
+            c1.len(),
+            8718,
+            "C1 `legacy_rendered_default_context_for_compat` moved; the frozen \
+             legacy recognizer no longer reproduces the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(c1.as_bytes())),
+            "daf07cbc24e46988747385f1d622c0b3309d29fa1fda77964afb2892ef85275c",
+            "C1 `legacy_rendered_default_context_for_compat` moved; the frozen \
+             legacy recognizer no longer reproduces the d7008b34 bytes"
+        );
+
+        // C2: the pre-#1072 reconstruction, the candidate that actually carries
+        // the `StaleGenerated` outcome.
+        let c2 =
+            pre_1072_legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
+        assert_eq!(
+            c2.len(),
+            9096,
+            "C2 `pre_1072_legacy_rendered_default_context_for_compat` moved; \
+             every pre-#1072 context file stops self-healing, permanently"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(c2.as_bytes())),
+            "24b2c24ddef33c307fbb64734eee05c5baf60c2b6616e21ef1e56fc0f33999ef",
+            "C2 `pre_1072_legacy_rendered_default_context_for_compat` moved; \
+             every pre-#1072 context file stops self-healing, permanently"
+        );
+    }
 }
 
 /// #1005 token-accounting harness (plan section 7). Renders the three boot
