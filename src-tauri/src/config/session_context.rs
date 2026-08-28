@@ -3366,6 +3366,13 @@ fn strip_legacy_self_maintenance(content: &str) -> String {
 
 const ROOT_GIT_SCOPE: &str = "Git discovery above the Root Agent session root is blocked. State-changing Git belongs at a registered project root (the `settings.projectPaths` entry, one level above `.ac`), never in the Root Agent directory or another `.ac` subtree; the `repo-*` naming restriction does not apply. Read-only Git is allowed within scope.";
 const WORKGROUP_GIT_SCOPE: &str = "`wg-*/` workgroups are gitignored; origin Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
+/// #1614 D8b: the exact `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
+/// Read only by `legacy_rendered_default_context_for_generation`, which
+/// reconstructs a pre-#1369 `Context.AgentsCommander.md` for byte
+/// comparison. Never used for current runtime output. 220 bytes, sha256
+/// A386B52D...566D (plan section 3.12 Table B); pinned by
+/// `workgroup_git_scope_split_is_correct`. Never edit.
+const WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME: &str = "`wg-*/` workgroups are gitignored; origin Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
 const DIRECT_MATRIX_GIT_SCOPE: &str = "Origin Agent Matrices are not gitignored and can be tracked. Git discovery above this Matrix root is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
 
 struct DefaultContextDynamicValues {
@@ -3857,7 +3864,7 @@ fn legacy_rendered_default_context_for_generation(
         )
     };
     let git_scope = match (git_scope_generation, matrix_root.is_some()) {
-        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME,
         (LegacyGitScopeGeneration::Current, false) => DIRECT_MATRIX_GIT_SCOPE,
         (LegacyGitScopeGeneration::Before1072, true) => LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
         (LegacyGitScopeGeneration::Before1072, false) => {
@@ -10142,6 +10149,88 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_eq!(
             on_disk, legacy,
             "edited legacy file must be preserved, never healed"
+        );
+    }
+
+    /// #1614 AC7.4, the frozen half of the D8b split. `WORKGROUP_GIT_SCOPE` is
+    /// read by the LIVE renderer and by the FROZEN legacy recognizer. Rule R
+    /// forces the first to change; Rule P3 forces the second not to. The live
+    /// half's assertions live in `workgroup_git_scope_split_is_correct`.
+    #[test]
+    fn workgroup_git_scope_frozen_half_is_byte_exact() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME.len(),
+            220,
+            "the frozen git-scope half must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "a386b52da8246826689215a8f07abf3cb58d01ebcc18afc530730157aa12566d",
+            "the frozen git-scope half changed; every pre-#1369 context file stops self-healing"
+        );
+    }
+
+    /// #1614 AC7.8, the source-side freeze, and the criterion round 1 most
+    /// needed and did not have: a byte comparison against a value taken from the
+    /// frozen base and written into the plan, so it cannot move with the code.
+    /// The rendered-output digests (AC7.7) prove nothing in the function's
+    /// closure moved; this proves no byte of the function itself moved.
+    ///
+    /// The ONE difference this criterion tolerates is D8b's identifier switch at
+    /// the git-scope read, which changes an identifier and not a byte of prose.
+    #[test]
+    fn legacy_rendered_default_context_for_generation_source_is_frozen() {
+        use sha2::{Digest, Sha256};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("config")
+            .join("session_context.rs");
+        let source = std::fs::read_to_string(&path).expect("read session_context.rs");
+        // The plan's digest is over the git blob, and .gitattributes pins *.rs
+        // to `eol=lf`, so normalize before hashing rather than depending on how
+        // this particular working tree was checked out.
+        let source = source.replace("\r\n", "\n");
+
+        let head = "fn legacy_rendered_default_context_for_generation(";
+        let start = source
+            .lines()
+            .position(|line| line == head)
+            .expect("frozen function head not found");
+        let end = source
+            .lines()
+            .skip(start)
+            .position(|line| line == "}")
+            .expect("frozen function terminator not found")
+            + start;
+
+        let body: String = source
+            .lines()
+            .skip(start)
+            .take(end - start + 1)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let normalized = body.replace(
+            "WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME",
+            "WORKGROUP_GIT_SCOPE",
+        );
+
+        assert_eq!(
+            normalized.len(),
+            15027,
+            "the frozen legacy reconstruction changed size; it reconstructs a user's pre-#1369 \
+             context file for byte comparison and must not move"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(normalized.as_bytes())),
+            "940fa35733c78cdf513391e5aed64438afd50fe6472a26e4d317270e5ee716c2",
+            "a byte of legacy_rendered_default_context_for_generation moved; every pre-#1369 \
+             Context.AgentsCommander.md falls from StaleGenerated to NotLegacy, never self-heals \
+             again, and keeps the pre-#1369 write restrictions permanently"
         );
     }
 

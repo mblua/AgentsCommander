@@ -305,6 +305,34 @@ Never send to origin coordinators or non-coordinator specialist/member agents fr
 
 Coordinators may reply by sending to `agentscommander://root-agent`; their replies appear in this session as standard file notifications."#;
 
+/// #1614 D8c: `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
+/// through base commit d7008b34. The live constant is DUAL-USE: it is the
+/// paragraph the deferred-messaging migration writes into the user's live
+/// Role.md, and it is simultaneously interpolated into
+/// `OLD_ROOT_CONTEXT_WITH_COORDINATION_MD`, which is entry 2 of the frozen
+/// `old_generated` array. Rule R forces the first to change and Rule P3
+/// forces the second not to, so the two are split and the RECOGNIZER reads
+/// this frozen half. Never edit.
+/// Provenance: the d7008b34 blob, root_agent.rs lines 292-306; declaration
+/// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
+/// sha256 FC2164A2...F207 (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME: &str = r#"You may message verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
+
+Root messaging is file-based:
+
+1. Write the message to `messaging/` inside this `ac-root-agent` directory.
+2. Use a filename shaped like `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md`.
+3. Send it with:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --send <filename> --mode wake
+```
+
+Never send to origin coordinators or non-coordinator specialist/member agents from this root session.
+
+Coordinators may reply by sending to `agentscommander://root-agent`; their replies appear in this session as standard file notifications."#;
+
 const OLD_ROOT_ROLE_MD: &str = r#"---
 name: 'agents-commander'
 description: 'Root coordinator for AgentsCommander sessions, workgroups, and agents.'
@@ -368,7 +396,7 @@ You are not a workgroup replica and you do not have an origin Agent Matrix. Use 
 
 Use the AgentsCommander CLI only for commands that are valid from this root-agent directory. Follow the write restrictions in the common context exactly.
 
-{ROOT_COORDINATION_MESSAGING_PARAGRAPH}
+{ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME}
 "#
     )
 });
@@ -722,6 +750,66 @@ The audit is a review lens: produce a structured recommendation before any refac
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
 
+/// #1614 D8a: `ROOT_ROLE_MD` exactly as it shipped through base commit
+/// d7008b34, frozen so a pristine pre-rename root context keeps being
+/// recognized. Wired into BOTH root lists: the `old_generated` array in
+/// `is_known_generated_root_context_template` AND `migrate_root_role_file`'s
+/// independent pristine-generation list. A snapshot wired into only one of
+/// the two reclassifies every pristine pre-rename root Role.md on the
+/// migration path while the recognizer test stays green. Never edit.
+/// Provenance: the d7008b34 blob, root_agent.rs lines 675-723; declaration
+/// 2501 bytes sha256 97136810...A095 (plan 3.12 Table A), value 2467 bytes
+/// sha256 7F82F28C...C52D (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD: &str = r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent, the top-level orchestrator for this AgentsCommander binary.
+
+## Responsibility
+
+Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a workgroup replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
+
+## Coordination
+
+Coordinate across workgroups at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
+
+## Team and workgroup setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one orchestrator and the worker agents.
+3. Activate a workgroup with `workgroup add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; workgroup activation uses the existing team definition.
+
+## Governance Boundary Audits
+
+Load and apply `skills/role-skill-boundary-audit/SKILL.md` before finalizing any work that creates, modifies, approves, or audits agents, `Role.md` files, skills, role templates, workflow instructions, or Agent Matrix structure, and when a role grows unusually large, a role contains repeatable operational procedure, a skill contains authority or ownership language, similar instructions appear in multiple roles, someone proposes another agent for a bounded capability, or periodic matrix hygiene is requested.
+
+The audit is a review lens: produce a structured recommendation before any refactor, never silently rewrite roles, skills, or agent boundaries.
+
+## Agency Agents Roles
+
+Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
+"#;
 pub(crate) fn default_root_context_template() -> &'static str {
     ROOT_ROLE_MD
 }
@@ -736,6 +824,7 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD),
         normalize_role_text(ROOT_ROLE_MD),
     ];
     old_generated.contains(&normalized)
@@ -1048,6 +1137,7 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
@@ -2324,6 +2414,68 @@ mod tests {
             ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD,
             default_root_context_template(),
             "the #1370 wording change must actually change the template or the freeze is pointless"
+        );
+    }
+
+    /// #1614 AC7.3 and AC7.5. Expected values taken from the frozen base and
+    /// written into the plan (section 3.12 Table B), never read back from the
+    /// constants they check.
+    #[test]
+    fn frozen_snapshots_are_byte_exact_at_d7008b34() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.len(),
+            2467,
+            "frozen pre-Room-rename root context must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.as_bytes())
+            ),
+            "7f82f28c70221c8476bb957f5978433173f60e388a9f18db729e5c2bf014c52d",
+            "frozen root snapshot changed; every pristine pre-rename root Role.md would be orphaned"
+        );
+
+        assert_eq!(
+            ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME.len(),
+            897,
+            "frozen pre-Room-rename coordination paragraph must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "fc2164a2a56957e481debca460f9df3cc681a634edda58f5270939c85668f207",
+            "the frozen half of the D8c split changed; old_generated[1] is no longer the shipped bytes"
+        );
+    }
+
+    /// #1614 AC7.6 / D8d. `OLD_DEFERRED_MESSAGING_PARAGRAPH` is NOT compared for
+    /// equality; it is searched for INSIDE the user's live Role.md, and on a hit
+    /// the migration substitutes the coordination paragraph for it. Editing it
+    /// would silently disable that migration for every installation still on the
+    /// deferred-messaging generation: the `contains` stops matching, the branch
+    /// never fires, and nothing reports it. It has no live twin, so there is
+    /// nothing to split and it takes NO edit -- which is exactly why it gets a
+    /// byte pin rather than a code comment.
+    #[test]
+    fn old_deferred_messaging_paragraph_is_frozen() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            OLD_DEFERRED_MESSAGING_PARAGRAPH.len(),
+            293,
+            "OLD_DEFERRED_MESSAGING_PARAGRAPH must stay the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(OLD_DEFERRED_MESSAGING_PARAGRAPH.as_bytes())
+            ),
+            "6e12e68e51c3c6df2386728dfd0ed98bfe06a8a0c3f6383bfaf8fd4463c7a463",
+            "editing this silently and permanently disables the deferred-messaging migration"
         );
     }
 

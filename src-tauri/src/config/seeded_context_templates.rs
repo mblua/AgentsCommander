@@ -330,6 +330,70 @@ You are running inside an AgentsCommander session - a terminal session manager t
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #1614 D8a: the `global` seeded context template exactly as it shipped
+/// through base commit d7008b34, frozen so an installation whose file is
+/// still pristine keeps auto-updating after the Room rename. A recognizer
+/// only accepts a file byte-for-byte, so a shipped byte that moves without
+/// the previous bytes being frozen reclassifies every pristine file as
+/// user-authored and it never auto-updates again. Never edit.
+/// Provenance: the d7008b34 blob, session_context.rs lines 2470-2492;
+/// declaration 549 bytes sha256 991C5BA8...F0AC (plan 3.12 Table A), value
+/// 539 bytes sha256 F4406596...316A (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME: &str = r#"# AgentsCommander Context
+
+You are in AgentsCommander, a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{AGENT_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
+/// #1614 D8a: the `coordinator` seeded context template exactly as it
+/// shipped through base commit d7008b34, frozen for the same reason as the
+/// global one above. Never edit.
+/// Provenance: the d7008b34 blob, session_context.rs lines 2509-2529;
+/// declaration 2703 bytes sha256 CC127468...3ABF (plan 3.12 Table A), value
+/// 2516 bytes sha256 0B89EB38...198E (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME: &str =
+    "You are the orchestrator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - To reach another workgroup, message its orchestrator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to an orchestrator who messaged you first is always authorized.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
+     - Give recommendations that help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop orchestrator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness orchestrator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your orchestrator row; it clears when the user interacts with your session.\n";
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextTemplateUpdate {
@@ -537,6 +601,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -556,6 +621,7 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 fn is_known_generated_coordinator_template(content: &str) -> bool {
@@ -564,6 +630,7 @@ fn is_known_generated_coordinator_template(content: &str) -> bool {
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -2000,6 +2067,47 @@ mod tests {
         get_default_coordinator_template, COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
     };
+
+    /// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and
+    /// are written into the plan (section 3.12 Table B), NOT read back from the
+    /// constants they check. That is what makes this criterion non-self-
+    /// referential: a later coordinated rename that moved both the constant and
+    /// its test would change the bytes and these hard-coded values would fail.
+    /// Round 1's recognizer criteria all built their expected value by calling
+    /// the function they then classified, so they went green under any
+    /// internally consistent rename.
+    #[test]
+    fn frozen_snapshots_are_byte_exact_at_d7008b34() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(),
+            539,
+            "frozen pre-Room-rename global template must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a",
+            "frozen global snapshot changed; every pristine installation would stop auto-updating"
+        );
+
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(),
+            2516,
+            "frozen pre-Room-rename coordinator template must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "0b89eb38608f6272f0d8087fc7df13ecc729fda716aba972673b15b734a2198e",
+            "frozen coordinator snapshot changed; every pristine installation would stop auto-updating"
+        );
+    }
 
     // Stage E (#1064) recognized-predecessor exhaustiveness sentinel (plan
     // section 10.2 item 17, 10.6, acceptance item 31): the coordinator recognizer
