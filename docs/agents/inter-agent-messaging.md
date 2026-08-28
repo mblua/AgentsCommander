@@ -70,6 +70,8 @@ The recipient's PTY receives a short notification pointing to the file's absolut
 
 The agent reads the file from disk. PTY size limits do not apply.
 
+**Receipt required (never report "enviado" without it):** `send` prints `Queued: <message-id>` to stdout as soon as the message is enqueued, and `Delivered: <message-id>` once delivery is confirmed. Capture both lines and verify them before considering the message sent: a missing `Queued:` line means the message was **NOT enqueued** — report failure, never success. A `Queued:` line with a later confirmation timeout (exit 1) means "enqueued but unconfirmed": the message stays durably queued, so verify the outbox instead of re-sending. On Windows, capture these lines through the Git Bash wrap above.
+
 ## Discovering peers
 
 Before sending, resolve the exact peer name via `list-peers-lean`:
@@ -95,6 +97,29 @@ JSON output (one entry per peer):
 ```
 
 The `name` field is the canonical FQN. Pass it verbatim to `send --to`.
+
+## Shell routing on Windows (required)
+
+On Windows, the release binary is GUI-subsystem, so PowerShell direct capture of its stdout is **empty** (and PS 5.1 does not propagate its exit code): `$x = & $bin ... | ConvertFrom-Json` silently yields nothing and the agent cannot tell whether the CLI even ran. Run **every** AgentsCommander CLI invocation through Git Bash instead; `bash.exe` is console-subsystem, so PowerShell waits for it, captures its stdout, and propagates its exit code.
+
+```bash
+# list-peers-lean through Git Bash from any shell (PowerShell, pwsh, cmd)
+peers=$("C:\Program Files\Git\bin\bash.exe" -lc '"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT"' 2>/dev/null)
+```
+
+Parse the captured JSON with `python` or `jq` (never PowerShell `ConvertFrom-Json` on a direct capture):
+
+```bash
+peer=$(printf '%s' "$peers" | python -c "import json,sys; print(json.load(sys.stdin)[0]['name'])")
+```
+
+`send` follows the same wrap:
+
+```bash
+"C:\Program Files\Git\bin\bash.exe" -lc '"<AGENTSCOMMANDER_BINARY_PATH>" send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_ROOT" --to "$peer" --send "<filename>" --mode wake'
+```
+
+The `$x = & $bin ... | ConvertFrom-Json` capture pattern is **banned**. For runners that expose both a Bash and a PowerShell tool (e.g. Claude Code), prefer the Bash tool for AgentsCommander CLI invocations; the wrap form works from any tool or shell regardless.
 
 ## Routing rules
 

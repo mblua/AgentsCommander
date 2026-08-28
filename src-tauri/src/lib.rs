@@ -1,3 +1,5 @@
+pub mod agent_update;
+pub mod agent_version;
 pub mod api;
 pub mod cli;
 pub mod commands;
@@ -17,23 +19,25 @@ pub mod shutdown;
 pub mod telegram;
 pub mod test_support;
 pub mod testability;
-pub mod agent_update;
-pub mod agent_version;
 pub mod update_check;
 pub mod voice;
 pub mod web;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
 use config::sessions_persistence;
 use config::settings::SettingsState;
+use futures_util::FutureExt;
 use pty::context_scrape::{
     ContextEventSink, ContextPatternSource, ContextPersistSink, ContextSample, ContextSampleSink,
     ContextScraper, ContextSessionLiveness, ContextUsagePayload, ScreenRowsRead, ScreenRowsSource,
@@ -48,6 +52,7 @@ use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
 use tauri::{Emitter, Manager};
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
@@ -165,56 +170,514 @@ pub(crate) fn install_container_route_remover(pty_mgr: &Arc<Mutex<PtyManager>>) 
 /// Tracks which sessions are currently detached into their own windows.
 pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
-struct OwnedWebServer {
-    bind: String,
-    port: u16,
-    handle: tauri::async_runtime::JoinHandle<()>,
+const WEB_SERVER_STOP_TIMEOUT_MS: u64 = 5_000;
+pub(crate) const WEB_SERVER_START_CANCELLED: &str = "Web server start cancelled by stop";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebServerLifecycle {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebServerLifecycleSnapshot {
+    pub generation: Option<u64>,
+    pub revision: u64,
+    pub lifecycle: WebServerLifecycle,
+    pub endpoint: Option<(String, u16)>,
+}
+
+struct WebServerGeneration {
+    generation: u64,
+    revision: u64,
+    lifecycle: WebServerLifecycle,
+    endpoint: Option<(String, u16)>,
+    generation_token: CancellationToken,
+    shutdown: ShutdownSignal,
+    admission: Arc<web::WebSocketAdmission>,
+    start_result: watch::Receiver<Option<Result<bool, String>>>,
+    stop_result: watch::Receiver<Option<Result<(), String>>>,
+    stop_deadline: Option<Instant>,
 }
 
 #[derive(Default)]
+struct WebServerControl {
+    next_generation: u64,
+    stopped_revision: u64,
+    last_generation: Option<u64>,
+    current: Option<WebServerGeneration>,
+}
+
+#[derive(Clone)]
+pub struct WebServerStartWaiter {
+    receiver: watch::Receiver<Option<Result<bool, String>>>,
+}
+
+impl WebServerStartWaiter {
+    pub async fn wait(mut self) -> Result<bool, String> {
+        loop {
+            if let Some(result) = self.receiver.borrow().clone() {
+                return result;
+            }
+            self.receiver.changed().await.map_err(|_| {
+                "Web server start supervisor channel closed before terminal result".to_string()
+            })?;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct WebServerStopWaiter {
+    receiver: watch::Receiver<Option<Result<(), String>>>,
+    deadline: Instant,
+}
+
+impl WebServerStopWaiter {
+    pub async fn wait(mut self) -> Result<(), String> {
+        let wait = async {
+            loop {
+                if let Some(result) = self.receiver.borrow().clone() {
+                    return result;
+                }
+                self.receiver.changed().await.map_err(|_| {
+                    "Web server stop supervisor channel closed before terminal state".to_string()
+                })?;
+            }
+        };
+        tokio::time::timeout_at(self.deadline.into(), wait)
+            .await
+            .map_err(|_| "Timed out waiting for web server generation to stop".to_string())?
+    }
+
+    #[cfg(test)]
+    fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct WebServerHandle {
-    inner: Arc<Mutex<Option<OwnedWebServer>>>,
+    inner: Arc<Mutex<WebServerControl>>,
     /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
     /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
-    bind_failure: std::sync::Mutex<Option<crate::web::StartServerError>>,
+    bind_failure: Arc<std::sync::Mutex<Option<crate::web::StartServerError>>>,
+    #[cfg(test)]
+    start_output_gate: Arc<Mutex<Option<WebServerStartOutputGate>>>,
+}
+
+#[cfg(test)]
+struct WebServerStartOutputGate {
+    reached: tokio::sync::oneshot::Sender<bool>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl WebServerHandle {
-    pub fn store_owned(
+    pub(crate) fn begin_start<F, Fut>(
         &self,
-        bind: String,
-        port: u16,
-        handle: tauri::async_runtime::JoinHandle<()>,
-    ) {
-        let mut slot = self.inner.lock().unwrap();
-        if let Some(existing) = slot.take() {
-            existing.handle.abort();
+        shutdown: ShutdownSignal,
+        factory: F,
+    ) -> WebServerStartWaiter
+    where
+        F: FnOnce(u64, Arc<web::WebSocketAdmission>, CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>
+            + Send
+            + 'static,
+    {
+        let mut factory = Some(factory);
+        let mut supervisor = None;
+        let waiter = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.current.as_ref() {
+                Some(generation) if generation.lifecycle == WebServerLifecycle::Starting => {
+                    WebServerStartWaiter {
+                        receiver: generation.start_result.clone(),
+                    }
+                }
+                Some(generation) if generation.lifecycle == WebServerLifecycle::Running => {
+                    Self::completed_start_waiter(Ok(true))
+                }
+                Some(_) => Self::completed_start_waiter(Err(WEB_SERVER_START_CANCELLED.into())),
+                None => {
+                    inner.next_generation = inner
+                        .next_generation
+                        .checked_add(1)
+                        .expect("web server generation id exhausted");
+                    let generation = inner.next_generation;
+                    let revision = inner
+                        .stopped_revision
+                        .checked_add(1)
+                        .expect("web server lifecycle revision exhausted");
+                    let generation_token = CancellationToken::new();
+                    let admission =
+                        Arc::new(web::WebSocketAdmission::new(generation_token.clone()));
+                    let (start_sender, start_result) = watch::channel(None);
+                    let (stop_sender, stop_result) = watch::channel(None);
+                    let result = WebServerStartWaiter {
+                        receiver: start_result.clone(),
+                    };
+                    inner.current = Some(WebServerGeneration {
+                        generation,
+                        revision,
+                        lifecycle: WebServerLifecycle::Starting,
+                        endpoint: None,
+                        generation_token: generation_token.clone(),
+                        shutdown: shutdown.clone(),
+                        admission: Arc::clone(&admission),
+                        start_result,
+                        stop_result,
+                        stop_deadline: None,
+                    });
+                    supervisor = Some((
+                        generation,
+                        admission,
+                        generation_token,
+                        shutdown,
+                        start_sender,
+                        stop_sender,
+                        factory.take().expect("new generation owns start factory"),
+                    ));
+                    result
+                }
+            }
+        };
+
+        if let Some((
+            generation,
+            admission,
+            generation_token,
+            shutdown,
+            start_sender,
+            stop_sender,
+            factory,
+        )) = supervisor
+        {
+            let handle = self.clone();
+            tauri::async_runtime::spawn(async move {
+                handle
+                    .supervise_generation(
+                        generation,
+                        admission,
+                        generation_token,
+                        shutdown,
+                        start_sender,
+                        stop_sender,
+                        factory,
+                    )
+                    .await;
+            });
         }
-        *slot = Some(OwnedWebServer { bind, port, handle });
+
+        waiter
     }
 
-    pub fn is_owned_running(&self, bind: &str, port: u16) -> bool {
-        let mut slot = self.inner.lock().unwrap();
-        if slot
-            .as_ref()
-            .map(|owned| owned.handle.inner().is_finished())
-            .unwrap_or(false)
+    fn completed_start_waiter(result: Result<bool, String>) -> WebServerStartWaiter {
+        let (_sender, receiver) = watch::channel(Some(result));
+        WebServerStartWaiter { receiver }
+    }
+
+    pub(crate) fn begin_stop(&self) -> Option<WebServerStopWaiter> {
+        self.begin_stop_with_timeout(Duration::from_millis(WEB_SERVER_STOP_TIMEOUT_MS))
+    }
+
+    fn begin_stop_with_timeout(&self, timeout: Duration) -> Option<WebServerStopWaiter> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(generation) = inner.current.as_mut() else {
+            self.clear_bind_failure();
+            return None;
+        };
+        if matches!(
+            generation.lifecycle,
+            WebServerLifecycle::Starting | WebServerLifecycle::Running
+        ) {
+            generation.lifecycle = WebServerLifecycle::Stopping;
+            generation.revision = generation
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+            generation.admission.close();
+            generation.generation_token.cancel();
+        }
+        let deadline = *generation
+            .stop_deadline
+            .get_or_insert_with(|| Instant::now() + timeout);
+        Some(WebServerStopWaiter {
+            receiver: generation.stop_result.clone(),
+            deadline,
+        })
+    }
+
+    pub fn publish_effective_endpoint(&self, generation: u64, bind: String, port: u16) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_mut() else {
+            return false;
+        };
+        if current.generation != generation
+            || !matches!(
+                current.lifecycle,
+                WebServerLifecycle::Starting | WebServerLifecycle::Stopping
+            )
         {
-            *slot = None;
+            return false;
+        }
+        let endpoint = (bind, port);
+        if current.endpoint.as_ref() != Some(&endpoint) {
+            current.endpoint = Some(endpoint);
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+        }
+        current.lifecycle == WebServerLifecycle::Starting
+    }
+
+    pub fn snapshot(&self) -> WebServerLifecycleSnapshot {
+        let inner = self.inner.lock().unwrap();
+        Self::snapshot_locked(&inner)
+    }
+
+    pub fn snapshot_is_current(&self, snapshot: &WebServerLifecycleSnapshot) -> bool {
+        let inner = self.inner.lock().unwrap();
+        Self::snapshot_locked(&inner) == *snapshot
+    }
+
+    fn snapshot_locked(inner: &WebServerControl) -> WebServerLifecycleSnapshot {
+        match inner.current.as_ref() {
+            Some(generation) => WebServerLifecycleSnapshot {
+                generation: Some(generation.generation),
+                revision: generation.revision,
+                lifecycle: generation.lifecycle,
+                endpoint: generation.endpoint.clone(),
+            },
+            None => WebServerLifecycleSnapshot {
+                generation: inner.last_generation,
+                revision: inner.stopped_revision,
+                lifecycle: WebServerLifecycle::Stopped,
+                endpoint: None,
+            },
+        }
+    }
+
+    fn publish_running(&self, generation: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_mut() else {
+            return false;
+        };
+        if current.generation != generation
+            || current.lifecycle != WebServerLifecycle::Starting
+            || current.endpoint.is_none()
+            || current.generation_token.is_cancelled()
+            || current.shutdown.is_cancelled()
+        {
             return false;
         }
 
-        slot.as_ref()
-            .map(|owned| owned.bind == bind && owned.port == port)
-            .unwrap_or(false)
-    }
-
-    pub fn abort_running(&self) -> bool {
-        if let Some(owned) = self.inner.lock().unwrap().take() {
-            owned.handle.abort();
+        current.lifecycle = WebServerLifecycle::Running;
+        current.revision = current
+            .revision
+            .checked_add(1)
+            .expect("web server lifecycle revision exhausted");
+        if current.admission.open(&current.shutdown) {
             true
         } else {
+            current.lifecycle = WebServerLifecycle::Stopping;
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+            current.admission.close();
+            current.generation_token.cancel();
             false
+        }
+    }
+
+    fn move_generation_to_stopping(&self, generation: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_mut() else {
+            return false;
+        };
+        if current.generation != generation {
+            return false;
+        }
+        if current.lifecycle != WebServerLifecycle::Stopping {
+            current.lifecycle = WebServerLifecycle::Stopping;
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+        }
+        current.admission.close();
+        current.generation_token.cancel();
+        true
+    }
+
+    fn transition_start_result_to_stopping(
+        &self,
+        generation: u64,
+        result_if_starting: Result<bool, String>,
+    ) -> Result<bool, String> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_mut() else {
+            return Err(WEB_SERVER_START_CANCELLED.to_string());
+        };
+        if current.generation != generation {
+            return Err(WEB_SERVER_START_CANCELLED.to_string());
+        }
+
+        let result = if current.lifecycle == WebServerLifecycle::Starting {
+            result_if_starting
+        } else {
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        };
+        if current.lifecycle != WebServerLifecycle::Stopping {
+            current.lifecycle = WebServerLifecycle::Stopping;
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .expect("web server lifecycle revision exhausted");
+        }
+        current.admission.close();
+        current.generation_token.cancel();
+        result
+    }
+
+    #[cfg(test)]
+    fn gate_next_start_output(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<bool>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_sender, reached_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        let previous = self
+            .start_output_gate
+            .lock()
+            .unwrap()
+            .replace(WebServerStartOutputGate {
+                reached: reached_sender,
+                release: release_receiver,
+            });
+        assert!(
+            previous.is_none(),
+            "only one start-output gate may be installed"
+        );
+        (reached_receiver, release_sender)
+    }
+
+    #[cfg(test)]
+    async fn pause_after_start_output(&self, generation: u64) {
+        let gate = self.start_output_gate.lock().unwrap().take();
+        let Some(gate) = gate else {
+            return;
+        };
+        let was_starting = {
+            let inner = self.inner.lock().unwrap();
+            inner.current.as_ref().is_some_and(|current| {
+                current.generation == generation
+                    && current.lifecycle == WebServerLifecycle::Starting
+            })
+        };
+        let _ = gate.reached.send(was_starting);
+        let _ = gate.release.await;
+    }
+
+    fn finish_generation(&self, generation: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(current) = inner.current.as_ref() else {
+            return false;
+        };
+        if current.generation != generation {
+            return false;
+        }
+        let revision = current
+            .revision
+            .checked_add(1)
+            .expect("web server lifecycle revision exhausted");
+        if current.stop_deadline.is_some() {
+            self.clear_bind_failure();
+        }
+        inner.current = None;
+        inner.last_generation = Some(generation);
+        inner.stopped_revision = revision;
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn supervise_generation<F, Fut>(
+        &self,
+        generation: u64,
+        admission: Arc<web::WebSocketAdmission>,
+        generation_token: CancellationToken,
+        shutdown: ShutdownSignal,
+        start_sender: watch::Sender<Option<Result<bool, String>>>,
+        stop_sender: watch::Sender<Option<Result<(), String>>>,
+        factory: F,
+    ) where
+        F: FnOnce(u64, Arc<web::WebSocketAdmission>, CancellationToken) -> Fut,
+        Fut: Future<Output = Result<Option<tauri::async_runtime::JoinHandle<()>>, String>>,
+    {
+        let start_future = AssertUnwindSafe(factory(
+            generation,
+            Arc::clone(&admission),
+            generation_token.clone(),
+        ))
+        .catch_unwind();
+        tokio::pin!(start_future);
+
+        let start_output = tokio::select! {
+            result = &mut start_future => result,
+            _ = shutdown.token().cancelled() => {
+                self.move_generation_to_stopping(generation);
+                start_future.await
+            }
+        };
+
+        let mut server = match start_output {
+            Ok(Ok(Some(server))) => Some(server),
+            Ok(Ok(None)) => {
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(generation, Ok(false));
+                let _ = start_sender.send(Some(result));
+                None
+            }
+            Ok(Err(error)) => {
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(generation, Err(error));
+                let _ = start_sender.send(Some(result));
+                None
+            }
+            Err(_) => {
+                #[cfg(test)]
+                self.pause_after_start_output(generation).await;
+                let result = self.transition_start_result_to_stopping(
+                    generation,
+                    Err("Web server start supervisor panicked".to_string()),
+                );
+                let _ = start_sender.send(Some(result));
+                None
+            }
+        };
+
+        if let Some(join) = server.as_mut() {
+            if self.publish_running(generation) {
+                let _ = start_sender.send(Some(Ok(true)));
+            } else {
+                self.move_generation_to_stopping(generation);
+                let _ = start_sender.send(Some(Err(WEB_SERVER_START_CANCELLED.to_string())));
+            }
+            if let Err(error) = join.await {
+                log::error!("[web-server] server task join failed: {}", error);
+            }
+        }
+
+        self.move_generation_to_stopping(generation);
+        admission.wait().await;
+        if self.finish_generation(generation) {
+            let _ = stop_sender.send(Some(Ok(())));
         }
     }
 
@@ -1160,9 +1623,7 @@ pub(crate) fn spawn_restore_startup(
         struct RestoreGuard(Arc<RestoreInProgress>);
         impl Drop for RestoreGuard {
             fn drop(&mut self) {
-                self.0
-                     .0
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.0 .0.store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
         let _restore_guard = RestoreGuard(restore_flag);
@@ -1182,10 +1643,8 @@ pub(crate) fn spawn_restore_startup(
 
         // #1341 - the selection barrier must never wedge behind a failed
         // restore (the webview's session commands queue on it).
-        let mut completion = RestoreCompletionGuard::new(
-            restore_barrier,
-            Arc::clone(&restore_observer_barrier),
-        );
+        let mut completion =
+            RestoreCompletionGuard::new(restore_barrier, Arc::clone(&restore_observer_barrier));
 
         // #1341 - a panic inside the restore body degrades (logged + partial
         // restore, retried next boot) instead of aborting the task and
@@ -1202,7 +1661,10 @@ pub(crate) fn spawn_restore_startup(
             let root_agent_path = match crate::config::root_agent::ensure_root_agent_dir() {
                 Ok(path) => Some(path),
                 Err(e) => {
-                    log::error!("[root-agent] Failed to provision root agent during restore: {}", e);
+                    log::error!(
+                        "[root-agent] Failed to provision root agent during restore: {}",
+                        e
+                    );
                     None
                 }
             };
@@ -1210,9 +1672,7 @@ pub(crate) fn spawn_restore_startup(
                 .iter()
                 .find(|ps| {
                     ps.is_root_agent
-                        || crate::config::root_agent::is_root_agent_path(
-                            &ps.working_directory,
-                        )
+                        || crate::config::root_agent::is_root_agent_path(&ps.working_directory)
                 })
                 .cloned();
 
@@ -1237,7 +1697,7 @@ pub(crate) fn spawn_restore_startup(
                                     last_coding_agent.as_deref(),
                                 )
                             };
-    
+
                             if should_auto_create {
                                 match commands::session::execute_root_transaction(
                                     &restore_transaction_for_task,
@@ -1262,9 +1722,7 @@ pub(crate) fn spawn_restore_startup(
                                 );
                             }
                         }
-                        Some(ps)
-                            if should_wake_root_agent_on_restore(ps.status.as_ref()) =>
-                        {
+                        Some(ps) if should_wake_root_agent_on_restore(ps.status.as_ref()) => {
                             let existing_root = {
                                 let mgr = session_mgr_clone.read().await;
                                 mgr.list_sessions().await.into_iter().find(|s| {
@@ -1361,78 +1819,78 @@ pub(crate) fn spawn_restore_startup(
                                     None
                                 };
                                 if !rebuild_failed {
-                                let (shell, shell_args, agent_label) =
-                                    if let Some(spawn) = resolved_spawn.as_ref() {
-                                        (
-                                            spawn.shell.clone(),
-                                            spawn.shell_args.clone(),
-                                            Some(spawn.trusted_agent_label.clone()),
-                                        )
-                                    } else {
-                                        (
-                                            ps.shell.clone(),
-                                            ps.shell_args.clone(),
-                                            ps.agent_label.clone(),
-                                        )
-                                    };
-                                match commands::session::create_session_inner_for_restore(
-                                    &restore_transaction_for_task,
-                                    &session_mgr_clone,
-                                    &pty_mgr_clone,
-                                    shell,
-                                    shell_args,
-                                    root_path.clone(),
-                                    Some(ps.name.clone()),
-                                    ps.agent_id.clone(),
-                                    agent_label,
-                                    false,
-                                    ps.git_repos.clone(),
-                                    false,
-                                    resolved_spawn,
-                                    resolved_agent_host_shell,
-                                    // #973 - headless caller: no terminal to measure, keep 120x30.
-                                    None,
-                                    Some(ps.start_fresh_on_restore),
-                                    None,
-                                )
-                                .await
-                                {
-                                    Ok(info) => {
-                                        if ps.was_active {
-                                            active_id = Some(info.id.clone());
-                                        }
-                                        n_woken += 1;
-                                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                            commands::session::attach_persisted_telegram_if_configured(
+                                    let (shell, shell_args, agent_label) =
+                                        if let Some(spawn) = resolved_spawn.as_ref() {
+                                            (
+                                                spawn.shell.clone(),
+                                                spawn.shell_args.clone(),
+                                                Some(spawn.trusted_agent_label.clone()),
+                                            )
+                                        } else {
+                                            (
+                                                ps.shell.clone(),
+                                                ps.shell_args.clone(),
+                                                ps.agent_label.clone(),
+                                            )
+                                        };
+                                    match commands::session::create_session_inner_for_restore(
+                                        &restore_transaction_for_task,
+                                        &session_mgr_clone,
+                                        &pty_mgr_clone,
+                                        shell,
+                                        shell_args,
+                                        root_path.clone(),
+                                        Some(ps.name.clone()),
+                                        ps.agent_id.clone(),
+                                        agent_label,
+                                        false,
+                                        ps.git_repos.clone(),
+                                        false,
+                                        resolved_spawn,
+                                        resolved_agent_host_shell,
+                                        // #973 - headless caller: no terminal to measure, keep 120x30.
+                                        None,
+                                        Some(ps.start_fresh_on_restore),
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(info) => {
+                                            if ps.was_active {
+                                                active_id = Some(info.id.clone());
+                                            }
+                                            n_woken += 1;
+                                            if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                commands::session::attach_persisted_telegram_if_configured(
                                                 &app_handle,
                                                 uuid,
                                                 ps.telegram_bot_id.as_deref(),
                                             )
                                             .await;
-                                        }
-    
-                                        if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                            if let Some(ref prompt) = ps.last_prompt {
-                                                let mgr = session_mgr_clone.read().await;
-                                                mgr.set_last_prompt(uuid, prompt.clone()).await;
                                             }
-                                        }
-    
-                                        if ps.was_detached {
+
                                             if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
-                                                {
+                                                if let Some(ref prompt) = ps.last_prompt {
                                                     let mgr = session_mgr_clone.read().await;
-                                                    if let Some(ref geo) = ps.detached_geometry
-                                                    {
-                                                        mgr.set_detached_geometry(
-                                                            uuid,
-                                                            geo.clone(),
-                                                        )
-                                                        .await;
-                                                    }
+                                                    mgr.set_last_prompt(uuid, prompt.clone()).await;
                                                 }
-    
-                                                let detached_result =
+                                            }
+
+                                            if ps.was_detached {
+                                                if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
+                                                    {
+                                                        let mgr = session_mgr_clone.read().await;
+                                                        if let Some(ref geo) = ps.detached_geometry
+                                                        {
+                                                            mgr.set_detached_geometry(
+                                                                uuid,
+                                                                geo.clone(),
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+
+                                                    let detached_result =
                                                     commands::window::execute_detach_transaction(
                                                         &restore_transaction_for_task,
                                                         uuid,
@@ -1440,25 +1898,25 @@ pub(crate) fn spawn_restore_startup(
                                                         true,
                                                     )
                                                     .await;
-                                                if let Err(e) = detached_result {
-                                                    log::warn!(
+                                                    if let Err(e) = detached_result {
+                                                        log::warn!(
                                                         "[restore] detach_terminal_inner failed for root agent '{}': {} — session stays live (attached)",
                                                         ps.name,
                                                         e
                                                     );
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        log::error!(
+                                        Err(e) => {
+                                            log::error!(
                                             "[root-agent] Failed to restore root session '{}': {}",
                                             ps.name,
                                             e
                                         );
-                                        failed_recoverable.push(ps.clone());
+                                            failed_recoverable.push(ps.clone());
+                                        }
                                     }
-                                }
                                 }
                             }
                         }
@@ -1521,7 +1979,7 @@ pub(crate) fn spawn_restore_startup(
                             }
                         }
                     }
-                    }
+                }
             } else if let Some(ps) = root_ps.as_ref() {
                 failed_recoverable.push(ps.clone());
             }
@@ -1532,9 +1990,7 @@ pub(crate) fn spawn_restore_startup(
 
             for ps in &persisted {
                 if ps.is_root_agent
-                    || crate::config::root_agent::is_root_agent_path(
-                        &ps.working_directory,
-                    )
+                    || crate::config::root_agent::is_root_agent_path(&ps.working_directory)
                 {
                     continue;
                 }
@@ -1550,7 +2006,11 @@ pub(crate) fn spawn_restore_startup(
 
                 // Skip sessions whose CWD no longer exists (permanent failure)
                 if !std::path::Path::new(&ps.working_directory).exists() {
-                    log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
+                    log::warn!(
+                        "Skipping restore of '{}': CWD '{}' no longer exists",
+                        ps.name,
+                        ps.working_directory
+                    );
                     // §1295 site C (restore-skip): append ONE archive
                     // record BEFORE the `continue`. The restore task is
                     // async and holds no `sessions_save_lock` here, so we
@@ -1585,11 +2045,10 @@ pub(crate) fn spawn_restore_startup(
                     teams.is_empty(),
                     ps.is_coordinator,
                 );
-                let archived_session =
-                    sessions_persistence::is_under_normalized_archived_roots(
-                        &ps.working_directory,
-                        &archived_roots,
-                    );
+                let archived_session = sessions_persistence::is_under_normalized_archived_roots(
+                    &ps.working_directory,
+                    &archived_roots,
+                );
                 let wake = restore_session_should_wake(
                     archived_session,
                     setting_on,
@@ -1600,14 +2059,12 @@ pub(crate) fn spawn_restore_startup(
                 if !wake {
                     // Defer: create a dormant Session record (no PTY, status = Exited(0)).
                     match restore_transaction_for_task
-                        .restore_dormant_inline(
-                            crate::session::selection::DormantRestoreRequest {
-                                persisted: ps.clone(),
-                                working_directory: ps.working_directory.clone(),
-                                is_coordinator: is_coord,
-                                is_root_agent: false,
-                            },
-                        )
+                        .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
+                            persisted: ps.clone(),
+                            working_directory: ps.working_directory.clone(),
+                            is_coordinator: is_coord,
+                            is_root_agent: false,
+                        })
                         .await
                     {
                         Ok(info) => {
@@ -1626,10 +2083,8 @@ pub(crate) fn spawn_restore_startup(
                             // The post-loop branching (Fix A) ensures `set_active_only`
                             // is used (not `switch_session`), so the dormant status
                             // survives selection.
-                            if restore_session_should_become_active(
-                                ps.was_active,
-                                archived_session,
-                            ) {
+                            if restore_session_should_become_active(ps.was_active, archived_session)
+                            {
                                 active_id = Some(info.id);
                             }
                         }
@@ -1675,20 +2130,20 @@ pub(crate) fn spawn_restore_startup(
                 } else {
                     None
                 };
-                let (shell, shell_args, agent_label) =
-                    if let Some(spawn) = resolved_spawn.as_ref() {
-                        (
-                            spawn.shell.clone(),
-                            spawn.shell_args.clone(),
-                            Some(spawn.trusted_agent_label.clone()),
-                        )
-                    } else {
-                        (
-                            ps.shell.clone(),
-                            ps.shell_args.clone(),
-                            ps.agent_label.clone(),
-                        )
-                    };
+                let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref()
+                {
+                    (
+                        spawn.shell.clone(),
+                        spawn.shell_args.clone(),
+                        Some(spawn.trusted_agent_label.clone()),
+                    )
+                } else {
+                    (
+                        ps.shell.clone(),
+                        ps.shell_args.clone(),
+                        ps.agent_label.clone(),
+                    )
+                };
 
                 // Wake: full PTY restore inside the restore transaction.
                 match commands::session::create_session_inner_for_restore(
@@ -1709,13 +2164,17 @@ pub(crate) fn spawn_restore_startup(
                     // #973 - headless caller: no terminal to measure, keep 120x30.
                     None,
                     Some(ps.start_fresh_on_restore),
-                    is_coord.then(|| {
-                        crate::commands::session::carry_communication_for_restart(
-                            ps.communication.clone(),
-                            ps.start_fresh_on_restore,
-                        )
-                    }).flatten(),
-                ).await {
+                    is_coord
+                        .then(|| {
+                            crate::commands::session::carry_communication_for_restart(
+                                ps.communication.clone(),
+                                ps.start_fresh_on_restore,
+                            )
+                        })
+                        .flatten(),
+                )
+                .await
+                {
                     Ok(info) => {
                         if ps.was_active {
                             active_id = Some(info.id.clone());
@@ -1789,7 +2248,10 @@ pub(crate) fn spawn_restore_startup(
             // the restore log in chronological order, not interleaved with switch events.
             log::info!(
                 "[restore] complete — {} woken, {} deferred (setting_on={}, total_evaluated={})",
-                n_woken, n_deferred, setting_on, persisted.len()
+                n_woken,
+                n_deferred,
+                setting_on,
+                persisted.len()
             );
 
             let persisted_target = active_id
@@ -1807,14 +2269,18 @@ pub(crate) fn spawn_restore_startup(
             }
 
             // Persist restored sessions + failed-but-recoverable entries
-            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
+            let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> =
+                session_mgr_clone.read().await;
             sessions_persistence::persist_merging_failed(&mgr, &failed_recoverable).await;
 
             if !failed_recoverable.is_empty() {
                 log::warn!(
                     "Session restore: {} sessions failed (preserved for next attempt): {:?}",
                     failed_recoverable.len(),
-                    failed_recoverable.iter().map(|s| &s.name).collect::<Vec<_>>()
+                    failed_recoverable
+                        .iter()
+                        .map(|s| &s.name)
+                        .collect::<Vec<_>>()
                 );
             }
         });
@@ -2386,34 +2852,34 @@ pub fn run(
             {
                 let web_settings = config::settings::load_settings();
                 if web_settings.web_server_enabled {
-                    let bind = web_settings.web_server_bind.clone();
-                    let port = web_settings.web_server_port;
-
-                    match tauri::async_runtime::block_on(web::start_server(
-                        bind.clone(),
-                        port,
+                    let ws_handle = app.state::<WebServerHandle>().inner().clone();
+                    let waiter = commands::config::begin_web_server_start(
+                        ws_handle.clone(),
+                        settings_for_web,
                         web_token_for_server,
                         session_mgr_for_web,
                         pty_mgr.clone(),
-                        settings_for_web,
                         broadcaster_for_web,
                         app.handle().clone(),
                         shutdown_for_setup.clone(),
-                    )) {
-                        Ok(join_handle) => {
-                            println!(
-                                "[web-token] Remote URL: http://{}:{}/?window=main&remoteToken={}",
-                                bind,
-                                port,
-                                web_access_token.value()
-                            );
-                            let ws_handle = app.state::<WebServerHandle>();
-                            ws_handle.store_owned(bind, port, join_handle);
+                    );
+                    match tauri::async_runtime::block_on(waiter.wait()) {
+                        Ok(true) => {
+                            if let Some((bind, port)) = ws_handle.snapshot().endpoint {
+                                println!(
+                                    "[web-token] Remote URL: http://{}:{}/?window=main&remoteToken={}",
+                                    bind,
+                                    port,
+                                    web_access_token.value()
+                                );
+                            }
                         }
-                        Err(err) => {
-                            log::warn!("[web-server] startup failed: {}", err);
-                            let ws_handle = app.state::<WebServerHandle>();
-                            ws_handle.record_bind_failure(err);
+                        Ok(false) => {}
+                        Err(error) if error == WEB_SERVER_START_CANCELLED => {
+                            log::info!("[web-server] autostart cancelled by lifecycle stop");
+                        }
+                        Err(error) => {
+                            log::warn!("[web-server] startup failed: {}", error);
                         }
                     }
                 }
@@ -3521,13 +3987,19 @@ mod tests {
         ApiServerTask, ContextPatternSource, ContextSample, ContextSampleSink,
         PersistedActiveFlagNormalization, RestoreObserverStartBarrier, ScraperPatterns,
         ScraperSamples, SettingsState, StartupError, StartupErrorKind, WebServerHandle,
+        WebServerLifecycle, WebServerLifecycleSnapshot, WebServerStopWaiter,
+        WEB_SERVER_START_CANCELLED,
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
     use crate::session::session::SessionStatus;
+    use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
 
     #[test]
@@ -4194,45 +4666,408 @@ mod tests {
         assert_eq!(*starts.lock().unwrap(), ["idle", "git", "discovery"]);
     }
 
-    #[tokio::test]
-    async fn web_server_handle_reports_owned_bind_and_port() {
-        let handle = WebServerHandle::default();
-        let task = tauri::async_runtime::spawn(async {
-            std::future::pending::<()>().await;
-        });
+    async fn wait_for_web_lifecycle(
+        handle: &WebServerHandle,
+        expected: WebServerLifecycle,
+    ) -> WebServerLifecycleSnapshot {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.snapshot();
+                if snapshot.lifecycle == expected {
+                    return snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("web lifecycle did not converge")
+    }
 
-        handle.store_owned("127.0.0.1".to_string(), 8765, task);
-
-        assert!(handle.is_owned_running("127.0.0.1", 8765));
-        assert!(!handle.is_owned_running("0.0.0.0", 8765));
-        assert!(!handle.is_owned_running("127.0.0.1", 8766));
-
-        assert!(handle.abort_running());
+    async fn start_test_web_generation(
+        handle: &WebServerHandle,
+        bind: &str,
+        port: u16,
+    ) -> (u64, Arc<crate::web::WebSocketAdmission>) {
+        let lifecycle = handle.clone();
+        let bind = bind.to_string();
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let (admission_sender, admission_receiver) = oneshot::channel();
+        let waiter = handle.begin_start(
+            shutdown,
+            move |generation, admission, generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(generation, bind, port));
+                assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
+                let server = tauri::async_runtime::spawn(async move {
+                    generation_token.cancelled().await;
+                });
+                Ok::<_, String>(Some(server))
+            },
+        );
+        let admission = tokio::time::timeout(Duration::from_secs(2), admission_receiver)
+            .await
+            .expect("factory did not expose admission")
+            .expect("factory dropped admission sender");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), waiter.wait())
+                .await
+                .expect("start waiter timed out"),
+            Ok(true)
+        );
+        let snapshot = wait_for_web_lifecycle(handle, WebServerLifecycle::Running).await;
+        assert_eq!(snapshot.endpoint, Some(("127.0.0.1".to_string(), port)));
+        (
+            snapshot.generation.expect("running generation has id"),
+            admission,
+        )
     }
 
     #[tokio::test]
-    async fn web_server_handle_clears_finished_task() {
+    async fn web_server_stop_during_start_is_sticky() {
         let handle = WebServerHandle::default();
-        let task = tauri::async_runtime::spawn(async {});
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let lifecycle = handle.clone();
+        let (entered_sender, entered_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = oneshot::channel();
+        let (admission_sender, admission_receiver) = oneshot::channel();
+        let first = handle.begin_start(
+            shutdown.clone(),
+            move |generation, admission, _generation_token| async move {
+                assert!(entered_sender.send(()).is_ok());
+                assert!(admission_sender.send(Arc::clone(&admission)).is_ok());
+                release_receiver
+                    .await
+                    .expect("test releases blocked start factory");
+                if !lifecycle.publish_effective_endpoint(generation, "127.0.0.1".to_string(), 8765)
+                {
+                    return Err(WEB_SERVER_START_CANCELLED.to_string());
+                }
+                panic!("a stopped generation must not reach bind");
+            },
+        );
+        entered_receiver.await.expect("factory entered");
+        let admission = admission_receiver.await.expect("admission exposed");
 
-        handle.store_owned("127.0.0.1".to_string(), 8765, task);
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let unexpected_factory_calls = Arc::new(AtomicU64::new(0));
+        let calls = Arc::clone(&unexpected_factory_calls);
+        let second = handle.begin_start(
+            shutdown,
+            move |_generation, _admission, _generation_token| async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(None)
+            },
+        );
+        let stop = handle.begin_stop().expect("starting generation is owned");
+        let stopping = handle.snapshot();
+        assert_eq!(stopping.lifecycle, WebServerLifecycle::Stopping);
+        assert_eq!(stopping.endpoint, None);
+        assert!(admission.try_acquire().is_none());
+        assert!(release_sender.send(()).is_ok());
 
-        assert!(!handle.is_owned_running("127.0.0.1", 8765));
-        assert!(!handle.abort_running());
+        let first_result = first.wait().await;
+        let second_result = second.wait().await;
+        assert_eq!(first_result, second_result);
+        assert_eq!(first_result, Err(WEB_SERVER_START_CANCELLED.to_string()));
+        assert_eq!(unexpected_factory_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(stop.wait().await, Ok(()));
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
+        assert!(admission.is_empty());
+    }
+
+    async fn assert_stop_after_start_output_cancels_result(
+        factory_output: Result<Option<tauri::async_runtime::JoinHandle<()>>, String>,
+    ) {
+        let handle = WebServerHandle::default();
+        let (output_reached, release_output) = handle.gate_next_start_output();
+        let start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |_generation, _admission, _generation_token| async move { factory_output },
+        );
+
+        assert!(
+            output_reached
+                .await
+                .expect("supervisor reports the observed lifecycle"),
+            "factory output must be complete while the generation is still Starting"
+        );
+        let stop = handle
+            .begin_stop()
+            .expect("Stop linealizes before start-result publication");
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        release_output
+            .send(())
+            .expect("release start-result publication");
+
+        assert_eq!(
+            start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+        assert_eq!(stop.wait().await, Ok(()));
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
     }
 
     #[tokio::test]
-    async fn web_server_handle_abort_clears_owned_status() {
+    async fn web_server_stop_between_factory_output_and_start_result_publication_is_sticky() {
+        assert_stop_after_start_output_cancels_result(Err("late factory error".to_string())).await;
+        assert_stop_after_start_output_cancels_result(Ok(None)).await;
+    }
+
+    #[tokio::test]
+    async fn web_server_stop_waits_for_generation_drain() {
         let handle = WebServerHandle::default();
-        let task = tauri::async_runtime::spawn(async {
-            std::future::pending::<()>().await;
-        });
+        let (_generation, admission) = start_test_web_generation(&handle, "127.0.0.1", 8765).await;
+        let connection_guard = admission
+            .try_acquire()
+            .expect("running generation admits connection");
+        let frame_guard = admission
+            .try_acquire()
+            .expect("running generation admits frame");
+        let waiter = handle.begin_stop().expect("running generation is owned");
+        let mut stop_task = tokio::spawn(waiter.wait());
 
-        handle.store_owned("127.0.0.1".to_string(), 8765, task);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut stop_task)
+                .await
+                .is_err()
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        drop(frame_guard);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut stop_task)
+                .await
+                .is_err()
+        );
+        drop(connection_guard);
 
-        assert!(handle.abort_running());
-        assert!(!handle.is_owned_running("127.0.0.1", 8765));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), stop_task)
+                .await
+                .expect("drain stop task timed out")
+                .expect("drain stop task panicked"),
+            Ok(())
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn web_server_stop_timeout_is_shared_and_fail_closed() {
+        let handle = WebServerHandle::default();
+        let (_generation, admission) = start_test_web_generation(&handle, "127.0.0.1", 8766).await;
+        let retained_guard = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let first = handle
+            .begin_stop_with_timeout(Duration::from_millis(40))
+            .expect("running generation is owned");
+        let second = handle
+            .begin_stop_with_timeout(Duration::from_secs(30))
+            .expect("stopping generation remains owned");
+        assert_eq!(first.deadline(), second.deadline());
+
+        let (first_result, second_result) = tokio::join!(first.wait(), second.wait());
+        assert_eq!(first_result, second_result);
+        assert_eq!(
+            first_result,
+            Err("Timed out waiting for web server generation to stop".to_string())
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+        let rejected_start = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            |_generation, _admission, _generation_token| async { Ok::<_, String>(None) },
+        );
+        assert_eq!(
+            rejected_start.wait().await,
+            Err(WEB_SERVER_START_CANCELLED.to_string())
+        );
+
+        drop(retained_guard);
+        wait_for_web_lifecycle(&handle, WebServerLifecycle::Stopped).await;
+    }
+
+    #[tokio::test]
+    async fn web_server_lost_stop_channel_is_fail_closed() {
+        let handle = WebServerHandle::default();
+        let (_generation, admission) = start_test_web_generation(&handle, "127.0.0.1", 8770).await;
+        let retained_guard = admission
+            .try_acquire()
+            .expect("running generation admits retained work");
+        let generation_stop = handle.begin_stop().expect("running generation is owned");
+        let (sender, receiver) = watch::channel(None);
+        drop(sender);
+        let lost_channel = WebServerStopWaiter {
+            receiver,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+
+        assert_eq!(
+            lost_channel.wait().await,
+            Err("Web server stop supervisor channel closed before terminal state".to_string())
+        );
+        assert_eq!(handle.snapshot().lifecycle, WebServerLifecycle::Stopping);
+
+        drop(retained_guard);
+        generation_stop
+            .wait()
+            .await
+            .expect("real generation Stop drains after channel-loss seam");
+    }
+
+    #[tokio::test]
+    async fn web_server_restart_uses_new_generation_and_ignores_stale_completion() {
+        let handle = WebServerHandle::default();
+        let (generation_one, _admission_one) =
+            start_test_web_generation(&handle, "127.0.0.1", 8767).await;
+        handle
+            .begin_stop()
+            .expect("first generation is owned")
+            .wait()
+            .await
+            .expect("first generation drains");
+        let (generation_two, _admission_two) =
+            start_test_web_generation(&handle, "127.0.0.1", 8768).await;
+        assert!(generation_two > generation_one);
+        let current = handle.snapshot();
+
+        assert!(!handle.move_generation_to_stopping(generation_one));
+        assert!(!handle.finish_generation(generation_one));
+        assert_eq!(handle.snapshot(), current);
+
+        handle
+            .begin_stop()
+            .expect("second generation is owned")
+            .wait()
+            .await
+            .expect("second generation drains");
+    }
+
+    #[tokio::test]
+    async fn web_server_finished_outer_task_converges_after_start_terminal() {
+        let handle = WebServerHandle::default();
+        let lifecycle = handle.clone();
+        let waiter = handle.begin_start(
+            crate::shutdown::ShutdownSignal::new(),
+            move |generation, _admission, _generation_token| async move {
+                assert!(lifecycle.publish_effective_endpoint(
+                    generation,
+                    "127.0.0.1".to_string(),
+                    8769,
+                ));
+                Ok::<_, String>(Some(tauri::async_runtime::spawn(async {})))
+            },
+        );
+        assert_eq!(waiter.wait().await, Ok(true));
+        wait_for_web_lifecycle(&handle, WebServerLifecycle::Stopped).await;
+    }
+
+    fn web_server_loopback_test_state() -> (
+        tauri::App,
+        Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+        Arc<Mutex<crate::pty::manager::PtyManager>>,
+        SettingsState,
+    ) {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(
+            crate::session::manager::SessionManager::new(),
+        ));
+        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let app = crate::test_support::test_builder()
+            .manage(Arc::clone(&settings))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build loopback websocket test app");
+        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let git_watcher = crate::pty::git_watcher::GitWatcher::new(
+            Arc::clone(&session_mgr),
+            app.handle().clone(),
+        );
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            None,
+            None,
+        )));
+        (app, session_mgr, pty_mgr, settings)
+    }
+
+    #[tokio::test]
+    async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
+        let (app, session_mgr, pty_mgr, settings) = web_server_loopback_test_state();
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let generation_token = CancellationToken::new();
+        let admission = Arc::new(crate::web::WebSocketAdmission::new(
+            generation_token.clone(),
+        ));
+        assert!(admission.open(&shutdown));
+        let router = crate::web::build_router(
+            Arc::new(crate::web::auth::WebAccessToken::new(
+                "loopback-test-token".to_string(),
+            )),
+            session_mgr,
+            pty_mgr,
+            settings,
+            crate::web::broadcast::WsBroadcaster::new(),
+            app.handle().clone(),
+            Arc::clone(&admission),
+            generation_token.clone(),
+            None,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback websocket listener");
+        let addr = listener.local_addr().expect("loopback listener address");
+        let server = crate::web::spawn_server_on_listener(
+            listener,
+            router,
+            generation_token.clone(),
+            shutdown,
+        );
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect loopback websocket client");
+        let request = format!(
+            "GET /ws?token=loopback-test-token HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("write RFC 6455 handshake");
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut chunk = [0_u8; 512];
+            while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = client
+                    .read(&mut chunk)
+                    .await
+                    .expect("read RFC 6455 handshake");
+                assert!(read > 0, "server closed before handshake completed");
+                response.extend_from_slice(&chunk[..read]);
+            }
+        })
+        .await
+        .expect("RFC 6455 handshake timed out");
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 101"),
+            "unexpected handshake: {}",
+            String::from_utf8_lossy(&response)
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while admission.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("connection guard was not tracked");
+
+        admission.close();
+        generation_token.cancel();
+        let mut eof = [0_u8; 1];
+        let (server_result, read_result, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(server, client.read(&mut eof), admission.wait())
+            })
+            .await
+            .expect("generation stop did not reap loopback websocket");
+        server_result.expect("loopback server task panicked");
+        assert_eq!(read_result.expect("read client EOF"), 0);
+        assert!(admission.is_empty());
     }
 
     #[test]

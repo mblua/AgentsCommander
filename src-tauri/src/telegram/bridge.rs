@@ -1375,7 +1375,10 @@ mod tests {
             "   ▄▀▀    ▀▀▄     D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3",
         ];
         for line in horizontal {
-            assert!(!filter.keep_line(line), "logo row should be dropped: {line:?}");
+            assert!(
+                !filter.keep_line(line),
+                "logo row should be dropped: {line:?}"
+            );
         }
 
         // Vertical logo text rows, frame 03:15:27.898 (Blocker C: no block
@@ -1386,7 +1389,10 @@ mod tests {
             "  Gemini 3.7 Flash (High)",
         ];
         for line in vertical {
-            assert!(!filter.keep_line(line), "vertical logo row should be dropped: {line:?}");
+            assert!(
+                !filter.keep_line(line),
+                "vertical logo row should be dropped: {line:?}"
+            );
         }
     }
 
@@ -1396,9 +1402,7 @@ mod tests {
 
         // The 4 exact rows of the vertical-logo response frame (L19-33),
         // with explicit outcomes.
-        assert!(!filter.keep_line(
-            "  mariano.blua@gmail.com (Google AI Pro)"
-        )); // DROPPED: account row by `Google AI Pro` pattern
+        assert!(!filter.keep_line("  mariano.blua@gmail.com (Google AI Pro)")); // DROPPED: account row by `Google AI Pro` pattern
         assert!(!filter.keep_line("  Gemini 3.7 Flash (High)")); // DROPPED: model row by ` (High)` pattern
         assert!(filter.keep_line(
             "  D:/0_repos/AgentsCommander_iac/.ac/wg-21-ac-dev-team-v3/__agent_ac-cli-tester-v3"
@@ -1432,9 +1436,8 @@ mod tests {
         // Blocker A: counter variant, bare and fused (frame 03:23:42.495, L208
         // — exact content, 15 spaces).
         assert!(!filter.keep_line("Gemini 3.7 Flash · high · 1 task(s) · /tasks"));
-        assert!(!filter.keep_line(
-            "esc to cancel               Gemini 3.7 Flash · high · 1 task(s) · /tasks"
-        ));
+        assert!(!filter
+            .keep_line("esc to cancel               Gemini 3.7 Flash · high · 1 task(s) · /tasks"));
     }
 
     #[test]
@@ -1445,9 +1448,7 @@ mod tests {
         assert!(!filter.keep_line("▸ Thought for 2s, 236 tokens"));
         assert!(!filter.keep_line("▸ Thought for 14s, 2.8k tokens"));
         assert!(!filter.keep_line("▸ Thought for 4s, 1.8k tokens"));
-        assert!(!filter.keep_line(
-            "▸ ThougUse /feedback to share your experience with the team."
-        ));
+        assert!(!filter.keep_line("▸ ThougUse /feedback to share your experience with the team."));
     }
 
     #[test]
@@ -1484,9 +1485,9 @@ mod tests {
         assert!(filter.keep_line(
             "  ¡Hola! Soy ac-cli-tester-v3. Estoy listo para ayudarte con la validación"
         ));
-        assert!(filter.keep_line(
-            "He ejecutado la validación en vivo de las 5 filas PENDING asignadas"
-        ));
+        assert!(
+            filter.keep_line("He ejecutado la validación en vivo de las 5 filas PENDING asignadas")
+        );
         // A normal code/tool line.
         assert!(filter.keep_line("  let info = BridgeInfo { bot_id: bot.id.clone() };"));
         // Tool-call activity rows pass intentionally (informative, not chrome).
@@ -1507,7 +1508,10 @@ mod tests {
             "  Investigating System Behavior",
             "  Observing System Activity",
         ] {
-            assert!(filter.keep_line(line), "step label should be kept: {line:?}");
+            assert!(
+                filter.keep_line(line),
+                "step label should be kept: {line:?}"
+            );
         }
     }
 
@@ -1541,7 +1545,10 @@ mod tests {
             filter_for_agent(Some(CodingAgentKind::Codex)).name(),
             "claude-code"
         );
-        assert_eq!(filter_for_agent(Some(CodingAgentKind::Pi)).name(), "claude-code");
+        assert_eq!(
+            filter_for_agent(Some(CodingAgentKind::Pi)).name(),
+            "claude-code"
+        );
         assert_eq!(filter_for_agent(None).name(), "claude-code");
     }
 
@@ -1553,8 +1560,8 @@ mod tests {
 
         for line in [
             "────────────────────", // box-drawing separator (U+2500)
-            "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", // braille spinner row (U+2800..U+28FF)
-            "▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪", // low-alnum decorative line
+            "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",           // braille spinner row (U+2800..U+28FF)
+            "▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪",     // low-alnum decorative line
         ] {
             assert!(!agy.keep_line(line), "agy should drop: {line:?}");
             assert!(!claude.keep_line(line), "claude should drop: {line:?}");

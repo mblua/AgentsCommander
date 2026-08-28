@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::config::ac_root::{existing_ac_root, find_ac_root_segment, has_ac_root};
 use crate::config::replica_identity::{
     agent_bare_name_from_ref, read_and_repair_wg_replica_config, WG_REPLICA_REQUIRED_CONTEXT,
 };
-use crate::config::ac_root::{existing_ac_root, find_ac_root_segment, has_ac_root};
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
@@ -952,8 +952,7 @@ pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<Pat
             // still hold a valid anchor above the current path.
             continue;
         }
-        let Some(layout) = crate::config::ac_root::wg_replica_layout_from_agent_dir(path)?
-        else {
+        let Some(layout) = crate::config::ac_root::wg_replica_layout_from_agent_dir(path)? else {
             continue;
         };
         if layout.ac_root != owning_ac_root {
@@ -2570,8 +2569,7 @@ mod tests {
         let ac_root = tmp.path().join("proj-a").join(".ac");
         let wg_dir = ac_root.join("wg-1-dev-team");
 
-        let resolved =
-            resolve_wg_coordinator_replica(&ac_root, &wg_dir).expect("coordinator");
+        let resolved = resolve_wg_coordinator_replica(&ac_root, &wg_dir).expect("coordinator");
 
         assert_eq!(resolved.project, "proj-a");
         assert_eq!(resolved.team, "dev-team");
@@ -3178,8 +3176,8 @@ mod tests {
             .join("_agent_phase0");
         std::fs::create_dir_all(&nested_origin).unwrap();
 
-        let anchor = strict_wg_replica_anchor_from_cwd(&nested_origin)
-            .expect("walk must not error");
+        let anchor =
+            strict_wg_replica_anchor_from_cwd(&nested_origin).expect("walk must not error");
         assert_eq!(
             anchor, None,
             "the ancestor project's replica must never anchor a nested-project cwd"
@@ -3231,8 +3229,7 @@ mod tests {
             .join("__agent_alice");
         std::fs::create_dir_all(&alice).unwrap();
 
-        let anchor =
-            strict_wg_replica_anchor_from_cwd(&alice).expect("walk must not error");
+        let anchor = strict_wg_replica_anchor_from_cwd(&alice).expect("walk must not error");
         assert_eq!(
             std::fs::canonicalize(anchor.expect("own replica must bind")).unwrap(),
             std::fs::canonicalize(&alice).unwrap()
@@ -3257,8 +3254,7 @@ mod tests {
 
         let anchor = strict_wg_replica_anchor_from_cwd(&deep).expect("walk must not error");
         assert_eq!(
-            std::fs::canonicalize(anchor.expect("deeper cwd must bind the own replica"))
-            .unwrap(),
+            std::fs::canonicalize(anchor.expect("deeper cwd must bind the own replica")).unwrap(),
             std::fs::canonicalize(
                 temp.path()
                     .join("proj")
@@ -3359,7 +3355,8 @@ mod tests {
     #[test]
     fn verify_pty_input_replica_cwd_nested_origin_cwd_is_invalid() {
         let (_temp, _nested_inner2, nested_origin) = nested_strict_target_fixture();
-        let err = verify_pty_input_replica_cwd(&nested_origin).expect_err("origin dir must not resolve");
+        let err =
+            verify_pty_input_replica_cwd(&nested_origin).expect_err("origin dir must not resolve");
         assert_eq!(err, "sender_identity_invalid");
     }
 

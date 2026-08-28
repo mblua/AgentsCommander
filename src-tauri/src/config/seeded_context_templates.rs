@@ -1264,10 +1264,7 @@ fn validate_project_ac_root(ac_root: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("Project AC Root {} has no parent", ac_root.display()))
 }
 
-fn validate_project_ac_root_for_scan(
-    project_dir: &Path,
-    ac_root: &Path,
-) -> Result<(), String> {
+fn validate_project_ac_root_for_scan(project_dir: &Path, ac_root: &Path) -> Result<(), String> {
     validate_existing_dir(ac_root, "Project AC Root")?;
     let expected = crate::config::ac_root::ac_root_for_project(project_dir);
     if ac_root != expected {
@@ -1326,8 +1323,7 @@ fn ensure_project_context_templates_with_clock(
     validate_existing_dir(ac_root, "Context template directory")?;
     let mut loaded = load_state(ac_root, false)?;
     for spec in project_specs() {
-        let execution =
-            sync_one_template(None, ac_root, spec, &mut loaded, true, false, clock);
+        let execution = sync_one_template(None, ac_root, spec, &mut loaded, true, false, clock);
         let _ = consume_template_execution(spec, execution, on_publication)?;
     }
     persist_state_best_effort(ac_root, &loaded);
@@ -2147,12 +2143,8 @@ mod tests {
                     publication.published_at,
                 );
             };
-            ensure_project_context_templates_with_clock(
-                &ac_root,
-                &mut clock,
-                &mut on_publication,
-            )
-            .expect("ensure project context templates");
+            ensure_project_context_templates_with_clock(&ac_root, &mut clock, &mut on_publication)
+                .expect("ensure project context templates");
         }
         guard.release();
 
@@ -2342,9 +2334,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
 
@@ -2388,9 +2379,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
 
         assert!(is_known_generated_coordinator_template(
@@ -2984,9 +2974,7 @@ mod tests {
 
         assert!(updates.is_empty());
         assert!(!ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
-        assert!(!ac_root
-            .join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
-            .exists());
+        assert!(!ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).exists());
     }
 
     #[test]
@@ -3190,9 +3178,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
 
@@ -3219,9 +3206,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
 
@@ -3265,9 +3251,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(content, get_default_coordinator_template());
     }
 
@@ -3344,9 +3329,8 @@ mod tests {
             published_at,
         );
 
-        let content =
-            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
-                .expect("read coordinator");
+        let content = std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read coordinator");
         assert_eq!(
             content,
             get_default_coordinator_template(),
@@ -3375,11 +3359,8 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            custom,
-        )
-        .expect("write custom coordinator");
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
 
         let mut clock = || fixed_publication_time();
         let mut publications = Vec::new();
@@ -3427,11 +3408,8 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator with forged seeded hash";
-        std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            custom,
-        )
-        .expect("write custom coordinator");
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         let mut state = SeededContextTemplateState::default();
         state.templates.insert(
             "coordinator".to_string(),
@@ -3463,11 +3441,8 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            custom,
-        )
-        .expect("write custom coordinator");
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .pop()
@@ -3656,11 +3631,8 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            custom,
-        )
-        .expect("write custom coordinator");
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         std::fs::write(
             ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
             "not json",
@@ -3689,11 +3661,8 @@ mod tests {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
         let custom = "custom coordinator guidance";
-        std::fs::write(
-            ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME),
-            custom,
-        )
-        .expect("write custom coordinator");
+        std::fs::write(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME), custom)
+            .expect("write custom coordinator");
         let update = scan_project_context_template_updates(temp.path(), &ac_root)
             .expect("scan updates")
             .pop()

@@ -211,7 +211,8 @@ fn make_fixture() -> Fixture {
     })
     .expect("seed isolated settings");
 
-    let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+    let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -254,12 +255,11 @@ fn make_fixture() -> Fixture {
     let deliveries = Arc::clone(&captured_deliveries);
     let error_capture = Arc::clone(&listener_errors);
     let app = agentscommander_lib::test_support::test_builder()
-        .manage(MasterToken::new("pty-powershell-native-master-token".into()))
+        .manage(MasterToken::new(
+            "pty-powershell-native-master-token".into(),
+        ))
         .manage(AppOutbox::new(
-            repo_root
-                .join(".app-outbox")
-                .to_string_lossy()
-                .to_string(),
+            repo_root.join(".app-outbox").to_string_lossy().to_string(),
         ))
         .manage(settings)
         .manage(Arc::clone(&session_mgr))
@@ -269,7 +269,9 @@ fn make_fixture() -> Fixture {
         .manage(voice_tracking)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(shutdown_signal)
-        .manage(Arc::new(WebAccessToken::new("pty-powershell-native-web-token".into())))
+        .manage(Arc::new(WebAccessToken::new(
+            "pty-powershell-native-web-token".into(),
+        )))
         .manage(WsBroadcaster::new())
         .manage(WebServerHandle::default())
         .manage(spec_board_state)
@@ -400,8 +402,9 @@ async fn create_resolved_session(
     cwd: &str,
     name: &str,
 ) -> SessionInfo {
-    let spawn = build_agent_spawn_command(settings, agent_id, Some(std::path::Path::new(cwd)), None)
-        .unwrap_or_else(|e| panic!("resolve agent spawn for {agent_id}: {e}"));
+    let spawn =
+        build_agent_spawn_command(settings, agent_id, Some(std::path::Path::new(cwd)), None)
+            .unwrap_or_else(|e| panic!("resolve agent spawn for {agent_id}: {e}"));
     let host_shell = ResolvedAgentHostShell {
         program: settings.default_shell.clone(),
         args: settings.default_shell_args.clone(),
@@ -480,9 +483,8 @@ async fn wait_for_snapshot_contains(
         )
         .map_err(|e| format!("{phase}: get_screen_snapshot failed for {session_id}: {e}"))?;
         if let Some(snapshot) = snapshot {
-            last_snapshot = Some(
-                serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"),
-            );
+            last_snapshot =
+                Some(serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"));
             let text = String::from_utf8_lossy(&snapshot.data);
             if text.contains(expected_bytes) {
                 let deliveries = fixture
@@ -539,7 +541,11 @@ async fn wait_for_session_gone(
 ) -> Result<(), String> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if fixture.pty_mgr.lock().unwrap().context_session_liveness(session_id)
+        if fixture
+            .pty_mgr
+            .lock()
+            .unwrap()
+            .context_session_liveness(session_id)
             == agentscommander_lib::pty::context_scrape::ContextSessionLiveness::SessionOver
         {
             return Ok(());
@@ -825,9 +831,7 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
         for line in &expected_lines {
             wait_for_snapshot_contains(&fixture, &id, line, "reporter-argv")
                 .await
-                .unwrap_or_else(|e| {
-                    panic!("{e}\nargv line missing: {line:?}")
-                });
+                .unwrap_or_else(|e| panic!("{e}\nargv line missing: {line:?}"));
         }
 
         // PTY input path: a distinct marker through PtyManager::write must be
@@ -898,27 +902,37 @@ fn configured_powershell_batch_regression() {
     // --session-id pair lands after the known values and is not echoed), then
     // exits with a deterministic code. `%~N` strips the command-line quotes;
     // cmd batch can only expand %0-%9, so `shift` brings args 10+ into %1.
-    let mut shim_body = String::from("echo AC_BATCH_MARKER
-");
+    let mut shim_body = String::from(
+        "echo AC_BATCH_MARKER
+",
+    );
     let mut shifted = 0usize;
     for i in 1..=cmd_safe_args.len() {
         if i <= 9 {
-            shim_body.push_str(&format!("echo \"V{i}=[%~{i}]\"
-"));
+            shim_body.push_str(&format!(
+                "echo \"V{i}=[%~{i}]\"
+"
+            ));
         } else {
             // `shift` moves every parameter one position left; before reading
             // arg i (i > 9), shift it down to %1.
             while shifted < i - 1 {
-                shim_body.push_str("shift
-");
+                shim_body.push_str(
+                    "shift
+",
+                );
                 shifted += 1;
             }
-            shim_body.push_str(&format!("echo \"V{i}=[%~1]\"
-"));
+            shim_body.push_str(&format!(
+                "echo \"V{i}=[%~1]\"
+"
+            ));
         }
     }
-    shim_body.push_str("exit /b 17
-");
+    shim_body.push_str(
+        "exit /b 17
+",
+    );
     write_cmd_shim(&shim_dir.join("claude.cmd"), &shim_body);
 
     let Some(powershell) = powershell_required_host() else {
@@ -980,16 +994,15 @@ fn configured_powershell_batch_regression() {
         for line in &expected_lines {
             wait_for_snapshot_contains(&fixture, &id, line, "batch-argument")
                 .await
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "{e}\nargument line missing: {line:?}"
-                    )
-                });
+                .unwrap_or_else(|e| panic!("{e}\nargument line missing: {line:?}"));
         }
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("batch shim exit code must propagate");
-        assert_eq!(code, 17, "nested batch shim exit code must propagate exactly");
+        assert_eq!(
+            code, 17,
+            "nested batch shim exit code must propagate exactly"
+        );
 
         // Pre-PTY rejection: explicit .cmd program with '%' in an argument.
         let explicit = shim_dir.join("explicit.cmd");
@@ -1017,7 +1030,13 @@ fn configured_powershell_batch_regression() {
             "pre-PTY rejection must name the explicit-batch rule: {err}"
         );
         assert!(
-            fixture.session_mgr.read().await.list_sessions().await.is_empty()
+            fixture
+                .session_mgr
+                .read()
+                .await
+                .list_sessions()
+                .await
+                .is_empty()
                 || !fixture
                     .session_mgr
                     .read()
@@ -1076,9 +1095,13 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
     let shim_dir = temp.join("shim-cmd");
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
     let shim_path = shim_dir.join("cmdprobe.cmd");
-    write_cmd_shim(&shim_path, "echo CMD_PROBE_MARKER\r\necho [%*]\r\nexit /b 7");
+    write_cmd_shim(
+        &shim_path,
+        "echo CMD_PROBE_MARKER\r\necho [%*]\r\nexit /b 7",
+    );
 
-    let cmd_host = std::env::var("ComSpec").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
+    let cmd_host =
+        std::env::var("ComSpec").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
     let host_shell = ResolvedAgentHostShell {
         program: cmd_host.clone(),
         args: vec!["/D".to_string()],
@@ -1121,9 +1144,16 @@ fn configured_cmd_host_shim_argv_and_pre_pty_rejections() {
             .await
             .expect("cmd shim marker must arrive through PTY output");
         // One literal argument each: the shim echoes [%*].
-        wait_for_snapshot_contains(&fixture, &id, "[--flag !bang! a\\b]", "cmd-literal-argument")
-            .await
-            .expect("flag-style, bang, and internal-backslash values must be one literal argument each");
+        wait_for_snapshot_contains(
+            &fixture,
+            &id,
+            "[--flag !bang! a\\b]",
+            "cmd-literal-argument",
+        )
+        .await
+        .expect(
+            "flag-style, bang, and internal-backslash values must be one literal argument each",
+        );
         let code = wait_for_exit_code(&fixture, id, EXIT_TIMEOUT)
             .await
             .expect("cmd shim exit code must propagate");
@@ -1224,7 +1254,10 @@ fn configured_powershell_host_shutdown_reaps_agent() {
     let shim_dir = temp.join("shim-long");
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
     let shim_path = shim_dir.join("claude.cmd");
-    write_cmd_shim(&shim_path, "echo AC_LONG_MARKER\r\nping -n 60 127.0.0.1 > nul");
+    write_cmd_shim(
+        &shim_path,
+        "echo AC_LONG_MARKER\r\nping -n 60 127.0.0.1 > nul",
+    );
 
     let Some(powershell) = powershell_required_host() else {
         eprintln!(
@@ -1263,9 +1296,7 @@ fn configured_powershell_host_shutdown_reaps_agent() {
             .expect("long-running shim must start");
 
         let record = spawn_diagnostics::record_for(id).expect("spawn record exists");
-        let host_pid = record
-            .pid()
-            .expect("the tracked host pid is available");
+        let host_pid = record.pid().expect("the tracked host pid is available");
         assert!(process_exists(host_pid), "PowerShell host must be running");
 
         destroy_session_inner(fixture.app.handle(), id)

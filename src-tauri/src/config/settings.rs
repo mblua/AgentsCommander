@@ -1737,8 +1737,8 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
         }
     }
 
-    if let Some(antigravity_idx) = find_provider_token(&tokens, "agy")
-        .or_else(|| find_provider_token(&tokens, "antigravity"))
+    if let Some(antigravity_idx) =
+        find_provider_token(&tokens, "agy").or_else(|| find_provider_token(&tokens, "antigravity"))
     {
         if antigravity_has_manual_resume(&tokens, antigravity_idx) {
             return Err(format!(

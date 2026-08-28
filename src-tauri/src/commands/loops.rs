@@ -5,6 +5,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
     read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
@@ -12,7 +13,6 @@ use crate::config::loops::{
     LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
     LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
-use crate::config::ac_root::existing_ac_root;
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
 use crate::loops::scheduler::LoopScheduler;

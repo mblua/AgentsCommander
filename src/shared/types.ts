@@ -548,7 +548,9 @@ export type MainSidebarSide = "left" | "right";
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export type WebServerOwnershipState =
+  | "starting"
   | "ownedRunning"
+  | "stopping"
   | "externalListening"
   | "stopped";
 
