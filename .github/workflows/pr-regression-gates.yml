@@ -170,15 +170,32 @@ jobs:
           #   3. The "1 passed" grep catches the filter matching nothing or
           #      matching something else instead.
           #
-          # Do NOT drop `pipefail` and rely on the greps. The test re-executes
-          # its own harness as a child with --nocapture, so the child's output
-          # interleaves and BOTH the identifier and a "1 passed" line appear
-          # TWICE. If the parent fails, the child's "ok" line is still in the
-          # log and both greps would still succeed. Only the exit code
-          # distinguishes those cases.
+          # The test re-executes itself as a child process, but the child's
+          # stdout and stderr are Stdio::piped() and collected into a String.
+          # On the success path that output is NEVER printed, so the identifier
+          # and the result line each appear EXACTLY ONCE in this log.
+          #
+          # On a FAILURE path the parent embeds the child's captured stdout
+          # into its panic message via {:?}, which debug-escapes the newlines
+          # onto a single line. That embedded text contains a literal
+          # "test result: ok. 1 passed" from a child that succeeded before the
+          # parent's own assertions failed. Two consequences:
+          #
+          #   - Guard 3 is anchored with `^` for exactly this reason. Embedded
+          #     mid-line, the child's "ok" cannot satisfy an anchored match.
+          #     Do NOT remove the `^`.
+          #   - Guard 2 is unanchored and CAN be satisfied by that embedded
+          #     text, so guard 2 alone cannot tell a real pass from a parent
+          #     failure that dumped a successful child's output.
+          #
+          # Keep `pipefail`. It is the only guard that does not depend on
+          # parsing text at all, so it is the only one no output shape can
+          # fool.
           #
           # Do NOT tighten these into count-based assertions (`grep -c ... 1`).
-          # Two occurrences are expected and correct.
+          # The success path yields one occurrence and the failure paths yield
+          # a different number depending on which assertion failed, so a fixed
+          # count would be wrong for some real failure it is meant to catch.
           grep -qF "$TEST" test-1577.log || {
             echo "::error::$TEST never ran. It was renamed, moved, or gated out, and this step was silently testing nothing."
             exit 1
