@@ -13,6 +13,40 @@ const LEGACY_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.agent.md";
 pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md";
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =
     crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME;
+
+/// #1605: per-platform project `.ac` files whose content IS the rendered
+/// `{{HOST_PLATFORM_RULES}}` block (including its `## Host Platform Rules`
+/// heading). Project-level only; never seeded in the app-config directory.
+pub const HOST_PLATFORM_RULES_FILENAME_WINDOWS: &str = "Context.platform.windows.md";
+pub const HOST_PLATFORM_RULES_FILENAME_LINUX: &str = "Context.platform.linux.md";
+pub const HOST_PLATFORM_RULES_FILENAME_MACOS: &str = "Context.platform.macos.md";
+
+/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// Windows host sessions (277 bytes; sha256
+/// 5fd5dd5f7d3d097f90e58cee6e6a210e2b2a6070c24e4164a7ac06d3854286a7 at
+/// 047248bc). Single source for both the `.ac/Context.platform.windows.md` seed
+/// and the render fallback.
+pub(crate) const DEFAULT_HOST_PLATFORM_RULES_WINDOWS: &str = r#"## Host Platform Rules
+
+Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | Out-String`."#;
+
+/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// Linux host sessions (106 bytes; sha256
+/// 848e6bd25a001b091dd419fb665d2114abc5e5c2a19429fc820144aaa6190790 at
+/// 047248bc). Single source for both the `.ac/Context.platform.linux.md` seed
+/// and the render fallback.
+pub(crate) const DEFAULT_HOST_PLATFORM_RULES_LINUX: &str = r#"## Host Platform Rules
+
+This session runs on a Linux host; no platform-specific shell routing rules apply."#;
+
+/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// macOS host sessions (106 bytes; sha256
+/// a305af4fce8148ac80d8e197b02142738a6056959e9b72bee43689b3d01cdc4d at
+/// 047248bc). Single source for both the `.ac/Context.platform.macos.md` seed
+/// and the render fallback.
+pub(crate) const DEFAULT_HOST_PLATFORM_RULES_MACOS: &str = r#"## Host Platform Rules
+
+This session runs on a macOS host; no platform-specific shell routing rules apply."#;
 static CONTEXT_TEMPLATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
