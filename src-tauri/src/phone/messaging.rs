@@ -383,13 +383,14 @@ fn is_wg_dir(name: &str) -> bool {
 }
 
 fn parse_wg_prefix(prefix: &str) -> Option<String> {
-    let rest = crate::config::entity_prefix::strip_entity_prefix(prefix)?;
+    let matched = crate::config::entity_prefix::entity_prefix_of(prefix)?;
+    let rest = &prefix[matched.len()..];
     let n_end = rest.find('-')?;
     let digits = &rest[..n_end];
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(format!("wg{}", digits))
+    Some(format!("{}{}", matched.trim_end_matches('-'), digits))
 }
 
 fn sanitize(s: &str) -> String {

@@ -1581,7 +1581,7 @@ fn agent_repos_header(is_root_agent: bool) -> &'static str {
          ## Repos\n\n"
     } else {
         "# Agent Repos\n\n\
-         You are working inside a workgroup replica. Your code repos are listed below; you MUST change into the \
+         You are working inside a room replica. Your code repos are listed below; you MUST change into the \
          appropriate repo directory before any code work (git, file edits, builds).\n\n\
          ## Repos\n\n"
     }
@@ -3547,12 +3547,12 @@ fn default_context_dynamic_values(
     };
     let messaging_exception = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
-            "**Narrow exception — workgroup messaging directory:**\n\n\
+            "**Narrow exception — room messaging directory:**\n\n\
              You MAY create message files inside this directory:\n\n\
              ```\n\
              {path}\n\
              ```\n\n\
-             Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory, and list your workgroup root (`wg-<N>-*`) to resolve that directory's path.\n\n",
+             Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path.\n\n",
             path = path,
         ),
         MessagingContextMode::Root(path) => format!(
@@ -3561,7 +3561,7 @@ fn default_context_dynamic_values(
              ```\n\
              {path}\n\
              ```\n\n\
-             Strictly limited to canonical Root Agent inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<orchestrator>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory.\n\n",
+             Strictly limited to canonical Root Agent inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory.\n\n",
             path = path,
         ),
         MessagingContextMode::None => String::new(),
@@ -3634,19 +3634,19 @@ fn default_context_dynamic_values(
     }
     .to_string();
     let peer_name_format = match &messaging_mode {
-        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG orchestrator replicas only, shaped `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/tech-lead`. Origin orchestrators and non-orchestrator WG replicas are not valid Root Agent targets in #277.".to_string(),
-        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>`, e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>`, e.g. `agentscommander/architect`.".to_string(),
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified Room orchestrator replicas only, shaped `<project>:<room>/<agent>`, e.g. `agentscommander:wg-15-dev-team/tech-lead`. Origin orchestrators and non-orchestrator WG replicas are not valid Root Agent targets in #277.".to_string(),
+        _ => "- **Room replicas** (the common case): `<project>:<room>/<agent>`, e.g. `agentscommander:room-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>`, e.g. `agentscommander/architect`.".to_string(),
     };
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
-            "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list verified WG orchestrator replicas only.\n\n\
+            "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list verified Room orchestrator replicas only.\n\n\
              Root messaging is **file-based** to avoid PTY truncation:\n\n\
              1. Write a new file in the Root Agent messaging directory:\n\n\
              ```\n\
              {path}\n\
              ```\n\n\
-             Name it `YYYYMMDD-HHMMSS-root-to-<wgN>-<orchestrator>-<slug>.md` (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
+             Name it `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md` (legacy: `<wgN>`) (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
              2. Send:\n\n\
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<orchestrator_name>\" --send <filename> --mode wake\n\
@@ -3655,7 +3655,7 @@ fn default_context_dynamic_values(
             path = path,
         ),
         MessagingContextMode::Workgroup(_) => "Messages are **file-based** to avoid PTY truncation:\n\n\
-             1. Write a new file in `<workgroup-root>/messaging/` (walk up from your root to the parent `wg-<N>-*` folder). Name it `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
+             1. Write a new file in `<room-root>/messaging/` (walk up from your root to the parent `room-<N>-*` folder (or `wg-<N>-*` if legacy)). Name it `YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (legacy: `<wgN>`) (UTC, sanitized kebab-case slug \u{2264}50 chars).\n\
              2. Send:\n\n\
              ```\n\
              \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
@@ -3666,7 +3666,7 @@ fn default_context_dynamic_values(
         // refuses this root (cli/send.rs:406-414). Telling it to walk up to a workgroup
         // root it does not have would order an operation the Golden Rule forbids and the
         // CLI rejects. State the truth instead.
-        MessagingContextMode::None => "This session has no messaging directory: `--send` requires a `--root` under `wg-<N>-*` or the canonical Root Agent directory. Do NOT search the filesystem for one. You can still receive messages: when an incoming `[Message from <peer>]` notification gives an absolute path, read that file, act, and report here instead of using `send --send`.\n"
+        MessagingContextMode::None => "This session has no messaging directory: `--send` requires a `--root` under `room-<N>-*` or `wg-<N>-*` or the canonical Root Agent directory. Do NOT search the filesystem for one. You can still receive messages: when an incoming `[Message from <peer>]` notification gives an absolute path, read that file, act, and report here instead of using `send --send`.\n"
             .to_string(),
     };
 
@@ -4819,9 +4819,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             assert_no_raw_template_placeholders(out);
         }
         assert!(wg.contains("C:/fake/_agent_architect"));
-        assert!(wg.contains("Narrow exception — workgroup messaging directory"));
+        assert!(wg.contains("Narrow exception — room messaging directory"));
         assert!(!plain.contains("Your origin Agent Matrix"));
-        assert!(!plain.contains("Narrow exception — workgroup messaging directory"));
+        assert!(!plain.contains("Narrow exception — room messaging directory"));
         assert!(plain.contains("This session has no messaging directory"));
     }
 
@@ -5308,7 +5308,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("filename ONLY"));
         assert!(out.contains("never a path"));
         assert!(out.contains("--send <filename> --mode wake"));
-        assert!(out.contains("YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md"));
+        assert!(out.contains("YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md"));
     }
 
     #[test]
@@ -5344,7 +5344,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn default_context_embeds_fqn_format_and_filesystem_warning() {
         let out = default_context("C:/tmp/fake-agent", None, &no_skill_section());
         // Canonical FQN format shown explicitly (the bug case used the wrong shape).
-        assert!(out.contains("<project>:<workgroup>/<agent>"));
+        assert!(out.contains("<project>:<room>/<agent>"));
         assert!(out.contains("<project>/<agent>"));
         // Explicit prohibition of filesystem-directory names as --to values.
         assert!(out.contains("filesystem directory name is NEVER"));
@@ -5435,7 +5435,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             &no_skill_section(),
         );
         assert!(
-            out.contains("Narrow exception — workgroup messaging directory"),
+            out.contains("Narrow exception — room messaging directory"),
             "expected messaging exception header, got:\n{}",
             out
         );
@@ -5479,7 +5479,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn default_context_non_workgroup_omits_messaging_exception() {
         let out = default_context("C:/fake/plain/agent", None, &no_skill_section());
         assert!(
-            !out.contains("Narrow exception — workgroup messaging directory"),
+            !out.contains("Narrow exception — room messaging directory"),
             "expected no messaging exception header for non-WG agent, got:\n{}",
             out
         );
@@ -5516,7 +5516,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out
             .replace('\\', "/")
             .contains("C:/fake/ac-root-agent/messaging"));
-        assert!(out.contains("YYYYMMDD-HHMMSS-root-to-<wgN>-<orchestrator>-<slug>.md"));
+        assert!(out.contains("YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md"));
     }
 
     #[test]
@@ -5548,7 +5548,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn default_context_root_agent_documents_verified_wg_coordinators_only() {
         let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
 
-        assert!(out.contains("verified WG orchestrator replicas only"));
+        assert!(out.contains("verified Room orchestrator replicas only"));
         assert!(out.contains("Origin orchestrators and non-orchestrator WG replicas are not valid Root Agent targets in #277"));
         assert!(out.contains("Use only the JSON `name` values returned by `list-peers-lean`"));
     }
@@ -5721,7 +5721,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             read_forbidden_bullet(&wg)
         );
         assert!(wg.contains(
-            "You may also READ message files inside this directory, and list your workgroup root (`wg-<N>-*`) to resolve that directory's path."
+            "You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path."
         ));
 
         // Root: has its own messaging directory and exception paragraph.
@@ -5993,7 +5993,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(out.contains("AgentsCommander indexes skills from"));
         assert!(out.contains("repo-demo"));
         assert!(out.contains("You are the Root Agent."));
-        assert!(!out.contains("You are working inside a workgroup replica."));
+        assert!(!out.contains("You are working inside a room replica."));
     }
 
     #[test]
@@ -6018,7 +6018,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let config = serde_json::json!({ "repos": ["repo-demo"] });
 
         let non_root = render_agent_repos_string(temp.path(), Some(&config), None, false);
-        assert!(non_root.contains("You are working inside a workgroup replica."));
+        assert!(non_root.contains("You are working inside a room replica."));
         assert!(!non_root.contains("You are the Root Agent."));
         assert_eq!(
             render_agent_repos_string(temp.path(), None, None, false),
@@ -6027,7 +6027,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         let as_root = render_agent_repos_string(temp.path(), Some(&config), None, true);
         assert!(as_root.contains("You are the Root Agent."));
-        assert!(!as_root.contains("You are working inside a workgroup replica."));
+        assert!(!as_root.contains("You are working inside a room replica."));
         assert_eq!(
             render_agent_repos_string(temp.path(), None, None, true),
             "# Agent Repos\n\nNo repos configured for the Root Agent.\n"
@@ -6399,7 +6399,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             out
         );
         assert!(
-            out.contains("Narrow exception — workgroup messaging directory"),
+            out.contains("Narrow exception — room messaging directory"),
             "messaging exception header missing, got:\n{}",
             out
         );
@@ -9588,7 +9588,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(content.contains("## Core Concepts"));
         assert!(content.contains("## GOLDEN RULE"));
-        assert!(content.contains("verified WG orchestrator replicas only"));
+        assert!(content.contains("verified Room orchestrator replicas only"));
         assert_eq!(
             content.matches("Root messaging is **file-based**").count(),
             1,
@@ -10423,6 +10423,53 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             std::fs::read_to_string(&template_path).expect("read template"),
             legacy,
             "a Current-generation legacy file is returned as-is and never rewritten"
+        );
+    }
+
+    /// #1614 AC7.13. The rendered LIVE context for a Room replica says Room.
+    /// The matrix root must have a real `skills/` directory, or
+    /// `render_skills_section` takes the no-skills arm and the criterion passes
+    /// without ever exercising the line D8f moves.
+    #[test]
+    fn default_context_for_a_room_replica_says_room() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("room-1-t").join("__agent_dev-rust");
+        std::fs::create_dir_all(&replica).expect("create replica");
+        let skill = matrix.join(SKILLS_DIR_NAME).join("gamma-skill");
+        std::fs::create_dir_all(&skill).expect("create skill");
+        std::fs::write(
+            skill.join(SKILL_MD_FILENAME),
+            "---\nname: gamma-skill\ndescription: Fixture skill.\n---\n\nbody\n",
+        )
+        .expect("write skill");
+
+        let skills = render_skills_section(&discover_skill_index(Some(&path_string(&matrix))));
+        assert!(
+            skills.contains(GENERATED_SKILLS_SECTION_REPLICA_LINE),
+            "the fixture must render the replica line, or this criterion is vacuous"
+        );
+
+        let rendered = resolve_agent_context(
+            &path_string(&replica),
+            Some(&path_string(&matrix)),
+            &skills,
+            &replica,
+            None,
+            None,
+        )
+        .expect("resolve context");
+
+        assert!(rendered.contains("room-<N>-*"), "{rendered}");
+        assert!(rendered.contains("<roomN>"), "{rendered}");
+        let offenders: Vec<&str> = rendered
+            .lines()
+            .filter(|l| l.to_lowercase().contains("workgroup"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "the live context for a Room replica must not say Workgroup anywhere: {offenders:#?}"
         );
     }
 
