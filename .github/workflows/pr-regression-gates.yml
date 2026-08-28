@@ -180,6 +180,23 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+  rust-fmt:
+    name: rust-fmt
+    # Skip branch-deletion push events while still requiring pull request validation.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
   terminal-snapshot-portable:
     name: terminal-snapshot-portable (${{ matrix.os }})
     # Skip branch-deletion push events while still requiring pull request validation.
