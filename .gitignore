@@ -14,7 +14,8 @@ _logbooks/
 # AgentsCommander delete sentinels/orphans.
 .deleting-*
 
-# AgentsCommander workgroup replicas (always per-machine state).
+# AgentsCommander room replicas (always per-machine state).
+.ac/room-*/
 .ac/wg-*/
 
 # Per-session agent context materialized by default_context()
