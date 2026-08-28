@@ -270,7 +270,7 @@ fn is_ac_replica_dir(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("wg-"))
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix)
 }
 
 fn is_root_agent_dir(path: &Path) -> bool {

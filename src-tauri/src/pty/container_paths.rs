@@ -286,11 +286,11 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
     let is_wg_dir = cwd
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("wg-"))
+        .map(crate::config::entity_prefix::has_entity_prefix)
         .unwrap_or(false);
     if is_wg_dir && crate::config::ac_root::find_ac_root_ancestor(cwd).is_some() {
         return Some(format!(
-            "container transport refuses to bind-mount workgroup root '{}'",
+            "container transport refuses to bind-mount room root '{}'",
             cwd.display()
         ));
     }

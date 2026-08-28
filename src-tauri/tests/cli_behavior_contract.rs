@@ -142,9 +142,13 @@ fn create_send_fixture(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, P
             "Build",
         ],
     );
+    // #1614 requirement (A): creation produces `room-<N>-<team>`. This fixture
+    // names the directory the product CREATES, so it moves with the creation
+    // prefix; the legacy `wg-*` fixtures that prove dual-prefix ACCEPTANCE are
+    // untouched (Rule P2).
     let sender = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_architect");
     assert!(sender.is_dir(), "sender replica root should exist");
     (project, sender)
@@ -706,7 +710,7 @@ fn simple_bad_path_contracts() {
     let send_config = config_dir_for_bin(&send_bin);
     let (project, sender) = create_send_fixture(send_tmp.path(), &send_bin, &send_config);
     let sender_s = sender.to_string_lossy().to_string();
-    let peer = "ProjectAlpha:wg-1-dev-team/dev-rust";
+    let peer = "ProjectAlpha:room-1-dev-team/dev-rust";
     let (code, stdout, stderr) = run(
         &send_bin,
         &[
@@ -738,7 +742,7 @@ fn simple_bad_path_contracts() {
     assert!(
         !project
             .join(".ac")
-            .join("wg-1-dev-team")
+            .join("room-1-dev-team")
             .join("__agent_dev-rust")
             .join(".agentscommander-new")
             .join("outbox")

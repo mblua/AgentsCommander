@@ -1179,7 +1179,7 @@ pub async fn discover_ac_agents(
                 }
 
                 // Workgroups: wg-*
-                if dir_name.starts_with("wg-") {
+                if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
                     let (task, task_title) = read_task_fields(&path);
 
                     // Find first repo-* directory for CWD
@@ -1958,7 +1958,7 @@ pub(crate) async fn discover_project_inner(
         }
 
         // Workgroups: wg-*
-        if dir_name.starts_with("wg-") {
+        if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
             let (task, task_title) = read_task_fields(&entry_path);
 
             let repo_path = std::fs::read_dir(&entry_path)

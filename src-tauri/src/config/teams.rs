@@ -86,7 +86,9 @@ pub fn agent_fqn_from_path(path: &str) -> String {
             let project = parts[ac_idx - 1];
             let wg = parts[ac_idx + 1];
             let agent_dir = parts[ac_idx + 2];
-            if wg.starts_with("wg-") && agent_dir.starts_with("__agent_") {
+            if crate::config::entity_prefix::has_entity_prefix(wg)
+                && agent_dir.starts_with("__agent_")
+            {
                 let agent = agent_dir.strip_prefix("__agent_").unwrap_or(agent_dir);
                 return format!("{}:{}/{}", project, wg, agent);
             }
@@ -118,7 +120,9 @@ pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<Stri
         if ac_idx + 2 < parts.len() {
             let wg = parts[ac_idx + 1];
             let agent_dir = parts[ac_idx + 2];
-            if wg.starts_with("wg-") && agent_dir.starts_with("__agent_") {
+            if crate::config::entity_prefix::has_entity_prefix(wg)
+                && agent_dir.starts_with("__agent_")
+            {
                 let agent = agent_dir.strip_prefix("__agent_").unwrap_or(agent_dir);
                 return (Some(wg.to_string()), Some(agent.to_string()));
             }
@@ -209,7 +213,7 @@ fn is_valid_wg_local_shape(local: &str) -> bool {
     if agent.is_empty() {
         return false;
     }
-    let Some(rest) = prefix.strip_prefix("wg-") else {
+    let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(prefix) else {
         return false;
     };
     let Some((digits, team)) = rest.split_once('-') else {
@@ -445,8 +449,7 @@ pub fn resolve_wg_coordinator_replica(
 ) -> Option<WgCoordinatorReplica> {
     let project = ac_root.parent()?.file_name()?.to_str()?.to_string();
     let wg_name = wg_dir.file_name()?.to_str()?.to_string();
-    let team = wg_name
-        .strip_prefix("wg-")
+    let team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
     let team_dir = ac_root.join(format!("_team_{}", team));
@@ -645,8 +648,7 @@ fn parse_strict_pty_fqn(value: &str) -> Result<StrictPtyFqn, String> {
     let (workgroup, agent) = local
         .split_once('/')
         .ok_or_else(|| "invalid_target".to_string())?;
-    let rest = workgroup
-        .strip_prefix("wg-")
+    let rest = crate::config::entity_prefix::strip_entity_prefix(workgroup)
         .ok_or_else(|| "invalid_target".to_string())?;
     let (digits, team) = rest
         .split_once('-')
@@ -1134,7 +1136,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
                 .file_name()
                 .into_string()
                 .map_err(|_| "unsafe_path".to_string())?;
-            if !name.starts_with("wg-") {
+            if !crate::config::entity_prefix::has_entity_prefix(&name) {
                 continue;
             }
             let workgroup_identity = crate::path_identity::verify_directory(&workgroup.path())?;
@@ -1462,11 +1464,10 @@ fn resolve_agent_path(ac_root: &Path, agent_ref: &str) -> Option<PathBuf> {
 fn extract_wg_team(agent_name: &str) -> Option<&str> {
     let (_, local) = split_project_prefix(agent_name);
     let prefix = local.split('/').next()?;
-    if !prefix.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(prefix) {
         return None;
     }
-    prefix
-        .strip_prefix("wg-")
+    crate::config::entity_prefix::strip_entity_prefix(prefix)
         .and_then(|s| s.split_once('-').map(|(_, team)| team))
 }
 
@@ -1658,7 +1659,9 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
     // (transition aid for Decision 3's tolerate-on-read).
     let (from_proj, from_local) = split_project_prefix(from);
     let (to_proj, to_local) = split_project_prefix(to);
-    if from_local.starts_with("wg-") && to_local.starts_with("wg-") {
+    if crate::config::entity_prefix::has_entity_prefix(from_local)
+        && crate::config::entity_prefix::has_entity_prefix(to_local)
+    {
         let from_wg = from_local.split('/').next().unwrap_or("");
         let to_wg = to_local.split('/').next().unwrap_or("");
         let project_match = match (from_proj, to_proj) {

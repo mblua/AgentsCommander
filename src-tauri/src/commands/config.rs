@@ -1419,7 +1419,7 @@ fn enumerate_profile_assignment_targets(
         ProfileAssignmentScope::Workgroup => {
             let wg_dir = target_replica
                 .parent()
-                .ok_or_else(|| "Target replica has no workgroup parent".to_string())?;
+                .ok_or_else(|| "Target replica has no room parent".to_string())?;
             collect_replica_dirs_in_workgroup(wg_dir, &mut candidate_dirs)?;
         }
         ProfileAssignmentScope::Kind => {
@@ -1517,16 +1517,16 @@ fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
         .and_then(|name| name.to_str())
         .unwrap_or("");
     if !name.starts_with("__agent_") {
-        return Err(format!("Target '{}' is not a WG replica", path.display()));
+        return Err(format!("Target '{}' is not a Room replica", path.display()));
     }
     let wg_name = path
         .parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
-            "Target '{}' is not inside a wg-* workgroup",
+            "Target '{}' is not inside a `room-*` or legacy `wg-*` Room directory",
             path.display()
         ));
     }
@@ -1535,7 +1535,7 @@ fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
 
 fn collect_replica_dirs_in_workgroup(wg_dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(wg_dir)
-        .map_err(|e| format!("Failed to read workgroup '{}': {}", wg_dir.display(), e))?;
+        .map_err(|e| format!("Failed to read room '{}': {}", wg_dir.display(), e))?;
     for entry in entries.flatten() {
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -1558,7 +1558,11 @@ fn collect_kind_replica_dirs(ac_root: &Path, out: &mut Vec<PathBuf>) -> Result<(
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if !file_type.is_dir() || !entry.file_name().to_string_lossy().starts_with("wg-") {
+        if !file_type.is_dir()
+            || !crate::config::entity_prefix::has_entity_prefix(
+                &entry.file_name().to_string_lossy(),
+            )
+        {
             continue;
         }
         collect_replica_dirs_in_workgroup(&entry.path(), out)?;

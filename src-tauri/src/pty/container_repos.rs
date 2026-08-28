@@ -133,7 +133,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
     let is_workgroup_root = wg_root
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("wg-"))
+        .map(crate::config::entity_prefix::has_entity_prefix)
         .unwrap_or(false)
         && crate::config::ac_root::find_ac_root_ancestor(&wg_root).is_some();
     if !is_workgroup_root {

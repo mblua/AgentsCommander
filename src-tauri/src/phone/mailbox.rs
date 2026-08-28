@@ -2154,7 +2154,7 @@ fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
 fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
     let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
     let (wg_name, agent_short) = local.split_once('/')?;
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return None;
     }
 
@@ -11203,7 +11203,7 @@ impl MailboxPoller {
         // project filter. §DR2-4 composition: push + break within a single `rp`
         // (an FQN matches at most one replica dir per project) but continue the
         // outer loop so ambiguity across projects is detected.
-        if target_local.starts_with("wg-") {
+        if crate::config::entity_prefix::has_entity_prefix(target_local) {
             if let Some((wg_name, agent_short)) = target_local.split_once('/') {
                 let replica_dir = format!("__agent_{}", agent_short);
 

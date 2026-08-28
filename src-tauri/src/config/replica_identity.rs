@@ -64,17 +64,17 @@ pub fn agent_bare_name_from_ref(raw_agent: &str) -> Result<String, String> {
 fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     let trimmed = identity.trim();
     if trimmed.is_empty() {
-        return Err("WG replica identity cannot be empty".to_string());
+        return Err("Room replica identity cannot be empty".to_string());
     }
     if trimmed.contains('\0') {
-        return Err("WG replica identity must not contain NUL".to_string());
+        return Err("Room replica identity must not contain NUL".to_string());
     }
 
     let normalized = trimmed.replace('\\', "/");
     let dir_name = normalized
         .split('/')
         .rfind(|part| !part.is_empty())
-        .ok_or_else(|| format!("Invalid WG replica identity '{}'", identity))?;
+        .ok_or_else(|| format!("Invalid Room replica identity '{}'", identity))?;
 
     #[cfg(windows)]
     let bare = {
@@ -84,7 +84,7 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
             .unwrap_or(false)
         {
             return Err(format!(
-                "WG replica identity '{}' must end in '_agent_<name>'",
+                "Room replica identity '{}' must end in '_agent_<name>'",
                 identity
             ));
         }
@@ -94,7 +94,7 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     #[cfg(not(windows))]
     let bare = dir_name.strip_prefix("_agent_").ok_or_else(|| {
         format!(
-            "WG replica identity '{}' must end in '_agent_<name>'",
+            "Room replica identity '{}' must end in '_agent_<name>'",
             identity
         )
     })?;
@@ -159,21 +159,21 @@ fn validate_local_matrix(
         })?;
     if actual_dir_name != expected_dir_name {
         return Err(format!(
-            "WG replica identity target '{}' does not match expected '{}'",
+            "Room replica identity target '{}' does not match expected '{}'",
             actual_dir_name, expected_dir_name
         ));
     }
 
     let metadata = std::fs::symlink_metadata(matrix_dir).map_err(|e| {
         format!(
-            "Expected local Agent Matrix '{}' for WG replica identity, but it is not readable: {}",
+            "Expected local Agent Matrix '{}' for Room replica identity, but it is not readable: {}",
             display_path(matrix_dir),
             e
         )
     })?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(format!(
-            "Expected local Agent Matrix '{}' for WG replica identity, but it is not a real directory",
+            "Expected local Agent Matrix '{}' for Room replica identity, but it is not a real directory",
             display_path(matrix_dir)
         ));
     }
@@ -196,7 +196,7 @@ fn validate_local_matrix(
         })?;
     if !matrix_abs.starts_with(&ac_root_abs) {
         return Err(format!(
-            "WG replica identity target '{}' escapes authoritative Project AC Root '{}'",
+            "Room replica identity target '{}' escapes authoritative Project AC Root '{}'",
             display_path(&matrix_abs),
             display_path(&ac_root_abs)
         ));
@@ -219,7 +219,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
         })?;
     let agent_name = replica_dir_name.strip_prefix("__agent_").ok_or_else(|| {
         format!(
-            "WG replica directory '{}' must be named '__agent_<name>'",
+            "Room replica directory '{}' must be named '__agent_<name>'",
             replica_dir_name
         )
     })?;
@@ -227,7 +227,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
 
     let wg_dir = replica_dir.parent().ok_or_else(|| {
         format!(
-            "WG replica directory '{}' has no parent workgroup",
+            "Room replica directory '{}' has no parent room",
             display_path(replica_dir)
         )
     })?;
@@ -235,16 +235,16 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
-            "WG replica directory '{}' is not inside a wg-* workgroup",
+            "Room replica directory '{}' is not inside a `room-*` or legacy `wg-*` Room directory",
             display_path(replica_dir)
         ));
     }
 
     let ac_root = find_ac_root_ancestor(replica_dir).ok_or_else(|| {
         format!(
-            "WG replica directory '{}' is not inside a Project AC Root",
+            "Room replica directory '{}' is not inside a Project AC Root",
             display_path(replica_dir)
         )
     })?;
@@ -269,7 +269,7 @@ pub fn validate_or_repair_wg_replica_identity(
     let expected = expected_wg_replica_identity(replica_dir)?;
     let persisted = persisted_identity.ok_or_else(|| {
         format!(
-            "WG replica '{}' has no config.json identity; expected '{}'",
+            "Room replica '{}' has no config.json identity; expected '{}'",
             display_path(replica_dir),
             expected.identity
         )
@@ -277,7 +277,7 @@ pub fn validate_or_repair_wg_replica_identity(
     let persisted_agent = persisted_identity_agent_name(persisted)?;
     if !persisted_identity_names_match(&persisted_agent, &expected.agent_name) {
         return Err(format!(
-            "WG replica '{}' identity '{}' names '_agent_{}', but the replica directory requires '_agent_{}'",
+            "Room replica '{}' identity '{}' names '_agent_{}', but the replica directory requires '_agent_{}'",
             display_path(replica_dir),
             persisted,
             persisted_agent,
@@ -370,11 +370,11 @@ pub fn read_wg_replica_config_read_only(
 ) -> Result<(Value, WgReplicaIdentity), String> {
     let config_path = replica_dir.join("config.json");
     let (bytes, _) = crate::path_identity::read_bounded_regular(&config_path, 1024 * 1024)
-        .map_err(|_| "WG replica config failed a bounded path-safe read".to_string())?;
+        .map_err(|_| "Room replica config failed a bounded path-safe read".to_string())?;
     let config = crate::path_identity::parse_json_no_duplicates(&bytes)
-        .map_err(|_| "WG replica config is not duplicate-free JSON".to_string())?;
+        .map_err(|_| "Room replica config is not duplicate-free JSON".to_string())?;
     if !config.is_object() {
-        return Err("WG replica config must be a JSON object".to_string());
+        return Err("Room replica config must be a JSON object".to_string());
     }
     let identity = validate_or_repair_wg_replica_identity(
         replica_dir,
@@ -396,7 +396,7 @@ pub fn read_and_repair_wg_replica_config(
                 repair_wg_replica_config_value(replica_dir, &mut value, required_context_prefix)?;
             let final_obj = value.as_object_mut().ok_or_else(|| {
                 format!(
-                    "WG replica config {} must be a JSON object",
+                    "Room replica config {} must be a JSON object",
                     config_path.display()
                 )
             })?;

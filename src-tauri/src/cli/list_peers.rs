@@ -704,7 +704,12 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
                     continue;
                 }
                 let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") && n != wg.my_wg_name => n.to_string(),
+                    Some(n)
+                        if crate::config::entity_prefix::has_entity_prefix(n)
+                            && n != wg.my_wg_name =>
+                    {
+                        n.to_string()
+                    }
                     _ => continue,
                 };
 
@@ -904,12 +909,12 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                     continue;
                 }
                 let wg_name = match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") => n.to_string(),
+                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => n.to_string(),
                     _ => continue,
                 };
-                // Derive team name from WG name: "wg-1-ac-devs" → "ac-devs"
-                let wg_team = wg_name
-                    .strip_prefix("wg-")
+                // Derive team name from the entity name: "room-1-ac-devs" or
+                // the legacy "wg-1-ac-devs" → "ac-devs"
+                let wg_team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
                     .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
                     .unwrap_or(&wg_name)
                     .to_string();
@@ -1006,7 +1011,7 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
                     continue;
                 }
                 match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") => {}
+                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {}
                     _ => continue,
                 }
 

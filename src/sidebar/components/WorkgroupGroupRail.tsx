@@ -2,6 +2,7 @@ import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
+import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import { projectStore } from "../stores/project";
 import { projectCollapseStore } from "../stores/project-collapse";
 import { railCollapseStore } from "../stores/rail-collapse";
@@ -64,13 +65,11 @@ interface ReorderState {
 }
 
 function wgNumber(name: string): number {
-  const match = name.match(/^wg-(\d+)/i);
-  return match ? Number.parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+  return entityDirNumber(name) ?? Number.MAX_SAFE_INTEGER;
 }
 
 function wgTooltipLabel(wgName: string): string {
-  const match = wgName.match(/^wg-(\d+)/i);
-  return match ? `WG${match[1]}` : wgName;
+  return entityShortLabel(wgName) ?? wgName;
 }
 
 function groupMatches(group: WorkgroupGroup, wg: AcWorkgroup): boolean {

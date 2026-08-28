@@ -2206,7 +2206,12 @@ fn create_run_workgroup_dirs(
         )]
     })?;
     let next = next_workgroup_number(ac_root)?;
-    let name = format!("wg-{}-role-exp-{}", next, sanitized_experiment);
+    let name = format!(
+        "{}{}-role-exp-{}",
+        crate::config::entity_prefix::ROOM_DIR_PREFIX,
+        next,
+        sanitized_experiment
+    );
     let path = ac_root.join(&name);
     reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
     fs::create_dir(&path).map_err(|e| {
@@ -2295,7 +2300,7 @@ fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
             )]
         })?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(rest) = name.strip_prefix("wg-") {
+        if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name) {
             let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = digits.parse::<u32>() {
                 max = max.max(n);
@@ -2325,7 +2330,9 @@ fn validate_workgroup_under_ac_root(
             &path,
         )]
     })?;
-    if canonical.starts_with(ac_root) && workgroup.name.starts_with("wg-") {
+    if canonical.starts_with(ac_root)
+        && crate::config::entity_prefix::has_entity_prefix(&workgroup.name)
+    {
         Ok(())
     } else {
         Err(vec![err(
@@ -3182,7 +3189,7 @@ fn find_live_sessions_for_variant(
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if name.starts_with("wg-") && path.is_dir() {
+            if crate::config::entity_prefix::has_entity_prefix(name) && path.is_dir() {
                 let replica = path.join(format!("__agent_{}", variant_agent_name));
                 if replica.is_dir() {
                     out.extend(find_live_sessions_under(&replica));
@@ -3201,7 +3208,8 @@ fn replica_role_overrides(ac_root: &Path, variant_agent_name: &str) -> Vec<PathB
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if name.starts_with("wg-") && !name.contains("-role-exp-") {
+            if crate::config::entity_prefix::has_entity_prefix(name) && !name.contains("-role-exp-")
+            {
                 let role = path
                     .join(format!("__agent_{}", variant_agent_name))
                     .join("Role.md");
@@ -3221,7 +3229,7 @@ fn is_replica_role_file(path: &Path) -> bool {
         .collect();
     components.windows(4).any(|w| {
         w[0] == ".ac"
-            && w[1].starts_with("wg-")
+            && crate::config::entity_prefix::has_entity_prefix(&w[1])
             && w[2].starts_with("__agent_")
             && w[3] == "Role.md"
     })

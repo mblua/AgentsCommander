@@ -48,11 +48,15 @@ async fn resolve_wg_root(
         .ok_or_else(|| format!("session {} not found", session_id))?;
     drop(mgr);
 
-    let task_path = find_workgroup_task_path_for_cwd(&cwd)
-        .ok_or_else(|| format!("session {} is not under a wg-* ancestor", session_id))?;
+    let task_path = find_workgroup_task_path_for_cwd(&cwd).ok_or_else(|| {
+        format!(
+            "session {} is not under a `room-*` or legacy `wg-*` Room directory",
+            session_id
+        )
+    })?;
     let wg_root = task_path
         .parent()
-        .ok_or_else(|| "workgroup TASK.md path has no parent".to_string())?
+        .ok_or_else(|| "room TASK.md path has no parent".to_string())?
         .to_path_buf();
     Ok(wg_root)
 }
@@ -82,17 +86,14 @@ fn validate_wg_root(
     //    symlink that escapes is normalized here and then caught by gate 4.
     let canonical = std::fs::canonicalize(workgroup_root).map_err(|_| {
         format!(
-            "workgroup root does not exist or is inaccessible: {}",
+            "room root does not exist or is inaccessible: {}",
             workgroup_root
         )
     })?;
 
     // 2. Must be a directory.
     if !canonical.is_dir() {
-        return Err(format!(
-            "workgroup root is not a directory: {}",
-            workgroup_root
-        ));
+        return Err(format!("room root is not a directory: {}", workgroup_root));
     }
 
     // 3. Leaf name must start with `wg-`. Matches the discovery invariant and the
@@ -101,10 +102,10 @@ fn validate_wg_root(
     let is_wg = canonical
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("wg-"));
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix);
     if !is_wg {
         return Err(format!(
-            "workgroup root is not a wg-* directory: {}",
+            "room root is not a `room-*` or legacy `wg-*` Room directory: {}",
             workgroup_root
         ));
     }
@@ -122,7 +123,7 @@ fn validate_wg_root(
     });
     if !under_known_root {
         return Err(format!(
-            "workgroup root is not under a configured project path: {}",
+            "room root is not under a configured project path: {}",
             workgroup_root
         ));
     }
@@ -141,7 +142,7 @@ fn validate_wg_root(
         .is_some_and(is_ac_root_name);
     if !parent_is_ac_root {
         return Err(format!(
-            "workgroup root is not a direct child of an .ac workspace dir: {}",
+            "room root is not a direct child of an .ac workspace dir: {}",
             workgroup_root
         ));
     }

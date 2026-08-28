@@ -246,7 +246,7 @@ pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::P
         let is_workgroup_dir = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|name| name.starts_with("wg-"));
+            .is_some_and(crate::config::entity_prefix::has_entity_prefix);
         if is_workgroup_dir {
             return Some(path.join("TASK.md"));
         }

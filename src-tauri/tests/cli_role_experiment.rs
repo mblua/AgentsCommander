@@ -417,7 +417,7 @@ fn role_experiment_variant_set_diff_and_validate() {
         b"\xEF\xBB\xBF# Tech Lead\r\n\r\nPlan.\r\n"
     );
     assert!(!workspace
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_tech-lead-strict")
         .join("Role.md")
         .exists());
@@ -470,7 +470,7 @@ fn role_experiment_rejects_replica_role_and_tampered_metadata() {
     init_experiment(&bin);
     let workspace = project.join(".ac");
     let replica_role = workspace
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_tech-lead-strict")
         .join("Role.md");
     std::fs::create_dir_all(replica_role.parent().unwrap()).expect("replica parent");
@@ -541,7 +541,7 @@ fn role_experiment_validate_reports_prompt_and_replica_errors() {
     init_experiment(&bin);
     let workspace = project.join(".ac");
     let replica = workspace
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_tech-lead-strict");
     std::fs::create_dir_all(&replica).unwrap();
     std::fs::write(replica.join("Role.md"), "# Override\n").unwrap();
@@ -1260,7 +1260,7 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
         .file_name()
         .unwrap()
         .to_string_lossy()
-        .starts_with("wg-"));
+        .starts_with("room-"));
     assert_eq!(team_snapshot(&workspace), teams_before);
 
     let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))

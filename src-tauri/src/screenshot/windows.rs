@@ -1402,7 +1402,7 @@ fn find_replica_root(start: &Path) -> Option<PathBuf> {
                     .parent()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
-                    .map(|p| p.starts_with("wg-"))
+                    .map(crate::config::entity_prefix::has_entity_prefix)
                     .unwrap_or(false);
                 if parent_is_wg {
                     return Some(dir.to_path_buf());
