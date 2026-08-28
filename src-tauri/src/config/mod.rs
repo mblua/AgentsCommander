@@ -121,6 +121,7 @@ where
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn retry_transient_io_with<T, Operation, Sleep, Retrying>(
     operation: Operation,
     sleep: Sleep,
