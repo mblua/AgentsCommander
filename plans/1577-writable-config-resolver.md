@@ -4,80 +4,84 @@ Status: READY_FOR_IMPLEMENTATION
 
 ## Delivery identity
 
-- Issue: [#1577](https://github.com/mblua/AgentsCommander/issues/1577), including approved specification comment `#issuecomment-5444596303`.
+- Issue: [#1577](https://github.com/mblua/AgentsCommander/issues/1577), approved specification comment `#issuecomment-5444596303`, and the release-owner round-two rulings that extend it.
 - Delivery path: Full.
 - Target: `main` pinned at `1eee2cd72a0d25095108d92b3f495da84b979d24`.
 - Branch: `fix/1577-writable-config-resolver`, created from that exact target.
+- The release owner and both reviewers already classified later `origin/main` drift as bounded and semantically non-blocking. The pinned base stands; there is no round-two rebase gate.
 - Planned application/test paths, and no others:
   - `src-tauri/src/config/mod.rs`
+  - `src-tauri/src/config/profile.rs`
+  - `src-tauri/src/config/settings.rs`
+  - `src-tauri/src/cli/mod.rs`
   - `src-tauri/src/lib.rs`
   - `src-tauri/src/main.rs`
   - `scripts/smoke-cli-release-windows.ps1`
 - Plan artifact: `plans/1577-writable-config-resolver.md`.
-- Task class: routine application and test change with elevated state-location safety impact. The accepted threat model covers accidental state relocation, real OS writability/ACL behavior, incomplete probe cleanup, and startup failure visibility. It does not include hostile-host/toolchain provenance, malicious `PATH`, symlink/reparse adversaries, signing, packaging provenance, destructive migration, or an untrusted build host.
+- Task class: routine application/test work with elevated state-location safety impact. The accepted threat model covers accidental state relocation, real ACL/read-only behavior, short-lived Windows antivirus/file-sharing interference, ambiguous marker metadata, probe debris, and startup failure visibility. It does not include hostile-host/toolchain provenance, malicious `PATH`, signing/packaging provenance, destructive migration, or an untrusted build host.
 
-## Objective and cause
+## Objective and verified cause
 
-Make an unmarked executable-adjacent config location conditional on an actual successful write probe, add a supported release-build config override, make `portable.txt` an explicit no-fallback assertion, and replace the app-outbox panic with a visible exit-1 startup error.
+Make an unmarked executable-adjacent config location conditional on a successful real write probe, add a supported release-build override, make `portable.txt` a hard no-fallback assertion, and replace the app-outbox panic with a visible exit-1 startup error.
 
-Evidence at the pinned base:
+Evidence at the pinned source tree:
 
-- `src-tauri/src/config/mod.rs:87-155`, `resolve_instance_location`, always selects `<exe_parent>/.<exe_stem>` when `current_exe()` has a parent/stem. It never considers writability; `$HOME/<profile::config_dir_name()>` is reached only after an unusable executable result.
-- `src-tauri/src/config/mod.rs:158-168`, `instance_location`, owns the process-lifetime `OnceLock` and reads only debug-only `AGENTSCOMMANDER_TEST_CONFIG_DIR` before calling the pure resolver.
-- `src-tauri/src/config/mod.rs:186-195`, `config_dir` and `instance_base`, and `:177-179`, `agent_local_dir_name`, are projections from that cached location.
-- `src-tauri/src/lib.rs:1823-1870`, `run`, resolves config, performs early startup work, then panics at `create_dir_all(&app_outbox_path).expect(...)` when the chosen state root cannot host the app outbox.
-- `src-tauri/src/cli/mod.rs:334-353` already provides `present_fatal_startup_message(&str)` on Windows and non-Windows. It returns `()` and never exits; its caller owns termination.
-- The nine resolver tests at `src-tauri/src/config/mod.rs:208-359` pin every existing debug-override, executable, fallback, stem, and instance-base result.
+- `src-tauri/src/config/mod.rs:87-155`, `resolve_instance_location`, always selects `<exe_parent>/.<exe_stem>` when the executable has a parent/stem. It never checks writability.
+- `src-tauri/src/config/mod.rs:158-168`, `instance_location`, owns the process-lifetime `OnceLock` and performs the resolver's explicit `current_exe()` capture.
+- The home branch calls `profile::config_dir_name()`. At `profile.rs:45-56` that calls `binary_suffix()`, whose private `OnceLock` at `profile.rs:20-30` performs another `current_exe()` call. The round-one six-argument resolver was therefore not transitively deterministic.
+- `binary_suffix()` splits the executable stem at the first underscore; `config_dir_name`, title, mutex, instance label, and both port derivations depend on that behavior. This parsing contract must not change.
+- `src-tauri/src/config/settings.rs:4413-4452` implements #1436: Windows raw OS 5 and 32 retry with delays `[15, 30, 60, 120, 240]` before the final attempt. The writable-config probe must share this policy, not copy it.
+- `src-tauri/src/cli/mod.rs:579-698` already treats window/UI automation controls as hidden release-parsed test flags and pins both hidden-help and parse behavior. The controlled-home acceptance input follows this existing testability surface.
+- On Windows, `dirs::home_dir()` uses `SHGetKnownFolderPath(FOLDERID_Profile)`, not `USERPROFILE`/`HOME` ([`dirs` source contract](https://docs.rs/dirs/latest/dirs/fn.home_dir.html)). A child environment block cannot control this acceptance seam; the round-two plan therefore uses an explicit, hidden, validated test-home input rather than making a false environment claim.
+- `src-tauri/src/lib.rs:1823-1870` initializes logging/state, obtains `config_dir()`, and panics when creating `<config>/instances/<uuid>/outbox`.
+- `src-tauri/src/main.rs:5-152` already owns GUI process exit and calls both `agentscommander_lib::run` and `cli::present_fatal_startup_message`.
+- The nine resolver tests at `config/mod.rs:208-359` pin every existing override, executable, home, stem, and absolute-only instance-base result.
 
-## Scope
+## Scope and exclusions
 
 In scope:
 
-- The exact precedence and behavior below on Windows, macOS, and Linux.
-- Real marker and create/write/delete probes owned by the config cache initializer.
-- A typed, cached portable-marker startup error without changing existing config projections.
-- A typed `lib::run` startup result, visible reporting in `main`, and exit code 1.
-- Focused unit tests and the already-triggered Windows release smoke.
+- The precedence, marker states, retry/classification policy, cleanup semantics, and cache lifetime below on Windows, macOS, and Linux.
+- A deterministic profile derivation over the resolver's one captured executable without changing first-underscore parsing or downstream title/mutex/port behavior.
+- One shared Windows retry policy used by settings replacement and the config probe.
+- One hidden release-smoke-only `--test-home-dir` input, validated at the executable boundary and used only as tier 5/6's home input.
+- Typed cached startup failure and fallback diagnostics without changing existing config projections.
+- A typed `lib::run` result, fatal presentation in `main`, focused tests, and the already-triggered Windows release smoke.
 
 Out of scope:
 
-- #1137's exact Linux `/usr/bin/agentscommander` identity, XDG target/input/error, fallible config-dir projection, and reserved precedence slot 3.5.
+- #1137's Linux package classifier, XDG target/input/error, general fallible config projection, and reserved precedence slot 3.5.
 - #1594's macOS bundle-container target and any genuine portable AppImage rule.
-- `packaging/**`, `.github/workflows/**`, `npm/**`, `scripts/pack-windows-portable.mjs`, and `scripts/smoke-windows-portable.ps1`.
-- `README.md`, `docs/quickstart.md`, `docs/features/portable-instances.md`, and `PRIVACY.md`.
-- Migration, copying, cleanup, or reconciliation between executable-adjacent and home state.
-- XDG, canonicalization, permission-bit inspection, ACL mutation, UAC configuration, AppImage heuristics, and a new fatal-message surface.
-- General removal of unrelated startup `expect` calls. In particular, the existing no-home `config_dir().expect("Cannot determine home directory")` remains distinct; #1577 preserves the resolver's `config_dir: None` result when both executable and home inputs are unavailable.
-- Cargo/package/lockfile changes, new dependencies, unrelated cleanup, and module reorganization.
+- Packaging, npm, workflow, manifest, lockfile, frontend, schema, migration, documentation, and unrelated startup-`expect` changes.
+- Canonicalization, permission-bit inspection, ACL mutation in product code, UAC configuration, symlink/reparse hardening beyond the marker-state decision below, and a new fatal-message surface.
+- A public/general home override or environment variable. `--test-home-dir` is hidden, cannot select a config directory directly, and is accepted only by the issue-specific copied smoke executable in GUI mode.
+- The existing `config_dir().expect("Cannot determine home directory")` when both executable and home inputs are unavailable. Tier 6 preserves that existing `None` result.
 
-The release owner must relay the documentation claim delta: an unmarked copy is executable-adjacent only while its real probe succeeds; `portable.txt` asserts executable-adjacent state and refuses fallback. Documentation and packaging changes remain release-track owned.
+The release owner must relay the documentation claim delta: an unmarked copy is adjacent only while the real probe succeeds; `portable.txt` forbids fallback. Documentation and packaging remain release-track owned.
 
 ## Required resolution contract
 
-First match wins. `std::env::var` supplies the two environment values; non-Unicode values remain unset, matching today's `.ok()` behavior. A Unicode value is unset only when `raw.trim().is_empty()`, but every selected path uses the original untrimmed string verbatim.
+`std::env::var` supplies both overrides. Non-Unicode values remain unset. A Unicode value is unset only when `raw.trim().is_empty()`; a selected path uses the original untrimmed string verbatim.
 
-1. Nonblank `AGENTSCOMMANDER_CONFIG_DIR`, in debug and release: `PathBuf::from(raw)` verbatim. An absolute path exposes its parent as `instance_base`; a relative path exposes no base. `local_dir_stem` still comes from `current_exe()` or the existing `agentscommander` default.
-2. Nonblank `AGENTSCOMMANDER_TEST_CONFIG_DIR`, compiled/read only under `debug_assertions`, with identical path/base/stem semantics. A public override can never be shadowed by it.
-3. When `<exe_parent>/portable.txt` exists, select `<exe_parent>/.<exe_stem>`. A successful write probe confirms startup may continue. A failed write probe produces the typed hard error below and never considers home.
-4. Without the marker, select `<exe_parent>/.<exe_stem>` only when its write probe succeeds. Preserve the current relative-path behavior and expose `instance_base` only when the executable parent is absolute.
-5. Without the marker, any write-probe failure, `current_exe()` failure, or executable path without parent/stem selects `$HOME/<profile::config_dir_name()>` with `instance_base: None`.
-6. If that fallback also lacks a home directory, retain `config_dir: None` and `instance_base: None`.
+First decisive state wins:
 
-Both override branches short-circuit lower I/O: they do not inspect `portable.txt`, create the adjacent directory, or create a probe file. Invalid executable shapes likewise skip both probes.
+1. Nonblank `AGENTSCOMMANDER_CONFIG_DIR` in debug and release selects `PathBuf::from(raw)` verbatim. Absolute paths expose their parent as `instance_base`; relative paths expose no base. The executable still determines `local_dir_stem`.
+2. Nonblank `AGENTSCOMMANDER_TEST_CONFIG_DIR`, compiled/read only under `debug_assertions`, has the same path/base/stem semantics. The public override always wins.
+3. With no override and a usable executable, inspect `<exe_parent>/portable.txt`:
+   - marker indeterminate is a hard startup error; do not probe the candidate or consider home;
+   - marker present plus write success selects `<exe_parent>/.<exe_stem>`;
+   - marker present plus any exhausted write-probe failure is a hard startup error and never considers home.
+4. Marker absent plus write success selects the executable-adjacent candidate, retaining today's relative-path and absolute-only-base behavior.
+5. Marker absent plus a conclusively-unwritable exhausted probe selects `$HOME/<the profile config name derived from the same captured executable>` with no base. `current_exe()` failure or a path without parent/stem also reaches this home tier without marker/write I/O.
+6. If the applicable home fallback has no home directory, preserve `config_dir: None` and `instance_base: None`.
 
-## Probe ownership, protocol, and caching
+Marker absent plus an indeterminate exhausted probe is not tier 5: it is a hard startup error with no relocation. Slot 3.5 stays reserved for #1137.
 
-`instance_location()` remains the only production I/O/cache owner. Inside its existing `OnceLock` initializer it must:
+Both override branches short-circuit marker and write I/O. Invalid executable shapes skip both probes. The process never re-probes or changes root after `instance_location()` initializes.
 
-1. Capture public override, debug override, `current_exe()`, and `dirs::home_dir()` exactly once.
-2. Reuse one private nonblank-override predicate to decide whether executable probes are needed; this predicate must be the same one the pure resolver uses for precedence.
-3. If no override wins and the captured executable has a parent/stem, derive the marker and candidate paths through one shared pure path helper, evaluate the marker probe, and execute the write probe. The resolver uses that same helper against the captured executable, preventing probe/selection path drift.
-4. Pass the captured values and typed marker/write-probe outcomes into `resolve_instance_location`. That resolver must contain no `std::fs` or environment access; tests inject outcomes just as they inject `current_exe_result` and `home_dir` today.
-5. Cache the complete `InstanceLocation`, including its optional startup error. Never re-read environment values, re-run probes, or change roots during the process.
+## One executable capture and transitive purity
 
-The private probe outcome types must distinguish marker present/absent/not-run and write writable/failed/not-run; a write failure carries the failing operation, affected path, `io::ErrorKind`, raw OS code when available, `io::Error::to_string()`, and an optional cleanup error. Override and invalid-executable branches may carry not-run outcomes because the resolver never consumes them there.
-
-The resolver's exact signature shape is:
+Round two deliberately drops round one's exact six-argument claim. The resolver takes one additional already-derived profile-name input so its legacy home assertions remain unchanged without a hidden executable query:
 
 ```rust
 pub(crate) fn resolve_instance_location(
@@ -85,151 +89,245 @@ pub(crate) fn resolve_instance_location(
     test_override: Option<String>,
     current_exe_result: Result<PathBuf, std::io::Error>,
     home_dir: Option<PathBuf>,
+    fallback_config_dir_name: &str,
     marker_probe: MarkerProbeOutcome,
     write_probe: WriteProbeOutcome,
 ) -> InstanceLocation
 ```
 
-Both outcome enums are private values with `NotRun` variants; neither contains a callback or performs I/O.
+`instance_location()` captures its own public override, debug override, and `current_exe()` result once. Its home input is the already-validated smoke test home when supplied, otherwise one `dirs::home_dir()` call. From the captured executable it derives `fallback_config_dir_name` once before calling the resolver. “One capture” is scoped to the instance-location transaction; unrelated existing main/profile consumers are not claimed to share a process-wide capture.
 
-The real write probe for candidate directory `D` is exactly:
+In `profile.rs`:
 
-1. `create_dir_all(D)`.
-2. Open `D/.agentscommander-write-probe-<Uuid::new_v4()>.tmp` with `write(true)`, `create_new(true)`, and no truncate/append.
-3. `write_all(b"AgentsCommander write probe\n")`.
+- Extract a pure executable-path-to-suffix helper from `binary_suffix()`. Preserve exactly: file stem via `to_string_lossy`, first `find('_')`, and all bytes after that first underscore. Do not change empty/multiple-underscore or no-underscore results.
+- Keep existing `binary_suffix()`, its `OnceLock`, its external callers, and all title/mutex/instance-label/port outcomes. It delegates parsing to the new pure helper but retains its current capture/cache behavior.
+- Add a `pub(super)` pure config-name derivation accepting `Option<&Path>`. It applies the same suffix parser and existing `BUILD_PROFILE` rule and returns the same two static names.
+- Make existing `config_dir_name()` delegate name selection through the same pure rule, retaining its signature/cache and behavior.
+
+`resolve_instance_location` joins `home_dir` with the injected `fallback_config_dir_name` and never calls either profile accessor. Its transitive call graph must contain no environment read, filesystem operation, `OnceLock` mutation, UUID/time/sleep, logging, or callback. Given identical seven inputs, it returns identical fields/errors/diagnostics. The production I/O adapter remains `instance_location()`.
+
+Production derives the injected name with the new pure profile helper over `current_exe_result.as_ref().ok()`. Legacy tests pass `profile::config_dir_name()` as that new input, so every existing assertion remains byte-for-byte unchanged while only the call signature grows. This adds `profile.rs` to scope and removes the round-one call-order-dependent second executable query without changing suffix parsing.
+
+### Hidden controlled-home test input
+
+In `cli/mod.rs`, add `test_home_dir: Option<PathBuf>` as `--test-home-dir` with `hide = true` and an absolute-path value parser. It must stay absent from short/long help and parse only as a global GUI test flag.
+
+Before any CLI/GUI branch can consume it, a pure CLI validator requires all three:
+
+1. no subcommand is present;
+2. the path is absolute; and
+3. the already-captured runtime binary stem starts with `agentscommander_issue1577_`.
+
+Invalid use follows the existing argument/validation stderr-plus-flush exit-1 surface and never initializes config. The valid smoke call passes the owned path through `main -> lib::run`; no process environment variable or config global is mutated.
+
+At the first line of `lib::run`, call a crate-private `config::initialize_instance_location(test_home_dir)`. It initializes the same `OnceLock<InstanceLocation>` that all existing projections read. `Some(path)` replaces only the `dirs::home_dir()` input; it does not create a new precedence tier, cannot beat either config override, cannot bypass marker policy, and cannot choose the adjacent candidate. `None` preserves production behavior. CLI subcommands never call this initializer with a test home.
+
+## Marker probe: present, absent, or indeterminate
+
+Do not use `Path::exists()`. The production marker adapter runs each `symlink_metadata`/follow-up `metadata` call through the shared retry helper defined below, then returns:
+
+- `Absent` only when the marker entry itself returns `NotFound`.
+- `Present` for a regular file or directory.
+- For a symlink, follow it with `metadata`: a resolvable regular-file/directory target is `Present`; a broken link, loop, unreadable target, or ambiguous target is `Indeterminate`.
+- A non-file/non-directory/non-symlink entry is `Indeterminate` as an ambiguous entry type.
+- Any metadata error other than entry-level `NotFound` is `Indeterminate` after its applicable retries and retains operation, path, attempts, kind, raw OS code, and OS reason.
+- `NotRun` is valid only for higher overrides or unusable executable shapes.
+
+Marker contents are never opened. Native case semantics apply. Marker indeterminate uses the same typed hard-error surface as marker-present probe failure, includes the marker path, and never enters the unmarked branch.
+
+Marker-metadata reasons are exact: `could not inspect portable marker entry metadata "{affected_path}" after {attempts} attempt(s): {os_reason}` or `could not resolve portable marker symlink target metadata "{affected_path}" after {attempts} attempt(s): {os_reason}`. An entry/target whose metadata is neither file, directory, nor symlink uses `filesystem metadata reported an unsupported portable marker entry type` as its deterministic reason.
+
+The round-one planned assertion “a broken marker link is absent” is explicitly inverted: `broken_marker_link_is_indeterminate_and_never_falls_home` must assert the hard error, no write probe consumption, and no home selection. It must not be retained, renamed to preserve the old outcome, or deleted.
+
+## Shared retry policy and final classification
+
+Put one test-injectable transient-I/O retry policy in `config/mod.rs` and make both the config probe and `settings.rs`'s existing atomic-replace wrapper delegate to it.
+
+`settings.rs` is a necessary additional application/test path. Excluding it would require a second transient predicate/backoff table and violate the release-owner ruling that #1436 and the probe cannot drift.
+
+- Move/generalize the sole Windows backoff constant to the config root: exactly `[15, 30, 60, 120, 240]` ms.
+- On Windows, raw OS 5 (`ERROR_ACCESS_DENIED`) and 32 (`ERROR_SHARING_VIOLATION`) receive the existing five sleeps and final sixth attempt. Existing #1436 call/sleep/error behavior and tests remain green.
+- `ErrorKind::Interrupted` receives one immediate additional attempt on every platform. It consumes no sleep. The budget is per required filesystem operation and cannot reset recursively.
+- On non-Windows, every non-`Interrupted` error returns after the first attempt. In particular, `PermissionDenied`/`ReadOnlyFilesystem` receives no Windows-shaped sleep/backoff.
+- A chain mixing `Interrupted` with Windows raw 5/32 has at most seven calls: initial, one immediate interrupted retry, and the five Windows delayed retries. The returned error is the terminal exhausted error.
+
+Only after that helper returns an error may the probe classify it. The conclusive allowlist is closed:
+
+- Windows raw OS 5 or 32; or
+- `ErrorKind::PermissionDenied` or `ErrorKind::ReadOnlyFilesystem` on any platform.
+
+Everything else is `Indeterminate`, including persistent `Interrupted`, unknown raw OS errors, `AlreadyExists`, `NotFound` during the required delete, path-shape errors, storage-full errors, and any future kind not explicitly added to the conclusive set. “When in doubt” means hard startup error, never silent relocation.
+
+## Real write probe and cleanup/debris contract
+
+For candidate directory `D`:
+
+1. Retry-wrapped `create_dir_all(D)`.
+2. Retry-wrapped `create_new` of `D/.agentscommander-write-probe-<Uuid::new_v4()>.tmp` with write enabled and no truncate/append.
+3. Retry-wrapped `write_all(b"AgentsCommander write probe\n")` on that owned handle.
 4. Close the handle.
-5. `remove_file` that exact probe file.
+5. Retry-wrapped `remove_file` of that exact probe file.
 
-`uuid` is already a production dependency with v4 support; no dependency or lockfile edit is allowed. `sync_all` is deliberately absent because this probe establishes mutation authority, not durability.
+`uuid` v4 is already a production dependency. No `sync_all`, permission-bit check, recursive delete, candidate rollback, or new dependency is allowed. A newly created successful candidate remains; the probe file does not.
 
-If `D` did not exist, a successful probe creates and retains it as the selected state directory; only the probe file is removed. After an open/write failure, close the handle and best-effort remove only the exact probe file this invocation created. Preserve the first required-operation failure; if cleanup also fails, append `; cleanup of probe file "{probe_path}" also failed: {cleanup_os_reason}`. Never recursively delete `D`, its ancestors, or user content.
+Cleanup rules:
 
-Every `io::ErrorKind` from directory creation, probe-file creation, write, or deletion means the probe did not prove writability. There is no permission-only allowlist and no fatal "other kind" for an unmarked copy:
+- No cleanup runs after `create_new` fails because this invocation did not establish file ownership.
+- After a post-create write failure, close the handle and run the same retry helper around best-effort removal of only the owned probe file.
+- `NotFound` during this best-effort cleanup proves no debris and is cleanup success. `NotFound` during the required step-5 delete remains an indeterminate probe failure.
+- Preserve the terminal primary operation/path/attempts/kind/raw-code/OS-reason. If cleanup exhausts, also preserve its complete terminal reason and set `probe_may_remain: true` with the exact probe path.
+- An exhausted required step-5 delete also sets `probe_may_remain: true` for that exact path. Do not start another removal loop: the shared helper already consumed the complete retry budget.
+- Aggregate classification is conclusive only when every retained non-success error is in the closed conclusive allowlist. Any indeterminate primary or cleanup error makes the whole outcome indeterminate.
+- A successful cleanup removes its transient errors from the final outcome. An exhausted cleanup is never discarded.
 
-- unmarked candidate: any failure selects the home fallback;
-- marker present: any failure is the typed hard startup error;
-- delete failure after successful create/write also fails the probe because create/write/delete is the accepted contract.
+For marker absent plus a conclusive failure, cache an `AdjacentFallbackDiagnostic` alongside the home selection. It includes candidate, selected home (when any), complete primary/cleanup reasons, probe path, and debris flag. After logger initialization, `lib::run` emits one warning from that retained diagnostic. This closes round one's discarded-reason gap while preserving tier-5 startup.
 
-The cached selection is stable. If an unmarked candidate becomes writable later, the process stays on home until restart. If a selected adjacent/override directory becomes unwritable later, the app-outbox creation path returns the second startup error. A new process re-evaluates everything.
+For marker present, any failure is hard regardless of classification. For marker absent, indeterminate is hard. No hard-error path initializes logging or state before returning.
 
-## `portable.txt` semantics
-
-- The marker path is the exact native path component `<exe_parent>/portable.txt`.
-- Its contents are never opened or interpreted; an empty file is sufficient.
-- Any entry for which `Path::exists()` is true counts, including a directory. A broken/unresolvable link follows `Path::exists()` and counts as absent; no third marker-metadata error surface is introduced.
-- No manual case folding occurs. Windows follows native case-insensitive lookup; case-sensitive filesystems require the exact spelling.
-- Marker presence changes placement/failure policy only. It does not alter `local_dir_stem`, `instance_base`, file formats, instance identity, ports, or config contents.
-
-## Typed errors and process boundary
+## Cached data, typed errors, and process boundary
 
 In `config/mod.rs`:
 
-- Add cloneable `ConfigWriteProbeFailure` data and `ConfigStartupError::PortableDirectoryUnwritable { marker_path, config_dir, failure }`.
-- Add a private `portable_startup_error: Option<ConfigStartupError>` field to `InstanceLocation`.
-- Marker plus a successful probe returns the normal adjacent location with no error. Marker plus a failed probe returns the same adjacent `config_dir`, stem, and absolute-only base plus the error. It must never construct a home location.
-- Keep `config_dir() -> Option<PathBuf>`, `instance_base() -> Option<PathBuf>`, and `agent_local_dir_name() -> String` unchanged. Add only crate-private `portable_startup_error() -> Option<ConfigStartupError>` as a clone projection.
+- Add cloneable marker/probe failure data, `ProbeFailureClass`, and `ConfigStartupError::AdjacentSelectionBlocked { config_dir, marker_path: Option<PathBuf>, reason }`.
+- Extend `InstanceLocation` privately with `startup_error: Option<ConfigStartupError>` and `fallback_diagnostic: Option<AdjacentFallbackDiagnostic>`.
+- Put its `OnceLock` behind crate-private `initialize_instance_location(test_home_dir: Option<PathBuf>)` plus the existing no-argument projection path. Once initialized, a later different test-home request is an invariant error in debug/tests and is never silently accepted.
+- Keep `config_dir() -> Option<PathBuf>`, `instance_base() -> Option<PathBuf>`, and `agent_local_dir_name() -> String` unchanged.
+- Add only crate-private clone projections for the startup error and fallback diagnostic. This is not #1137's future general fallible config API.
 
-This narrow error projection is not #1137's future general fallible config projection. #1137, when replanned on this resolver, owns the reserved branch between marker and normal probe, its XDG inputs/error, and a process-wide `try_config_dir`-style contract. #1577 must not add any exact Linux-package classifier or name/claim that future projection.
+Exact startup text without a known marker:
+
+```text
+AgentsCommander cannot start because configuration directory "{config_dir}" could not be safely selected: {reason}. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.
+```
+
+When marker status is present or indeterminate, append exactly:
+
+```text
+ Portable marker path: "{marker_path}".
+```
+
+Thus every hard selection message contains the directory, terminal filesystem/OS reason, and `AGENTSCOMMANDER_CONFIG_DIR`; it contains the marker path only for marker-present/indeterminate states. `{reason}` names marker metadata or write-probe operation/path, attempts, OS reason, and any cleanup/debris clause. Paths use `.display()`; OS text remains verbatim, while kind/raw code remain available in typed diagnostics/tests.
+
+Write-probe reasons use exactly `write probe could not {create configuration directory|create probe file|write probe file|delete probe file} "{affected_path}" after {attempts} attempt(s): {os_reason}`. An exhausted post-failure cleanup appends ` Cleanup of probe file "{probe_path}" also failed after {attempts} attempt(s): {cleanup_os_reason}; the probe file may remain.` An exhausted required delete appends ` The probe file "{probe_path}" may remain.`
 
 In `lib.rs`:
 
-- Add public `StartupError` with private typed variants for the config portable error and `AppOutboxCreate { config_dir, app_outbox_path, source: io::Error }`; implement `Display` and `Error`.
-- Change `run(test_window_placement, ui_automation_enabled)` from `()` to `Result<(), StartupError>`.
-- Before `logging::init_logger`, token generation, settings access, or application-state mutation, return the cached portable error if present.
-- Replace only the `create_dir_all(&app_outbox_path).expect(...)` with `map_err` into `AppOutboxCreate` and `?` at the same ownership point.
-- Return `Ok(())` after the Tauri run loop ends.
+- Add public `StartupError` with private typed variants for the config startup error and `AppOutboxCreate { config_dir, app_outbox_path, source: io::Error }`; implement `Display`/`Error`.
+- Change `run(test_window_placement, ui_automation_enabled, test_home_dir: Option<PathBuf>)` from `()` to `Result<(), StartupError>`.
+- First initialize the instance location with that validated test-home input; then, before logger/token/settings/state mutation, return the cached config startup error.
+- Initialize the logger, then emit the retained conclusive-fallback warning when present.
+- Replace only `create_dir_all(&app_outbox_path).expect(...)` with the typed `map_err`/`?` at the same ownership point.
+- Return `Ok(())` after the Tauri run loop.
 
-In `main.rs`, handle only the GUI `run` result: on `Err`, call `agentscommander_lib::cli::present_fatal_startup_message(&error.to_string())` exactly once, then `std::process::exit(1)`. Existing parse/validation, CLI-command, UI-automation, and second-instance priority/exit behavior remains unchanged.
-
-Exact user-facing templates (paths use `.display()`; the OS-controlled reason remains verbatim):
-
-```text
-AgentsCommander cannot start because portable marker "{marker_path}" requires configuration directory "{config_dir}", but its write probe failed: {probe_reason}. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.
-```
-
-`{probe_reason}` is `failed to {create configuration directory|create probe file|write probe file|delete probe file} "{affected_path}": {os_reason}`, followed by the cleanup suffix above only when applicable.
+Exact app-outbox text remains:
 
 ```text
 AgentsCommander cannot start because it could not create app outbox directory "{app_outbox_path}" for configuration directory "{config_dir}": {os_reason}. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.
 ```
 
-Neither error prints a Rust panic/backtrace hint. Windows presentation continues to follow #1592's stdout/stderr/dialog destination contract; non-Windows writes and flushes stderr. The helper never exits; `main` owns exit 1.
+In `cli/mod.rs`, add the hidden field, absolute-path/parser validation, runtime binary/mode validator, and updates to `internal_verbs_and_test_flags_are_hidden_from_help` plus `hidden_test_only_flags_still_parse`.
 
-## Platform, compatibility, and security behavior
+In `main.rs`, validate the hidden test-home input against the already-captured binary name and command mode, pass it only to the GUI `run` call, and handle that result. On `Err`, call `agentscommander_lib::cli::present_fatal_startup_message(&error.to_string())` once and exit 1. Other parse, CLI-command, UI-automation, mutex/second-instance, and exit behavior stays unchanged. Neither startup error contains panic/backtrace text.
 
-- Windows, macOS, and Linux run the same marker and write-probe protocol. No platform `cfg` narrows it.
-- A writable portable zip/USB/user-folder copy remains adjacent, including renamed executables and their per-stem isolation. A root-owned/system install falls back to home when unmarked. `portable.txt` converts failure into a visible refusal to relocate state.
-- A macOS in-bundle executable that fails the probe falls back to home unless marked; this is the safety net, not #1594's containing-`.app` placement.
-- A read-only Linux AppImage mount falls back to home unless marked and therefore works as a per-user install, not a genuinely portable AppImage. No `$APPIMAGE` rule is added.
-- `$HOME/<profile::config_dir_name()>` remains byte-for-byte the fallback construction. No XDG path is introduced.
-- Existing config schemas, file contents, instance name/stem, port derivation, and absolute-only `instance_base` contract are unchanged.
-- Overrides intentionally preserve the existing verbatim relative-path/CWD semantics; no canonicalization or validation is added.
-- `create_new` and a unique name prevent probe truncation/clobber. Probe bytes contain no secret. The cleanup is scoped to the exact file created by this process.
-- The config layer remains filesystem/path-only and gains no `cli`, Tauri, `AppHandle`, or UI-transport dependency. Presentation and process exit stay at the existing executable/application boundary.
-- Symlink/reparse no-follow hardening, ACL manipulation, host executable hashes, helper inventories, and custom cross-process locks are non-applicable enhanced controls under the accepted threat model. Unique probe files make concurrent probes independent; the existing singleton remains unrelated to resolver correctness.
+## Platform and compatibility behavior
+
+- Windows, macOS, and Linux share marker/probe/classification semantics. Only the retry schedule is platform-specific as stated.
+- A short raw-32/raw-5 Windows hold that clears within #1436's schedule stays adjacent. Persistent raw 5/32 is conclusively unwritable and reaches home when unmarked.
+- Unix `EACCES`/read-only results classify immediately without sleep. Unknown Unix errors hard-stop.
+- Writable zip/USB/user-folder copies remain adjacent, including renamed executable isolation. Root/system installs fall home when unmarked. A marker converts any inability/ambiguity into visible refusal.
+- macOS bundle and Linux AppImage behavior remain safety nets, not #1594/#1137 placement implementations.
+- Existing schemas, contents, stem, mutex, labels, ports, absolute-only base, and verbatim relative override behavior remain unchanged.
+- Product code never changes ACLs. `create_new` plus UUID prevents truncation/clobber. Cleanup is limited to the file this process created.
+- `config` gains no CLI/Tauri/`AppHandle`/UI dependency. Presentation and process termination stay at `lib/main`.
 
 ## Affected files and symbols
 
 1. `src-tauri/src/config/mod.rs`
-   - `InstanceLocation`, new probe/error data, marker and real write-probe helpers.
-   - `resolve_instance_location` inputs and precedence.
-   - `instance_location` production I/O and `OnceLock` initialization.
-   - New crate-private `portable_startup_error`; existing three projections unchanged.
-   - Preserve all nine resolver tests and add focused #1577 unit/probe/error tests.
-2. `src-tauri/src/lib.rs`
-   - New `StartupError` and formatting tests.
-   - `run` result, pre-logger portable-error return, fallible app-outbox creation, terminal `Ok(())`.
-3. `src-tauri/src/main.rs`
-   - GUI call-site handling, existing fatal-message helper, and exit 1.
-4. `scripts/smoke-cli-release-windows.ps1`
-   - Add bounded release-process cases for marker hard failure and public override precedence/outbox failure, reusing the script's existing release binary, log root, and process cleanup conventions.
+   - Shared retry policy, marker/probe outcomes and adapters, classification, cleanup, typed errors/diagnostics.
+   - Seven-input pure resolver and one-shot `instance_location` orchestration.
+   - Unchanged public projections plus narrow startup/diagnostic projections.
+   - Existing nine tests retained; focused #1577 tests added.
+2. `src-tauri/src/config/profile.rs`
+   - Pure suffix/config-name derivation; existing `binary_suffix`/`config_dir_name` delegate without changing first-underscore behavior.
+3. `src-tauri/src/config/settings.rs`
+   - Existing Windows atomic-replace wrapper delegates to the shared retry policy; #1436 behavior/tests stay intact.
+4. `src-tauri/src/cli/mod.rs`
+   - Hidden absolute `--test-home-dir` field, runtime smoke-identity/mode validation, help/parse tests.
+5. `src-tauri/src/lib.rs`
+   - `StartupError`, early config failure, retained fallback warning, fallible outbox create, `run -> Result`.
+6. `src-tauri/src/main.rs`
+   - Hidden test-home validation/pass-through, GUI result presentation, and exit 1.
+7. `scripts/smoke-cli-release-windows.ps1`
+   - Three bounded release-child cases, including the real unmarked fallback seam.
 
-No module/file move, Cargo feature/dependency, manifest, lockfile, frontend, IPC, persistence schema, workflow, packaging, npm, or documentation edit is allowed.
+No module/file move, new source file, dependency, lockfile, frontend, IPC, persistence schema, workflow, packaging, npm, or documentation edit is allowed.
 
 ## Ordered implementation
 
-1. Freeze branch/base/index/tracked/untracked state and the four application/test paths. Stop on any unrelated dirty state or relevant target drift.
-2. In `config/mod.rs`, add typed probe outcomes/failures, exact `Display` text, marker semantics, and the real create/write/delete helper using only std plus existing `uuid`.
-3. Extend `InstanceLocation` and the pure resolver with public/debug override inputs and injected marker/write outcomes. Preserve all old fields/results, implement the six-tier precedence, and expose only `portable_startup_error` in addition to existing projections.
-4. Make `instance_location` capture all runtime inputs once, short-circuit lower probes for overrides/invalid executable shapes, run required I/O, and cache the final location/error for process lifetime.
-5. In `lib.rs`, add `StartupError`, make `run` fallible, preflight the cached marker error before logging/state work, and replace the app-outbox `expect` with the typed result.
-6. In `main.rs`, present a failed GUI `run` through the existing helper and exit 1 without changing any earlier branch.
-7. Add/adjust unit tests, keeping every existing resolver assertion. Extend the Windows release smoke with isolated child environments, bounded waits, and durable diagnostics.
-8. Format, run focused and full local validation, run the dependency gate, verify exact diff/path/lockfile/workflow scope, then deliver by PR. No implementation commit or PR may include the plan-only commit's unrelated worktree artifacts.
+1. Recheck branch/base/index/affected bytes and freeze the seven-path scope. Stop on unrelated dirty state.
+2. Split profile capture from derivation and pin first-underscore behavior before changing the resolver call.
+3. Generalize the #1436 retry policy in the config root; delegate settings replacement and prove its old tests unchanged.
+4. Add marker tri-state, write probe, final classification, cleanup/debris data, and retained diagnostic.
+5. Extend `InstanceLocation` and the pure resolver; preserve all nine old results and implement the decisive-state table.
+6. Make `instance_location` perform the single resolver capture, short-circuit I/O, run real adapters once, and cache the result.
+7. Add the hidden CLI test-home control and `lib/main` initialization/result handling without moving other startup work.
+8. Add focused tests and the three release-smoke cases.
+9. Format, validate locally, rerun dependency/scope gates, and deliver through the issue PR with exact-head CI.
 
 ## Tests and objective acceptance
 
-### Resolver and probe tests
+### Pure resolver/profile tests
 
-- Retain all nine named resolver tests and every assertion. Only calls gain public override plus injected probe inputs; executable-adjacent rows inject marker absent/write success.
-- Public nonblank override beats a simultaneous nonblank debug override, present marker, and failed write outcome; assert absolute and relative path/base semantics and executable-derived stem.
-- Blank public override allows nonblank debug override; blank public and blank debug continue to the marker/probe tiers.
-- Marker present plus write success selects executable-adjacent state. Marker present plus a synthetic `PermissionDenied` returns adjacent state plus the typed error and never the supplied home path.
-- Marker absent plus the same failure selects the exact home fallback/no base; marker absent plus success remains adjacent.
-- `current_exe()` failure and invalid parent/stem do not consume probe outcomes and preserve current fallback/default-stem results.
-- Real probe tests cover an existing directory and a missing directory, verify success, verify no probe file remains, and verify a newly created selected directory remains. The fixed sentinel bytes and `write_all` call are pinned by the helper's focused source/unit contract without introducing an injectable filesystem abstraction.
-- A deterministic non-directory/blocking-path test exercises a real failure and captures operation/path/kind/OS reason. A synthetic typed-failure formatting test covers first-failure preservation plus the exact cleanup suffix.
-- Marker helper tests prove an empty file, arbitrary-content file, and directory all count; a missing/broken target does not. Source review asserts no content read and no manual case folding.
-- Exact formatter tests use fixed paths and synthetic OS reasons to compare both complete startup strings byte-for-byte.
+- Prefix every new #1577 unit test, including CLI/config-initializer tests, with `issue_1577_` so the focused command is exhaustive.
+- Retain all nine named resolver tests and every assertion; only calls gain public override, `profile::config_dir_name()` as the injected fallback name, and marker/write outcomes.
+- Existing adjacent rows inject marker absent/write success. Existing fallback rows retain exact path/stem/base results.
+- Public override beats simultaneous debug override, marker, and failed outcomes. Blank values fall through correctly.
+- Profile tests pin no underscore, first underscore, multiple underscores, empty suffix, `dev` suffix, and current build-profile fallback. Existing mutex/title/port tests stay unchanged.
+- Resolver tests prove marker present success, marker present conclusive/indeterminate failure, marker absent success, marker absent conclusive home fallback, marker absent indeterminate hard error, invalid executable short-circuit, and no-home tier 6.
+- Identical seven inputs produce identical complete `InstanceLocation` data; no resolver call installs callbacks or reaches process-global profile caches.
+- CLI tests add `--test-home-dir` to the hidden-help allowlist, prove an absolute value parses, and prove the pure runtime validator rejects a relative path, any subcommand, and a non-`agentscommander_issue1577_` binary stem. A config initializer test proves the validated path becomes only the injected `home_dir` input and cannot outrank public/debug/marker tiers.
 
-### Startup and release smoke
+### Retry, classification, marker, and cleanup tests
 
-Extend `scripts/smoke-cli-release-windows.ps1` with uniquely named copies of the already-built release executable so no installed/running identity can interfere:
+- Existing `windows_settings_replace_retries_access_denied` and `...sharing_violation` retain their two-call/`[15]` assertions.
+- Shared-helper tests pin six persistent raw-5/raw-32 calls and sleeps `[15,30,60,120,240]`, transient success, one immediate `Interrupted` retry on every platform, the seven-call mixed upper bound, and no Unix sleep for permission/read-only errors.
+- Classification table tests prove only the closed allowlist is conclusive and an unknown raw code/future-other kind is indeterminate.
+- Real successful probes cover existing/missing directories, retained created directory, and zero probe residue.
+- A real non-directory candidate is now asserted indeterminate/hard with no home relocation; it must not masquerade as permission failure.
+- Injected cleanup tests cover interrupted-then-success, Windows sharing-violation-then-success, persistent conclusive delete with retained debris diagnostic, and unknown cleanup upgrading the whole result to indeterminate.
+- Marker tests cover absent, empty file, arbitrary file, directory, valid symlink, Windows raw-32-then-success metadata retry, persistent metadata permission error, ambiguous entry, and broken symlink. The broken-link assertion is explicitly the inverted hard-error test described above.
+- Exact formatter tests compare marker-present, marker-indeterminate, unmarked-indeterminate, cleanup/debris, retained-warning, and outbox strings byte-for-byte.
 
-1. Marker-hard-error case: create an empty adjacent `portable.txt`, make the computed adjacent config candidate deterministically fail the real probe, clear both config override variables, set child-only `AC_UI_AUTOMATION=0`, remove child-only `AC_TEST_WINDOW_PLACEMENT`, and launch `--app` with stdout/stderr redirected. Require exit 1, marker path, adjacent config path, OS reason, and `AGENTSCOMMANDER_CONFIG_DIR` in the presented error; forbid a home/outbox fallback and `panicked at`.
-2. Release-public-override case: retain the marker and failing adjacent candidate, set child-only `AGENTSCOMMANDER_CONFIG_DIR` to a different absolute blocking path, also set `AGENTSCOMMANDER_TEST_CONFIG_DIR` to a third path, and launch `--app`. Require exit 1 and the app-outbox template naming the public override config/outbox path and OS reason; forbid the marker error, debug path, adjacent candidate, and `panicked at`. This proves the public variable is compiled/read in release and outranks all lower tiers.
+### Windows release subprocess acceptance
 
-Each child has a 15-second deadline. On timeout, terminate it, wait for terminal process state, retain stdout/stderr/exit/timing/path diagnostics under ignored `artifacts/cli-release-smoke`, and fail. Environment changes are child-scoped; the script restores or never mutates its own process environment. Test copies/probe artifacts are removed only when they remain inside the case-specific artifact root; logs survive failures for CI upload.
+Extend the existing smoke using copies named `agentscommander_issue1577_<case-id>.exe` (the suffix is deliberately non-`dev`) and case roots under ignored `artifacts/cli-release-smoke`. Each GUI child receives `--app --test-home-dir <absolute-case-home>`; no `HOME`/`USERPROFILE` assumption is allowed. Launch every background child with `Start-Process -WindowStyle Hidden` and redirected streams; no case needs an interactive window. All environment changes are child-scoped. Resolve/capture the current user's ACL identity and the parent directory's original security descriptor before a case changes ACLs; restore that exact descriptor before scoped cleanup. Product code never participates.
+
+For each adjacent-writability case, copy the binary first, ensure the exact adjacent candidate is absent, then add a deny rule limited to file/directory creation and write in the copied binary's parent while preserving read/execute and permission-restoration authority. A preflight child operation must observe raw Windows 5 for candidate creation; otherwise fail the fixture rather than accepting an ambiguous blocker.
+
+1. **Unmarked primary fallback:** no `portable.txt`; remove child `AGENTSCOMMANDER_CONFIG_DIR` and `AGENTSCOMMANDER_TEST_CONFIG_DIR`; set child `AC_UI_AUTOMATION=0`; remove child `AC_TEST_WINDOW_PLACEMENT`; pass a fresh absolute case home through the hidden CLI input. Within 15 seconds require:
+   - exact fallback config root `<child-home>/.agentscommander-new`;
+   - exactly one `<fallback>/instances/<uuid>/outbox`, and `app-outbox-path.txt` plus the `[app-outbox]` stdout line both name that exact directory;
+   - the adjacent candidate and marker remain absent and no adjacent state is created;
+   - retained fallback diagnostics name the adjacent candidate, selected home, raw OS 5, and exhausted retries;
+   - no fatal-selection text, `panicked at`, or backtrace hint.
+   The healthy GUI child is expected to remain running; terminate it only after these assertions.
+2. **Marker hard error:** create empty adjacent `portable.txt` before applying the same ACL blocker; clear both overrides and pass a fresh absolute test home. Require exit 1 within 15 seconds and the exact selection template containing candidate directory, terminal raw-5 OS reason, `AGENTSCOMMANDER_CONFIG_DIR`, and marker path. Require no test-home/outbox state and no panic text.
+3. **Release public override:** retain the marker/blocked adjacent candidate, set `AGENTSCOMMANDER_CONFIG_DIR` to a distinct absolute blocking file path and `AGENTSCOMMANDER_TEST_CONFIG_DIR` to a third path, and pass a fourth fresh test home. Require exit 1 and the exact app-outbox template naming only the public override config/outbox and OS reason. Forbid marker/debug/adjacent/test-home selection messages and panic text. This proves the public variable exists in release and outranks every lower tier.
+
+Every child has a 15-second observation/exit deadline. Before termination, snapshot the root plus recursively discovered descendant PID set. Invoke the resolved `$env:SystemRoot\System32\taskkill.exe /PID <root-pid> /T /F` once, bound that command itself to 10 seconds, then poll the captured identities (PID plus creation time, so PID reuse cannot satisfy the check) until all are terminal or the same deadline expires. Timeout, taskkill failure, surviving identity, ACL-restore failure, or artifact-cleanup conflict fails while preserving stdout/stderr/timing/PID/path/ACL diagnostics. Remove only case-owned artifacts after exact ACL restoration; retain diagnostic logs on failure.
+
+This real release subprocess is mandatory. Unit composition without the unmarked `instance_location()`/outbox seam does not satisfy #1577.
 
 ### Required commands
 
-From the repository root, using locked dependencies and the repository/CI-defined toolchain:
+From the repository root with locked dependencies and repository/CI toolchains:
 
 ```powershell
 npm ci
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --lib issue_1577_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib windows_settings_replace_retries -- --test-threads=1
 cargo test --manifest-path src-tauri/Cargo.toml --test loops_layering
 cargo test --manifest-path src-tauri/Cargo.toml --test instance_gitignore_layering
 cargo test --manifest-path src-tauri/Cargo.toml --test project_settings_layering
@@ -240,60 +338,64 @@ npm run build:prod:no-bundle
 npm run smoke:cli-release-windows
 ```
 
-Focused failures, formatter drift, an old resolver assertion change/removal, a smoke timeout, exit other than 1, wrong selected path, missing message field, panic text, probe residue, or any unexpected file change blocks delivery. Existing documented test debt must be identified by its exact established signature; no new failure is accepted as debt.
+Any old resolver/profile/settings assertion change, formatter drift, wrong retry count, unknown-error relocation, broken-link absence, probe residue without retained diagnostics, smoke timeout/tree leak, wrong selected path, panic text, or unexpected file change blocks delivery. Existing debt must be identified by exact established signature; no new failure is accepted as debt.
 
 ## Dependency-cycle and layering gate
 
-Planned new/removed internal Rust module arcs: zero.
+Planned new/removed unique internal Rust module arcs: zero.
 
-- `src-tauri/src/lib.rs -> crate::config` already exists at the current `config_dir` call sites.
-- `src-tauri/src/main.rs -> agentscommander_lib::run` and `-> agentscommander_lib::cli` already exist, including the current fatal-message call.
-- All new config probe/error references are internal to `agentscommander_lib::config`; std/uuid references are external dependencies, not Rust module arcs.
-- No lower layer gains UI transport. `config` returns typed data; `lib/main` own presentation and termination.
+- `config::mod -> config::profile` already exists; replacing `config_dir_name` with the pure injected derivation preserves that pair.
+- `config::settings -> config::mod` already exists at four production sites (`settings.rs:1775,2163,4191,4502`). Delegating to the shared retry helper adds a site, not a new `from -> to` pair.
+- `lib -> config` and `main -> agentscommander_lib::{run,cli}` already exist; the added hidden CLI field, validator, `run` argument, and config initializer preserve those pairs.
+- Profile/CLI extraction and probe/error work are intra-module; std/uuid are external.
+- No lower layer gains CLI, Tauri, `AppHandle`, or UI transport. The config root owns shared config-filesystem policy; `lib/main` own presentation/exit.
 
-Clean-base `rust-levelization-run` evidence at `1eee2cd72a0d25095108d92b3f495da84b979d24`: 191 modules, 1,037 unique arcs/3,732 sites, 107 SCCs, exactly one cyclic SCC with 85 members. Regenerated `src-tauri/module-arcs.txt` was byte-identical to the tracked 82,149-byte/1,037-arc record, SHA-256 `A93ED10E844CD18D3C2150AC53ACD8DFD704195D0783A5CA169CEB7B8C864D9E`.
+Clean pinned-source `rust-levelization-run` evidence: Node `C:\Program Files\nodejs\node.exe` v24.13.0; detector exit 1 with graph emitted; 191 modules, 1,037 unique arcs/3,732 sites, 107 SCCs, exactly one cyclic SCC with 85 members. Regenerated `module-arcs.txt` was byte-identical to the tracked 82,149-byte/1,037-arc record, SHA-256 `A93ED10E844CD18D3C2150AC53ACD8DFD704195D0783A5CA169CEB7B8C864D9E`.
 
-The implementation reviewer must run the authoritative detector on clean base and final-head trees. From `repo-AgentsCommander` inside the workgroup, the team-owned tools are at the exact sibling-repository path below:
+Run on clean pinned-base and final-head worktrees:
 
 ```powershell
-# Run separately in clean base and final-head worktrees.
 node "..\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\01-rust_module-dependency-cycles.mjs" src-tauri --emit-graph graph.json --quiet
 node "..\repo-personal\ObsidianVault\Coding Agents\IA-Programming\rust\Levelization\02-levelize.mjs" rank graph.json
 node scripts/02-module-arc-record.mjs --graph graph.json --out src-tauri/module-arcs.txt
 ```
 
-Detector exit 1 is normal when the existing cycle is measured and the graph exists; exit 3 is unusable and blocks. Green requires all of:
+Detector exit 1 is normal when the existing cycle is measured and the graph exists; exit 3 blocks. Green requires:
 
-1. `coverage.graphShape.cyclicSccs` remains 1.
-2. The single 85-module cyclic SCC member set is identical set-to-set, not merely equal in count.
-3. The final graph has zero new `from -> to` pairs crossing a previously clean SCC boundary; expected new internal module arcs are also zero.
-4. Regenerated `src-tauri/module-arcs.txt` is byte-identical to the committed record and leaves empty Git status for that path.
-5. `loops_layering`, `instance_gitignore_layering`, and `project_settings_layering` remain green.
+1. `cyclicSccs` remains 1.
+2. The 85-member cyclic SCC set is identical set-to-set.
+3. Zero new unique `from -> to` pairs cross any previously clean SCC boundary; expected new/removed pairs are zero.
+4. Regenerated `module-arcs.txt` is byte-identical and clean.
+5. All three structural guards stay green.
 
-Any new arc, changed SCC membership/count, role inversion, or arc-record byte drift is implementation deviation and returns to architecture review.
+A changed unique arc, SCC membership/count, role inversion, or arc-record byte drift returns to architecture review. A higher edge-site count on a pre-existing pair is expected and is not a new module arc.
 
 ## Delivery and nonfunctional gates
 
 ### CI parity and deterministic tools
 
-The pinned workflows make these PR jobs applicable: `test-debt`; Windows `rust-regression`; `rust-regression-linux`; `rust-regression-macos`; the four-host `terminal-snapshot-portable` matrix; `windows-release-cli-smoke`; `frontend-regression`; and `lockfile-drift` (whose changed-input detector must report no package-manifest change). `bundle-validation` and `version-sync` path filters do not match the frozen path set. Re-derive this list if the workflows or final diff drift.
+The pinned workflows make these PR jobs applicable: `test-debt`; Windows `rust-regression`; Linux/macOS Rust regression; the four-host terminal-snapshot matrix; `windows-release-cli-smoke`; `frontend-regression`; and `lockfile-drift`, whose detector must report no package-manifest change. Bundle/version path filters do not match. Re-derive only if relevant workflow/config/diff paths drift.
 
-CI uses Node 22, npm 11.6.2, Rust stable, `npm ci`, and Cargo's committed lockfile. Local evidence may use the resolved standard toolchain but must record versions; the planning host resolved Rust/Cargo 1.97.1, Node 24.13.0, and npm 11.6.2. Host-dependent Windows presentation/release evidence belongs to `windows-release-cli-smoke`. Every triggered and configured-required check must succeed on the exact PR-head SHA; another SHA, unexplained skip, bypass, or waiver does not satisfy delivery.
+CI uses Node 22, npm 11.6.2, Rust stable, `npm ci`, and committed Cargo lock resolution. Local runs record resolved versions. Host-dependent release/ACL behavior belongs to Windows CI. Every triggered and configured-required check must pass on the exact PR-head SHA; another SHA, unexplained skip, bypass, or waiver is insufficient.
 
-### Git, drift, mutation, and recovery
+### Git, bounded drift, mutation, and recovery
 
-- Before first product write and again before PR creation/update, fetch live `main` and classify drift from pinned base by changed paths and semantic relevance. Refresh only affected source/test/workflow/toolchain evidence; unrelated target movement does not restart accepted design.
-- Require the exact issue branch, synchronized/recorded base, clean index, no unrelated tracked edits, and a frozen intended path set. Product Git mutations occur only in the authorized `repo-AgentsCommander` root. Deliver through a PR; never directly push `main`.
-- Immediately before each edit, recheck branch/head/index and the affected path bytes. Preserve external edits. Recovery may unstage/remove only this run's newly created or demonstrably unchanged output; do not use broad reset, checkout, restore, clean, or repository-wide deletion.
-- Runtime smoke artifacts stay under ignored `artifacts/cli-release-smoke`. Build artifacts stay in repository-standard ignored roots. Final evidence must enumerate tracked, staged, ordinary-untracked, lockfile, config, workflow, and intended path state.
-- The Markdown plan digest is not an implementation artifact. For any later plan certification, hash the committed blob byte stream, not the CRLF worktree representation.
+- The immutable planning base remains `1eee2cd...` by release-owner ruling. Do not add a rebase prerequisite merely because `main` moved.
+- Immediately before first product mutation and PR creation/update, fetch live `main` and classify drift from the pinned base by affected source/test/workflow/toolchain semantics. Refresh only materially affected evidence; unrelated motion cannot restart accepted design.
+- Require the issue branch, recorded base/head, clean index, no unrelated tracked/untracked state, and frozen seven-path scope. Product Git writes occur only in authorized `repo-AgentsCommander` and deliver through a PR, never direct to `main`.
+- Before each write, recheck affected bytes. Recovery may unstage/remove only this run's newly created or demonstrably unchanged output. Never use broad reset/restore/clean.
+- Smoke/build artifacts stay in repository-standard ignored roots. ACL recovery restores the captured case-root descriptor before deleting only owned artifacts; a mismatch preserves evidence and fails.
+- Final evidence enumerates tracked, staged, ordinary-untracked, lockfile, config, workflow, and intended path state.
+- Hash plan certifications from `git cat-file blob <commit>:plans/1577-writable-config-resolver.md`, not worktree bytes or `git show`.
 
 ### Bounded diagnostics and enhanced controls
 
-All tests/builds use runner or CI timeouts and retain exit code/stdout/stderr sufficient to diagnose failures. The new smoke children use the explicit 15-second deadline above; timeout/cancellation is failure, and cleanup failure cannot erase the primary failure.
+Tests/builds use runner/CI timeouts and retain exit/stdout/stderr. The release child uses explicit 15-second observation plus 10-second tree-cleanup bounds; timeout/cancellation is failure and cleanup cannot erase the primary failure.
 
-No enhanced provenance, signing, binary-hash, helper/DLL inventory, hostile-parent environment quarantine, reparse/hardlink proof, custom transaction ledger, or exclusive process lock applies. The task changes ordinary application code, uses repository/CI-defined toolchains, creates only a unique non-secret probe file, and performs no migration or irreversible mutation. Exact-head GitHub CI, scoped diffs, real probe tests, and no-clobber cleanup are proportionate evidence.
+No enhanced signing, binary-hash, helper inventory, hostile-parent quarantine, product ACL mutation, reparse proof, custom transaction ledger, or exclusive cross-process lock applies. The ACL fixture is scoped test setup for the issue's primary Windows hazard; shared retries, exact-head CI, real subprocess acceptance, scoped diff, and no-clobber cleanup are proportionate.
 
 ## Ready/acceptance verdict
 
-Implementation is accepted only when the exact precedence, cache lifetime, marker semantics, error templates, exit 1, old resolver outcomes, four application/test files plus this plan, release smoke, local checks, zero-arc dependency criterion, and exact PR-head CI checks all pass. Any need to change an approved precedence/result, add packaging/npm/workflow/docs work, add #1137/#1594/AppImage behavior, or weaken marker hard failure is a blocker back to the release owner, not an implementer decision.
+Implementation is accepted only when the precedence/cache contract, one-capture pure derivation, unchanged first-underscore/profile behavior, hidden validated test-home input, shared #1436 retry schedule, closed conclusive allowlist, marker-indeterminate hard error, inverted broken-link assertion, cleanup/debris diagnostic, exact messages, exit 1, nine legacy outcomes, seven-path scope, mandatory unmarked release subprocess, dependency criterion, local checks, and exact-head CI all pass.
+
+Any request to silently relocate on an unknown error, coerce marker ambiguity to absent, duplicate the retry policy, change suffix parsing, add #1137/#1594/AppImage behavior, or weaken process-tree/ACL recovery is a blocker back to the release owner.
