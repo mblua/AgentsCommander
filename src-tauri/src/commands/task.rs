@@ -164,7 +164,7 @@ fn emit_task_updated(
     let _ = app.emit(
         "workgroup_task_updated",
         serde_json::json!({
-            "roomRoot": strip_unc(wg_root),
+            "workgroupRoot": strip_unc(wg_root),
             "source": "manual",
             "task": task.clone(),
             "taskTitle": task_title.clone(),
