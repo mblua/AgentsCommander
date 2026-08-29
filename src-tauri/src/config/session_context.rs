@@ -3556,6 +3556,34 @@ fn render_host_platform_rules_block(
     }
     let filename = host_platform_rules_filename();
     let fallback = host_platform_rules_default();
+    // #1625: a known project opened with a binary that never reached the
+    // creation path (create/register) has no platform rule files; the read
+    // must seed them absent-only through the seeder lifecycle before reading.
+    // Guard: one resolve (walk + canonicalize) + one symlink_metadata per
+    // render in steady state; read_context_template repeats the same resolve
+    // + stat immediately after, so the marginal cost is one extra resolve +
+    // one extra stat per render — negligible per materialization.
+    if let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) {
+        let path = context_dir.join(filename);
+        let missing = match std::fs::symlink_metadata(&path) {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        };
+        if missing {
+            if let Err(error) =
+                crate::config::seeded_context_templates::ensure_platform_context_templates(
+                    &context_dir,
+                )
+            {
+                log::warn!(
+                    "[session_context] failed to seed platform rules files in {}: {}",
+                    context_dir.display(),
+                    error
+                );
+            }
+        }
+    }
     match read_context_template(agent_root, filename) {
         Ok(Some(content)) if !content.trim().is_empty() => content,
         Ok(Some(_)) => {
@@ -5625,28 +5653,131 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn host_platform_rules_missing_or_empty_file_falls_back_to_embedded_default() {
-        // #1605 T-8: absent or empty platform file -> embedded default for the
-        // build's OS (with a WARN in app.log), never an empty section.
+    fn render_seeds_missing_platform_file_absent_only() {
+        // #1625 T-1 (replaces the missing case of #1605 T-8): the render path
+        // seeds the missing platform files absent-only through the seeder
+        // lifecycle before reading: the host file and all three platform files
+        // exist byte-equal to their embedded defaults, the state records
+        // `platform.<os>` v1 with `lastSeededSha256 == hash(default)`, the
+        // rendered block carries the default, and a second render is
+        // idempotent (same output, same files, same state).
+        use sha2::{Digest, Sha256};
+
         let temp = tempfile::tempdir().expect("tempdir");
         let ac = temp.path().join(".ac");
         let replica = ac.join("wg-1-team").join("__agent_dev");
         std::fs::create_dir_all(&replica).expect("create replica layout");
         let filename = host_platform_rules_filename();
         let default = host_platform_rules_default();
+        let state_path = ac
+            .join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
 
-        let missing = render_agent_context_template_inner(
-            get_default_agent_template(),
-            &path_string(&replica),
-            None,
-            &no_skill_section(),
-            &replica,
-            None,
-            None,
-            false,
+        let render = |replica: &std::path::Path| {
+            render_agent_context_template_inner(
+                get_default_agent_template(),
+                &path_string(replica),
+                None,
+                &no_skill_section(),
+                replica,
+                None,
+                None,
+                false,
+            )
+        };
+
+        let out1 = render(&replica);
+        assert!(out1.contains("## Host Platform Rules"));
+        assert!(out1.contains(default));
+        assert_eq!(
+            count_context_occurrences(&out1, "## Host Platform Rules"),
+            1
         );
-        assert!(missing.contains("## Host Platform Rules"));
-        assert!(missing.contains(default));
+        assert_no_raw_template_placeholders(&out1);
+
+        // (a) host file exists byte-equal to its embedded default.
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read seeded host file"),
+            default,
+            "the host platform file must be seeded byte-equal to the default"
+        );
+        // (b) all three platform files exist byte-equal to their defaults.
+        for (file, expected) in [
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(ac.join(file)).expect("read seeded platform file"),
+                expected,
+                "{file} must be seeded byte-equal to its embedded default"
+            );
+        }
+        // (c) state records platform.<os> v1 with lastSeededSha256 == hash(default).
+        let state = std::fs::read_to_string(&state_path).expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        for (id, expected) in [
+            (
+                "platform.windows",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                "platform.linux",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                "platform.macos",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                parsed["templates"][id]["currentVersion"], 1,
+                "{id} state entry must be v1"
+            );
+            assert_eq!(
+                parsed["templates"][id]["lastSeededSha256"],
+                format!("{:x}", Sha256::digest(expected.as_bytes())),
+                "{id} state entry must carry the default sha"
+            );
+        }
+
+        // (e) second render idempotent: same output, files unchanged, state unchanged.
+        let host_before = std::fs::read_to_string(ac.join(filename)).expect("read host file");
+        let out2 = render(&replica);
+        assert_eq!(out1, out2, "the second render must be byte-identical");
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read host file again"),
+            host_before,
+            "the seeded host file must not change on a second render"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&state_path).expect("read state again"),
+            state,
+            "the state must not change on a second render"
+        );
+    }
+
+    #[test]
+    fn host_platform_rules_empty_file_falls_back_to_embedded_default() {
+        // #1625 T-2 (replaces the empty case of #1605 T-8): an empty platform
+        // file renders the embedded default (single block) and is preserved
+        // as-is: it is never seeded over, and no state entry is created for it
+        // (silent preservation of the unowned empty file via
+        // `suppress_unknown_without_state`).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+        let filename = host_platform_rules_filename();
+        let default = host_platform_rules_default();
 
         std::fs::write(ac.join(filename), "").expect("write empty platform file");
         let empty = render_agent_context_template_inner(
@@ -5664,6 +5795,146 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_eq!(
             count_context_occurrences(&empty, "## Host Platform Rules"),
             1
+        );
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read empty platform file"),
+            "",
+            "an empty pre-existing file must never be overwritten"
+        );
+        assert!(
+            !ac.join(
+                crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME
+            )
+            .exists(),
+            "an unowned empty file must not create a state entry"
+        );
+    }
+
+    #[test]
+    fn render_with_container_mounts_never_seeds_platform_files() {
+        // #1625 T-4: a container session renders no host platform rules block
+        // and never seeds the platform files (the early return precedes the
+        // seed guard); no state file is created either.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+
+        let out = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            Some(&crate::pty::container_repos::RepoMountResolution::default()),
+            false,
+        );
+        assert!(!out.contains("## Host Platform Rules"));
+        for file in [
+            crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+            crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+            crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+        ] {
+            assert!(
+                !ac.join(file).exists(),
+                "{file} must never be seeded for a container session"
+            );
+        }
+        assert!(
+            !ac.join(
+                crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME
+            )
+            .exists(),
+            "no state file may be created for a container session"
+        );
+    }
+
+    #[test]
+    fn deleted_platform_file_is_reseeded_absent_only() {
+        // #1625 T-5: after a render-triggered seed, deleting the host platform
+        // file re-seeds it absent-only on the next render (file byte-equal to
+        // the default again) and the state keeps `platform.<os>` v1 seeded.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+        let filename = host_platform_rules_filename();
+        let default = host_platform_rules_default();
+        let state_path = ac
+            .join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+
+        let render = |replica: &std::path::Path| {
+            render_agent_context_template_inner(
+                get_default_agent_template(),
+                &path_string(replica),
+                None,
+                &no_skill_section(),
+                replica,
+                None,
+                None,
+                false,
+            )
+        };
+
+        let out1 = render(&replica);
+        assert!(out1.contains(default));
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read seeded host file"),
+            default
+        );
+        let state_before =
+            std::fs::read_to_string(&state_path).expect("read state before deletion");
+
+        std::fs::remove_file(ac.join(filename)).expect("delete host platform file");
+        let out2 = render(&replica);
+        assert!(out2.contains("## Host Platform Rules"));
+        assert!(out2.contains(default));
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read reseeded host file"),
+            default,
+            "the deleted file must be re-seeded byte-equal to the default"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&state_path).expect("read state after reseed"),
+            state_before,
+            "the reseed must keep the existing state entry untouched"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&state_before).expect("parse state");
+        assert_eq!(
+            parsed["templates"]["platform.windows"]["currentVersion"], 1,
+            "the platform state entry must stay v1 seeded"
+        );
+    }
+
+    #[test]
+    fn render_never_overwrites_edited_platform_file() {
+        // #1625 T-6: an existing custom platform file renders as-is and is
+        // never touched by the seed guard (no sync runs over existing files).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac = temp.path().join(".ac");
+        let replica = ac.join("wg-1-team").join("__agent_dev");
+        std::fs::create_dir_all(&replica).expect("create replica layout");
+        let filename = host_platform_rules_filename();
+        let custom = format!("## Host Platform Rules\n\nMY CUSTOM RULES {filename}\n");
+
+        std::fs::write(ac.join(filename), &custom).expect("write custom platform file");
+        let out = render_agent_context_template_inner(
+            get_default_agent_template(),
+            &path_string(&replica),
+            None,
+            &no_skill_section(),
+            &replica,
+            None,
+            None,
+            false,
+        );
+        assert!(out.contains("MY CUSTOM RULES"));
+        assert_eq!(count_context_occurrences(&out, "## Host Platform Rules"), 1);
+        assert_eq!(
+            std::fs::read_to_string(ac.join(filename)).expect("read custom platform file"),
+            custom,
+            "an existing custom file must never be overwritten"
         );
     }
 
@@ -7646,16 +7917,58 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             err
         );
 
-        // (d) the project's global and its state file are byte-identical afterwards:
-        // not read into the output, not synced, not healed.
+        // (d) the project's global and its state entry are byte-identical
+        // afterwards: not read into the output, not synced, not healed. The
+        // state FILE itself gains the three `platform.*` entries: per #1625 the
+        // render path seeds the missing platform rule files absent-only in any
+        // host session under a resolvable `.ac` ancestor (the hook lives in
+        // `render_host_platform_rules_block`, which also covers the root
+        // prologue); the invariant under test here is that Root never touches
+        // the project GLOBAL.
+        use sha2::{Digest, Sha256};
         assert_eq!(
             std::fs::read(&sentinel_path).expect("read sentinel"),
             sentinel.as_bytes()
         );
+        let state_after = std::fs::read_to_string(&state_path).expect("read state");
+        let parsed: serde_json::Value = serde_json::from_str(&state_after).expect("parse state");
         assert_eq!(
-            std::fs::read(&state_path).expect("read state"),
-            state.as_bytes()
+            parsed["templates"]["global"]["templateId"], "global",
+            "the project global state entry must stay untouched by Root renders"
         );
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"], 1,
+            "the project global must not be synced/healed by Root renders"
+        );
+        assert_eq!(
+            parsed["templates"]["global"]["lastSeededSha256"],
+            serde_json::Value::Null,
+            "the project global must not be seeded by Root renders"
+        );
+        for (id, default) in [
+            (
+                "platform.windows",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                "platform.linux",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                "platform.macos",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                parsed["templates"][id]["currentVersion"], 1,
+                "{id} must be seeded v1 by the render (absent-only, per #1625)"
+            );
+            assert_eq!(
+                parsed["templates"][id]["lastSeededSha256"],
+                format!("{:x}", Sha256::digest(default.as_bytes())),
+                "{id} must carry the default sha"
+            );
+        }
 
         // (e) with the sentinel ABSENT, Root creates no `Context.AgentsCommander.md`.
         std::fs::remove_file(&sentinel_path).expect("remove sentinel");
