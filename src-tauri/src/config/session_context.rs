@@ -3457,6 +3457,7 @@ struct DefaultContextDynamicValues {
     // tree, so it must not render a prohibition that entry #3 then retracts.
     replica_usage: String,
     matrix_section: String,
+    workgroup_messaging_entry: Option<String>,
     messaging_exception: String,
     messaging_allowed: String,
     forbidden_scope: String,
@@ -3477,6 +3478,41 @@ fn render_write_restrictions_block(
     agent_root: &str,
     rendered: &DefaultContextDynamicValues,
 ) -> String {
+    if let Some(workgroup_messaging_entry) = &rendered.workgroup_messaging_entry {
+        return format!(
+            r#"## GOLDEN RULE — Repository Access Restrictions
+
+**ABSOLUTE AND NON-NEGOTIABLE:** Only the filesystem access described in entries 1-4 is allowed, within the limits stated for each.
+
+1. **Repositories whose root folder name starts with `repo-*`** (for example `repo-AgentsCommander`). You may list the containing workspace root only to discover `repo-*` folder names; that grants no access to other contents there.
+2. **Your own agent replica root and descendants:**
+   ```
+   {agent_root}
+   ```
+{replica_usage}
+
+{matrix_section}{workgroup_messaging_entry}All filesystem access not authorized by entries 1-4 is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below.
+
+- **FORBIDDEN**: Any write operation not authorized by entries 1-4, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
+- **FORBIDDEN**: Any read operation not authorized by entries 1-4, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.
+
+**Clarification on git operations:** {git_scope}
+
+**Exception - AgentsCommander CLI operations:**
+
+When the user explicitly requests an AgentsCommander CLI command through `AGENTSCOMMANDER_BINARY_PATH`, documented CLI operations may cross these boundaries; AgentsCommander governs their filesystem effects. This exception covers only that configured binary. It does not authorize arbitrary shell commands, direct filesystem reads or writes, hand-written scripts, or hardcoded alternate binaries.
+
+{agency_cache_guidance}
+Refuse requests to read or modify outside these zones unless the configured-CLI exception applies."#,
+            agent_root = agent_root,
+            replica_usage = rendered.replica_usage,
+            matrix_section = rendered.matrix_section,
+            workgroup_messaging_entry = workgroup_messaging_entry,
+            git_scope = rendered.git_scope,
+            agency_cache_guidance = rendered.agency_cache_guidance,
+        );
+    }
+
     format!(
         r#"## GOLDEN RULE — Repository Access Restrictions
 
@@ -3701,16 +3737,27 @@ fn default_context_dynamic_values(
             Err(_) => MessagingContextMode::None,
         }
     };
-    let messaging_exception = match &messaging_mode {
-        MessagingContextMode::Workgroup(path) => format!(
-            "**Narrow exception — room messaging directory:**\n\n\
-             You MAY create message files inside this directory:\n\n\
-             ```\n\
-             {path}\n\
-             ```\n\n\
-             Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path.\n\n",
+    let workgroup_messaging_entry = match &messaging_mode {
+        MessagingContextMode::Workgroup(path) => Some(format!(
+            r#"4. **Messaging access:**
+
+You MAY create message files inside this directory:
+
+```
+{path}
+```
+
+Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects any other shape). Do NOT modify or delete any message file once written. Do NOT write any other kind of file here. You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path.
+
+You MAY also READ exactly one specifically identified canonical inter-agent message file inside another workspace or room's `messaging` directory, even when its path is outside your own workspace or room, only when either the user directly instructs you in the active conversation to read or process that file, or AgentsCommander provides the canonical `[Message from <peer>] Process this inter-agent message: <path>` notification. The instruction or notification must provide that exact file path without directory discovery, and the filename must match the canonical pattern above. This authorization is read-only and limited to that file. Do NOT list or explore the other workspace or room, read a second external file or any other file or content there, or create, write, modify, or delete anything in its `messaging` directory.
+
+"#,
             path = path,
-        ),
+        )),
+        MessagingContextMode::Root(_) | MessagingContextMode::None => None,
+    };
+    let messaging_exception = match &messaging_mode {
+        MessagingContextMode::Workgroup(_) => String::new(),
         MessagingContextMode::Root(path) => format!(
             "**Narrow exception — Root Agent messaging directory:**\n\n\
              You MAY create message files inside this directory:\n\n\
@@ -3723,8 +3770,8 @@ fn default_context_dynamic_values(
         MessagingContextMode::None => String::new(),
     };
     let messaging_allowed = match &messaging_mode {
-        // #1005 S3: the Workgroup/Root write+read grants live inside the "Narrow
-        // exception" paragraph itself (single carrier); no bullets remain here.
+        // Workgroup messaging renders in the standard entry-4 block and Root
+        // messaging remains in its Narrow exception; neither uses this fine bullet.
         MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
         // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
         // ancestor, not the Root Agent), so `send --send` rejects it outright
@@ -3734,7 +3781,7 @@ fn default_context_dynamic_values(
         MessagingContextMode::None => "- **Allowed (read-only)**: Read an inter-agent message file when AgentsCommander hands you its absolute path in an incoming `[Message from <peer>]` notification. This grant covers that file only; no other path outside the entries above becomes readable.
 ".to_string(),
     };
-    let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
+    let has_messaging_exception = matches!(&messaging_mode, MessagingContextMode::Root(_));
     let ac_root_phrase = if has_messaging_exception {
         "the workspace root (other than the narrow messaging exception above)"
     } else {
@@ -3753,16 +3800,12 @@ fn default_context_dynamic_values(
             ws = ac_root_phrase,
         )
     };
-    // #923 D4/D8: whatever messaging read grant this agent got, it lives OUTSIDE the
-    // numbered entries, so the read bullet must defuse it exactly like the write bullet
-    // defuses the write exception. #1005 S3: gate on the MODE enum, never on
-    // `messaging_allowed` emptiness - the Workgroup/Root grants now live inside the
-    // exception paragraph and their bullet string is empty, yet the carve-out must
-    // still render. Every mode carries a grant: None names its inbound-file bullet,
-    // the other two name their exception paragraph.
+    // Root and None retain fine-grained messaging grants outside the numbered entries.
+    // Workgroup messaging is its normal entry 4, so it has no exception carve-out.
     let messaging_read_phrase = match &messaging_mode {
         MessagingContextMode::None => " (other than the inbound message file grant above)",
-        _ => " (other than the narrow messaging exception above)",
+        MessagingContextMode::Root(_) => " (other than the narrow messaging exception above)",
+        MessagingContextMode::Workgroup(_) => "",
     };
     // #923: reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
@@ -3838,6 +3881,7 @@ fn default_context_dynamic_values(
     DefaultContextDynamicValues {
         replica_usage,
         matrix_section,
+        workgroup_messaging_entry,
         messaging_exception,
         messaging_allowed,
         forbidden_scope,
@@ -4549,6 +4593,8 @@ mod tests {
             "May read without restriction",
             "Read the entire filesystem",
         ];
+        const EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ: &str =
+            "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there";
 
         let normalized = normalize(out);
         for fragment in EXPLICIT_BROAD_GRANTS {
@@ -4559,7 +4605,11 @@ mod tests {
             );
         }
 
-        for raw_clause in out.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
+        // This explicit policy sentence is a prohibition. Its comma-separated
+        // trailing clause has read-any-file wording, so scan the whole
+        // prohibition as one recognized negative rather than misclassifying it.
+        let detector_input = out.replace(EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ, "");
+        for raw_clause in detector_input.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
             let clause = normalize(raw_clause);
             if clause.is_empty() {
                 continue;
@@ -4950,10 +5000,10 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         const SKILLS: &str = "## Skills\n\nUNIQUE_SKILLS_SENTINEL\n";
         let wg = render_agent_context_template_inner(
             SUMMARIZED_FINE_PLACEHOLDER_FIXTURE,
-            "C:/fake/wg-7-dev-team/__agent_architect",
+            "C:/fake/room-7-dev-team/__agent_architect",
             Some("C:/fake/_agent_architect"),
             SKILLS,
-            Path::new("C:/fake/wg-7-dev-team/__agent_architect"),
+            Path::new("C:/fake/room-7-dev-team/__agent_architect"),
             None,
             None,
             false,
@@ -4977,10 +5027,42 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             assert_no_raw_template_placeholders(out);
         }
         assert!(wg.contains("C:/fake/_agent_architect"));
-        assert!(wg.contains("Narrow exception — room messaging directory"));
+        assert!(!wg.contains("Narrow exception — room messaging directory"));
         assert!(!plain.contains("Your origin Agent Matrix"));
         assert!(!plain.contains("Narrow exception — room messaging directory"));
         assert!(plain.contains("This session has no messaging directory"));
+
+        let values = default_context_dynamic_values(
+            "C:/fake/room-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            SKILLS,
+            false,
+        );
+        assert!(values.messaging_exception.is_empty());
+
+        let normal = default_context(
+            "C:/fake/room-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            SKILLS,
+        );
+        assert_eq!(
+            normal.matches("4. **Messaging access:**").count(),
+            1,
+            "{normal}"
+        );
+
+        let write_restrictions_only = render_agent_context_template_inner(
+            "{{WRITE_RESTRICTIONS}}",
+            "C:/fake/room-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
+            SKILLS,
+            Path::new("C:/fake/room-7-dev-team/__agent_architect"),
+            None,
+            None,
+            false,
+        );
+        assert!(write_restrictions_only.contains("4. **Messaging access:**"));
+        assert!(!write_restrictions_only.contains("Narrow exception — room messaging directory"));
     }
 
     #[test]
@@ -4995,8 +5077,8 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             .expect("origin Matrix entry");
         let entry_end = entry_start
             + wg[entry_start..]
-                .find("**Narrow exception")
-                .expect("messaging boundary after Matrix entry");
+                .find("4. **Messaging access:**")
+                .expect("messaging entry four boundary after Matrix entry");
         let entry = &wg[entry_start..entry_end];
         let allowed = entry
             .find("Allowed for reading and writing there:")
@@ -5035,7 +5117,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
 
         assert!(wg.contains("Allowed for reading and writing there"));
-        assert!(wg.contains("- **FORBIDDEN**: Any read operation outside"));
+        assert!(wg.contains("- **FORBIDDEN**: Any read operation not authorized by entries 1-4"));
         assert!(wg.contains("another agent's memory is private"));
         assert!(plain.contains("inbound message file grant above"));
         assert!(plain.contains("another agent's memory is private"));
@@ -5045,6 +5127,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         for out in [&wg, &plain, &root] {
             assert_no_broad_read_grant(out);
         }
+        assert_no_broad_read_grant(
+            "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there.",
+        );
 
         for prohibited in [
             "Read any path",
@@ -6076,27 +6161,64 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn default_context_replica_under_wg_includes_messaging_exception() {
+    fn default_context_replica_under_room_renders_messaging_entry_four() {
         let out = default_context(
-            "C:/fake/wg-7-dev-team/__agent_architect",
-            None,
+            "C:/fake/room-7-dev-team/__agent_architect",
+            Some("C:/fake/_agent_architect"),
             &no_skill_section(),
         );
         assert!(
-            out.contains("Narrow exception — room messaging directory"),
-            "expected messaging exception header, got:\n{}",
+            out.contains("4. **Messaging access:**"),
+            "expected messaging entry four, got:\n{}",
             out
         );
         assert!(
-            out.contains("wg-7-dev-team"),
-            "expected workgroup name in messaging path, got:\n{}",
+            out.replace('\\', "/")
+                .contains("C:/fake/room-7-dev-team/messaging"),
+            "expected Room messaging path, got:\n{}",
             out
         );
         assert!(
-            out.contains("You MAY create message files inside this directory"),
-            "expected exception-paragraph write grant (single carrier since #1005 S3), got:\n{}",
+            out.contains("YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md"),
+            "expected Room filename pattern, got:\n{}",
             out
         );
+        assert!(!out.contains("Narrow exception — room messaging directory"));
+    }
+
+    #[test]
+    fn default_context_room_authorizes_only_instructed_cross_workspace_canonical_message_read() {
+        let agent_root = "C:/fake/room-7-dev-team/__agent_architect";
+        let rendered = default_context_dynamic_values(
+            agent_root,
+            Some("C:/fake/_agent_architect"),
+            &no_skill_section(),
+            false,
+        );
+        let out = render_write_restrictions_block(agent_root, &rendered);
+        let policy_start = out
+            .find("4. **Messaging access:**")
+            .expect("messaging entry four must be present");
+        let policy_end = out[policy_start..]
+            .find("All filesystem access not authorized by entries 1-4 is OFF-LIMITS")
+            .expect("entries-1-4 closure must be present");
+        let policy = out[policy_start..policy_start + policy_end].replace('\\', "/");
+
+        for required in [
+            "C:/fake/room-7-dev-team/messaging",
+            "`messaging`",
+            "YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md",
+            "the user directly instructs you in the active conversation to read or process that file",
+            "`[Message from <peer>] Process this inter-agent message: <path>`",
+            "without directory discovery",
+            "read-only and limited to that file",
+            "Do NOT list or explore",
+            "read a second external file",
+            "or any other file or content",
+            "create, write, modify, or delete anything in its `messaging` directory",
+        ] {
+            assert!(policy.contains(required), "missing `{required}` in:\n{policy}");
+        }
     }
 
     #[test]
@@ -6348,26 +6470,25 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .expect("read FORBIDDEN bullet must be present")
     }
 
-    /// #923 D4/D8: every messaging read grant lives OUTSIDE the numbered entries, so the
-    /// read bullet must defuse it exactly like the write bullet does, or a conservative
-    /// agent stops reading its own inbox. This must hold in ALL THREE messaging modes;
-    /// D8 was exactly the `None` mode slipping through a `Workgroup`-only assertion.
+    /// Workgroup messaging is entry 4, while Root and None retain their separate
+    /// messaging grants and corresponding read-boundary assertions.
     #[test]
-    fn read_bullet_carves_out_the_messaging_grant_in_every_mode() {
-        // Workgroup: has a messaging directory and a "Narrow exception" paragraph.
+    fn read_bullet_matches_messaging_mode_access_model() {
+        // Workgroup: messaging is a normal entry 4, not a narrow exception.
         let wg = default_context(
-            "C:/fake/wg-7-dev-team/__agent_architect",
+            "C:/fake/room-7-dev-team/__agent_architect",
             Some("C:/fake/_agent_architect"),
             &no_skill_section(),
         );
         assert!(
-            read_forbidden_bullet(&wg).starts_with(
-                "the entries listed above (other than the narrow messaging exception above)"
+            wg.contains(
+                "- **FORBIDDEN**: Any read operation not authorized by entries 1-4, except for explicitly requested AgentsCommander CLI operations covered by the exception below."
             ),
-            "workgroup read bullet missing the messaging carve-out, got:
+            "workgroup read bullet missing the entries-1-4 prefix, got:
 {}",
-            read_forbidden_bullet(&wg)
+            wg
         );
+        assert!(!wg.contains("other than the narrow messaging exception above"));
         assert!(wg.contains(
             "You may also READ message files inside this directory, and list your room root (`room-<N>-*`) to resolve that directory's path."
         ));
@@ -6398,7 +6519,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert!(!none.contains("narrow messaging exception above"));
 
         // Symmetry with the write axis: every mode defers to the CLI exception.
-        for out in [&wg, &root, &none] {
+        assert!(wg.contains(
+            "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
+        ));
+        for out in [&root, &none] {
             assert!(read_forbidden_bullet(out).contains(
                 "except for explicitly requested AgentsCommander CLI operations covered by the exception below"
             ));
@@ -7036,9 +7160,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn default_context_replica_with_matrix_and_messaging_renders_both_sections() {
+    fn default_context_replica_with_matrix_and_messaging_renders_entries_three_and_four() {
         let out = default_context(
-            "C:/fake/wg-7-dev-team/__agent_architect",
+            "C:/fake/room-7-dev-team/__agent_architect",
             Some("C:/fake/_agent_architect"),
             &no_skill_section(),
         );
@@ -7048,49 +7172,37 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             out
         );
         assert!(
-            out.contains("Narrow exception — room messaging directory"),
-            "messaging exception header missing, got:\n{}",
+            out.contains("4. **Messaging access:**"),
+            "messaging entry four missing, got:\n{}",
             out
         );
-        // Composition: matrix bullets immediately followed by exception header
-        // (single blank line between, matrix_section ends with \n\n).
         assert!(
-            out.contains("- `Role.md`\n\n**Narrow exception"),
-            "expected matrix → exception boundary, got:\n{}",
+            out.contains("- `Role.md`\n\n4. **Messaging access:**"),
+            "expected entry 3 immediately followed by entry 4, got:\n{}",
             out
         );
-        // Composition: ordering of the three structural markers.
-        let exception_pos = out
-            .find("Narrow exception")
-            .expect("messaging exception must be present");
-        let summary_pos = out
-            .find("Everything outside the allowed entries is OFF-LIMITS for reading and writing except")
-            .expect("summary line must be present");
-        let forbidden_pos = out
-            .find("- **FORBIDDEN**")
-            .expect("forbidden bullet must be present");
         assert!(
-            exception_pos < summary_pos,
-            "exception must precede summary; exception_pos={exception_pos}, summary_pos={summary_pos}"
-        );
-        assert!(
-            summary_pos < forbidden_pos,
-            "summary must precede forbidden bullet; summary_pos={summary_pos}, forbidden_pos={forbidden_pos}"
-        );
-        // The FORBIDDEN bullet acknowledges the messaging exception by name.
-        assert!(
-            out.contains("the workspace root (other than the narrow messaging exception above)"),
-            "FORBIDDEN bullet missing the messaging-exception qualifier, got:\n{}",
+            out.contains(
+                "All filesystem access not authorized by entries 1-4 is OFF-LIMITS, except for explicitly requested AgentsCommander CLI operations covered below."
+            ),
+            "entries-1-4 closure missing, got:\n{}",
             out
         );
-        // Regression guard: the FORBIDDEN bullet must reference "the entries listed above"
-        // (R-1.2 / R-1.3 fix). A regression that reverts forbidden_scope to "two zones"
-        // would slip past every other assertion in this test.
         assert!(
-            out.contains("- **FORBIDDEN**: Any write operation outside the entries listed above"),
-            "FORBIDDEN bullet missing 'the entries listed above' prefix, got:\n{}",
+            out.contains(
+                "- **FORBIDDEN**: Any write operation not authorized by entries 1-4, including other agents' replica directories, any other files inside the Agent Matrix, the workspace root, parent project dirs, user home files, or arbitrary paths on disk, except for explicitly requested AgentsCommander CLI operations covered by the exception below."
+            ),
+            "Workgroup write boundary missing, got:\n{}",
             out
         );
+        assert!(
+            out.contains(
+                "- **FORBIDDEN**: Any read operation not authorized by entries 1-4, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask."
+            ),
+            "Workgroup read boundary missing, got:\n{}",
+            out
+        );
+        assert!(!out.contains("Narrow exception — room messaging directory"));
     }
 
     #[test]
@@ -7210,7 +7322,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         assert!(content.contains(&format!("root={}", canonical_display_path(&replica_root))));
         assert!(content.contains("3. **Your origin Agent Matrix"));
-        assert!(content.contains("Narrow exception"));
+        assert!(content.contains("4. **Messaging access:**"));
+        assert!(!content.contains("Narrow exception — room messaging directory"));
         assert!(content.contains("Template skill."));
     }
 
@@ -11393,8 +11506,13 @@ mod token_accounting {
         const V3_TOUCHED_OWNERS_BYTES: usize = 7_567;
         const V3_FULL_WG_PROFILE_BYTES: usize = 9_070;
         const REQUIRED_REDUCTION_BYTES: usize = 757;
-        const MAX_TOUCHED_OWNERS_BYTES: usize = 6_810;
-        const MAX_FULL_WG_PROFILE_BYTES: usize = 8_313;
+        const V3_MAX_TOUCHED_OWNERS_BYTES: usize = 6_810;
+        const V3_MAX_FULL_WG_PROFILE_BYTES: usize = 8_313;
+        const ROOM_ENTRY_FOUR_DELTA_BYTES: usize = 796;
+        const V4_TOUCHED_OWNERS_BYTES: usize = 8_363;
+        const V4_FULL_WG_PROFILE_BYTES: usize = 9_866;
+        const V4_MAX_TOUCHED_OWNERS_BYTES: usize = 7_606;
+        const V4_MAX_FULL_WG_PROFILE_BYTES: usize = 9_109;
 
         let skills = synthetic_replica_skills_section();
         let values = super::default_context_dynamic_values(
@@ -11411,6 +11529,31 @@ mod token_accounting {
             + super::DEFAULT_SESSION_CREDENTIALS.len()
             + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
         let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+
+        assert_eq!(
+            V4_TOUCHED_OWNERS_BYTES,
+            V3_TOUCHED_OWNERS_BYTES + ROOM_ENTRY_FOUR_DELTA_BYTES
+        );
+        assert_eq!(
+            V4_FULL_WG_PROFILE_BYTES,
+            V3_FULL_WG_PROFILE_BYTES + ROOM_ENTRY_FOUR_DELTA_BYTES
+        );
+        assert_eq!(
+            V4_MAX_TOUCHED_OWNERS_BYTES,
+            V3_MAX_TOUCHED_OWNERS_BYTES + ROOM_ENTRY_FOUR_DELTA_BYTES
+        );
+        assert_eq!(
+            V4_MAX_FULL_WG_PROFILE_BYTES,
+            V3_MAX_FULL_WG_PROFILE_BYTES + ROOM_ENTRY_FOUR_DELTA_BYTES
+        );
+        assert_eq!(
+            V4_TOUCHED_OWNERS_BYTES - V4_MAX_TOUCHED_OWNERS_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
+        assert_eq!(
+            V4_FULL_WG_PROFILE_BYTES - V4_MAX_FULL_WG_PROFILE_BYTES,
+            REQUIRED_REDUCTION_BYTES
+        );
 
         // Security, ownership, and protocol assertions precede the byte budget.
         for required in [
@@ -11439,23 +11582,23 @@ mod token_accounting {
         );
 
         assert!(
-            touched_owners <= MAX_TOUCHED_OWNERS_BYTES,
-            "five touched owners are {touched_owners} bytes; v3 baseline {V3_TOUCHED_OWNERS_BYTES}, ceiling {MAX_TOUCHED_OWNERS_BYTES}"
+            touched_owners <= V4_MAX_TOUCHED_OWNERS_BYTES,
+            "five touched owners are {touched_owners} bytes; v4 baseline {V4_TOUCHED_OWNERS_BYTES}, ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
         );
         assert!(
-            V3_TOUCHED_OWNERS_BYTES - touched_owners >= REQUIRED_REDUCTION_BYTES,
+            V4_TOUCHED_OWNERS_BYTES - touched_owners >= REQUIRED_REDUCTION_BYTES,
             "five-owner reduction is only {} bytes",
-            V3_TOUCHED_OWNERS_BYTES - touched_owners
+            V4_TOUCHED_OWNERS_BYTES - touched_owners
         );
         assert!(
-            full_wg.len() <= MAX_FULL_WG_PROFILE_BYTES,
-            "WG profile is {} bytes; v3 baseline {V3_FULL_WG_PROFILE_BYTES}, ceiling {MAX_FULL_WG_PROFILE_BYTES}",
+            full_wg.len() <= V4_MAX_FULL_WG_PROFILE_BYTES,
+            "WG profile is {} bytes; v4 baseline {V4_FULL_WG_PROFILE_BYTES}, ceiling {V4_MAX_FULL_WG_PROFILE_BYTES}",
             full_wg.len()
         );
         assert!(
-            V3_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
+            V4_FULL_WG_PROFILE_BYTES - full_wg.len() >= REQUIRED_REDUCTION_BYTES,
             "WG reduction is only {} bytes",
-            V3_FULL_WG_PROFILE_BYTES - full_wg.len()
+            V4_FULL_WG_PROFILE_BYTES - full_wg.len()
         );
     }
 
