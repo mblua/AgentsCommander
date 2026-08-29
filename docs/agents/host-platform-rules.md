@@ -37,7 +37,7 @@ The files are **project-level**: they are seeded absent-only into project `.ac` 
 
 ## How the lifecycle works
 
-- **Seeding**: on project open/create/scan, a missing platform file is created byte-equal to the embedded default for that platform (absent-only: a pre-existing file is never overwritten, and an unowned pre-existing file is preserved silently).
+- **Seeding**: on project creation/registration the full project template set is seeded; for an already-known project, the platform files are seeded absent-only by the render path on the first materialization after open when a platform file is missing (same `sync_one_template` lifecycle, state entries `platform.*` v1 with `lastSeededSha256`). The startup scan never creates templates (unchanged). A pre-existing file is never overwritten; an unowned pre-existing file is preserved silently.
 - **Editing**: edits are preserved. The seeded-template state (`.agentscommander-context-templates.json`) records the file in the observed posture (`lastObservedSha256`), and if a future app default differs, the file is offered a pending update instead of being silently overwritten.
 - **Deleting or emptying** a platform file: the render falls back to the embedded default for that platform with a `WARN` line in `app.log`; the next project open re-seeds a deleted file (absent-only).
 - **Versioning**: platform files are versioned in the seeded-template state like the global/coordinator templates (`platform.windows`, `platform.linux`, `platform.macos`, version 1). When a future release changes a platform default, the previous default is frozen as a snapshot and recognized, so seeded files auto-update while edited files stay preserved with the pending-update offer.
