@@ -364,14 +364,23 @@ You are running inside an AgentsCommander session - a terminal session manager t
 "#;
 
 /// #1614 D8a: the `global` seeded context template exactly as it shipped
-/// through base commit d7008b34, frozen so an installation whose file is
+/// through base commit df494bfa, frozen so an installation whose file is
 /// still pristine keeps auto-updating after the Room rename. A recognizer
 /// only accepts a file byte-for-byte, so a shipped byte that moves without
 /// the previous bytes being frozen reclassifies every pristine file as
 /// user-authored and it never auto-updates again. Never edit.
-/// Provenance: the d7008b34 blob, session_context.rs lines 2470-2492;
-/// declaration 549 bytes sha256 991C5BA8...F0AC (plan 3.12 Table A), value
-/// 539 bytes sha256 F4406596...316A (Table B); pinned by
+///
+/// RE-BASED in plan section 15.3 item 1. It previously held the v4 body,
+/// which is the generation main already froze under its own name as
+/// `GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES` (#1605). Holding it
+/// here too would have shipped two constants with identical bytes under two
+/// names and left the v5 generation unrecognized forever, so every
+/// installation that reached v5 before upgrading would have had its global
+/// template permanently reclassified as user-authored. AC7.1b's `!=` limb is
+/// what makes that state unshippable.
+/// Provenance: the df494bfa blob, session_context.rs lines 2513-2537;
+/// declaration 574 bytes sha256 D9E93582...A844 (plan 3.12 Table A), value
+/// 564 bytes sha256 D094106B...4F77 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
 const GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME: &str = r#"# AgentsCommander Context
 
@@ -391,6 +400,8 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 {{AGENT_REPOS}}
 
 {{CLI_CONTEXT}}
+
+{{HOST_PLATFORM_RULES}}
 
 {{SESSION_CREDENTIALS}}
 
@@ -2190,6 +2201,59 @@ mod tests {
         );
     }
 
+    /// #1614 AC7.1b: the merge-resolution guard for the #1605 collision. Two
+    /// limbs, catching two different failures.
+    ///
+    /// The `||`-chain limb catches a three-way merge over two adjacent
+    /// single-line additions to one recognizer chain silently dropping one of
+    /// them: main added `_BEFORE_HOST_PLATFORM_RULES` and this branch added
+    /// `_BEFORE_ROOM_RENAME` in the same place, and keeping only the newer one
+    /// would stop recognizing every pristine v4 file.
+    ///
+    /// The `!=` limb is the one that catches the genuinely silent failure:
+    /// both recognizer lines kept but the frozen body NOT re-based, which
+    /// leaves two constants holding byte-identical bytes under two names with
+    /// v5 permanently unrecognized. No conflict, no compile error and no other
+    /// criterion in this plan surfaces that; before plan section 15.3's
+    /// re-base both constants really were 539 bytes and F4406596...316A.
+    #[test]
+    fn both_frozen_global_generations_are_recognized_and_distinct() {
+        // The ||-chain limb: neither generation may be dropped from either
+        // recognizer.
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+
+        // The != limb: the v4 body (main's, #1605) and the v5 body (this
+        // plan's, re-based in 15.3) are two different generations.
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            "the pre-Room-rename snapshot was not re-based onto main's v5 body; \
+             two constants hold identical bytes and v5 is unrecognized forever"
+        );
+        assert_eq!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.len(), 539);
+        assert_eq!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(), 564);
+        assert!(
+            !GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+                .contains("{{HOST_PLATFORM_RULES}}"),
+            "the v4 body predates the placeholder"
+        );
+        assert!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("{{HOST_PLATFORM_RULES}}"),
+            "the v5 body carries the placeholder #1605 introduced"
+        );
+    }
+
     #[test]
     fn frozen_pre_room_rename_coordinator_template_is_recognized() {
         assert!(is_known_generated_coordinator_template(
@@ -2211,7 +2275,7 @@ mod tests {
     #[test]
     fn seeded_template_versions_were_bumped() {
         let [global, coordinator, ..] = project_specs();
-        assert_eq!(global.current_version, 5, "global 4 -> 5");
+        assert_eq!(global.current_version, 6, "global 5 -> 6");
         assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
         assert_eq!(root_spec().current_version, 8, "rootAgent 7 -> 8");
     }
@@ -2230,15 +2294,15 @@ mod tests {
 
         assert_eq!(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(),
-            539,
-            "frozen pre-Room-rename global template must be the d7008b34 bytes"
+            564,
+            "frozen pre-Room-rename global template must be the df494bfa v5 bytes"
         );
         assert_eq!(
             format!(
                 "{:x}",
                 Sha256::digest(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.as_bytes())
             ),
-            "f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a",
+            "d094106b386172e714512dbe1d18cc30a82ff2b25df467f3a1be1c328d464f77",
             "frozen global snapshot changed; every pristine installation would stop auto-updating"
         );
 
@@ -2323,7 +2387,7 @@ mod tests {
     fn project_specs_bump_global_to_v6_and_add_platform_specs() {
         let [global, coordinator, windows, linux, macos] = project_specs();
         assert_eq!(global.id, "global");
-        assert_eq!(global.current_version, 5);
+        assert_eq!(global.current_version, 6);
         assert_eq!(
             (global.current_content)(),
             crate::config::session_context::get_default_agent_template()
@@ -2906,7 +2970,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -2965,7 +3029,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -3045,7 +3109,7 @@ mod tests {
                 assert!(scan_publications.is_empty(), "{label}/{trusted_state}");
                 if trusted_state {
                     assert_eq!(updates.len(), 1, "{label}: trusted state must be pending");
-                    assert_eq!(updates[0].current_default_version, 5);
+                    assert_eq!(updates[0].current_default_version, 6);
                     assert_eq!(
                         updates[0].current_default_sha256,
                         hash_text(crate::config::session_context::get_default_agent_template())
@@ -3125,7 +3189,7 @@ mod tests {
                 .expect("scan fine custom global");
             assert_eq!(updates.len(), usize::from(trusted_state));
             if trusted_state {
-                assert_eq!(updates[0].current_default_version, 5);
+                assert_eq!(updates[0].current_default_version, 6);
             }
             assert_eq!(
                 std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -3180,14 +3244,14 @@ mod tests {
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
-            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v5"
+            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v6"
         );
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 5,
-            "recognized v4 global content must land on the current v5 default"
+            parsed["templates"]["global"]["currentVersion"], 6,
+            "recognized v4 global content must land on the current v6 default"
         );
     }
 
@@ -3240,7 +3304,7 @@ mod tests {
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3298,7 +3362,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3341,7 +3405,7 @@ mod tests {
         let v4_sha = hash_text(crate::config::session_context::get_default_agent_template());
         assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(update.current_default_sha256, v4_sha);
-        assert_eq!(update.current_default_version, 5);
+        assert_eq!(update.current_default_version, 6);
 
         let result = overwrite_context_template_with_default(
             &ac_root,
@@ -3366,7 +3430,7 @@ mod tests {
         )
         .expect("parse seeded state");
         assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v4_sha);
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
     }
 
     #[test]
@@ -4068,7 +4132,7 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].current_file_sha256, custom_hash);
         assert_eq!(updates[0].current_default_sha256, v4_hash);
-        assert_eq!(updates[0].current_default_version, 5);
+        assert_eq!(updates[0].current_default_version, 6);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read preserved custom global"),
@@ -4124,7 +4188,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_current_v5_pair_remains_suppressed() {
+    fn ignored_current_v6_pair_remains_suppressed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -4138,7 +4202,7 @@ mod tests {
             "global".to_string(),
             SeededContextTemplateEntry {
                 template_id: "global".to_string(),
-                current_version: 5,
+                current_version: 6,
                 last_seeded_sha256: Some(v4_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
                 ignored_default_sha256: Some(v4_hash),
