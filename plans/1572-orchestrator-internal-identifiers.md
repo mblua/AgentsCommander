@@ -4,7 +4,11 @@ Status: READY_FOR_IMPLEMENTATION
 Issue: #1572 (open, label `refactor`). Parent epic: #1570, phase 2 of 4. Phase 1 (#1571) closed
 2026-08-27T16:26:04Z and landed.
 Route: Full.
-Author: ac-architect-v3. Consensus round 9. Supersedes the round-8 candidate
+Author: ac-architect-v3. Consensus round 10. Supersedes the round-9 candidate
+`5668DC0DA87559CBC98CFA5AC1917E8D37FB3631027152120AA2C7BEB9836691` (three `PLAN_APPROVED`, no
+blocker, the user's approval, and dispatch: C1, C1b, C2 and C3 all landed with their gates green and
+the run is stopped at the C3/C4 boundary by a **second** target drift, which this round absorbs.
+Nothing round 9 settled is reopened here). Before it the round-8 candidate
 `432FD5F2635A1592002729FC0D725AC2C5C4A5EABC054C59CC6DC160264A9341` (one `PLAN_APPROVED` and two
 `CHANGES_REQUIRED`, two blockers: the enumeration of 1.1 was missing one citation, refuted by the
 very clause round 8 made falsifiable; and the instruction to locate a `mod tests` by its header
@@ -28,8 +32,8 @@ green and the run stopped at C2 on a blocker from `ac-dev-rust-v3`. Before it th
 `A835750BC4EB5F364CB6BA7F0E6C0938A12536E2A0F99791B35206A14EBBFE9D` (two `PLAN_APPROVED`, one
 `CHANGES_REQUIRED`), and before that the round-1 candidate
 `09816BAF4995FCB4851F80265528FCEBB99B264C4E7871ACB2C805F303C6EAF7`, which three reviewers returned
-`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-8 finding to the section that closes
-it. Round 9 changes four things and nothing else: the `commands/session.rs` entry of 1.1 gains the
+`CHANGES_REQUIRED`. Section 15 maps every round-1 through round-9 finding to the section that closes
+it. Round 9 changed four things and nothing else: the `commands/session.rs` entry of 1.1 gains the
 citation `:2573-2575` and the count becomes **25**, with the four restatements of that number in
 1.1, decision 10.1.16, the round-6 prose of section 15 and the GN5 cell following it; the `lib.rs`
 row of 5.9's site table gains the instruction to locate the module by its `#[cfg(test)] mod tests`
@@ -47,6 +51,22 @@ on declaring eleven symbols while listing ten, and now declares ten. All three a
 corrections a reviewer raised, not scope. Beyond them, no pin, no rule, no criterion, no allowlist
 entry, no digest, no boundary set, no path table, and no row of section 3.3, 5, 6.3, 6.4, 6.5, 9 or
 11 changed.
+
+**Round 10 absorbs a second target drift, and changes six things and nothing else.** With C1, C1b, C2
+and C3 landed and the working tree clean, `origin/main` moved again, and this time
+`git merge-tree --write-tree HEAD origin/main` exits **1** with a content conflict in
+`src-tauri/src/config/seeded_context_templates.rs`, a file C2 had already closed. Condition 1 of
+**G-merge** says a conflicting merge stops and reports, and it did. The six edits: **12.1** gains two
+rows between C3 and C4, `C3b` (the absorbing merge, one command, no hand edit) and `C3c` (Rule A over
+the two paths that merge reopens), and becomes **16** commits; **12.1a** gains the gate `C3b` carries,
+**G-merge2**, a sixth definition parameterised from G-merge; **13.5**'s absorption clause gains its
+mid-run edition, because the clause round 7 wrote placed the merge before the first content commit
+and had no second edition; **1.1** records the two citation lists this round re-measured, one of them
+correcting a stale target SHA; **6.5** gains its 29th row and re-bases the six TypeScript coordinates
+the drift moves, which makes C8's derivation **26** instead of 25; and this authorship block and
+section 15 record the round. **Nothing else moves: no rule, no criterion, no allowlist entry, no
+digest, no boundary set, no member or experiment count, none of the five gate definitions that
+already existed, and no Content cell of C1 through C3 or of C4 onward.**
 Repos: `repo-AgentsCommander` and `repo-agentscommander_webpage`. One plan, two pull requests.
 
 ---
@@ -119,6 +139,33 @@ measured here at `147ad4ef` against `d7008b34`:
 - **It changes what `cargo fmt` does**, and that is the expensive half: see decision **10.1.16**,
   which is where the drift is absorbed, by the new merge commit **C1b**.
 
+**The second drift, and the target `C3b` actually absorbs.** Two facts the list above does not carry,
+both re-measured by program for this round over the committed blob, with the round-9 list reproduced
+as the control. First, **C1b merged `7dba5049`, not `d7008b34`**: `a866d96e^2` is
+`7dba504976429333d498c35f2725b6ead1b5d65d`. Measured `147ad4ef` against `7dba5049` the list is **36
+moved citations in 9 files** rather than 25 in 8: the 25 above, plus **10** in `config/settings.rs`
+(all **-13**) and `lib.rs:76` (**+3**), and with two of the 25 shifting further than the list says:
+`lib.rs:3370` is **+80** and `lib.rs:3899-3900` is **+81**, not +3. The second of those is C6b's
+insertion point and C6b has not run, so this correction is load bearing rather than historical; what
+already covers it is the instruction repeated in this bullet, in the `lib.rs` row of 5.9 and in the
+C6b row of 12.1, to locate that `mod tests` by its `#[cfg(test)] mod tests` header and **never** by
+the number, and that instruction is exactly what makes a +81 cost the same as a +3. Second, **C3b
+absorbs `809120fa`**, and measured `147ad4ef` against it the list is **still 36 in the same 9
+files**: the only difference from `7dba5049` is `config/seed_manifest.rs`, whose four citations
+(`:3279`, `:3279-3281`, `:5913`, `:5913-5915`) go from **-1** to **+6**. Nothing new joins the
+list, nothing leaves it, and no other shift changes. **All eight coordinates the gate machinery reads
+are byte-identical at `809120fa`**: `config/mod.rs:12`, `config/session_context.rs:13` and
+`tests/cli_project_registration.rs:514` (**B4**), `tests/pty_lifecycle_regression.rs:25`,
+`tests/pty_powershell_managed_native.rs:50` and `tests/wake_consumption_measure.rs:65` (**B5**), and
+`tests/cli_workgroup_team.rs:1811` with its assertion at `:1836-1838` (**L8**). **TypeScript, which
+this list is not about but which the second drift does reach**: **zero** of this plan's TypeScript
+citations move at `7dba5049` and **six** move at `809120fa`, all six in
+`src/sidebar/stores/sessions.ts`, and that file's row in 6.5 states their shifts, +1 and +38, under
+the same rule this bullet follows: the base coordinate stays, the shift is declared, and the site is
+located by its identifier.
+Both re-measurements were run with the same tool and the same 4000-character binding window round 9
+ratified, and it reproduces round 9's 25-in-8 exactly when pointed at `d7008b34`.
+
 `147ad4ef` therefore **stays** the coordinate base. Moving it would force a re-measurement of the
 entire plan to buy 25 line numbers, and after C1b those 25 are the plan's known and enumerated cost,
 not a surprise: a citation that is off by a few lines after C1b is one the list above names, and the
@@ -182,9 +229,10 @@ way: `git merge-base --is-ancestor 5ec1ad27e1fed2970a83c191a5d4e33993a5436f HEAD
 Command (7) records the live target. Classify its drift by changed paths before continuing
 (section 13.5). Drift that does not touch `src-tauri/`, `src/`, `scripts/02-module-arc-record.mjs`,
 `.github/workflows/` or `.gitattributes` is recorded and synchronised at the next bounded gate; it
-does not reopen this plan. Drift that does touch them is absorbed by **C1b** under decision 10.1.16,
-and if `origin/main` has moved past `d7008b34` since this edition, C1b's gate is what re-measures
-it.
+does not reopen this plan. Drift that does touch them is absorbed by **C1b** under decision 10.1.16
+before the first content commit, and, once content commits exist, by **C3b** under the mid-run clause
+of 13.5; if `origin/main` has moved past the SHA the running merge names, that merge's own gate is
+what re-measures it, **G-merge** at C1b and **G-merge2** at C3b.
 
 Baseline digest that must hold before the first mutation:
 
@@ -244,7 +292,7 @@ cannot disagree with each other.
 | `src-tauri/src` | 66 | 55 | 55 (54 in 6.3 + the file R1 renames) |
 | `src-tauri/tests` | 9 | 6 | 6 |
 | `crates/` | 5 | **0** | **0** |
-| `src/` (TS/TSX) | 89 | 73 | 34 (28 in 6.5 + the 6 files R2-R7 rename) |
+| `src/` (TS/TSX) | 89 | 73 | 34 (the 28 rows 6.5 has at this base + the 6 files R2-R7 rename) |
 | distinct Rust identifiers | n/a | 224 | |
 | distinct TypeScript identifiers | n/a | 60 | |
 
@@ -255,8 +303,9 @@ Two derived facts, both of which are load bearing and both of which are asserted
   `config/coordinator_clocks.rs`, which appears in 6.2/6.1 instead because it is renamed. Set
   equality, not just cardinality.
 - **The TypeScript file set of section 6.5 is provably complete.** Of the 73 TS/TSX files carrying a
-  `coordinator` token in code, 34 are in the tables (the 28 rows of 6.5 plus the 6 files R2-R7
-  rename). In the other 39 files the 130 surviving occurrences use **exactly 10 distinct
+  `coordinator` token in code, 34 are in the tables (the 28 rows 6.5 has **at this base** plus the 6
+  files R2-R7 rename; 6.5's 29th row is a file that does not exist at `147ad4ef` and arrives with the
+  second drift, see the note under that table). In the other 39 files the 130 surviving occurrences use **exactly 10 distinct
   identifiers, and all 10 are in Rule K's frozen enumeration**; none of the 130 stands in a
   declaration context. Section 5.5 gives the per-identifier counts and the sweep.
   Note the shape of that argument: what closes the 39 is the *identifier set*, not the occurrences'
@@ -961,7 +1010,7 @@ untouched, but by residual 10.2.4, not by the reason round 1 gave.
 to cover every `coordinator` token in TypeScript code, and round 1's tables did not. The closing
 measurement: blank every string literal and comment (the section 9.3 alternation), then look at what
 survives. 73 TS/TSX files carry a `coordinator` token in code. 34 are in the tables of section 6
-(the 28 rows of 6.5 plus the 6 files R2-R7 rename). In the remaining **39 files there are 130
+(the 28 rows 6.5 has at `147ad4ef` plus the 6 files R2-R7 rename). In the remaining **39 files there are 130
 occurrences, and they use exactly 10 distinct identifiers**:
 
 | Identifier | Occurrences | Frozen by Rule K as |
@@ -986,6 +1035,16 @@ arithmetically possible once `raise-hand.test.tsx` joined the tables: those four
 34, so they cannot also be among the 39. The measurement above replaces both. **No row of section
 6.5 changes as a result**; the three reviewers' independent sweeps of these 39 files all returned
 zero non-frozen occurrences, and so does this one.
+
+**The second drift adds two TypeScript files to the tree, and this measurement is where they are
+classified.** `src/sidebar/components/ProjectPanel.order-lock.test.tsx` carries the in-scope local
+`openCoordinatorMenu` and therefore takes a row in 6.5, its 29th.
+`src/sidebar/App.order-lock.test.tsx` carries **only** `isCoordinator`, four times and every one an
+object property of a session fixture, so it joins the **39** rather than the tables and stays
+byte-identical; on the post-C3b tree the 39 are 40 and the identifier set of the 10 is unchanged.
+`src/shared/testing/ui-harness.tsx`, which the drift also edits and which is one of the two non-test
+files named next, keeps its identifier set unchanged and its cited coordinates `:120`, `:169-174` and
+`:231` byte-identical.
 
 **Exactly two of the 39 are non-test files**, and both were read individually:
 `shared/testing/ui-harness.tsx:120,169-174,231` (seven frozen `AppSettings` keys plus a frozen
@@ -1286,7 +1345,7 @@ Rule A unless the row says otherwise. "S1-pin" means a serde pin (5.3 S1) is add
 | `src-tauri/tests/pty_powershell_managed_native.rs` | Rule B: import at :50 and local. |
 | `src-tauri/tests/wake_consumption_measure.rs` | Rule B: import at :65 and local. |
 
-### 6.5 `repo-AgentsCommander`: MODIFIED, TypeScript (28)
+### 6.5 `repo-AgentsCommander`: MODIFIED, TypeScript (29)
 
 | Path completo archivo | Que se modifico |
 | --- | --- |
@@ -1305,6 +1364,7 @@ Rule A unless the row says otherwise. "S1-pin" means a serde pin (5.3 S1) is add
 | `src/sidebar/components/ProjectPanel.context-menu-hover.test.tsx` | Local `openCoordinatorMenu` (:187). |
 | `src/sidebar/components/ProjectPanel.context-menu.test.tsx` | Local helper `projectDiscoveryWithCoordinatorRepos` (:81). |
 | `src/sidebar/components/ProjectPanel.groups-filter.test.tsx` | Local `openCoordinatorMenu`. |
+| `src/sidebar/components/ProjectPanel.order-lock.test.tsx` | **New in round 10, and the file itself is new**: it does not exist at `147ad4ef` and arrives with the second target drift, absorbed at **C3b**. Local helper `openCoordinatorMenu`, **9 sites**: the declaration and 8 calls. It is the same local helper this table already lists in `ProjectPanel.context-menu-hover.test.tsx` and in `ProjectPanel.groups-filter.test.tsx`, so Rule A applies to it without ambiguity. Frozen: the four `isCoordinator: true` fixture properties (Rule K), the `describe` and `it` titles, and the two comment lines, which are prose about the concept and name no symbol. |
 | `src/sidebar/components/ProjectPanel.raise-hand.test.tsx` | **New in round 2.** The helper parameters `isCoordinator` at :34 and :47 and the argument use at :54 rename to `isOrchestrator`; the shorthand at :39 expands to `isCoordinator: isOrchestrator,`. Frozen: the object properties at :67 and :191, and the three test titles at :106, :186, :202. This is the only TypeScript file outside the tables that carried an in-scope local; section 5.5 gives the sweep that proves it. |
 | `src/sidebar/components/ProjectPanel.regex-filter.test.tsx` | **One new `it(...)`** per section 5.8. No existing assertion changes; every `coordinator:` fixture key stays. |
 | `src/sidebar/components/ProjectPanel.repo-browse.automation.test.tsx` | Local helper `coordinatorAgent` (:144). |
@@ -1315,9 +1375,19 @@ Rule A unless the row says otherwise. "S1-pin" means a serde pin (5.3 S1) is add
 | `src/sidebar/components/SettingsModal.tsx` | Local `validateCoordinatorIdle` (:1652). All seven settings keys and the six `settings.general.coordinator*` testids are frozen. |
 | `src/sidebar/components/WorkgroupGroupRail.raise-hand.test.tsx` | Test-helper option `coordinator?: boolean` (:27, :29, :145) and its use at :40. |
 | `src/sidebar/components/loop-modal-helpers.ts` | `LoopCoordinatorOption` (:3), `coordinatorName` (:5, :22), `coordinatorOptionsFromWorkgroups` (:13), the local `coordinator` (:18, :19, :22, :23). **Allowlist L13 applies at :23**: the template literal `` `${wg.name} - ${coordinator.name}` `` interpolates the renamed local and does not typecheck unless it follows. `agent.isCoordinator` (:18) and `BusyCoordinatorPolicy`-typed members frozen except the type-alias name itself. |
-| `src/sidebar/stores/sessions.ts` | `lastCoordinatorVisibleOrderByProject` and its setter (:14), `frozenCoordinatorVisibleOrderByProject` and its setter (:15), `recordCoordinatorVisibleOrder`, `coordinatorVisibleOrder`, `setIsCoordinator`, the local `coordinator` (:249, :279) and `team.coordinatorName` (:255, :269). |
-| `src/sidebar/stores/sessions-helpers.test.ts` | `coordinatorVisibleOrder`, `recordCoordinatorVisibleOrder`. |
+| `src/sidebar/stores/sessions.ts` | `lastCoordinatorVisibleOrderByProject` and its setter (:14), `frozenCoordinatorVisibleOrderByProject` and its setter (:15), `recordCoordinatorVisibleOrder`, `coordinatorVisibleOrder`, `setIsCoordinator`, the local `coordinator` (:249, :279) and `team.coordinatorName` (:255, :269). **These six are the only TypeScript citations in this plan that the second target drift moves**, and C8 runs after C3b, so it reads them on a tree where they have shifted. Per round 8's ratified decision the coordinates above stay at `147ad4ef` and the **shift** is stated instead: `:14` and `:15` take **+1**, and `:249`, `:255`, `:269` and `:279` take **+38**. Each is to be located by its identifier, as 1.1 requires of every citation the drift moves. The identifier set of this file does not change. |
+| `src/sidebar/stores/sessions-helpers.test.ts` | `coordinatorVisibleOrder`, `recordCoordinatorVisibleOrder`, and, in the 101 lines the second drift appends to this file, one comment naming `ProjectPanel.coordinatorItems`, which is in-scope item 8 of section 4 and which the `ProjectPanel.tsx` row above renames at `:1908`. The drift is a pure append, so the cited `:294` does not move and no existing assertion changes. |
 | `src/terminal/App.tsx` | `isSelectionCoordinatorBusyError` (Rule B). |
+
+**The 29th row and the base.** 28 of these rows are files that exist at `147ad4ef`, and every count
+in section 3.1 and every sweep in 5.5 is a measurement at that base and stays as written. The 29th,
+`ProjectPanel.order-lock.test.tsx`, arrives with the second target drift and exists only from **C3b**
+onward, which is also why **C8**'s derivation subtracts from 29 rather than from 28. The other new
+TypeScript file the same drift adds, `src/sidebar/App.order-lock.test.tsx`, takes **no** row: its only
+coordinator-family identifier is `isCoordinator`, four object properties frozen by Rule K, so it stays
+byte-identical and joins the 39 files 5.5 closes by identifier set. `src/shared/testing/ui-harness.tsx`
+and `src/sidebar/App.tsx`, which the drift also edits, keep their identifier sets and their cited
+coordinates unchanged: `App.tsx:800` and `:801` are byte-identical at the merged tree, verified.
 
 ### 6.6 `repo-AgentsCommander`: MODIFIED, docs and data (3)
 
@@ -1388,13 +1458,13 @@ Playwright spec references the renamed key or the renamed components.
 
    | Repo | Toolchain | Red at | First green |
    | --- | --- | --- | --- |
-   | app (14 commits) | `cargo check --lib --bins` | C1, C1b, C2, C3 | **C4** |
+   | app (16 commits) | `cargo check --lib --bins` | C1, C1b, C2, C3, C3b, C3c | **C4** |
    | app | `cargo fmt --all -- --check` | C1, C1b (rustfmt cannot resolve `mod coordinator_clocks`) | **C2** |
-   | app | `cargo check --all-targets`, `cargo clippy`, `cargo test` | C1, C1b, C2, C3, C4, C5 | **C6** |
-   | app | `npm run typecheck`, `npm test` | C1 to C7 (C1b to C6 touch no TypeScript, and C1 left it red) | **C8** |
+   | app | `cargo check --all-targets`, `cargo clippy`, `cargo test` | C1, C1b, C2, C3, C3b, C3c, C4, C5 | **C6** |
+   | app | `npm run typecheck`, `npm test` | C1 to C7 (C1b to C6 touch no TypeScript **of this plan's making**; C3b imports the target's, which is why C8 subtracts from 29 rows and not 28, and C1 left it red) | **C8** |
    | web (4 commits) | `npm run check` | W1 | **W2** |
 
-   So **9 of the app repo's 14 commits** (C1, C1b, C2, C3, C4, C5, C6, C6b, C7) leave a tree that
+   So **11 of the app repo's 16 commits** (C1, C1b, C2, C3, C3b, C3c, C4, C5, C6, C6b, C7) leave a tree that
    fails at least one of that repo's three toolchains, and **1 of the web repo's 4** (W1) does. The
    earlier claim in this item, "exactly one commit in each repo is not independently buildable", was
    true only of the web repo; it is corrected here (section 15, finding FN2). This is accepted,
@@ -1940,15 +2010,15 @@ isomorphic and the cycle count cannot change. Criterion 3 measures it anyway, ba
 Route: Full. The implementer owns every commit; the reviewer owns section 9's gates; the tech lead
 owns the merge.
 
-### 12.1 `repo-AgentsCommander`, 14 commits
+### 12.1 `repo-AgentsCommander`, 16 commits
 
 **Read 12.1a before this table.** The commits are grouped by directory; the compile-dependency chain
-is not, and a rename is atomic between a definition and every reference to it. Four of the five Rust
+is not, and a rename is atomic between a definition and every reference to it. Five of the six Rust
 content commits and the first frontend commit therefore leave a tree that does not compile, by
 construction rather than by mistake. Their gates below are stated as **exact conditions on the
 compiler's error set**, not as "green", and 12.1a gives the measured boundary sets **B2**, **B3**,
-**B4**, **B5**, **B7** and the five gate definitions **G-scope**, **G-fmt**, **G-merge**, **G-bound**
-and **G-bound-ts** that the Gate column names. Every gate stated as green below is green for the first time at that
+**B4**, **B5**, **B7** and the six gate definitions **G-scope**, **G-fmt**, **G-merge**,
+**G-merge2**, **G-bound** and **G-bound-ts** that the Gate column names. Every gate stated as green below is green for the first time at that
 commit; none of them could have been green earlier.
 
 | # | Commit | Content | Gate before moving on |
@@ -1958,12 +2028,14 @@ commit; none of them could have been green earlier.
 | C1b | `chore(1572): merge origin/main into the branch` | a merge commit and nothing else: `git merge --no-ff origin/main`, no hand edit, no conflict resolution. This absorbs the target drift under decision **10.1.16** and is what makes the base fmt-clean. **Does not build, and `cargo fmt` cannot even run on it** | **G-merge** of 12.1a. The tree it produces is the tree every later commit of this table is built on |
 | C2 | `refactor(1572): orchestrator identifiers in config/` | `config/orchestrator_clocks.rs`, `config/mod.rs`, `teams.rs` (allowlist **L9, L10, L11, L14**), `settings.rs` (Rule S1), `session_context.rs`, `seeded_context_templates.rs`, `instance_artifacts.rs` (allowlist **L12**), `projects.rs`, `seed_manifest.rs`, `root_agent.rs`, `loops.rs` (Rule S1), `agent_config.rs` (Rule S1), `sessions_persistence.rs` (Rule S1), `activity_log.rs`, plus the two `docs/` path cells of section 6.6 | **G-fmt**, then **G-scope**, then **G-bound** against boundary set **B2** of 12.1a |
 | C3 | `refactor(1572): orchestrator identifiers in commands/, lib.rs, web/` | `commands/*.rs` (Rule S1 on `ac_discovery`, `entity_creation`, `loops`), `lib.rs`, `web/commands.rs` | **G-fmt**, then **G-scope**, then **G-bound** against boundary set **B3** of 12.1a |
+| C3b | `chore(1572): merge origin/main into the branch (second absorption)` | a merge commit and nothing else: `git fetch origin main`, then `git merge --no-ff -X theirs origin/main`. **One command, no hand edit, no conflict resolution**, exactly as C1b. This absorbs the **second** target drift under the mid-run clause of **13.5**, on the premise decision **10.1.16** established. `-X theirs` is a strategy this plan uses nowhere else and it discards one side of every conflict region **in silence**, so the whole containment argument is conditions 2 and 4 of its gate, and 12.1a names the three regions it costs and the commit that repairs each. **Does not build, and no `cargo` command runs on it** | **G-merge2** of 12.1a, four conditions, measured against the **live** target at the moment C3b runs. The tree it produces is the tree C3c and everything after it is built on |
+| C3c | `refactor(1572): orchestrator identifiers in the absorbed drift` | exactly **two paths**, `config/session_context.rs` and `config/seeded_context_templates.rs`, and nothing else. Rule A over the closed enumeration of **11 identifiers and 14 code sites** that C3b reopens in them, plus the **one** in-scope doc comment (item 8 of section 4) that `-X theirs` reverts. 12.1a gives the enumeration, per file and per identifier, and the argument that a two-path Content cell closes it. **Does not build**: this commit stands on the C3 boundary and restores it | **G-fmt**, then **G-scope** against those two paths, then **G-bound** against boundary set **B3** of 12.1a. B3 does not move: 12.1a gives the reason |
 | C4 | `refactor(1572): orchestrator identifiers in cli/, api/, phone/, loops/, pty/, session/` | the remaining Concept A files of section 6.3, with Rule S1 on `cli/team.rs`, `phone/types.rs`, `pty/git_watcher.rs`, `session/session.rs`, and **Rule S2 on `cli/team.rs:49-53`, `:84-85` and `cli/workgroup.rs:48-49`** | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**, which is the first commit at which it can be; then **G-bound** against **B4** of 12.1a. Clippy and the `cli_workgroup_team` run move to **C6**, which is the first commit at which either can be green: 12.1a gives the two independent reasons |
 | C5 | `refactor(1572): SelectionCoordinator becomes SelectionArbiter` | Rule B across the 11 production files plus allowlist L7, plus Rule S1 on `QuarantineRetryPath::Coordinator`, plus `coordinator_shutdown` becoming `arbiter_shutdown` at `commands/session.rs:1432`/`:2573` | **G-fmt**, then **G-scope**; `cargo check --lib --bins` with **zero errors**; then **G-bound** against **B5** of 12.1a |
 | C6 | `refactor(1572): orchestrator identifiers in src-tauri/tests` | the 6 files of section 6.4, including allowlist L8 | **G-fmt**, then **G-scope**, and then the first commit at which the Rust tree compiles at all: `cargo check --all-targets` with **zero errors**; `cargo clippy --workspace --all-targets -- -D warnings` with zero warnings; `cargo test --lib --bins --tests` (redirect stdout to a file, it is swallowed otherwise) all green, **including `cli_workgroup_team` with its `--coordinator` invocations unedited (criterion 8c)** |
 | C6b | `test(1572): pin the 28 serialised wire keys` | the two tests of section 5.9: `wire_keys_are_stable_for_every_renamed_serialised_member` in `lib.rs` and `team_cli_wire_keys_are_stable` in `cli/team.rs`. No production file changes in this commit. **Read the `lib.rs` row of 5.9's site table with 1.1's drift bullet in hand: both `mod tests` are located by their `#[cfg(test)] mod tests` header and never by the coordinate, because the `lib.rs` header sits three lines lower after C1b and an insertion at the cited line compiles outside the module and reddens nothing.** | **G-fmt**, then **G-scope**; criterion 8a green; **and each test proved real**: see the note below |
 | C7 | `refactor(1572): rewrite the 6 renamed TypeScript modules` | contents of the **6 TypeScript** files ADDED in 6.1 (**not** `config/orchestrator_clocks.rs`: that is the seventh renamed file, it is Rust, and 6.1 assigns its content commit to C2), plus the 10 module specifiers L1 to L6 in their importers and the renamed store and badge symbols at those importers' call sites. This closes `src/sidebar/components/SessionItem.tsx` and `src/shared/shortcuts.ts` **completely**, since the renamed-store import is their only in-scope content; `ProjectPanel.tsx` is only partly closed and returns in C8 | **G-scope**, then **G-bound-ts** against **B7** of 12.1a. No **G-fmt**: `rust-fmt` is `working-directory: src-tauri` and C7 touches no Rust |
-| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining **25** files of section 6.5, including `ProjectPanel.raise-hand.test.tsx`, the two `ipc.ts` parameter renames at `:1114`/`:1134`, and all four shorthand expansions (`ipc.ts:1081`, `:1122`, `:1142`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts`. **Derivation of the 25**, written out because gate 5 of 13.2 counts this commit's paths against it: section 6.5 has **28** rows; subtract `ProjectPanel.regex-filter.test.tsx` (**1**), whose only change is the new `it(...)` and which is therefore C9; subtract `SessionItem.tsx` and `shared/shortcuts.ts` (**2**), which C7 closes completely. 28 − 1 − 2 = **25**. The 6 renamed TypeScript files are **not** subtracted: they live in 6.1/6.2, not 6.5, per the section 6 header. `ProjectPanel.tsx` is touched by both C7 and C8 and is counted here | **the first commit at which either can be green.** `npm run typecheck` with **zero diagnostics**, and `npm test` green |
+| C8 | `refactor(1572): orchestrator identifiers in the sidebar and shared frontend` | the remaining **26** files of section 6.5, including `ProjectPanel.raise-hand.test.tsx`, `ProjectPanel.order-lock.test.tsx`, the two `ipc.ts` parameter renames at `:1114`/`:1134`, and all four shorthand expansions (`ipc.ts:1081`, `:1122`, `:1142`, `raise-hand.test.tsx:39`), plus allowlist **L13** in `loop-modal-helpers.ts`. **Derivation of the 26**, written out because gate 5 of 13.2 counts this commit's paths against it: section 6.5 has **29** rows; subtract `ProjectPanel.regex-filter.test.tsx` (**1**), whose only change is the new `it(...)` and which is therefore C9; subtract `SessionItem.tsx` and `shared/shortcuts.ts` (**2**), which C7 closes completely. 29 − 1 − 2 = **26**. The 29th row is `ProjectPanel.order-lock.test.tsx`, which arrives with the second target drift at **C3b** and is counted here because C8 runs after C3b; round 9 read **25** from 28 rows, and that is the only reason this number moves. The 6 renamed TypeScript files are **not** subtracted: they live in 6.1/6.2, not 6.5, per the section 6 header. `ProjectPanel.tsx` is touched by both C7 and C8 and is counted here | **the first commit at which either can be green.** `npm run typecheck` with **zero diagnostics**, and `npm test` green |
 | C9 | `test(1572): pin the sidebar orchestrator filter token (R11)` | the one new `it(...)` of section 5.8 | `npm test -- ProjectPanel.regex-filter` green, and green only with the production token present |
 | C10 | `chore(1572): regenerate module-arcs.txt` | `src-tauri/module-arcs.txt` only | section 9.4, all five conditions |
 | C11 | `chore(1572): final gate evidence` | nothing, or the PR body only | sections 9.3, 9.5 criteria 1 to 8, in order; and `cargo fmt --all -- --check` (cwd `src-tauri`) exit 0 at the tip, which is the local twin of the `rust-fmt` job of 3.8 |
@@ -1998,7 +2070,7 @@ commit; none of them could have been green earlier.
 In both cases the revert must be verified by `git status --porcelain` being empty before the next
 commit. Materialise-and-revert is the accepted technique for proving a gate discriminates.
 
-### 12.1a The commit boundaries, measured, and the five gate definitions
+### 12.1a The commit boundaries, measured, and the six gate definitions
 
 **Why the round-5 gates could not pass.** Section 12.1 groups commits by directory. The
 compile-dependency chain does not follow directories, and a rename is atomic between a definition and
@@ -2316,6 +2388,166 @@ Four conditions, counted:
 `cargo check` is **not** run at C1b. C1b changes no Rust of this plan's making, and `config/mod.rs:12`
 still names a module whose file C1 moved, so the tree is red for exactly the reason C1 left it red.
 
+**G-merge2**, which only **C3b** carries. It is G-merge parameterised for a merge that lands with
+content commits already on the branch, and it is the only place in this plan that uses `-X theirs`.
+
+```powershell
+cd D:\0_repos\AgentsCommander_iac\.ac\wg-13-ac-dev-team-v3\repo-AgentsCommander
+git fetch origin main --quiet
+git rev-parse HEAD origin/main
+git merge-tree --write-tree -X theirs HEAD origin/main     # measure the four conditions here FIRST
+git merge --no-ff -X theirs origin/main -m "chore(1572): merge origin/main into the branch (second absorption)"
+git diff --name-only --diff-filter=U
+git diff --name-only <the pre-merge HEAD> HEAD
+```
+
+**Measured against the live target, not against a SHA this plan pins.** Every condition below is
+measured at the moment C3b runs, against whatever `origin/main` then is, exactly as **G-merge**'s
+four conditions are. The figures quoted in each condition are what the author measured at
+`HEAD = 7399f9cf` and `origin/main = 809120fa9fe09bb22c314ed462735378f6438d75`, on the merge tree
+`bb748b65b7955330ae55cbba447cbdd3b87185a4` that `git merge-tree --write-tree -X theirs` returns with
+exit 0; they are a **control for the method, not the gate itself**. `origin/main` has moved five
+times during this plan's rounds and may move again before C3b runs. **Condition 3 is the condition
+that detects that it moved**, and the re-measurement it demands is run on the `merge-tree` output
+**before** `git merge`, not after: if the target has moved, conditions 2 and 4 move with it, and if
+condition 3 returns more or fewer than the one new identifier, the run stops and reports rather than
+re-deriving the boundary sets on its own.
+
+Four conditions, all of which must hold. They are counted, not judged.
+
+1. **The merge is clean.** `git merge` exits 0 and `git diff --name-only --diff-filter=U` prints
+   nothing. With `-X theirs` a *content* conflict cannot stop the merge, so what this condition
+   actually catches is a conflict `theirs` does not resolve: a rename/delete, a modify/delete, a
+   directory/file collision, a submodule. Any of those stops the run, because none of them is
+   something a merge strategy may decide silently.
+
+2. **`-X theirs` reverted nothing outside the drift, and this is the condition that proves the
+   strategy contained.** `git diff --name-only <the pre-merge HEAD> HEAD` must print **exactly the
+   paths the drift changes and no others**, that is, it must equal as a set
+   `git diff --name-only $(git rev-parse <C1b>^2) origin/main`, the second revision being the SHA C1b
+   absorbed, which `git rev-parse` reads off the merge commit rather than from memory. A path in the
+   first list and not the
+   second is a file where `theirs` threw away work this plan has already landed, and it is the only
+   way that loss can reach code outside the drift's own surface. Measured on tree `bb748b65`, both
+   lists are the same **12** paths and neither has a thirteenth: `docs/agents/host-platform-rules.md`,
+   `plans/1605-host-platform-rules.md`, `plans/1624-sidebar-order-lock.md`,
+   `src-tauri/src/config/seed_manifest.rs`, `src-tauri/src/config/seeded_context_templates.rs`,
+   `src-tauri/src/config/session_context.rs`, `src/shared/testing/ui-harness.tsx`,
+   `src/sidebar/App.order-lock.test.tsx`, `src/sidebar/App.tsx`,
+   `src/sidebar/components/ProjectPanel.order-lock.test.tsx`,
+   `src/sidebar/stores/sessions-helpers.test.ts`, `src/sidebar/stores/sessions.ts`. The tree the
+   comparison is made against is named so a reviewer can reproduce it without re-deriving anything:
+   `git merge-tree --write-tree -X theirs 7399f9cf 809120fa` returns `bb748b65`.
+
+3. **The census moved by exactly one identifier, proved by set equality in both directions.** Re-run
+   the sweep of this section's **Method** over the merged tree, mapping every token back through the
+   inverse of Rules A and B before comparing: C2 and C3 have already rewritten part of the tree, so
+   the raw spellings are mixed and only the inverse-mapped set is comparable with 12.1a's. Under that
+   mapping the Method returns **223** identifiers in **61** files at `3e88cdc6`, and **that
+   inverse-mapped set at `3e88cdc6` is the reference**. The 223 is this section's own **221** plus the
+   **2** identifiers phase 1 (#1571) already spells with `ORCHESTRATOR` and no `coordinator`, which
+   the raw Method does not see and a family sweep does. The map is not the identity on the reference
+   either: **5** of the 223 come out re-spelled, because they carry an `_ORCHESTRATOR_RENAME` or
+   `_orchestrator_rename_` segment phase 1 left behind and the inverse folds it
+   (`COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME`,
+   `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact`,
+   `read_sync_updates_pre_orchestrator_rename_coordinator_template`,
+   `ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD` and
+   `root_context_pre_orchestrator_rename_snapshot_is_byte_exact`). That is harmless because both
+   sides of the comparison are mapped the same way, and it is stated because a reviewer who maps only
+   one side gets five spurious differences and no real one. The raw sweep at `3e88cdc6` still returns
+   exactly **221 in 61**, which is the control that this is the same tool 12.1a's Method names. On the merged tree the sweep must return the **same 61
+   files**, same set and not merely the same count, and an identifier set equal to the reference
+   **plus exactly `coordinator_session_profile_embeds_host_platform_rules_once`**, checked **in both
+   directions**: nothing in the reference may be missing, and nothing but that one name may be added.
+   **A count of 224 is not this condition, and it would pass on the wrong set.** The drift could as
+   easily have removed one identifier and added two; **B2** through **B5** are enumerations of names
+   and not cardinalities, and a name silently substituted for a name is precisely the failure that
+   would redden condition 4 of **G-bound** at C4 on correct work, which is the defect class round 6
+   shipped and round 7 removed. Measured on `bb748b65`: 61 files, 224 identifiers, *only in the
+   reference*: none; *only in the merged tree*:
+   `coordinator_session_profile_embeds_host_platform_rules_once`.
+
+4. **Containment: the merge reopens exactly two files and closes none.** The set of files that still
+   carry a **coordinator**-spelled identifier after the merge must be exactly the set that carried one
+   at the pre-merge HEAD, **plus `config/session_context.rs` and `config/seeded_context_templates.rs`**,
+   with nothing removed. The set is **46** files, and rather than list 46 the rule that determines them
+   is given, because it is countable: it is the **61** family files of this section's **Method** minus
+   the files C2 and C3 have **fully closed**, which after this merge are **15**:
+   `commands/ac_discovery.rs`, `commands/loops.rs`, `commands/pty.rs`, `config/activity_log.rs`,
+   `config/agent_config.rs`, `config/instance_artifacts.rs`, `config/loops.rs`, `config/mod.rs`,
+   `config/orchestrator_clocks.rs`, `config/projects.rs`, `config/root_agent.rs`,
+   `config/seed_manifest.rs`, `config/sessions_persistence.rs`, `config/settings.rs`,
+   `config/teams.rs`. Before the merge that list is **17**, the same 15 plus the two the merge
+   reopens: 61 − 17 = **44** at the pre-merge HEAD and 61 − 15 = **46** after, and the difference is
+   exactly those two paths. Everything else C2 and C3 closed stays closed.
+   `config/seed_manifest.rs` stays **closed** although the drift edits it, because every one of its
+   coordinator-family survivors is a frozen literal that the Method blanks; that was verified file by
+   file and is why C3c's Content cell is two paths and not three.
+
+`cargo check` and `cargo fmt` are **not** run at C3b, for the same reason they are not run at C1b:
+this is a merge that deliberately leaves the tree mid-rename, and its gate is structural rather than a
+compilation. What catches a merged base that is not fmt-clean is condition 2 of **G-fmt** at **C3c**,
+the very next commit, which fails if `cargo fmt --all` writes any path C3c does not own. That is the
+C1b/C2 pairing repeated, and it is why the merge and the renames are two commits and not one.
+
+**What `-X theirs` costs, named, so that a reviewer can see C3c repair it rather than see it lost.**
+Only `config/seeded_context_templates.rs` conflicts, in **three** regions, and `theirs` takes the
+target's side of each. Nothing in `config/session_context.rs` or `config/seed_manifest.rs` conflicts
+at all: both auto-merge, which is the more dangerous half and is what conditions 3 and 4 are for.
+
+| Region | What the target's side brings back | Where it is repaired |
+| --- | --- | --- |
+| the `#1005 S4` doc comment on the second legacy snapshot const | one doc-comment line: `` `get_default_orchestrator_template()` `` reverts to `` `get_default_coordinator_template()` ``. Measured by comparing the comment sets of both files at the pre-merge HEAD and at the merged tree, it is the **only** comment line of C2's work in either file that the merge undoes; the drift's own three new comment lines naming "coordinator" are prose about the concept and name no symbol, so section 4's in-scope item 8 does not reach them and they stay | **C3c**, item 8 of section 4 |
+| `is_known_generated_orchestrator_template` and its five-line body, beside which `#1605` adds three `is_known_generated_platform_*` recognizers | the function name plus **five** references: `get_default_coordinator_template()` and the four frozen-snapshot consts. **This is the region that does not compile**, and it is worth being exact about why: the four const **declarations** are *not* reverted. They auto-merge cleanly, keeping C2's `ORCHESTRATOR_*` spelling at the target's new line positions, so after the merge this body names four consts that no longer exist. The loss is five reference sites and a function name, not a declaration and not a byte of frozen template content | **C3c** |
+| the `project_specs` destructuring inside `mod tests`, which `#1605` widens from two bindings to five | the local binding `orchestrator` reverts to `coordinator`, inside `let [global, coordinator, windows, linux, macos] = project_specs();` | **C3c**, Rule A on a local binding |
+
+**Nothing frozen is lost.** The four snapshot consts' **bytes** are frozen by Rule P, they are in no
+conflict region, and their declarations keep the new spelling throughout; what the merge touches is
+their spelling at reference sites. No serde member, no wire key, no event name, no CLI flag and no
+on-disk file name is in the drift's Rust surface at all.
+
+**The closed enumeration C3c rewrites: 11 identifiers, 14 code sites, in exactly two files**, all
+measured on `bb748b65` by the Method's own blanking, so a comment or a string cannot enter the count.
+
+| File | Identifiers, with the code-site count of each |
+| --- | --- |
+| `config/session_context.rs` (**3** identifiers, **5** sites) | `coordinator`, a local binding (2); `coordinator_session_profile_embeds_host_platform_rules_once`, a `#[cfg(test)]` fn name and the one identifier the drift adds to the census (1); `get_default_coordinator_template` (2) |
+| `config/seeded_context_templates.rs` (**8** identifiers, **9** sites) | `COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE` (1), `COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME` (1), `COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION` (1), `COORDINATOR_CONTEXT_TEMPLATE_FILENAME` (1), `OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND` (1), `coordinator`, a local binding (1), `get_default_coordinator_template` (2), `is_known_generated_coordinator_template` (1) |
+
+Plus the single doc-comment site of the first conflict region, which is in-scope item 8 and is not a
+code site. **No coordinate is given for any of the 14**, deliberately: they are located by identifier
+on the tree C3b produces, and that tree does not exist until C3b runs.
+
+**Why a two-path Content cell closes**, which is what makes **G-scope** meaningful at C3c. On the
+merged tree the four snapshot consts and `is_known_generated_coordinator_template` are referenced in
+`seeded_context_templates.rs` and **nowhere else in the tree**;
+`get_default_coordinator_template` is declared in `session_context.rs` and used in
+`seeded_context_templates.rs`, so the two files must rename together and neither alone would compile;
+`coordinator_session_profile_embeds_host_platform_rules_once` and both bare `coordinator` bindings are
+file-local, and a local binding is file-local in Rust. The one identifier with a site outside the two
+paths is `COORDINATOR_CONTEXT_TEMPLATE_FILENAME`, whose declaration at `config/session_context.rs:13`
+C2 already renamed and whose only remaining old-spelled site outside them is
+`tests/cli_project_registration.rs:514`: that is **B4**'s single member and C6's to close, exactly as
+it was before the drift, and 1.1 records that this coordinate is byte-identical at `809120fa`.
+
+**Why C3c's boundary set is B3, and why B3, B4 and B5 do not move.** **B3** was measured on a tree in
+which C2 had closed both of these files. C3b reopens them and C3c closes them again, so the straddling
+set after C3c is **B3** unchanged. None of the 11 is a new member: nine are file-local or confined to
+the two paths, and `COORDINATOR_CONTEXT_TEMPLATE_FILENAME` and the bare `coordinator` are already B3
+members. **B4** and **B5** are untouched for the same reason, and **B7** is untouched because neither
+new TypeScript file imports any of the 6 renamed modules and `openCoordinatorMenu` is declared and
+used in one file.
+
+**This is also why the absorption must happen here and not after C4.** `get_default_coordinator_template`
+is a member of **B3** only after C3c puts it back inside `config/`; it is a member of neither **B4**
+nor **B5**. The new block is inside `#[cfg(test)]`, so `cargo check --lib --bins` never sees it, but
+**G-bound**'s capture command is `cargo check --all-targets`, which does. A merge landing at the C4 or
+C5 boundary would therefore put a name outside that commit's boundary set onto a primary line, in a
+path table 6.3 owns, and condition 4 of **G-bound** would go **red on correct work** at exactly the two
+commits whose green `cargo check --lib --bins` is this plan's central prediction. That is the round-6
+defect class, and the boundary sets are the gate, so it cannot be pardoned at execution time.
+
 **G-fmt**, which every Rust content commit carries, run after that commit's edits and **before**
 `git commit`.
 
@@ -2469,6 +2701,35 @@ gets more expensive the longer it is left unabsorbed, because the conflict lands
 the phase claims to preserve. So the rule gains a clause: **drift in the first bullet that reformats
 or rewrites a file in tables 6.3 or 6.4 is absorbed by merge before the first content commit, not
 after the last one.** `C1b` is that merge.
+
+**That clause needed a second edition, and this round writes it, because a first-bullet drift landed
+again with C2 and C3 already committed.** Read literally the round-7 clause has no continuation once
+content commits exist: it places the merge "before the first content commit", names C1b as that merge,
+and offers no second. That literal reading is the correct one and it is what the run followed:
+condition 1 of **G-merge** says a conflicting merge stops and reports and does not hand-resolve, and
+the run stopped. The rule therefore gains its general form. **A first-bullet drift that lands mid-run
+is absorbed at the next commit boundary, in a merge commit of its own carrying a gate of its own, and
+the renames it reopens are a separate content commit immediately after it.** Never renames inside the
+merge: that is what condition 2 of **G-merge** forbids, and its stated reason, that a hand edit inside
+a merge is the one thing that would make the rest of 12.1 unverifiable, is not weakened by the drift
+being the second rather than the first. `C3b` and `C3c` are that pair. 12.1 places them at the C3/C4
+boundary for three independent reasons, any one sufficient: the merge conflicts **today**, in a file
+C2 owns, and every further content commit only enlarges the conflict surface; a later boundary puts a
+name outside **B4** and **B5** into `cargo check --all-targets` and reddens **G-bound** on correct
+work, which 12.1a measures; and the run is stopped exactly there, so nothing already committed is
+rewritten.
+
+**The classification actually performed for the second drift, at `7dba5049` against `809120fa`.**
+**12** files: 3 under `src-tauri/src`, 6 under `src/`, 2 under `plans/` and 1 under `docs/`; **zero**
+under `.github/`, `src-tauri/tests`, `scripts/` or `.gitattributes`, and `src-tauri/module-arcs.txt`
+untouched. First bullet again, so refresh the affected evidence:
+
+| Evidence the first bullet names | Result | Where it is recorded |
+| --- | --- | --- |
+| Re-measure the touched files' identifier sets | the census moves by **exactly one** identifier, `coordinator_session_profile_embeds_host_platform_rules_once`, with the 61-file set unchanged and set equality checked in both directions | condition 3 of **G-merge2**, which re-runs it on the merged tree at execution time |
+| Re-derive section 3.8 | **does not move**: `.github/` is byte-identical between `7dba5049` and `809120fa`, and `pr-regression-gates.yml` declares the same 8 PR jobs at `d7008b34`, `7dba5049` and `809120fa` | 3.8, and gates 1 and 2 of 13.2 |
+| Recompute the `module-arcs.txt` base and predicted digests of 3.6 | `src-tauri/module-arcs.txt` is not in the drift, and its digest is `A93ED10E...` at `147ad4ef`, `d7008b34`, `7dba5049`, `809120fa`, at the branch HEAD and on the merged tree `bb748b65`. 1.2's baseline and 3.6 stand, and C10 still re-derives the predicted digest under 9.4's five conditions | 1.2, 3.6, 9.4 |
+| Re-base the line citations the drift moves | **4** Rust citations, all in `config/seed_manifest.rs`, and **6** TypeScript citations, all in `src/sidebar/stores/sessions.ts`. Nothing else moves and no gate coordinate does | 1.1 for the Rust half, the `sessions.ts` row of 6.5 for the TypeScript half |
 
 Once a PR exists, exact PR-head checks and the repository merge policy are authoritative. Continuous
 pre-PR attestation that the target never moved is forbidden.
@@ -2768,6 +3029,59 @@ as "**24 citations in 8 files**", which is what round 8 wrote and is therefore t
 HN1 is where the count becomes 25. The GN5 cell's "the 25 citations of 1.1" is a live
 cross-reference to the list rather than a record of what a past round did, so it follows 1.1 like
 the restatements in 10.1.16 and in the round-6 prose above.
+
+### Round-9 findings, and where each one is closed
+
+Round 9 (`5668DC0DA87559CBC98CFA5AC1917E8D37FB3631027152120AA2C7BEB9836691`, plan commit `2d8ec082`)
+drew **three `PLAN_APPROVED` and no blocker**, then the user's approval, and it was dispatched. Both
+Rust reviewers reproduced the 25-citation list of 1.1 by program, independently, in both directions
+and over the committed blob rather than by carrying the author's numbers;
+`ac-dev-rust-grinch-v3` re-derived it with three separate extractions, including one that ignores
+backticks entirely, and returned **zero** moved-but-undeclared citations, which is the property round
+8's blocker HN1 existed to establish. `ac-dev-webpage-ui-v3` re-confirmed the frontend surface and
+that no register row, rule or table cell had moved. There is therefore **no finding table for this
+round**: what it produced instead is execution evidence and one drift, and all of it is recorded here
+because round 10 is built on it.
+
+**The gates round 7 and round 8 added worked on their first real use, which is the thing five rounds
+of argument could not establish.** `ac-dev-rust-v3` landed C1b, C2 and C3. At C3, **G-bound** against
+**B3** read a capture of **139** error lines and returned: **0** uncoded errors (condition 1); **133**
+primary lines, every one matching `coordinat|orchestrat|arbiter` (condition 2a); **6** cascades, all
+`E0277`, all in `commands/pty.rs`, all in a path that also carries a primary (condition 2b); **0**
+errors outside the paths of tables 6.1, 6.3 and 6.4 (condition 3); and, after reducing each primary
+line's backtick-quoted tokens to their last `::` segment and mapping through the inverse of Rules A
+and B, **zero** tokens outside **B3** (condition 4). The six cascades are the six that finding
+**FN6/GN4** of round 6 predicted, at the predicted sites, offset by one line by the drift C1b
+absorbed, an offset no gate reads. **That capture is the counterexample round 6's condition 2 would
+have failed**: it required every error line to match the family regex, and six of these 139 do not.
+
+**C2 was amended, and the amendment is recorded rather than absorbed silently.** Six in-scope comments
+naming a renamed symbol, item 8 of section 4, had been left behind: four in `config/teams.rs`
+(naming `is_any_coordinator`, `make_coordinator_fixture`, `is_coordinator_for_cwd` and
+`is_coordinator`), one in `config/seeded_context_templates.rs` (naming
+`is_known_generated_coordinator_template`) and one in `config/session_context.rs` (naming
+`is_coordinator`). **They are named by identifier and never by coordinate, deliberately**: the
+implementer's report reads them on the tree C2 produces, and a coordinate on that tree is not a
+citation 1.1's list covers or could cover, since 1.1 is measured at `147ad4ef`.
+`ac-tech-lead-v3` authorized a `git commit --amend` on the unpushed branch as conformity with item 8
+rather than as new scope; **G-scope** was re-verified after the amend and returned exactly the **16**
+paths of C2's Content cell, and the amend's own diff is 3 files, 6 insertions and 6 deletions. C2 is
+now `7680b649`. Nothing else in it moved.
+
+**The drift this round's execution found, and which round 10 absorbs.** With C3 committed at
+`7399f9cf` and the tree clean, `origin/main` had moved to `809120fa`.
+`git merge-tree --write-tree HEAD origin/main` exits **1** with a content conflict in
+`src-tauri/src/config/seeded_context_templates.rs`, a file C2 had closed. The drift is 12 files and
+adds exactly one identifier to the census, but **the expensive half is not the new identifier**: it is
+**new sites of identifiers C2 already renamed**, inside files C2 had already closed, among them
+`get_default_coordinator_template`, which is a member of no boundary set and which
+`cargo check --all-targets` does see. Two measurements the round's own brief had the other way round
+are corrected here rather than carried: the drift's `coordinat` line count is **57**, not 30, of which
+**43** are under `src/` and are the half no Rust table sees; and the merge does **not** apply cleanly.
+Round 10 closes it in **12.1** (rows `C3b` and `C3c`), **12.1a** (`G-merge2`, and the enumeration C3c
+rewrites), **13.5** (the mid-run edition of the absorption clause), **1.1** (the two re-measured
+citation lists, one of which corrects a stale target SHA that predates this drift) and **6.5** (the
+29th row, the re-based `sessions.ts` coordinates and C8's **26**).
 
 ### Tech lead's ruling, recorded
 
