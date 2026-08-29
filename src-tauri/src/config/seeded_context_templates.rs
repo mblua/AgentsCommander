@@ -201,6 +201,39 @@ You are running inside an AgentsCommander session - a terminal session manager c
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #1605: `get_default_agent_template()` exactly as it shipped through base
+/// commit 047248bc (the v4 summarization), frozen so a pristine v4
+/// `Context.AgentsCommander.md` on disk keeps being recognized (project
+/// auto-update AND standalone root retirement) after the v5
+/// `{{HOST_PLATFORM_RULES}}` insertion. Never edit. Provenance: the accessor at
+/// 047248bc is len 539, sha256
+/// f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a; pinned by
+/// `global_before_host_platform_rules_snapshot_is_byte_exact` against those
+/// externally captured values, never against this const itself.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES: &str = r#"# AgentsCommander Context
+
+You are in AgentsCommander, a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{AGENT_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
 /// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
 /// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
@@ -538,13 +571,14 @@ impl LoadedState {
     }
 }
 
-fn project_specs() -> [SeededContextTemplateSpec; 2] {
+fn project_specs() -> [SeededContextTemplateSpec; 5] {
+    let [windows, linux, macos] = platform_specs();
     [
         SeededContextTemplateSpec {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 5,
+            current_version: 6,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -559,6 +593,50 @@ fn project_specs() -> [SeededContextTemplateSpec; 2] {
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
             suppress_unknown_without_state: false,
+        },
+        windows,
+        linux,
+        macos,
+    ]
+}
+
+/// #1605: the three per-EXECUTION-platform `{{HOST_PLATFORM_RULES}}` files
+/// (`Context.platform.<os>.md`), seeded absent-only in project `.ac` roots by
+/// the same `sync_one_template` lifecycle as the global/coordinator templates
+/// (seeded/observed state, edit preservation, pending-update offer).
+/// `suppress_unknown_without_state: true` keeps a pre-existing unowned file
+/// preserved silently, never prompted — same posture as the global template.
+fn platform_specs() -> [SeededContextTemplateSpec; 3] {
+    [
+        SeededContextTemplateSpec {
+            id: "platform.windows",
+            filename: crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+            label: "Windows host platform rules",
+            current_version: 1,
+            current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            is_known_generated: is_known_generated_platform_windows,
+            project_actionable: true,
+            suppress_unknown_without_state: true,
+        },
+        SeededContextTemplateSpec {
+            id: "platform.linux",
+            filename: crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+            label: "Linux host platform rules",
+            current_version: 1,
+            current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            is_known_generated: is_known_generated_platform_linux,
+            project_actionable: true,
+            suppress_unknown_without_state: true,
+        },
+        SeededContextTemplateSpec {
+            id: "platform.macos",
+            filename: crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+            label: "macOS host platform rules",
+            current_version: 1,
+            current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            is_known_generated: is_known_generated_platform_macos,
+            project_actionable: true,
+            suppress_unknown_without_state: true,
         },
     ]
 }
@@ -601,6 +679,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
@@ -620,8 +699,26 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+}
+
+/// #1605: per-platform generated recognizers — equality with the current
+/// platform default const only. A future default change MUST first freeze the
+/// previous default as a snapshot const and extend the recognizer (same pattern
+/// as the global template generations), so seeded files auto-update and edited
+/// files are preserved with the pending-update offer.
+fn is_known_generated_platform_windows(content: &str) -> bool {
+    content == crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+}
+
+fn is_known_generated_platform_linux(content: &str) -> bool {
+    content == crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX
+}
+
+fn is_known_generated_platform_macos(content: &str) -> bool {
+    content == crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS
 }
 
 fn is_known_generated_coordinator_template(content: &str) -> bool {
@@ -2113,7 +2210,7 @@ mod tests {
     /// the read_sync tests, so the bump is pinned on both sides.
     #[test]
     fn seeded_template_versions_were_bumped() {
-        let [global, coordinator] = project_specs();
+        let [global, coordinator, ..] = project_specs();
         assert_eq!(global.current_version, 5, "global 4 -> 5");
         assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
         assert_eq!(root_spec().current_version, 8, "rootAgent 7 -> 8");
@@ -2202,23 +2299,38 @@ mod tests {
         assert!(is_known_generated_standalone_global_template(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
         assert!(
             !is_known_generated_global_template(
                 COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE
             ),
             "the global recognizer must not widen to a coordinator snapshot"
         );
+        assert!(
+            !is_known_generated_global_template(
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+            ),
+            "the global recognizer must not widen to a platform default"
+        );
     }
 
     #[test]
-    fn project_specs_bump_only_the_global_template_to_v5() {
-        let [global, coordinator] = project_specs();
+    fn project_specs_bump_global_to_v6_and_add_platform_specs() {
+        let [global, coordinator, windows, linux, macos] = project_specs();
         assert_eq!(global.id, "global");
         assert_eq!(global.current_version, 5);
         assert_eq!(
             (global.current_content)(),
             crate::config::session_context::get_default_agent_template()
         );
+        assert!((global.is_known_generated)(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
         assert!((global.is_known_generated)(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         ));
@@ -2234,6 +2346,41 @@ mod tests {
         ));
         assert!(!(coordinator.is_known_generated)(
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
+        ));
+
+        for (spec, id, filename, default) in [
+            (
+                windows,
+                "platform.windows",
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                linux,
+                "platform.linux",
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                macos,
+                "platform.macos",
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(spec.id, id);
+            assert_eq!(spec.filename, filename);
+            assert_eq!(spec.current_version, 1);
+            assert_eq!((spec.current_content)(), default);
+            assert!((spec.is_known_generated)(default));
+            assert!(spec.project_actionable);
+            assert!(spec.suppress_unknown_without_state);
+        }
+        assert!(!(windows.is_known_generated)(
+            crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX
+        ));
+        assert!(!(global.is_known_generated)(
+            crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
         ));
     }
 
@@ -2282,7 +2429,7 @@ mod tests {
     // fail them (plan acceptance item 22).
 
     #[test]
-    fn context_create_records_both_project_templates_under_the_gate() {
+    fn context_create_records_project_templates_under_the_gate() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path();
         let ac_root = project.join(".ac");
@@ -2316,6 +2463,10 @@ mod tests {
         assert!(
             manifest.contains("scope = \"context:coordinator\""),
             "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("scope = \"context:platform\""),
+            "platform seed publications must record the context:platform scope: {manifest}"
         );
         assert!(
             manifest.contains("kind = \"project_context_template\""),
@@ -2617,8 +2768,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 5,
-            "recognized v1 global content must land on the current v5 default"
+            parsed["templates"]["global"]["currentVersion"], 6,
+            "recognized v1 global content must land on the current v6 default"
         );
     }
 
@@ -2656,6 +2807,46 @@ mod tests {
             GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION,
             crate::config::session_context::get_default_agent_template(),
             "the v4 summarization must differ from its frozen v3 operand"
+        );
+    }
+
+    /// #1605: the frozen v4 global snapshot must stay byte-identical to what
+    /// shipped at base commit 047248bc. Expected values captured by a one-off
+    /// run of the shipped accessor AT 047248bc (len 539, sha256
+    /// f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a),
+    /// never from this const.
+    #[test]
+    fn global_before_host_platform_rules_snapshot_is_byte_exact() {
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.len(),
+            539,
+            "frozen v4 global snapshot must be the 047248bc bytes"
+        );
+        assert_eq!(
+            hash_text(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
+            "f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a",
+            "frozen v4 global snapshot changed; it must stay byte-identical to what shipped"
+        );
+        assert!(
+            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
+            "the project recognizer must accept the frozen v4 bytes"
+        );
+        assert!(
+            is_known_generated_standalone_global_template(
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+            ),
+            "the standalone (retirement) recognizer must accept the frozen v4 bytes"
+        );
+        assert!(
+            !is_known_generated_global_template(
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+            ),
+            "the project recognizer must not widen to a platform default"
+        );
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            crate::config::session_context::get_default_agent_template(),
+            "the v5 placeholder insertion must differ from its frozen v4 operand"
         );
     }
 
@@ -2942,6 +3133,62 @@ mod tests {
                 FINE_TEMPLATE
             );
         }
+    }
+
+    /// #1605 failing-first proof for ALL of: the v5 placeholder insertion
+    /// (assert_ne), BOTH recognizers (project auto-update and standalone root
+    /// retirement), the version bump, and the pristine-v4-on-disk auto-upgrade
+    /// through the seeded-state SHA flow.
+    #[test]
+    fn read_sync_updates_pre_host_platform_rules_global_template() {
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            crate::config::session_context::get_default_agent_template(),
+            "the v5 rewrite must actually change the template or the freeze is pointless"
+        );
+        assert!(
+            is_known_generated_global_template(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES),
+            "project recognizer must accept the frozen v4 bytes"
+        );
+        assert!(
+            is_known_generated_standalone_global_template(
+                GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+            ),
+            "standalone (retirement) recognizer must accept the frozen v4 bytes"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        std::fs::write(
+            ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME),
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+        )
+        .expect("write pristine v4 global");
+
+        let published_at = fixed_publication_time();
+        let publications =
+            sync_for_read_at(&ac_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME, published_at);
+        assert_one_publication(
+            &publications,
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            published_at,
+        );
+
+        let content = std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+            .expect("read global");
+        assert_eq!(
+            content,
+            crate::config::session_context::get_default_agent_template(),
+            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v5"
+        );
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["global"]["currentVersion"], 5,
+            "recognized v4 global content must land on the current v5 default"
+        );
     }
 
     /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
@@ -3316,6 +3563,158 @@ mod tests {
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read first published target"),
             crate::config::session_context::get_default_agent_template()
+        );
+    }
+
+    /// #1605: a fresh `.ac` root seeds the three platform files byte-equal to
+    /// their embedded defaults with `platform.*` state entries carrying the
+    /// default sha; a pre-existing custom platform file is never overwritten
+    /// (absent-only) and is preserved silently.
+    #[test]
+    fn ensure_project_context_templates_seeds_platform_files_absent_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+
+        let custom_windows = "## Host Platform Rules\n\nMY OWN WINDOWS RULES\n";
+        std::fs::write(
+            ac_root.join(crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS),
+            custom_windows,
+        )
+        .expect("write pre-existing custom windows platform file");
+
+        let published_at = fixed_publication_time();
+        let mut clock = || published_at;
+        let mut publications = Vec::new();
+        ensure_project_context_templates_with_clock(
+            &ac_root,
+            &mut clock,
+            &mut |filename, publication| publications.push((filename, publication)),
+        )
+        .expect("ensure project context templates");
+
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read global"),
+            crate::config::session_context::get_default_agent_template()
+        );
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME))
+                .expect("read coordinator"),
+            get_default_coordinator_template()
+        );
+        for (filename, default) in [
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(filename)).expect("read seeded platform file"),
+                default,
+                "{filename} must be seeded byte-equal to its embedded default"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(
+                ac_root.join(crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS)
+            )
+            .expect("read preserved windows platform file"),
+            custom_windows,
+            "a pre-existing custom platform file must be preserved, never overwritten"
+        );
+
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        for (id, default) in [
+            (
+                "platform.linux",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                "platform.macos",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                parsed["templates"][id]["currentVersion"], 1,
+                "{id} state entry must be v1"
+            );
+            assert_eq!(
+                parsed["templates"][id]["lastSeededSha256"],
+                hash_text(default),
+                "{id} state entry must carry the default sha"
+            );
+        }
+        assert_eq!(
+            parsed["templates"]["platform.windows"],
+            serde_json::Value::Null,
+            "a stateless pre-existing custom platform file must stay unowned (same posture as the global template)"
+        );
+    }
+
+    /// #1605: after seeding, an edit to a platform file is preserved by the
+    /// sync path (content unchanged) and lands in the observed posture
+    /// (`lastObservedSha256` updated); a scan against the same default yields no
+    /// pending update, and the file is never silently overwritten.
+    #[test]
+    fn platform_file_edit_is_preserved_and_observed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ac_root = temp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create workspace");
+        ensure_project_context_templates(&ac_root).expect("seed platform files");
+
+        let filename = crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS;
+        let edited = format!(
+            "{}\n\nMY OWN WINDOWS RULES\n",
+            crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+        );
+        std::fs::write(ac_root.join(filename), &edited).expect("edit windows platform file");
+
+        let published_at = fixed_publication_time();
+        let publications = sync_for_read_at(&ac_root, filename, published_at);
+        assert!(
+            publications.is_empty(),
+            "an edited platform file must not publish"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(filename)).expect("read edited platform file"),
+            edited,
+            "the edit must be preserved, never overwritten"
+        );
+
+        let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        assert_eq!(
+            parsed["templates"]["platform.windows"]["lastObservedSha256"],
+            hash_text(&edited),
+            "the edit must land in the observed posture"
+        );
+
+        let updates =
+            scan_project_context_template_updates(temp.path(), &ac_root).expect("scan updates");
+        assert_eq!(
+            updates.len(),
+            1,
+            "a customized platform file must be offered as a pending update"
+        );
+        assert_eq!(updates[0].filename, filename);
+        assert_eq!(updates[0].current_file_sha256, hash_text(&edited));
+        assert_eq!(
+            updates[0].current_default_sha256,
+            hash_text(crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS)
+        );
+        assert_eq!(updates[0].current_default_version, 1);
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(filename)).expect("re-read edited platform file"),
+            edited,
+            "the scan must never silently overwrite the edit"
         );
     }
 
@@ -3725,7 +4124,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_current_v4_pair_remains_suppressed() {
+    fn ignored_current_v5_pair_remains_suppressed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -3739,7 +4138,7 @@ mod tests {
             "global".to_string(),
             SeededContextTemplateEntry {
                 template_id: "global".to_string(),
-                current_version: 4,
+                current_version: 5,
                 last_seeded_sha256: Some(v4_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
                 ignored_default_sha256: Some(v4_hash),

@@ -72,7 +72,7 @@ jobs:
           components: clippy
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
@@ -125,7 +125,7 @@ jobs:
           components: clippy
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri -> target
           key: rust-regression-linux
@@ -137,6 +137,73 @@ jobs:
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      # IS #1577: the ONLY CI execution of the primary-case test. It copies a
+      # binary into a mode-0555 directory and depends on that mode actually
+      # being enforced, so it must run on a native Linux filesystem.
+      # ubuntu-latest is ext4, which enforces.
+      #
+      # Do NOT move this to a Windows runner, a DrvFs path (/mnt/<drive>), or a
+      # bind mount from a Windows host. There, chmod 0555 is silently ignored,
+      # stat reports 777, the write succeeds, the fallback never fires, and the
+      # test reports ok while proving nothing.
+      #
+      # Only this one test runs here, by name. The suite runs on the Windows
+      # leg; enabling it wholesale on Linux would light up #[cfg(unix)] tests
+      # that have compiled for months and never once executed.
+      - name: cargo test (IS #1577 primary case)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST='tests::issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home'
+
+          cargo test --lib "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee test-1577.log
+
+          # Three independent guards, and none is redundant:
+          #
+          #   1. The exit code (via `set -o pipefail`, which is LOAD-BEARING
+          #      through the `tee`) catches a test that ran and FAILED.
+          #   2. The identifier grep catches a test that never ran at all,
+          #      because a filtered cargo test matching nothing exits 0 and
+          #      prints "0 passed".
+          #   3. The "1 passed" grep catches the filter matching nothing or
+          #      matching something else instead.
+          #
+          # The test re-executes itself as a child process, but the child's
+          # stdout and stderr are Stdio::piped() and collected into a String.
+          # On the success path that output is NEVER printed, so the identifier
+          # and the result line each appear EXACTLY ONCE in this log.
+          #
+          # On a FAILURE path the parent embeds the child's captured stdout
+          # into its panic message via {:?}, which debug-escapes the newlines
+          # onto a single line. That embedded text contains a literal
+          # "test result: ok. 1 passed" from a child that succeeded before the
+          # parent's own assertions failed. Two consequences:
+          #
+          #   - Guard 3 is anchored with `^` for exactly this reason. Embedded
+          #     mid-line, the child's "ok" cannot satisfy an anchored match.
+          #     Do NOT remove the `^`.
+          #   - Guard 2 is unanchored and CAN be satisfied by that embedded
+          #     text, so guard 2 alone cannot tell a real pass from a parent
+          #     failure that dumped a successful child's output.
+          #
+          # Keep `pipefail`. It is the only guard that does not depend on
+          # parsing text at all, so it is the only one no output shape can
+          # fool.
+          #
+          # Do NOT tighten these into count-based assertions (`grep -c ... 1`).
+          # The success path yields one occurrence and the failure paths yield
+          # a different number depending on which assertion failed, so a fixed
+          # count would be wrong for some real failure it is meant to catch.
+          grep -qF "$TEST" test-1577.log || {
+            echo "::error::$TEST never ran. It was renamed, moved, or gated out, and this step was silently testing nothing."
+            exit 1
+          }
+          grep -qE '^test result: ok\. 1 passed; 0 failed' test-1577.log || {
+            echo "::error::expected exactly one passing test; the filter matched nothing or the count changed."
+            exit 1
+          }
 
   rust-regression-macos:
     name: rust-regression-macos
@@ -167,7 +234,7 @@ jobs:
           components: clippy
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri -> target
           key: rust-regression-macos
@@ -217,7 +284,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: . -> target
 
@@ -253,7 +320,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'

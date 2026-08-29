@@ -24,9 +24,12 @@ pub mod voice;
 pub mod web;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -873,6 +876,77 @@ impl AppOutbox {
     pub fn path(&self) -> &str {
         &self.0
     }
+}
+
+#[derive(Debug)]
+pub struct StartupError {
+    kind: StartupErrorKind,
+}
+
+#[derive(Debug)]
+enum StartupErrorKind {
+    Config(config::ConfigStartupError),
+    AppOutboxCreate {
+        config_dir: PathBuf,
+        app_outbox_path: PathBuf,
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            StartupErrorKind::Config(error) => error.fmt(formatter),
+            StartupErrorKind::AppOutboxCreate {
+                config_dir,
+                app_outbox_path,
+                source,
+            } => write!(
+                formatter,
+                "AgentsCommander cannot start because it could not create app outbox directory \"{}\" for configuration directory \"{}\": {}. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
+                app_outbox_path.display(),
+                config_dir.display(),
+                source
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            StartupErrorKind::Config(error) => Some(error),
+            StartupErrorKind::AppOutboxCreate { source, .. } => Some(source),
+        }
+    }
+}
+
+pub fn preflight_config_startup() -> Result<(), StartupError> {
+    match config::config_startup_error() {
+        Some(error) => Err(StartupError {
+            kind: StartupErrorKind::Config(error),
+        }),
+        None => Ok(()),
+    }
+}
+
+fn prepare_app_outbox(
+    config_dir: &Path,
+    instance_id: &str,
+) -> Result<(PathBuf, AppOutbox), StartupError> {
+    let app_outbox_path = config_dir
+        .join(crate::config::instance_artifacts::INSTANCES_DIR_NAME)
+        .join(instance_id)
+        .join("outbox");
+    std::fs::create_dir_all(&app_outbox_path).map_err(|source| StartupError {
+        kind: StartupErrorKind::AppOutboxCreate {
+            config_dir: config_dir.to_path_buf(),
+            app_outbox_path: app_outbox_path.clone(),
+            source,
+        },
+    })?;
+    let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
+    Ok((app_outbox_path, app_outbox))
 }
 
 /// Decide whether a persisted session should be restored with a live PTY
@@ -2289,11 +2363,16 @@ pub(crate) fn spawn_restore_startup(
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
-) {
+) -> Result<(), StartupError> {
+    preflight_config_startup()?;
+
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
+    if let Some(diagnostic) = config::adjacent_fallback_diagnostic() {
+        log::warn!("[config_dir] {diagnostic}");
+    }
 
     // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
@@ -2331,9 +2410,7 @@ pub fn run(
     // lets the scan tell a dead predecessor from a live sibling.
     let activity_log_enabled = config::settings::read_activity_log_enabled_only();
     crate::config::activity_log::init_run(&config_dir, &instance_id, activity_log_enabled);
-    let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
-    std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
-    let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
+    let (_app_outbox_path, app_outbox) = prepare_app_outbox(&config_dir, &instance_id)?;
     let ui_automation_state = crate::testability::ui_automation::UiAutomationState::new(
         ui_automation_enabled,
         config_dir.clone(),
@@ -3897,19 +3974,21 @@ pub fn run(
                 _ => {}
             }
         });
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_persisted_active_flags, resolve_is_coord_for_restore,
+        normalize_persisted_active_flags, prepare_app_outbox, resolve_is_coord_for_restore,
         restore_session_should_become_active, restore_session_should_wake,
         should_auto_create_root_agent_on_first_restore, should_wake_on_restore,
         should_wake_root_agent_on_restore, skip_auto_resume_for_restore, ApiServerHandle,
         ApiServerTask, ContextPatternSource, ContextSample, ContextSampleSink,
         PersistedActiveFlagNormalization, RestoreObserverStartBarrier, ScraperPatterns,
-        ScraperSamples, SettingsState, WebServerHandle, WebServerLifecycle,
-        WebServerLifecycleSnapshot, WebServerStopWaiter, WEB_SERVER_START_CANCELLED,
+        ScraperSamples, SettingsState, StartupError, StartupErrorKind, WebServerHandle,
+        WebServerLifecycle, WebServerLifecycleSnapshot, WebServerStopWaiter,
+        WEB_SERVER_START_CANCELLED,
     };
     use crate::config::sessions_persistence::PersistedSession;
     use crate::config::settings::{AgentConfig, AppSettings};
@@ -3922,6 +4001,361 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn issue_1577_app_outbox_error_is_typed_and_exact() {
+        let config_dir = std::path::PathBuf::from("config-root");
+        let app_outbox_path = config_dir.join("instances/fixed/outbox");
+        let error = StartupError {
+            kind: StartupErrorKind::AppOutboxCreate {
+                config_dir: config_dir.clone(),
+                app_outbox_path: app_outbox_path.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            },
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "AgentsCommander cannot start because it could not create app outbox directory \"{}\" for configuration directory \"{}\": denied. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.",
+                app_outbox_path.display(),
+                config_dir.display()
+            )
+        );
+        let StartupErrorKind::AppOutboxCreate { source, .. } = &error.kind else {
+            panic!("expected typed app-outbox error");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn issue_1577_prepare_app_outbox_creates_the_shared_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let instance_id = "00000000-0000-4000-8000-000000001577";
+        let (path, outbox) = prepare_app_outbox(temp.path(), instance_id).unwrap();
+        let expected = temp
+            .path()
+            .join("instances")
+            .join(instance_id)
+            .join("outbox");
+        assert_eq!(path, expected);
+        assert_eq!(outbox.path(), expected.to_string_lossy());
+        assert!(expected.is_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home() {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1577_CHILD";
+        const TEST_NAME: &str =
+            "tests::issue_1577_linux_unmarked_adjacent_unwritable_falls_back_to_home";
+        const INSTANCE_ID: &str = "00000000-0000-4000-8000-000000001577";
+
+        if std::env::var_os(CHILD_SENTINEL).is_some() {
+            let executable = std::env::current_exe().unwrap();
+            let case_root = executable.parent().unwrap();
+            let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
+            let selected_home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                .join(".agentscommander-new");
+
+            let observed = crate::config::config_dir().expect("child config root");
+            assert_eq!(observed, selected_home);
+            let (outbox_path, _) = prepare_app_outbox(&observed, INSTANCE_ID).unwrap();
+            assert_eq!(
+                outbox_path,
+                selected_home
+                    .join("instances")
+                    .join(INSTANCE_ID)
+                    .join("outbox")
+            );
+
+            let diagnostic =
+                crate::config::adjacent_fallback_diagnostic().expect("child fallback diagnostic");
+            assert_eq!(diagnostic.candidate, adjacent);
+            assert_eq!(diagnostic.selected_home, Some(selected_home));
+            assert_eq!(
+                diagnostic.failure.primary.operation,
+                crate::config::ProbeOperation::CreateConfigurationDirectory
+            );
+            assert_eq!(diagnostic.failure.primary.attempts, 1);
+            assert_eq!(
+                diagnostic.failure.primary.kind,
+                Some(std::io::ErrorKind::PermissionDenied)
+            );
+            assert!(diagnostic.failure.probe_path.is_none());
+            assert!(!diagnostic.failure.probe_may_remain);
+            return;
+        }
+
+        let case_temp = tempfile::TempDir::new().unwrap();
+        let home_temp = tempfile::TempDir::new().unwrap();
+        let case_root = case_temp.path().to_path_buf();
+        let home_root = home_temp.path().to_path_buf();
+        let original_mode = std::fs::metadata(&case_root).unwrap().permissions().mode();
+        let copied_executable = case_root.join("agentscommander_issue1577_linux_subprocess");
+        let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
+        let marker = case_root.join("portable.txt");
+        let selected_home = home_root.join(".agentscommander-new");
+
+        let body = (|| -> Result<(), String> {
+            let source_executable =
+                std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
+            std::fs::copy(&source_executable, &copied_executable).map_err(|error| {
+                format!(
+                    "copy {} -> {} failed: {error}",
+                    source_executable.display(),
+                    copied_executable.display()
+                )
+            })?;
+            let mut executable_permissions = std::fs::metadata(&copied_executable)
+                .map_err(|error| format!("copied executable metadata failed: {error}"))?
+                .permissions();
+            executable_permissions.set_mode(executable_permissions.mode() | 0o111);
+            std::fs::set_permissions(&copied_executable, executable_permissions)
+                .map_err(|error| format!("set executable mode failed: {error}"))?;
+
+            if marker.exists() || adjacent.exists() {
+                return Err(format!(
+                    "fixture not fresh marker={} adjacent={}",
+                    marker.display(),
+                    adjacent.display()
+                ));
+            }
+
+            let mut read_only_permissions = std::fs::metadata(&case_root)
+                .map_err(|error| format!("case-root metadata failed: {error}"))?
+                .permissions();
+            read_only_permissions.set_mode(0o555);
+            std::fs::set_permissions(&case_root, read_only_permissions)
+                .map_err(|error| format!("chmod 0555 {} failed: {error}", case_root.display()))?;
+
+            let fixture_probe = case_root.join("fixture-write-preflight.tmp");
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&fixture_probe)
+            {
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(error) => {
+                    return Err(format!(
+                        "0555 preflight returned {:?} instead of PermissionDenied for {}: {error}",
+                        error.kind(),
+                        fixture_probe.display()
+                    ));
+                }
+                Ok(file) => {
+                    drop(file);
+                    let mut restored = std::fs::metadata(&case_root)
+                        .map_err(|error| format!("restore metadata failed: {error}"))?
+                        .permissions();
+                    restored.set_mode(original_mode);
+                    std::fs::set_permissions(&case_root, restored).map_err(|error| {
+                        format!("restore after false preflight failed: {error}")
+                    })?;
+                    std::fs::remove_file(&fixture_probe).map_err(|error| {
+                        format!("remove false-positive fixture probe failed: {error}")
+                    })?;
+                    return Err(format!(
+                        "mode 0555 did not block create_new in {}; refusing false pass",
+                        case_root.display()
+                    ));
+                }
+            }
+
+            let mut child = Command::new(&copied_executable)
+                .arg(TEST_NAME)
+                .arg("--exact")
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .env("HOME", &home_root)
+                .env_remove("AGENTSCOMMANDER_CONFIG_DIR")
+                .env_remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+                .env(CHILD_SENTINEL, "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| {
+                    format!(
+                        "spawn copied child {} failed: {error}",
+                        copied_executable.display()
+                    )
+                })?;
+
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut status_poll_error = None;
+            let terminal_status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Ok(None) => break None,
+                    Err(error) => {
+                        status_poll_error = Some(error);
+                        break None;
+                    }
+                }
+            };
+
+            if terminal_status.is_none() {
+                let kill_error = child.kill().err();
+                let reap_deadline = Instant::now() + Duration::from_secs(5);
+                let reaped = loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break true,
+                        Ok(None) if Instant::now() < reap_deadline => {
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        Ok(None) | Err(_) => break false,
+                    }
+                };
+                if !reaped {
+                    return Err(format!(
+                        "child did not reap within 5 seconds; kill_error={kill_error:?} poll_error={status_poll_error:?} case_root={} home_root={}",
+                        case_root.display(),
+                        home_root.display()
+                    ));
+                }
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| format!("timed-out child final reap failed: {error}"))?;
+                return Err(format!(
+                    "child did not reach a clean terminal status; kill_error={kill_error:?} poll_error={status_poll_error:?} status={:?} stdout={:?} stderr={:?} case_root={} home_root={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                    case_root.display(),
+                    home_root.display()
+                ));
+            }
+
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("child output collection failed: {error}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !output.status.success() {
+                return Err(format!(
+                    "child failed status={:?} stdout={stdout:?} stderr={stderr:?} case_root={} home_root={}",
+                    output.status.code(),
+                    case_root.display(),
+                    home_root.display()
+                ));
+            }
+            for text in [&*stdout, &*stderr] {
+                if text.contains("panicked at") || text.contains("stack backtrace:") {
+                    return Err(format!(
+                        "child emitted panic/backtrace text stdout={stdout:?} stderr={stderr:?}"
+                    ));
+                }
+            }
+
+            let outbox = selected_home
+                .join("instances")
+                .join(INSTANCE_ID)
+                .join("outbox");
+            if !outbox.is_dir() {
+                return Err(format!("expected outbox missing: {}", outbox.display()));
+            }
+            let config_entries: Vec<_> = std::fs::read_dir(&selected_home)
+                .map_err(|error| format!("read selected home failed: {error}"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<_, _>>()
+                .map_err(|error| format!("read selected-home entry failed: {error}"))?;
+            if config_entries != [std::ffi::OsString::from("instances")] {
+                return Err(format!(
+                    "unexpected home config entries: {config_entries:?}"
+                ));
+            }
+            let instance_entries: Vec<_> = std::fs::read_dir(selected_home.join("instances"))
+                .map_err(|error| format!("read instances failed: {error}"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<_, _>>()
+                .map_err(|error| format!("read instance entry failed: {error}"))?;
+            if instance_entries != [std::ffi::OsString::from(INSTANCE_ID)] {
+                return Err(format!("unexpected instance entries: {instance_entries:?}"));
+            }
+            let instance_children: Vec<_> =
+                std::fs::read_dir(selected_home.join("instances").join(INSTANCE_ID))
+                    .map_err(|error| format!("read fixed instance failed: {error}"))?
+                    .map(|entry| entry.map(|entry| entry.file_name()))
+                    .collect::<Result<_, _>>()
+                    .map_err(|error| format!("read fixed-instance entry failed: {error}"))?;
+            if instance_children != [std::ffi::OsString::from("outbox")] {
+                return Err(format!(
+                    "unexpected fixed-instance entries: {instance_children:?}"
+                ));
+            }
+            if std::fs::read_dir(&outbox)
+                .map_err(|error| format!("read outbox failed: {error}"))?
+                .next()
+                .is_some()
+            {
+                return Err(format!("outbox was not empty: {}", outbox.display()));
+            }
+            if adjacent.exists() || marker.exists() {
+                return Err(format!(
+                    "adjacent state appeared adjacent={} marker={}",
+                    adjacent.display(),
+                    marker.display()
+                ));
+            }
+            let case_entries: Vec<_> = std::fs::read_dir(&case_root)
+                .map_err(|error| format!("read case root failed: {error}"))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<_, _>>()
+                .map_err(|error| format!("read case-root entry failed: {error}"))?;
+            if case_entries
+                != [copied_executable
+                    .file_name()
+                    .expect("copied executable file name")
+                    .to_os_string()]
+            {
+                return Err(format!("unexpected case-root entries: {case_entries:?}"));
+            }
+            Ok(())
+        })();
+
+        let restore_result = (|| -> Result<(), String> {
+            let mut permissions = std::fs::metadata(&case_root)
+                .map_err(|error| format!("mode-restore metadata failed: {error}"))?
+                .permissions();
+            permissions.set_mode(original_mode);
+            std::fs::set_permissions(&case_root, permissions).map_err(|error| {
+                format!(
+                    "restore exact mode on {} failed: {error}",
+                    case_root.display()
+                )
+            })
+        })();
+        let case_close = case_temp
+            .close()
+            .map_err(|error| format!("close case TempDir {} failed: {error}", case_root.display()));
+        let home_close = home_temp
+            .close()
+            .map_err(|error| format!("close home TempDir {} failed: {error}", home_root.display()));
+
+        let mut failures = Vec::new();
+        if let Err(error) = body {
+            failures.push(error);
+        }
+        if let Err(error) = restore_result {
+            failures.push(error);
+        }
+        if let Err(error) = case_close {
+            failures.push(error);
+        }
+        if let Err(error) = home_close {
+            failures.push(error);
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     fn api_test_addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
