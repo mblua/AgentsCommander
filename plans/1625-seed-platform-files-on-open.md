@@ -5,7 +5,7 @@
 - **Branch**: `fix/1625-seed-platform-files-on-open` (creada desde `main` = `origin/main` = `809120fa`; árbol limpio al planear)
 - **Base congelada**: `809120fa` (immutable para este plan; drift posterior se clasifica por paths según gate 3 de delivery-nonfunctional-invariants)
 - **Plan canónico**: este archivo (`plans/1625-seed-platform-files-on-open.md`), único archivo de plan
-- **Ronda**: 1. **Estado**: `READY_FOR_IMPLEMENTATION`
+- **Ronda**: 2. **Estado**: `READY_FOR_IMPLEMENTATION`
 - **Clase de tarea / modelo de amenaza (registro obligatorio)**: cambio de código de producto rutinario (comportamiento de lectura/materialización del seeder de contextos; sin frontera de seguridad, sin empaquetado, sin firma, sin migración destructiva). Se aplica el modelo de amenaza baseline del repo (toolchain pinned por CI dtolnay stable + `Cargo.lock` commiteado, gates estándar). Ningún control reforzado es aplicable (razones en §9).
 
 ## 1. Causa raíz (evidencia compacta, verificada sobre `809120fa`)
@@ -13,7 +13,7 @@
 El requisito del owner de #1605 (editar un archivo para cambiar `{{HOST_PLATFORM_RULES}}` sin rebuild) NO se cumple en open de un proyecto YA conocido con el binario nuevo: el seeder corre (global/coordinator → v5) pero no existe ningún `.ac/Context.platform.{windows,linux,macos}.md` ni entradas `platform.*` de estado; app.log registra 22× `[WARN] ... platform rules file Context.platform.windows.md is missing; using the embedded default`. El render funciona pero desde el default embebido.
 
 1. `platform_specs()` (`src-tauri/src/config/seeded_context_templates.rs:545`) alimenta `project_specs()` (:510) — los 3 specs de plataforma están en todos los loops (ensure/scan/read-sync).
-2. El único camino que crea un archivo faltante es `sync_one_template(..., allow_create_missing=true)` (:1117), alcanzable SOLO desde `ensure_project_context_templates_with_clock` (:1408), que corre únicamente en creación/registración de proyecto (`create_default_context_templates*` en `ac_discovery.rs:1631/4079/4218` y `projects.rs:202/287/2200/2358`).
+2. El camino que crea un archivo faltante es `sync_one_template(..., allow_create_missing=true)` (:1117), alcanzable desde `ensure_project_context_templates_with_clock` (:1408) — que corre en creación/registración de proyecto (`create_default_context_templates*` en `ac_discovery.rs:1631/4079/4218` y `projects.rs:202/287/2200/2358`) — y también desde `sync_project_context_template_for_read_with_clock` (:1512-1527), que corre en cada materialización del read-sync; pero este segundo camino está acotado por `project_spec_by_filename` (:593), que solo devuelve global/coordinator, nunca specs de plataforma. Para filenames de plataforma, el único camino creador sigue siendo el ensure de creación/registración.
 3. Los dos caminos que corren para un proyecto ya conocido NUNCA crean:
    - **Scan** de arranque/open (`scan_project_context_template_updates_with_clock`, :1465): `allow_create_missing=false` → `Skipped(CreationDisabled)` (scan deliberadamente no-creador).
    - **Read** de materialización: global/coordinator se sincronizan vía `read_or_create_context_template_with_sync` (`session_context.rs:1233`; sincroniza SOLO los filenames `GLOBAL_CONTEXT_TEMPLATE_FILENAME` y `COORDINATOR_CONTEXT_TEMPLATE_FILENAME`); los de plataforma se leen DIRECTO por `render_host_platform_rules_block` (`session_context.rs:3550` → `read_context_template` :1169, sin caché, deliberadamente fuera del sync). `read_context_template` para el archivo de plataforma tiene UN único call site (:3559, dentro de `render_host_platform_rules_block`).
@@ -29,7 +29,7 @@ Enrutar la lectura del archivo de plataforma por el ciclo de vida del seeder: si
 Restricciones obligatorias (en orden de prioridad):
 1. Scan no-creador intacto (no convertir el scan en creador).
 2. Contenedor (`repo_mounts=Some`) sin lectura ni seed (sin sección, como hoy).
-3. Preservación de ediciones y self-heal sin cambio: archivo pre-existente nunca se pisa; edición preservada con observed; borrado → re-seed absent-only (hoy: + WARN; tras el fix: sin WARN porque el archivo se siembra antes de leer).
+3. Preservación de ediciones y self-heal sin cambio: archivo pre-existente nunca se pisa; edición preservada (observed + WARN solo si tiene entrada de estado válida; preservación silenciosa, sin entrada de estado y sin WARN, si es unowned); borrado → re-seed absent-only (hoy: + WARN; tras el fix: sin WARN porque el archivo se siembra antes de leer).
 4. Cero arcos nuevos de módulo (`module-arcs.txt` byte-idéntico, SCC idéntico).
 5. Constantes de presupuesto intactas (8313/9070/757/6810/7567) y presupuesto medido dentro de techo.
 6. Comportamiento sin caché: editar → respawn → texto nuevo (como hoy).
@@ -91,7 +91,7 @@ fn ensure_platform_context_templates_with_clock(
 ```
 
 Decisiones explícitas:
-- **`allow_create_missing=true`, `return_pending=false`**: idéntico al ensure de creación y al read-sync de global/coordinator. Absent-only: `create_missing_template` usa `write_template_if_missing_with_clock` (create-only, nunca pisa); un archivo existente pasa por las ramas de sync (seeded si byte-igual al default, observed si editado, preservado si unowned-unknown via `suppress_unknown_without_state=true`).
+- **`allow_create_missing=true`, `return_pending=false`**: idéntico al ensure de creación y al read-sync de global/coordinator. Absent-only: `create_missing_template` usa `write_template_if_missing_with_clock` (create-only, nunca pisa); un archivo existente pasa por las ramas de sync (seeded si byte-igual al default; si editado: observed + WARN solo con entrada de estado válida (`has_valid_entry`, rama :1264-1273); preservación silenciosa `Skipped(AmbiguousWithoutState)`, sin entrada de estado y sin WARN, si es unowned — el caso del issue, nunca seedado — vía `suppress_unknown_without_state=true` de los 3 specs).
 - **`validate_existing_dir` sí, `create_dir_all` no**: `context_dir` llega resuelto por `find_ac_root` (existe por construcción); no crear directorios que el caller no pidió. Igual posture que `sync_project_context_template_for_read_with_clock` (:1498).
 - **`load_state(context_dir, false)`**: degradación best-effort idéntica al resto del seeder (estado corrupto/inaccesible → se crean los archivos igual, persistencia saltada).
 - **`platform_specs()` es privada y del mismo módulo**: sin cambios de visibilidad.
@@ -105,8 +105,10 @@ Insertar, DESPUÉS del early-return de `repo_mounts.is_some()` (restricción 2) 
 // #1625: a known project opened with a binary that never reached the
 // creation path (create/register) has no platform rule files; the read
 // must seed them absent-only through the seeder lifecycle before reading.
-// Guard: one symlink_metadata per render when present (steady state), so
-// materialization I/O is unchanged today.
+// Guard: one resolve (walk + canonicalize) + one symlink_metadata per
+// render in steady state; read_context_template repeats the same resolve
+// + stat immediately after, so the marginal cost is one extra resolve +
+// one extra stat per render — negligible per materialization.
 if let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) {
     let path = context_dir.join(filename);
     let missing = match std::fs::symlink_metadata(&path) {
@@ -129,7 +131,7 @@ if let Some(context_dir) = resolve_ac_root_context_dir(Path::new(agent_root)) {
 ```
 
 Decisiones explícitas:
-- **Trigger = ausencia del archivo del HOST** (`host_platform_rules_filename()`): es la única dependencia real del render; el guard cuesta 1 `symlink_metadata` por materialización en estado estable (hoy `read_context_template` ya hace ese stat + read). Cuando dispara, `ensure_platform_context_templates` siembra los 3 specs absent-only en un solo pass (una carga de estado, un persist si dirty).
+- **Trigger = ausencia del archivo del HOST** (`host_platform_rules_filename()`): es la única dependencia real del render; el guard corre `resolve_ac_root_context_dir` (walk + canonicalize) + 1 `symlink_metadata` en CADA render (no solo cuando falta), y `read_context_template` repite esa misma resolución + stat inmediatamente después: costo en estado estable = 1 resolve + 1 stat extra por render, ambos ya pagados por el read inmediato — negligible por materialización. Cuando dispara, `ensure_platform_context_templates` siembra los 3 specs absent-only en un solo pass (una carga de estado, un persist si dirty).
 - **Detección por `symlink_metadata` NotFound** (no `path.exists()`): un symlink roto (`exists()` = false) NO dispara seed; un symlink/no-regular existente tampoco; ambos siguen el camino actual (WARN "not readable"/"not a regular file" + fallback). Semántica idéntica a `read_context_template` (:1169).
 - **Error de seed → WARN + continuar al read**: el render nunca bloquea la sesión por el archivo de plataforma; si el seed falla, el read encuentra el archivo ausente y cae al fallback (el WARN "is missing" actual queda como camino de fallo, no de operación normal).
 - **Sin cambios en el resto de la función** (fallback, WARN empty, WARN not-readable, retorno de contenido).
@@ -152,7 +154,7 @@ Reemplazar la bala "Seeding" (líneas 36-43) por la verdad post-fix:
 | Caso | Antes (#1605) | Después (#1625) |
 |---|---|---|
 | Open proyecto conocido, archivos ausentes | WARN "is missing" ×N + fallback; sin archivos, sin estado | 1er render: seed absent-only de los 3 + estado `platform.*` v1 `lastSeededSha256`; read devuelve el archivo; SIN WARN "is missing" |
-| Archivo editado (con o sin estado) | existe → read directo, texto editado, sin WARN | idéntico (existe → no seed → read directo; el guard de 1 stat no toca el archivo) |
+| Archivo editado (con o sin estado) | existe → read directo, texto editado, sin WARN | idéntico (existe → no seed → read directo; el guard no toca el archivo, solo 1 resolve + 1 stat extra, ver D2) |
 | Editar → respawn (sin rebuild) | texto nuevo en cada materialización | idéntico (sin caché; restricción 6) |
 | Archivo borrado | WARN "is missing" + fallback | re-seed absent-only en el próximo render; sin WARN (restricción 3) |
 | Borrar solo un archivo no-host (p.ej. linux.md en Windows) | nada (nunca se lee) | no se re-siembra hasta el próximo trigger de seed (host ausente o create/register); sin WARN, sin impacto de render. Edge aceptado y documentado en D2 |
@@ -162,9 +164,9 @@ Reemplazar la bala "Seeding" (líneas 36-43) por la verdad post-fix:
 | Scan de arranque | `CreationDisabled` para faltantes | idéntico (restricción 1) |
 | Creación/registración de proyecto | `ensure_project_context_templates*` siembra los 5 specs | idéntico (sin cambios) |
 | `ensure_platform_context_templates` falla (dir no escribible, estado corrupto) | — | WARN "[session_context] failed to seed platform rules files" + read → fallback. La sesión nunca se bloquea |
-| Estado JSON corrupto | (no aplica: nunca se creaba) | `load_state(false)` degrada (can_persist=false); archivos se crean igual; persistencia saltada |
+| Estado JSON corrupto | (no aplica: nunca se creaba) | `load_state(false)` degrada a estado mínimo con `can_persist=true, dirty=true` (JSON inválido, :795-803) → `persist_state_best_effort` REESCRIBE el estado corrupto con el estado mínimo válido (misma posture que global/coordinator); `can_persist=false` solo para state path no-regular/inaccesible. En ambos casos los archivos se crean igual y la sesión nunca se bloquea |
 | Dos renders concurrentes (mismo `.ac`) | (no aplica) | `write_template_if_missing_with_clock` es create-only: segundo writer → `AlreadyPresent`; `mark_seeded` idempotente; persist best-effort (misma posture que global/coordinator hoy) |
-| Archivos linux/macos editados mientras falta el host | (no se tocaban) | `ensure` los marca `observed` (restricción 3) y emite el WARN pre-existente "preserving customized context template ...; a newer default is available" (texto genérico del seeder, aceptado: es la misma maquinaria que el scan usa hoy para platform editado) |
+| Archivos linux/macos editados mientras falta el host | (no se tocaban) | `ensure` los preserva en silencio (unowned, `suppress_unknown_without_state` → `Skipped(AmbiguousWithoutState)` con `log::debug`, sin entrada de estado, sin WARN; restricción 3). Solo si tienen entrada de estado válida (p. ej. seed previo y edición posterior) `ensure` los marca `observed` y emite el WARN pre-existente "preserving customized context template ...; a newer default is available" (texto genérico del seeder) |
 | Presupuesto de bytes | — | sin cambios: no se altera ningún default ni el template; el fixture del budget test (`FAKE_REPLICA_ROOT = "C:/fake/..."`) no tiene ancestro `.ac` → `resolve_ac_root_context_dir` = None → sin seed; medición idéntica |
 
 ## 6. Archivos y símbolos exactos (diff esperado)
