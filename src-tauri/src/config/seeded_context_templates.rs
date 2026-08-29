@@ -2241,11 +2241,13 @@ mod tests {
             "the pre-Room-rename snapshot was not re-based onto main's v5 body; \
              two constants hold identical bytes and v5 is unrecognized forever"
         );
-        assert_eq!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.len(), 539);
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.len(),
+            539
+        );
         assert_eq!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(), 564);
         assert!(
-            !GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-                .contains("{{HOST_PLATFORM_RULES}}"),
+            !GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.contains("{{HOST_PLATFORM_RULES}}"),
             "the v4 body predates the placeholder"
         );
         assert!(

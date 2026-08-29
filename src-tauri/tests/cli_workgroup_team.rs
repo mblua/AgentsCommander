@@ -2047,7 +2047,10 @@ fn room_list_reports_a_mixed_root() {
     }
 
     // The legacy directory is never renamed, moved or removed (no migration).
-    assert!(legacy.is_dir(), "the legacy Workgroup must survive untouched");
+    assert!(
+        legacy.is_dir(),
+        "the legacy Workgroup must survive untouched"
+    );
     assert!(legacy.join("__agent_architect").is_dir());
 }
 
