@@ -4593,6 +4593,8 @@ mod tests {
             "May read without restriction",
             "Read the entire filesystem",
         ];
+        const EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ: &str =
+            "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there";
 
         let normalized = normalize(out);
         for fragment in EXPLICIT_BROAD_GRANTS {
@@ -4603,7 +4605,11 @@ mod tests {
             );
         }
 
-        for raw_clause in out.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
+        // This explicit policy sentence is a prohibition. Its comma-separated
+        // trailing clause has read-any-file wording, so scan the whole
+        // prohibition as one recognized negative rather than misclassifying it.
+        let detector_input = out.replace(EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ, "");
+        for raw_clause in detector_input.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
             let clause = normalize(raw_clause);
             if clause.is_empty() {
                 continue;
@@ -5111,7 +5117,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
 
         assert!(wg.contains("Allowed for reading and writing there"));
-        assert!(wg.contains("- **FORBIDDEN**: Any read operation outside"));
+        assert!(wg.contains("- **FORBIDDEN**: Any read operation not authorized by entries 1-4"));
         assert!(wg.contains("another agent's memory is private"));
         assert!(plain.contains("inbound message file grant above"));
         assert!(plain.contains("another agent's memory is private"));
@@ -5121,6 +5127,9 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         for out in [&wg, &plain, &root] {
             assert_no_broad_read_grant(out);
         }
+        assert_no_broad_read_grant(
+            "Do NOT list or explore the other workspace or room, read a second external file or any other file or content there.",
+        );
 
         for prohibited in [
             "Read any path",
@@ -7313,7 +7322,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         assert!(content.contains(&format!("root={}", canonical_display_path(&replica_root))));
         assert!(content.contains("3. **Your origin Agent Matrix"));
-        assert!(content.contains("Narrow exception"));
+        assert!(content.contains("4. **Messaging access:**"));
+        assert!(!content.contains("Narrow exception — room messaging directory"));
         assert!(content.contains("Template skill."));
     }
 
