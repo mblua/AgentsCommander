@@ -72,6 +72,11 @@ const HOST_FINAL_NONCE: &str = "cfe821546eab901d4b548d56b77f42d5587865d709a76a31
 const HOST_PANIC_NONCE: &str = "d4ce25af58bfe2f151aebfa3b5865a627a52da87eb8d4ad303049568dc718d33";
 const PROJECT: &str = "project";
 const WORKGROUP: &str = "wg-1-dev-team";
+/// #1614 section 9.1 "API and snapshot fixture twins". Added BESIDE
+/// `WORKGROUP`, never replacing it: a legacy fixture is the only way
+/// dual-prefix acceptance is testable at all (Rule P2), so this file keeps
+/// exercising `wg-1-dev-team` and gains the Room case.
+const ROOM: &str = "room-1-dev-team";
 
 struct ConfigEnvGuard {
     previous: Option<OsString>,
@@ -6676,4 +6681,32 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
         }
         assert_cleanup_and_secondary_surfaces(&fixture, &config, &canaries);
     });
+}
+
+/// #1614 requirement (D) and (C), section 9.1 "API and snapshot fixture twins".
+///
+/// This file is on section 6.1's PRESERVED list: no production line in it
+/// changes, and section 6.1's table authorizes exactly this `#[cfg(test)]`
+/// edit. The snapshot surface treats a peer FQN as opaque, so what has to be
+/// proved is that a Room directory name flows through the same shapes the
+/// legacy one does and stays a distinct identity.
+#[test]
+fn room_and_legacy_entity_names_are_both_accepted_and_distinct() {
+    use crate::config::entity_prefix::{has_entity_prefix, strip_entity_prefix};
+
+    // (C): both prefixes are accepted by the one shared gate.
+    assert!(has_entity_prefix(WORKGROUP), "{WORKGROUP}");
+    assert!(has_entity_prefix(ROOM), "{ROOM}");
+    // Both resolve to the same slot-and-team remainder, which is what every
+    // name parser downstream consumes.
+    assert_eq!(strip_entity_prefix(WORKGROUP), Some("1-dev-team"));
+    assert_eq!(strip_entity_prefix(ROOM), Some("1-dev-team"));
+
+    // (D) and residual R1: the FQNs this file builds carry the literal
+    // directory name, so a Room and a legacy Workgroup at the same slot are
+    // two different peers rather than one.
+    let legacy_fqn = format!("{PROJECT}:{WORKGROUP}/coordinator");
+    let room_fqn = format!("{PROJECT}:{ROOM}/coordinator");
+    assert_ne!(legacy_fqn, room_fqn);
+    assert!(room_fqn.contains("room-1-dev-team"));
 }

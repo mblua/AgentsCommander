@@ -666,3 +666,35 @@ async fn expired_deadline_retains_maximum_raster_and_permit_until_reclamation() 
         tokio::task::yield_now().await;
     }
 }
+
+/// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+///
+/// This file is on section 6.1's PRESERVED list and takes no production edit.
+/// The two existing FQN literals at the top are unchanged (Rule P2); these are
+/// their Room twins, added beside them.
+const ROOM_REQUESTER: &str = "project:room-1-team/coordinator";
+const ROOM_TARGET: &str = "project:room-1-team/member";
+
+#[test]
+fn room_fqns_parse_like_their_legacy_twins_and_stay_distinct() {
+    use crate::config::entity_prefix::has_entity_prefix;
+
+    for (legacy, room) in [(REQUESTER, ROOM_REQUESTER), (TARGET, ROOM_TARGET)] {
+        // Same shape: <project>:<entity>/<agent>, entity accepted by the one
+        // shared dual-prefix gate.
+        let (legacy_entity, legacy_agent) = split_fqn(legacy);
+        let (room_entity, room_agent) = split_fqn(room);
+        assert!(has_entity_prefix(legacy_entity), "{legacy_entity}");
+        assert!(has_entity_prefix(room_entity), "{room_entity}");
+        assert_eq!(legacy_agent, room_agent);
+        // ...and a distinct identity, because the FQN carries the literal
+        // directory name (residual R1's mixed root).
+        assert_ne!(legacy, room);
+    }
+}
+
+/// `<project>:<entity>/<agent>` split, for the twin above.
+fn split_fqn(fqn: &str) -> (&str, &str) {
+    let (_project, rest) = fqn.split_once(':').expect("fqn carries a project");
+    rest.split_once('/').expect("fqn carries an agent")
+}
