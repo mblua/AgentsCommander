@@ -184,11 +184,12 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // (b) badge: reset only when the typed-to session is a coordinator.
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
+        let cwd = mgr.read().await.orchestrator_cwd(session_id).await;
         cwd
     };
     let Some(cwd) = cwd else { return };
-    let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    let Some(clocks) =
+        app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
     else {
         return;
     };
@@ -229,7 +230,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         // inside the 60s flush tick window (mirrors close_coordinator's
         // explicit save; the exit flush in lib.rs only covers clean exits).
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+        if let Err(e) = crate::config::orchestrator_clocks::save_map(&snapshot) {
             log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
         }
     }
@@ -390,7 +391,7 @@ pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
 
 /// (#756) Mirror half: write the coordinator-clocks `start_fresh_at` for the
 /// session's cwd. Returns false without touching anything for non-coordinators
-/// (`coordinator_cwd` -> None; root agents land here too) or when the value is
+/// (`orchestrator_cwd` -> None; root agents land here too) or when the value is
 /// already in the target state. Persists the clocks file immediately on a real
 /// transition: these boundaries are rare and must survive an app close inside
 /// the 60s flush tick (same discipline as close_coordinator's explicit save).
@@ -409,13 +410,14 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
 ) -> BoundaryMetadataOutcome {
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
+        let cwd = mgr.read().await.orchestrator_cwd(session_id).await;
         cwd
     };
     let Some(cwd) = cwd else {
         return BoundaryMetadataOutcome::Unchanged;
     };
-    let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+    let Some(clocks) =
+        app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
     else {
         return BoundaryMetadataOutcome::Unchanged;
     };
@@ -436,7 +438,7 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
             fqn
         );
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-        if crate::config::coordinator_clocks::save_map(&snapshot).is_err() {
+        if crate::config::orchestrator_clocks::save_map(&snapshot).is_err() {
             log::warn!(
                 "[coordinator-clocks] start_fresh_at save failed code=boundary_metadata_failed"
             );
@@ -1721,21 +1723,21 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use crate::config::coordinator_clocks::{CoordinatorClocks, CoordinatorClocksState};
+    use crate::config::orchestrator_clocks::{OrchestratorClocks, OrchestratorClocksState};
     use crate::session::manager::SessionManager;
     use crate::session::session::SessionRepo;
 
     struct FreshIntentFixture {
         app: tauri::App<tauri::test::MockRuntime>,
         session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-        clocks: CoordinatorClocksState,
+        clocks: OrchestratorClocksState,
         session_id: Uuid,
         fqn: String,
     }
 
     fn user_input_test_app(
         session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
-        clocks: CoordinatorClocksState,
+        clocks: OrchestratorClocksState,
     ) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
             .manage(session_mgr)
@@ -1747,7 +1749,7 @@ mod tests {
 
     async fn fresh_intent_fixture() -> FreshIntentFixture {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
+        let clocks = Arc::new(Mutex::new(OrchestratorClocks::default()));
         let app = user_input_test_app(session_mgr.clone(), clocks.clone());
         let cwd = "C:/ac-test/project/.ac/wg-871-dev-team/__agent_tech-lead".to_string();
         let fqn = crate::config::teams::agent_fqn_from_path(&cwd);

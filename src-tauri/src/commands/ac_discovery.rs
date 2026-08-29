@@ -81,7 +81,8 @@ pub struct AcTeam {
     /// Agent display names belonging to this team
     pub agents: Vec<String>,
     /// Coordinator agent display name, if any
-    pub coordinator: Option<String>,
+    #[serde(rename = "coordinator")]
+    pub orchestrator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,20 +110,21 @@ pub struct AcAgentReplica {
     /// Computed at construction against a fresh `config::teams` snapshot;
     /// covers WG-aware suffix matching that simple `originProject/name`
     /// comparison on the frontend misses. See issue #69.
-    pub is_coordinator: bool,
+    #[serde(rename = "isCoordinator")]
+    pub is_orchestrator: bool,
     /// #552/#580 RFC3339 timestamp of the unified team-idle anchor
     /// `max(last_user_message_at, last_activity_at)` for this coordinator, or
-    /// None. Only meaningful when `is_coordinator`. The badge displays and
+    /// None. Only meaningful when `is_orchestrator`. The badge displays and
     /// auto-close triggers on this value (closed time counts). The field keeps
     /// its #552 name (rename to `idleSinceAt` deferred, Decision C). Read from
-    /// the persisted CoordinatorClocks store keyed by FQN.
+    /// the persisted OrchestratorClocks store keyed by FQN.
     pub last_user_message_at: Option<String>,
     /// #552 RFC3339 timestamp this coordinator's team was auto-closed for
-    /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the
+    /// inactivity, or None. Only meaningful when `is_orchestrator`. Drives the
     /// "auto-closed" pill; cleared on reopen. Read from the same store entry.
     pub auto_closed_at: Option<String>,
     /// #588 RFC3339 time this coordinator was manually closed, or None. Only
-    /// meaningful when `is_coordinator`. Drives the MANUALLY-CLOSED pill;
+    /// meaningful when `is_orchestrator`. Drives the MANUALLY-CLOSED pill;
     /// cleared on reopen. Read from the same persisted store entry.
     pub manually_closed_at: Option<String>,
 }
@@ -1037,20 +1039,20 @@ pub async fn discover_ac_agents(
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
-    coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
+    orchestrator_clocks: State<'_, crate::config::orchestrator_clocks::OrchestratorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await.clone();
     // #552 snapshot the persisted badge/auto-closed store once so the per-replica
     // scan below never locks inside the loop.
     let clocks_snapshot: std::collections::HashMap<
         String,
-        crate::config::coordinator_clocks::ClockEntry,
-    > = coordinator_clocks
+        crate::config::orchestrator_clocks::ClockEntry,
+    > = orchestrator_clocks
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .snapshot();
-    // Discovery-wide team snapshot — used per-replica for is_coordinator
-    // and at the end for refresh_coordinator_flags. Computed once so a
+    // Discovery-wide team snapshot — used per-replica for is_orchestrator
+    // and at the end for refresh_orchestrator_flags. Computed once so a
     // single discovery pass presents a coherent coordinator view.
     // Lock-safe: the settings snapshot is owned and the read guard was dropped
     // before any filesystem scan.
@@ -1262,13 +1264,13 @@ pub async fn discover_ac_agents(
                                     None
                                 };
 
-                                // §AR2-strict: `is_coordinator` short-circuits on
+                                // §AR2-strict: `is_orchestrator` short-circuits on
                                 // unqualified names, so build the project-qualified FQN
                                 // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
                                 // shape). Covered by
-                                // teams::tests::is_any_coordinator_requires_qualified_fqn.
-                                let is_coordinator =
-                                    crate::config::teams::resolve_wg_coordinator_replica(
+                                // teams::tests::is_any_orchestrator_requires_qualified_fqn.
+                                let is_orchestrator =
+                                    crate::config::teams::resolve_wg_orchestrator_replica(
                                         &ac_root, &path,
                                     )
                                     .map(|resolved| resolved.agent_name == replica_name)
@@ -1281,14 +1283,14 @@ pub async fn discover_ac_agents(
                                     dir_name,
                                     replica_name,
                                     project_folder, dir_name, replica_name,
-                                    is_coordinator
+                                    is_orchestrator
                                 );
 
                                 // #552 look up this coordinator's persisted clocks by FQN
                                 // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
                                 let fqn =
                                     format!("{}:{}/{}", project_folder, dir_name, replica_name);
-                                let clock_entry = if is_coordinator {
+                                let clock_entry = if is_orchestrator {
                                     clocks_snapshot.get(&fqn)
                                 } else {
                                     None
@@ -1318,7 +1320,7 @@ pub async fn discover_ac_agents(
                                     current_profile,
                                     repo_paths,
                                     repo_branch,
-                                    is_coordinator,
+                                    is_orchestrator,
                                     last_user_message_at,
                                     auto_closed_at,
                                     manually_closed_at,
@@ -1361,7 +1363,7 @@ pub async fn discover_ac_agents(
                                 })
                                 .unwrap_or_default();
 
-                            let coordinator = parsed
+                            let orchestrator = parsed
                                 .get("coordinator")
                                 .and_then(|c| c.as_str())
                                 .map(|r| resolve_agent_ref(&project_folder, r));
@@ -1369,7 +1371,7 @@ pub async fn discover_ac_agents(
                             teams.push(AcTeam {
                                 name: team_name,
                                 agents: team_agents,
-                                coordinator,
+                                orchestrator,
                             });
                         }
                     }
@@ -1440,23 +1442,23 @@ pub async fn discover_ac_agents(
     // Recompute coordinator flags on every live session against the hoisted team snapshot.
     let changes = {
         let mgr = session_mgr.read().await;
-        mgr.refresh_coordinator_flags(&teams_snapshot).await
+        mgr.refresh_orchestrator_flags(&teams_snapshot).await
     };
     for (id, is_coord) in changes {
         let _ = app.emit(
             "session_coordinator_changed",
-            crate::pty::git_watcher::CoordinatorChangedPayload {
+            crate::pty::git_watcher::OrchestratorChangedPayload {
                 session_id: id.to_string(),
-                is_coordinator: is_coord,
+                is_orchestrator: is_coord,
             },
         );
     }
 
     let total_replicas: usize = workgroups.iter().map(|wg| wg.agents.len()).sum();
-    let total_coordinator: usize = workgroups
+    let total_orchestrator: usize = workgroups
         .iter()
         .flat_map(|wg| wg.agents.iter())
-        .filter(|a| a.is_coordinator)
+        .filter(|a| a.is_orchestrator)
         .count();
     log::debug!(
         "[ac-discovery] call={} discover_ac_agents: summary — workgroups={} teams={} replicas={} coordinator={}",
@@ -1464,7 +1466,7 @@ pub async fn discover_ac_agents(
         workgroups.len(),
         teams.len(),
         total_replicas,
-        total_coordinator
+        total_orchestrator
     );
     crate::config::seeded_context_templates::dedupe_context_template_updates(
         &mut context_template_updates,
@@ -1818,7 +1820,7 @@ pub async fn discover_project(
     path: String,
     settings: State<'_, SettingsState>,
     branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
-    coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
+    orchestrator_clocks: State<'_, crate::config::orchestrator_clocks::OrchestratorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
     discover_project_inner(
         &app,
@@ -1826,7 +1828,7 @@ pub async fn discover_project(
         &path,
         settings.inner(),
         branch_watcher.inner(),
-        coordinator_clocks.inner(),
+        orchestrator_clocks.inner(),
     )
     .await
 }
@@ -1837,7 +1839,7 @@ pub(crate) async fn discover_project_inner(
     path: &str,
     settings: &SettingsState,
     branch_watcher: &Arc<DiscoveryBranchWatcher>,
-    coordinator_clocks: &crate::config::coordinator_clocks::CoordinatorClocksState,
+    orchestrator_clocks: &crate::config::orchestrator_clocks::OrchestratorClocksState,
 ) -> Result<AcDiscoveryResult, String> {
     let base = Path::new(path);
     if !base.is_dir() {
@@ -1848,8 +1850,8 @@ pub(crate) async fn discover_project_inner(
     // #552 snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
     let clocks_snapshot: std::collections::HashMap<
         String,
-        crate::config::coordinator_clocks::ClockEntry,
-    > = coordinator_clocks
+        crate::config::orchestrator_clocks::ClockEntry,
+    > = orchestrator_clocks
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .snapshot();
@@ -2031,17 +2033,18 @@ pub(crate) async fn discover_project_inner(
                             None
                         };
 
-                        // §AR2-strict: `is_coordinator` short-circuits on
+                        // §AR2-strict: `is_orchestrator` short-circuits on
                         // unqualified names, so build the project-qualified FQN
                         // (mirrors `agent_fqn_from_path`'s `<proj>:<wg>/<agent>`
                         // shape). Covered by
-                        // teams::tests::is_any_coordinator_requires_qualified_fqn.
-                        let is_coordinator = crate::config::teams::resolve_wg_coordinator_replica(
-                            &ac_root,
-                            &entry_path,
-                        )
-                        .map(|resolved| resolved.agent_name == replica_name)
-                        .unwrap_or(false);
+                        // teams::tests::is_any_orchestrator_requires_qualified_fqn.
+                        let is_orchestrator =
+                            crate::config::teams::resolve_wg_orchestrator_replica(
+                                &ac_root,
+                                &entry_path,
+                            )
+                            .map(|resolved| resolved.agent_name == replica_name)
+                            .unwrap_or(false);
 
                         log::debug!(
                             "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' fqn='{}:{}/{}' is_coordinator={}",
@@ -2050,13 +2053,13 @@ pub(crate) async fn discover_project_inner(
                             dir_name,
                             replica_name,
                             project_folder, dir_name, replica_name,
-                            is_coordinator
+                            is_orchestrator
                         );
 
                         // #552 look up this coordinator's persisted clocks by FQN
                         // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
                         let fqn = format!("{}:{}/{}", project_folder, dir_name, replica_name);
-                        let clock_entry = if is_coordinator {
+                        let clock_entry = if is_orchestrator {
                             clocks_snapshot.get(&fqn)
                         } else {
                             None
@@ -2085,7 +2088,7 @@ pub(crate) async fn discover_project_inner(
                             current_profile,
                             repo_paths,
                             repo_branch,
-                            is_coordinator,
+                            is_orchestrator,
                             last_user_message_at,
                             auto_closed_at,
                             manually_closed_at,
@@ -2127,7 +2130,7 @@ pub(crate) async fn discover_project_inner(
                         })
                         .unwrap_or_default();
 
-                    let coordinator = parsed
+                    let orchestrator = parsed
                         .get("coordinator")
                         .and_then(|c| c.as_str())
                         .map(|r| resolve_agent_ref(&project_folder, r));
@@ -2135,7 +2138,7 @@ pub(crate) async fn discover_project_inner(
                     teams.push(AcTeam {
                         name: team_name,
                         agents: team_agents,
-                        coordinator,
+                        orchestrator,
                     });
                 }
             }
@@ -2196,23 +2199,23 @@ pub(crate) async fn discover_project_inner(
     // `session_mgr` / inner `sessions` lock contention during the boot-concurrent
     // session restore (#384 empty-tree hang fix). This refresh only emits
     // `session_coordinator_changed` for live sessions; it is not needed to build the
-    // returned tree (each replica's `is_coordinator` is computed inline above), so
+    // returned tree (each replica's `is_orchestrator` is computed inline above), so
     // moving it off the return path is behavior-preserving for the tree while keeping
     // the coordinator-flag events flowing.
     {
-        let coordinator_app = app.clone();
-        let coordinator_session_mgr = Arc::clone(session_mgr);
+        let orchestrator_app = app.clone();
+        let orchestrator_session_mgr = Arc::clone(session_mgr);
         tokio::spawn(async move {
             let changes = {
-                let mgr = coordinator_session_mgr.read().await;
-                mgr.refresh_coordinator_flags(&teams_snapshot).await
+                let mgr = orchestrator_session_mgr.read().await;
+                mgr.refresh_orchestrator_flags(&teams_snapshot).await
             };
             for (id, is_coord) in changes {
-                let _ = coordinator_app.emit(
+                let _ = orchestrator_app.emit(
                     "session_coordinator_changed",
-                    crate::pty::git_watcher::CoordinatorChangedPayload {
+                    crate::pty::git_watcher::OrchestratorChangedPayload {
                         session_id: id.to_string(),
-                        is_coordinator: is_coord,
+                        is_orchestrator: is_coord,
                     },
                 );
             }
@@ -2220,10 +2223,10 @@ pub(crate) async fn discover_project_inner(
     }
 
     let total_replicas: usize = workgroups.iter().map(|wg| wg.agents.len()).sum();
-    let total_coordinator: usize = workgroups
+    let total_orchestrator: usize = workgroups
         .iter()
         .flat_map(|wg| wg.agents.iter())
-        .filter(|a| a.is_coordinator)
+        .filter(|a| a.is_orchestrator)
         .count();
     log::debug!(
         "[ac-discovery] call={} discover_project: summary — path='{}' workgroups={} teams={} replicas={} coordinator={}",
@@ -2232,7 +2235,7 @@ pub(crate) async fn discover_project_inner(
         workgroups.len(),
         teams.len(),
         total_replicas,
-        total_coordinator
+        total_orchestrator
     );
     crate::config::seeded_context_templates::dedupe_context_template_updates(
         &mut context_template_updates,
@@ -3144,7 +3147,7 @@ mod tests {
             agent_label: None,
             git_repos: Vec::new(),
             workgroup_task: None,
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent,
             token: "token".to_string(),
             agent_kind: None,
@@ -4058,7 +4061,7 @@ mod tests {
         assert!(tmp
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
         assert!(!tmp.path().join(".ac").join("templates").exists());
     }
@@ -4110,7 +4113,7 @@ mod tests {
         let project = temp.path();
         let ac_root = project.join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
-        let filename = crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME;
+        let filename = crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME;
         std::fs::write(ac_root.join(filename), "custom coordinator guidance")
             .expect("write custom coordinator");
         let update =
@@ -4172,7 +4175,7 @@ mod tests {
         assert!(!tmp
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
 
         let mut settings = crate::config::settings::AppSettings::default();
@@ -4181,7 +4184,7 @@ mod tests {
         assert!(tmp
             .path()
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
     }
 
@@ -4199,7 +4202,7 @@ mod tests {
             .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME)
             .exists());
         assert!(!ac_root
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .exists());
     }
 
@@ -4359,7 +4362,7 @@ mod tests {
             .is_file());
         assert!(project
             .join(".ac")
-            .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME)
+            .join(crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME)
             .is_file());
     }
 
@@ -4501,7 +4504,7 @@ mod tests {
 
         let err = keep_custom_context_template(
             ac_root.to_string_lossy().to_string(),
-            crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
+            crate::config::session_context::ORCHESTRATOR_CONTEXT_TEMPLATE_FILENAME.to_string(),
             "file".to_string(),
             "default".to_string(),
         )
@@ -5346,7 +5349,7 @@ mod tests {
             "invalid identity must not be masked as the local origin project"
         );
         assert!(
-            crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir).is_none(),
+            crate::config::teams::resolve_wg_orchestrator_replica(&ac_root, &wg_dir).is_none(),
             "invalid identity must not grant coordinator/root authority"
         );
 

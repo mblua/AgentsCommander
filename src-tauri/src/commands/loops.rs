@@ -9,7 +9,7 @@ use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
     read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
-    validate_loop_id, write_loop_config, write_loop_state_atomic, BusyCoordinatorPolicy,
+    validate_loop_id, write_loop_config, write_loop_state_atomic, BusyOrchestratorPolicy,
     LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopTarget, LoopTargetKind,
     LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
@@ -26,8 +26,8 @@ pub struct LoopCreateRequest {
     pub expr: String,
     pub workgroup: String,
     pub prompt_body: String,
-    #[serde(default)]
-    pub busy_coordinator: Option<BusyCoordinatorPolicy>,
+    #[serde(default, rename = "busyCoordinator")]
+    pub busy_orchestrator: Option<BusyOrchestratorPolicy>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -41,8 +41,8 @@ pub struct LoopUpdateRequest {
     pub expr: Option<String>,
     pub workgroup: Option<String>,
     pub prompt_body: Option<String>,
-    #[serde(default)]
-    pub busy_coordinator: Option<BusyCoordinatorPolicy>,
+    #[serde(default, rename = "busyCoordinator")]
+    pub busy_orchestrator: Option<BusyOrchestratorPolicy>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -85,12 +85,12 @@ pub async fn create_loop(
             timezone: LOOP_TIMEZONE_LOCAL.to_string(),
         },
         target: LoopTarget {
-            kind: LoopTargetKind::WorkgroupCoordinator,
+            kind: LoopTargetKind::WorkgroupOrchestrator,
             workgroup: request.workgroup,
         },
         prompt: LoopPrompt { body: prompt_body },
         policy: LoopPolicy {
-            busy_coordinator: request.busy_coordinator.unwrap_or_default(),
+            busy_orchestrator: request.busy_orchestrator.unwrap_or_default(),
             ..LoopPolicy::default()
         },
     };
@@ -135,7 +135,7 @@ pub async fn update_loop(
             expr: request.expr,
             workgroup: request.workgroup,
             prompt_body: request.prompt_body,
-            busy_coordinator: request.busy_coordinator,
+            busy_orchestrator: request.busy_orchestrator,
             enabled: request.enabled,
         },
     )?;

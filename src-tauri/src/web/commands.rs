@@ -816,9 +816,9 @@ async fn dispatch_browser_project_command(
             let branch_watcher = state
                 .app_handle
                 .state::<Arc<crate::commands::ac_discovery::DiscoveryBranchWatcher>>();
-            let coordinator_clocks = state
+            let orchestrator_clocks = state
                 .app_handle
-                .state::<crate::config::coordinator_clocks::CoordinatorClocksState>(
+                .state::<crate::config::orchestrator_clocks::OrchestratorClocksState>(
             );
 
             let result = crate::commands::ac_discovery::discover_project_inner(
@@ -827,7 +827,7 @@ async fn dispatch_browser_project_command(
                 &path,
                 &state.settings,
                 branch_watcher.inner(),
-                coordinator_clocks.inner(),
+                orchestrator_clocks.inner(),
             )
             .await?;
 

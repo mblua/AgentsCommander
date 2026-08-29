@@ -953,7 +953,7 @@ fn prepare_app_outbox(
 /// at app startup, or deferred (created as a dormant `Exited(0)` record).
 ///
 /// Inputs:
-///   - `setting_on`: value of `AppSettings::restore_coordinator_wake_state`.
+///   - `setting_on`: value of `AppSettings::restore_orchestrator_wake_state`.
 ///   - `is_coord`: whether the agent FQN derived from `ps.working_directory`
 ///     is a coordinator of any discovered team.
 ///   - `persisted_status`: `PersistedSession::status` as snapshotted at the
@@ -1067,10 +1067,10 @@ impl RestoreObserverStartBarrier {
 
 /// (#630) Resolve coordinator status for a restore decision, backstopping a
 /// transient empty `discover_teams()` with the snapshot's persisted
-/// `is_coordinator`. When live discovery returned teams we trust it. Only when
+/// `is_orchestrator`. When live discovery returned teams we trust it. Only when
 /// discovery came back EMPTY do we fall back, so a real coordinator is not
 /// silently downgraded to "deferred" because project paths were not ready at
-/// cold start. The woken session's `is_coordinator` is recomputed in
+/// cold start. The woken session's `is_orchestrator` is recomputed in
 /// `create_session_inner`, so a stale backstop cannot poison identity.
 pub(crate) fn resolve_is_coord_for_restore(
     live_is_coord: bool,
@@ -1955,7 +1955,7 @@ pub(crate) fn spawn_restore_startup(
                                         crate::session::selection::DormantRestoreRequest {
                                             persisted: ps.clone(),
                                             working_directory: root_path,
-                                            is_coordinator: false,
+                                            is_orchestrator: false,
                                             is_root_agent: true,
                                         },
                                     )
@@ -2033,17 +2033,17 @@ pub(crate) fn spawn_restore_startup(
 
                 // #248 — decide wake vs defer for this session.
                 // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
-                // team membership and coordinator checks. Strict `is_coordinator`
+                // team membership and coordinator checks. Strict `is_orchestrator`
                 // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
                 let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
-                let live_is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+                let live_is_coord = crate::config::teams::is_any_orchestrator(&agent_name, &teams);
                 // (#630) Backstop a transient empty discover_teams() with the snapshot's
-                // persisted is_coordinator so a real coordinator is not silently downgraded
+                // persisted is_orchestrator so a real coordinator is not silently downgraded
                 // to "deferred" when project paths were not ready at cold start.
                 let is_coord = resolve_is_coord_for_restore(
                     live_is_coord,
                     teams.is_empty(),
-                    ps.is_coordinator,
+                    ps.is_orchestrator,
                 );
                 let archived_session = sessions_persistence::is_under_normalized_archived_roots(
                     &ps.working_directory,
@@ -2062,7 +2062,7 @@ pub(crate) fn spawn_restore_startup(
                         .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
                             persisted: ps.clone(),
                             working_directory: ps.working_directory.clone(),
-                            is_coordinator: is_coord,
+                            is_orchestrator: is_coord,
                             is_root_agent: false,
                         })
                         .await
@@ -2538,15 +2538,15 @@ pub fn run(
     let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(loaded_settings));
     // #552 persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
-    let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
-        Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
+    let orchestrator_clocks: crate::config::orchestrator_clocks::OrchestratorClocksState =
+        Arc::new(Mutex::new(crate::config::orchestrator_clocks::load()));
     // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
     // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
-    crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
-        &coordinator_clocks,
+    crate::config::orchestrator_clocks::prune_orphaned_workgroups_and_persist(
+        &orchestrator_clocks,
         &startup_project_paths,
     );
-    let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
+    let orchestrator_clocks_for_exit = Arc::clone(&orchestrator_clocks);
     let resource_monitor_state = Arc::new(resource_monitor::ResourceMonitorState::new());
     // #714 screenshot capture lifecycle + global-hotkey registration state.
     let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
@@ -2635,7 +2635,7 @@ pub fn run(
         .manage(voice_tracking)
         .manage(settings)
         .manage(idle_detector_for_state) // #552 managed type: Arc<IdleDetector>
-        .manage(coordinator_clocks) // #552 managed type: CoordinatorClocksState
+        .manage(orchestrator_clocks) // #552 managed type: OrchestratorClocksState
         .manage(std::sync::Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
@@ -3390,7 +3390,7 @@ pub fn run(
                 // #248 — read the new setting and always discover teams (the coord check
                 // is run for every persisted session, regardless of the setting's value).
                 let settings_snapshot = restore_settings_snapshot.clone();
-                let setting_on = settings_snapshot.restore_coordinator_wake_state;
+                let setting_on = settings_snapshot.restore_orchestrator_wake_state;
                 let teams = crate::config::teams::discover_teams();
 
                 // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
@@ -3954,11 +3954,11 @@ pub fn run(
                     // exit (the 60s tick can leave up to one tick of recency
                     // unpersisted). Sync snapshot + save; best-effort on poison.
                     {
-                        let snap = coordinator_clocks_for_exit
+                        let snap = orchestrator_clocks_for_exit
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .snapshot();
-                        if let Err(e) = crate::config::coordinator_clocks::save_map(&snap) {
+                        if let Err(e) = crate::config::orchestrator_clocks::save_map(&snap) {
                             log::warn!("[coordinator-clocks] exit flush failed: {}", e);
                         }
                     }

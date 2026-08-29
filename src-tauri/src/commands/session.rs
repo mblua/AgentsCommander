@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::agent_config::{self, AgentLocalConfig};
-use crate::config::coordinator_clocks::CoordinatorClocksState;
+use crate::config::orchestrator_clocks::OrchestratorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::backend::{
@@ -1471,12 +1471,12 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
         };
 
-        // Recompute is_coordinator from the current team snapshot. One source of truth:
+        // Recompute is_orchestrator from the current team snapshot. One source of truth:
         // every caller of create_session_inner gets the same computation.
         let teams = tokio::task::spawn_blocking(crate::config::teams::discover_teams)
             .await
             .map_err(|e| e.to_string())?;
-        let is_coordinator = crate::config::teams::is_coordinator_for_cwd(&cwd, &teams);
+        let is_orchestrator = crate::config::teams::is_orchestrator_for_cwd(&cwd, &teams);
         let is_root_agent = crate::config::root_agent::is_root_agent_path(&cwd);
 
         // #552 seed the badge clock for a coordinator's first spawn so it shows 0m
@@ -1484,9 +1484,9 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // is DESTROYED, so its reopen flows through this create path (the "create
         // in-place" branch of handleReplicaClick), NOT restart_session_inner.
         // seed_if_absent never overwrites, so a respawn does NOT reset the badge.
-        if is_coordinator {
+        if is_orchestrator {
             if let Some(clocks) =
-                app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+                app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
             {
                 // agent_fqn_from_path returns String (teams.rs:80), not Option.
                 let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
@@ -1530,16 +1530,16 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // here: only post-boundary content (typed input or AC-injected content)
         // drops it, so repeated close/reopen cycles with no content stay fresh.
         let mut fresh_forced_by_mirror = false;
-        if is_coordinator && !skip_auto_resume {
+        if is_orchestrator && !skip_auto_resume {
             if let Some(clocks) =
-                app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+                app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
             {
                 let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
                 let pending = {
                     let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
                     guard.start_fresh_at(&fqn)
                 };
-                if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {
+                if mirror_forces_fresh(skip_auto_resume, is_orchestrator, pending.is_some()) {
                     log::info!(
                     "[session] fresh-intent mirror pending for '{}' (boundary {}): forcing skip_auto_resume (#756)",
                     fqn,
@@ -1653,7 +1653,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 agent_id.clone(),
                 agent_label.clone(),
                 git_repos,
-                is_coordinator,
+                is_orchestrator,
                 backend_kind,
             )
             .await
@@ -1673,7 +1673,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     agent_id.clone(),
                     agent_label.clone(),
                     git_repos,
-                    is_coordinator,
+                    is_orchestrator,
                     backend_kind,
                 )
                 .await
@@ -2043,7 +2043,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             // Eligibility is an explicit direct-shell capability, independent of
             // CodingAgentKind provider tuning.
             let auto_self_clear =
-                resolve_launch_auto_self_clear(&cfg, &shell, &cwd, is_coordinator);
+                resolve_launch_auto_self_clear(&cfg, &shell, &cwd, is_orchestrator);
             (target, managed, auto_self_clear)
         };
 
@@ -2077,7 +2077,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                                 &cwd,
                                 &target_filename,
                                 &managed_filenames,
-                                is_coordinator,
+                                is_orchestrator,
                                 auto_self_clear,
                                 container_repos.as_ref(),
                                 activation.as_ref(),
@@ -2371,13 +2371,13 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // variables; no credentials are written through PTY.
         //
         // Currently the only bootstrap payload is the Coordinator auto-title prompt.
-        if agent_id.is_some() && !is_coordinator {
+        if agent_id.is_some() && !is_orchestrator {
             log::debug!(
                 "[session] No bootstrap injection for non-coordinator agent session {}",
                 id
             );
         }
-        if agent_id.is_some() && is_coordinator {
+        if agent_id.is_some() && is_orchestrator {
             let auto_title_enabled = false; /*
                                                 let settings_state = app.state::<SettingsState>();
                                                 let cfg = settings_state.read().await;
@@ -2602,12 +2602,13 @@ fn resolve_launch_auto_self_clear(
     settings: &AppSettings,
     shell: &str,
     cwd: &str,
-    is_coordinator: bool,
+    is_orchestrator: bool,
 ) -> bool {
     if !crate::pty::inject::supports_auto_self_maintenance(shell) {
         return false;
     }
-    let class_default_on = is_coordinator || crate::config::root_agent::is_root_agent_dir_name(cwd);
+    let class_default_on =
+        is_orchestrator || crate::config::root_agent::is_root_agent_dir_name(cwd);
     let agent_name =
         crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(cwd))
             .unwrap_or_default();
@@ -3363,7 +3364,7 @@ pub async fn destroy_session(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoordinatorCloseOutcome {
+pub struct OrchestratorCloseOutcome {
     /// true if the close was performed; false if confirmation is required first.
     pub closed: bool,
     /// number of live, working (not waiting_for_input) team members; only
@@ -3382,19 +3383,19 @@ fn count_working_members(members: &[(bool /*live*/, bool /*waiting_for_input*/)]
         .count()
 }
 
-async fn execute_manual_coordinator_destroy<R: tauri::Runtime>(
+async fn execute_manual_orchestrator_destroy<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    coordinator_id: Uuid,
+    orchestrator_id: Uuid,
     member_ids: Vec<Uuid>,
     cascade: bool,
 ) -> Result<DestroyOutcome, String> {
     let mut planned_ids = if cascade { member_ids } else { Vec::new() };
-    planned_ids.push(coordinator_id);
+    planned_ids.push(orchestrator_id);
     let outcome =
         destroy_sessions_with_source(app, planned_ids, DestructionSource::ManualClose, false)
             .await?;
     for (failed_id, error) in &outcome.failed {
-        if *failed_id != coordinator_id {
+        if *failed_id != orchestrator_id {
             log::warn!(
                 "[manual-close] member destroy {} failed: {}",
                 &failed_id.to_string()[..8],
@@ -3402,7 +3403,7 @@ async fn execute_manual_coordinator_destroy<R: tauri::Runtime>(
             );
         }
     }
-    outcome.clone().into_single_result(coordinator_id)?;
+    outcome.clone().into_single_result(orchestrator_id)?;
     Ok(outcome)
 }
 
@@ -3416,24 +3417,24 @@ pub async fn close_coordinator(
     app: AppHandle,
     id: String,
     confirmed: bool,
-) -> Result<CoordinatorCloseOutcome, String> {
+) -> Result<OrchestratorCloseOutcome, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
 
     // Snapshot coordinator facts BEFORE destroying (destroy removes the record).
-    let (is_coordinator, cwd) = {
+    let (is_orchestrator, cwd) = {
         let mgr = session_mgr.read().await;
         let s = mgr
             .get_session(uuid)
             .await
             .ok_or_else(|| "Session not found".to_string())?;
-        (s.is_coordinator, s.working_directory.clone())
+        (s.is_orchestrator, s.working_directory.clone())
     };
 
     // Defensive: a non-coordinator target is a plain destroy (no marker/cascade).
-    if !is_coordinator {
+    if !is_orchestrator {
         destroy_session_inner(&app, uuid).await?;
-        return Ok(CoordinatorCloseOutcome {
+        return Ok(OrchestratorCloseOutcome {
             closed: true,
             working_count: 0,
         });
@@ -3449,7 +3450,7 @@ pub async fn close_coordinator(
     // guard-bound-then-used-next-line form does NOT compile (the temporary State is
     // dropped at the `;`, so the read guard dangles). `bool` is Copy.
     let settings = app.state::<SettingsState>();
-    let cascade = settings.read().await.coordinator_cascade_close_enabled;
+    let cascade = settings.read().await.orchestrator_cascade_close_enabled;
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
     // LIVE-PTY members of THIS team, excluding the coordinator (decision 1; mirrors
@@ -3489,7 +3490,7 @@ pub async fn close_coordinator(
         }
         let working_count = count_working_members(&member_states);
         if working_count > 0 {
-            return Ok(CoordinatorCloseOutcome {
+            return Ok(OrchestratorCloseOutcome {
                 closed: false,
                 working_count,
             });
@@ -3500,11 +3501,11 @@ pub async fn close_coordinator(
     // planned set is excluded from fallback ranking, member failures are known
     // before the one final manual selection, and no doomed sibling can become an
     // intermediate canonical target.
-    execute_manual_coordinator_destroy(&app, uuid, live_ids, cascade).await?;
+    execute_manual_orchestrator_destroy(&app, uuid, live_ids, cascade).await?;
 
     // Set the manual marker on the coordinator FQN and persist immediately (this
     // command is not on the auto-close tick, so flush_clocks won't run).
-    if let Some(clocks) = app.try_state::<CoordinatorClocksState>() {
+    if let Some(clocks) = app.try_state::<OrchestratorClocksState>() {
         let now = chrono::Utc::now();
         let newly = clocks
             .lock()
@@ -3523,12 +3524,12 @@ pub async fn close_coordinator(
             );
         }
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+        if let Err(e) = crate::config::orchestrator_clocks::save_map(&snapshot) {
             log::warn!("[manual-close] clocks save failed: {}", e);
         }
     }
 
-    Ok(CoordinatorCloseOutcome {
+    Ok(OrchestratorCloseOutcome {
         closed: true,
         working_count: 0,
     })
@@ -3599,10 +3600,10 @@ fn effective_create_skip_auto_resume(requested: Option<bool>) -> bool {
 /// silent inline revert by the `dead_code` lint under CI's `-D warnings`).
 fn mirror_forces_fresh(
     requested_skip_auto_resume: bool,
-    is_coordinator: bool,
+    is_orchestrator: bool,
     mirror_pending: bool,
 ) -> bool {
-    !requested_skip_auto_resume && is_coordinator && mirror_pending
+    !requested_skip_auto_resume && is_orchestrator && mirror_pending
 }
 
 fn effective_restart_requested_profile(
@@ -4863,7 +4864,7 @@ mod tests {
         classify_existing_root, claude_projects_dir_for_config_dir,
         claude_resume_probe_target_for_kind, compute_profile_outdated,
         container_path_context_for_cwd, count_working_members, effective_restart_requested_profile,
-        execute_manual_coordinator_destroy, inject_codex_resume, inject_pi_resume,
+        execute_manual_orchestrator_destroy, inject_codex_resume, inject_pi_resume,
         injected_claude_config_dir_for_copy, maybe_inject_pi_resume,
         pi_has_explicit_session_control, pi_is_non_conversation_invocation, resolve_actual_agent,
         resolve_agent_command, resolve_agent_from_shell, resolve_claude_projects_dir,
@@ -5983,7 +5984,7 @@ mod tests {
         let project = temp.path().join("project");
         let ac_root = project.join(".ac");
         let team = ac_root.join("_team_team");
-        let coordinator_matrix = ac_root.join("_agent_lead");
+        let orchestrator_matrix = ac_root.join("_agent_lead");
         let first_matrix = ac_root.join("_agent_dev-one");
         let second_matrix = ac_root.join("_agent_dev-two");
         let workgroup = ac_root.join("wg-1-team");
@@ -5992,7 +5993,7 @@ mod tests {
         let second = workgroup.join("__agent_dev-two");
         for directory in [
             &team,
-            &coordinator_matrix,
+            &orchestrator_matrix,
             &first_matrix,
             &second_matrix,
             &coordinator,
@@ -6234,7 +6235,7 @@ mod tests {
         receiver
     }
 
-    async fn close_test_coordinator(app: &tauri::App<tauri::test::MockRuntime>) {
+    async fn close_test_orchestrator(app: &tauri::App<tauri::test::MockRuntime>) {
         use tauri::Manager;
 
         app.state::<crate::session::selection::SelectionCoordinator>()
@@ -6335,7 +6336,7 @@ mod tests {
             .await
             .expect("join create")
             .expect("create completes");
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     async fn create_manual_cascade_fixture(
@@ -6356,7 +6357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection() {
+    async fn manual_orchestrator_cascade_barrier_publishes_only_one_final_selection() {
         use tauri::Manager;
 
         let cwd = tempfile::tempdir().unwrap();
@@ -6372,7 +6373,7 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let [external, member_a, member_b, coordinator_id] =
+        let [external, member_a, member_b, orchestrator_id] =
             create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
         app.state::<crate::session::selection::SelectionCoordinator>()
             .transition(crate::session::selection::SelectionRequest::user_switch(
@@ -6384,9 +6385,9 @@ mod tests {
         let close = {
             let app = app.handle().clone();
             tokio::spawn(async move {
-                execute_manual_coordinator_destroy(
+                execute_manual_orchestrator_destroy(
                     &app,
-                    coordinator_id,
+                    orchestrator_id,
                     vec![member_a, member_b],
                     true,
                 )
@@ -6408,7 +6409,7 @@ mod tests {
             .expect("cascade succeeds");
         assert_eq!(
             outcome.destroyed_ids,
-            vec![member_a, member_b, coordinator_id]
+            vec![member_a, member_b, orchestrator_id]
         );
         let selection = session_mgr.read().await.selection_payload().await;
         assert_eq!(selection.id(), Some(external));
@@ -6434,11 +6435,11 @@ mod tests {
             ]
         );
         assert!(events.try_recv().is_err());
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
-    async fn manual_coordinator_cascade_failed_selected_member_stays_selected_without_fallback() {
+    async fn manual_orchestrator_cascade_failed_selected_member_stays_selected_without_fallback() {
         use tauri::Manager;
 
         let cwd = tempfile::tempdir().unwrap();
@@ -6454,7 +6455,7 @@ mod tests {
             Arc::clone(&session_mgr),
             Arc::clone(&pty_mgr),
         );
-        let [_external, member_a, member_b, coordinator_id] =
+        let [_external, member_a, member_b, orchestrator_id] =
             create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
         app.state::<crate::session::selection::SelectionCoordinator>()
             .transition(crate::session::selection::SelectionRequest::user_switch(
@@ -6473,9 +6474,9 @@ mod tests {
         let close = {
             let app = app.handle().clone();
             tokio::spawn(async move {
-                execute_manual_coordinator_destroy(
+                execute_manual_orchestrator_destroy(
                     &app,
-                    coordinator_id,
+                    orchestrator_id,
                     vec![member_a, member_b],
                     true,
                 )
@@ -6494,7 +6495,7 @@ mod tests {
             .iter()
             .any(|(session_id, error)| *session_id == member_a
                 && error.contains("synthetic live teardown failure")));
-        assert_eq!(outcome.destroyed_ids, vec![member_b, coordinator_id]);
+        assert_eq!(outcome.destroyed_ids, vec![member_b, orchestrator_id]);
         assert!(session_mgr
             .read()
             .await
@@ -6514,7 +6515,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(observed, vec!["session_destroyed", "session_destroyed"]);
         assert!(events.try_recv().is_err());
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -6598,7 +6599,7 @@ mod tests {
         assert_eq!(selection_payload["id"], replacement.id);
         assert_eq!(selection_payload["source"], "restart");
         assert_eq!(selection_payload["userInitiated"], true);
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -6656,7 +6657,7 @@ mod tests {
         let rows = session_mgr.read().await.list_sessions().await;
         assert_eq!(rows.len(), 1, "old row replaced, not duplicated");
         assert_eq!(rows[0].id, replacement.id);
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -6759,7 +6760,7 @@ mod tests {
             "the nested-project session row must exist"
         );
         let _ = temp;
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     /// #1535 S2: a nested project with its OWN replica (a) does not race
@@ -6825,7 +6826,7 @@ mod tests {
         .expect_err("the nested replica's own duplicate must still gate");
         assert_eq!(err, "sessionRace");
         let _ = (temp, nested_origin);
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -6944,7 +6945,7 @@ mod tests {
             vec!["session_created", "session_destroyed", "session_switched"]
         );
         assert!(events.try_recv().is_err());
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -6996,7 +6997,7 @@ mod tests {
             Some(old_id)
         );
         assert!(events.try_recv().is_err());
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -7060,7 +7061,7 @@ mod tests {
         let selection_payload: serde_json::Value = serde_json::from_str(&switched.1).unwrap();
         assert!(selection_payload["id"].is_null());
         assert_eq!(selection_payload["source"], "restart");
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -7116,7 +7117,7 @@ mod tests {
         assert_eq!(selection.id(), Some(old_id));
         assert_eq!(selection.status(), Some(&SessionStatus::Exited(23)));
         assert!(events.try_recv().is_err());
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[tokio::test]
@@ -7346,7 +7347,7 @@ mod tests {
                 "startup restore must not depend on the specialized PTY store: {restored:?}"
             );
             assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
-            close_test_coordinator(&app).await;
+            close_test_orchestrator(&app).await;
         }
     }
 
@@ -7723,7 +7724,7 @@ mod tests {
     //     while a resume rotates. Recorded in the issue.
     //   - A cross-file CALL added in `lib.rs` before the restore at `:2350` is
     //     invisible to every assertion here and to both behavioral tests below.
-    //   - `skip_auto_resume |= is_coordinator;` inserted immediately above the
+    //   - `skip_auto_resume |= is_orchestrator;` inserted immediately above the
     //     binding leaves ALL FIVE assertions and BOTH behavioral tests green while
     //     a coordinator resume rotates. Measured; plan 2.8.
     //
@@ -7952,7 +7953,7 @@ mod tests {
         // Boundary 2: the fresh side rotated, and the resume side is STILL untouched.
         assert_memory_rotated_once(&fresh, "fresh create");
         assert_resume_left_memory_alone(&resumed, "restore, rechecked after the fresh launch");
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     /// #1175 B2. The same function twice with matched arguments and the same
@@ -7975,7 +7976,7 @@ mod tests {
     /// seeded, non-empty `memory/` to observe.
     ///
     /// Its resume half uses the same `false` polarity as the #599 reopen of a
-    /// closed coordinator, but it is NOT that scenario: `is_coordinator` is
+    /// closed coordinator, but it is NOT that scenario: `is_orchestrator` is
     /// deterministically false for every cwd in this binary, and the Tauri
     /// `create_session` producer is bypassed. Plan D5 records coordinator polarity
     /// and outer composition as untested.
@@ -8050,7 +8051,7 @@ mod tests {
         // Boundary 2.
         assert_resume_left_memory_alone(&resumed, "reopen that resumes");
         assert_memory_rotated_once(&fresh, "fresh side, rechecked after the resume");
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     #[test]
@@ -8495,7 +8496,7 @@ mod tests {
             agent_label: None,
             git_repos: Vec::new(),
             workgroup_task: None,
-            is_coordinator: false,
+            is_orchestrator: false,
             is_root_agent: false,
             token: "t".to_string(),
             agent_kind: None,
@@ -10125,7 +10126,7 @@ mod tests {
             0,
             "rejected create leaves zero residue"
         );
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
 
         // Registered existing root with Enforce -> Ok and a row is created.
         let project_root = temp.path().join("project");
@@ -10184,7 +10185,7 @@ mod tests {
             1,
             "row created"
         );
-        close_test_coordinator(&app2).await;
+        close_test_orchestrator(&app2).await;
     }
 
     /// Test 14 (B2/N4b): restart of a LIVE outside-roots session DECLINES before
@@ -10253,7 +10254,7 @@ mod tests {
             1,
             "no replacement spawn"
         );
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     /// Test 15 (N4d): the restore-wake gate exempts root-agent and archived-root
@@ -10281,7 +10282,7 @@ mod tests {
                 .is_ok(),
             "root-agent cwd is gate-exempt"
         );
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
 
         // Archived-root cwd: allowed with existence waived.
         let archived_dir = tempfile::tempdir().unwrap();
@@ -10311,7 +10312,7 @@ mod tests {
             .is_ok(),
             "archived-root restore-wake is gate-exempt"
         );
-        close_test_coordinator(&app2).await;
+        close_test_orchestrator(&app2).await;
 
         // Outside-roots cwd: refused.
         let session_mgr3 = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -10329,7 +10330,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("sessionCreateBlocked"), "{err}");
-        close_test_coordinator(&app3).await;
+        close_test_orchestrator(&app3).await;
     }
 
     /// Test 16 (S5/N4): the Tauri `create_session` command with `cwd: None`
@@ -10387,7 +10388,7 @@ mod tests {
         .await
         .expect("create with home default succeeds in the test build");
         assert_eq!(session_mgr.read().await.list_sessions().await.len(), 1);
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     // --- #1271 configured default-shell propagation --------------------------
@@ -10535,7 +10536,7 @@ mod tests {
             );
             assert_eq!(host.args, vec!["-NoProfile".to_string()]);
         }
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     /// #1271 - the observable session metadata seam (`set_pending_effective_shell_args`,
@@ -10634,7 +10635,7 @@ mod tests {
                 "host-shell args travel only in the paired snapshot"
             );
         }
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 
     /// #1271 - native twin of the web invalid-input postcondition test: the
@@ -10754,6 +10755,6 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        close_test_coordinator(&app).await;
+        close_test_orchestrator(&app).await;
     }
 }

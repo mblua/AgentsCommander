@@ -19,7 +19,7 @@ use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
 };
 use crate::config::settings::{AppSettings, SettingsState};
-use crate::pty::git_watcher::{CoordinatorChangedPayload, GitWatcher};
+use crate::pty::git_watcher::{GitWatcher, OrchestratorChangedPayload};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionRepo, SessionStatus};
 
@@ -55,8 +55,8 @@ pub struct RepoAssignment {
 pub struct TeamConfigResult {
     #[serde(default)]
     pub agents: Vec<String>,
-    #[serde(default)]
-    pub coordinator: String,
+    #[serde(default, rename = "coordinator")]
+    pub orchestrator: String,
     #[serde(default)]
     pub repos: Vec<RepoAssignment>,
     #[serde(default)]
@@ -101,7 +101,7 @@ pub(crate) struct WorkgroupDiskCreateArgs {
     pub task_title: String,
     // Legacy provisioning path. Ordinary callers should pass None and empty
     // vectors so workgroup creation activates an existing team config.
-    pub coordinator: Option<String>,
+    pub orchestrator: Option<String>,
     pub agents: Vec<String>,
     pub repos: Vec<RepoAssignment>,
 }
@@ -1020,12 +1020,12 @@ pub(crate) fn normalize_team_config_for_project(
     config: &TeamConfigResult,
 ) -> Result<TeamConfigResult, String> {
     let agents = normalize_team_agent_refs(ac_root, &config.agents)?;
-    let coordinator = if config.coordinator.trim().is_empty() {
+    let orchestrator = if config.orchestrator.trim().is_empty() {
         String::new()
     } else {
-        resolve_agent_ref(ac_root, &config.coordinator)?
+        resolve_agent_ref(ac_root, &config.orchestrator)?
     };
-    if !coordinator.is_empty() && !agents.contains(&coordinator) {
+    if !orchestrator.is_empty() && !agents.contains(&orchestrator) {
         return Err("Orchestrator must be one of the selected agents".to_string());
     }
     let mut repos = Vec::with_capacity(config.repos.len());
@@ -1039,7 +1039,7 @@ pub(crate) fn normalize_team_config_for_project(
         normalize_context_alert_percentages(&config.context_alert_percentages)?;
     Ok(TeamConfigResult {
         agents,
-        coordinator,
+        orchestrator,
         repos,
         context_alert_percentages,
     })
@@ -1154,16 +1154,16 @@ pub(crate) async fn create_workgroup_on_disk(
     }
 
     let team_config =
-        if !args.agents.is_empty() || args.coordinator.is_some() || !args.repos.is_empty() {
-            let coordinator = args.coordinator.clone().ok_or_else(|| {
+        if !args.agents.is_empty() || args.orchestrator.is_some() || !args.repos.is_empty() {
+            let orchestrator = args.orchestrator.clone().ok_or_else(|| {
                 "Orchestrator is required when provisioning team config".to_string()
             })?;
-            if !args.agents.contains(&coordinator) {
+            if !args.agents.contains(&orchestrator) {
                 return Err("Orchestrator must be one of the selected agents".to_string());
             }
             let config = TeamConfigResult {
                 agents: args.agents.clone(),
-                coordinator,
+                orchestrator,
                 repos: args.repos.clone(),
                 context_alert_percentages: Vec::new(),
             };
@@ -1640,7 +1640,7 @@ where
             if settings_changed {
                 let _ = app.emit("coding_agent_profiles_updated", serde_json::json!({}));
             }
-            emit_coordinator_refresh(app, session_mgr).await;
+            emit_orchestrator_refresh(app, session_mgr).await;
             Ok(())
         }
         AgentDeleteTransactionOutcome::Blocked { target, raw_error } => {
@@ -2197,7 +2197,7 @@ fn collect_agent_team_mutations_raw(
     }
     team_dirs.sort();
 
-    let mut coordinator_blockers = Vec::new();
+    let mut orchestrator_blockers = Vec::new();
     let mut mutations = Vec::new();
     for team_dir in team_dirs {
         let dir_name = team_dir
@@ -2237,10 +2237,10 @@ fn collect_agent_team_mutations_raw(
 
         if value
             .get("coordinator")
-            .and_then(|coordinator| coordinator.as_str())
-            .is_some_and(|coordinator| agent_ref_matches_target(coordinator, agent_name))
+            .and_then(|orchestrator| orchestrator.as_str())
+            .is_some_and(|orchestrator| agent_ref_matches_target(orchestrator, agent_name))
         {
-            coordinator_blockers.push(team_name.to_string());
+            orchestrator_blockers.push(team_name.to_string());
         }
 
         let mut changed = false;
@@ -2304,12 +2304,12 @@ fn collect_agent_team_mutations_raw(
         }
     }
 
-    if !coordinator_blockers.is_empty() {
-        coordinator_blockers.sort();
+    if !orchestrator_blockers.is_empty() {
+        orchestrator_blockers.sort();
         return Err(format!(
             "Cannot delete agent '{}': orchestrator of team(s): {}. Reassign the orchestrator first.",
             agent_name,
-            coordinator_blockers.join(", ")
+            orchestrator_blockers.join(", ")
         ));
     }
 
@@ -2798,7 +2798,7 @@ pub async fn create_team(
 
     let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&team_dir);
     log::info!("[entity_creation] Created team: {}", result_path);
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    emit_orchestrator_refresh(&app, session_mgr.inner()).await;
     Ok(CreatedEntityResult { path: result_path })
 }
 
@@ -2933,7 +2933,7 @@ pub async fn create_workgroup(
         result_path,
         clone_errors.len()
     );
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    emit_orchestrator_refresh(&app, session_mgr.inner()).await;
     Ok(WorkgroupCloneResult {
         path: result_path,
         clone_errors,
@@ -3122,7 +3122,7 @@ where
     let mut team_clock_removed = 0usize;
     if let Some(project_name) = Path::new(project_path).file_name().and_then(|n| n.to_str()) {
         if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
         {
             for wg_name in &report.removed_workgroups {
                 team_clock_removed += clocks
@@ -3134,15 +3134,15 @@ where
     }
     if team_clock_removed > 0 {
         if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
         {
             let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
-            if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+            if let Err(e) = crate::config::orchestrator_clocks::save_map(&snapshot) {
                 log::warn!("[delete-team] clocks save failed: {}", e);
             }
         }
     }
-    emit_coordinator_refresh(app, session_mgr).await;
+    emit_orchestrator_refresh(app, session_mgr).await;
     Ok(())
 }
 
@@ -3243,16 +3243,16 @@ pub async fn delete_workgroup(
         outcome,
     )
     .await?;
-    // (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
+    // (#621) Drop the workgroup's orchestrator_clocks keys from the in-memory store
     // and persist immediately (this command is not on the auto-close flush tick).
     if let Some(project_name) = Path::new(&project_path)
         .file_name()
         .and_then(|n| n.to_str())
     {
         if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
+            app.try_state::<crate::config::orchestrator_clocks::OrchestratorClocksState>()
         {
-            crate::config::coordinator_clocks::remove_workgroup_in_state(
+            crate::config::orchestrator_clocks::remove_workgroup_in_state(
                 clocks.inner(),
                 project_name,
                 &workgroup_name,
@@ -3264,7 +3264,7 @@ pub async fn delete_workgroup(
         workgroup_name,
         force.unwrap_or(false)
     );
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    emit_orchestrator_refresh(&app, session_mgr.inner()).await;
     Ok(())
 }
 
@@ -3417,7 +3417,7 @@ pub async fn update_team(
     }
 
     // Refresh coordinator flags — a team edit can add/remove the coordinator or change its target.
-    emit_coordinator_refresh(&app, session_mgr.inner()).await;
+    emit_orchestrator_refresh(&app, session_mgr.inner()).await;
 
     Ok(())
 }
@@ -3655,23 +3655,23 @@ async fn sync_workgroup_repos_inner(
     Ok(result)
 }
 
-/// Refresh `is_coordinator` on every live session and emit `session_coordinator_changed`
+/// Refresh `is_orchestrator` on every live session and emit `session_coordinator_changed`
 /// for those whose flag flipped. Called by team-CRUD commands (§2).
-pub(crate) async fn emit_coordinator_refresh(
+pub(crate) async fn emit_orchestrator_refresh(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) {
     let teams = crate::config::teams::discover_teams();
     let changes = {
         let mgr = session_mgr.read().await;
-        mgr.refresh_coordinator_flags(&teams).await
+        mgr.refresh_orchestrator_flags(&teams).await
     };
     for (id, is_coord) in changes {
         let _ = app.emit(
             "session_coordinator_changed",
-            CoordinatorChangedPayload {
+            OrchestratorChangedPayload {
                 session_id: id.to_string(),
-                is_coordinator: is_coord,
+                is_orchestrator: is_coord,
             },
         );
     }
@@ -4461,7 +4461,7 @@ mod tests {
 
         let config = TeamConfigResult {
             agents: vec!["_agent_tech-lead".into(), "_agent_dev-rust".into()],
-            coordinator: "_agent_tech-lead".into(),
+            orchestrator: "_agent_tech-lead".into(),
             repos: vec![],
             context_alert_percentages: vec![],
         };
@@ -4478,12 +4478,12 @@ mod tests {
         )
         .expect("the privileged validator must accept the bytes the writer produced");
 
-        let without_coordinator = TeamConfigResult {
+        let without_orchestrator = TeamConfigResult {
             agents: vec!["_agent_dev-rust".into()],
             ..config
         };
         assert_eq!(
-            normalized_team_config_bytes(&ac_root, &without_coordinator).unwrap_err(),
+            normalized_team_config_bytes(&ac_root, &without_orchestrator).unwrap_err(),
             "Orchestrator must be one of the selected agents"
         );
     }
@@ -4772,7 +4772,7 @@ mod tests {
                 "_agent_dev-rust".to_string(),
                 "architect".to_string(),
             ],
-            coordinator: "_agent_architect".to_string(),
+            orchestrator: "_agent_architect".to_string(),
             repos: vec![RepoAssignment {
                 url: "https://example.test/repo.git".to_string(),
                 agents: vec!["architect".to_string(), "_agent_dev-rust".to_string()],
@@ -4789,7 +4789,7 @@ mod tests {
                 "_agent_dev-rust".to_string()
             ]
         );
-        assert_eq!(normalized.coordinator, "_agent_architect");
+        assert_eq!(normalized.orchestrator, "_agent_architect");
         assert_eq!(
             normalized.repos[0].agents,
             vec![
@@ -4820,7 +4820,7 @@ mod tests {
                 .join("_agent_architect")
                 .to_string_lossy()
                 .to_string()],
-            coordinator: "_agent_architect".to_string(),
+            orchestrator: "_agent_architect".to_string(),
             repos: Vec::new(),
             context_alert_percentages: Vec::new(),
         };
@@ -4834,7 +4834,7 @@ mod tests {
 
         let windows_config = TeamConfigResult {
             agents: vec![r"C:\Users\maria\project\.ac\_agent_architect".to_string()],
-            coordinator: "_agent_architect".to_string(),
+            orchestrator: "_agent_architect".to_string(),
             repos: Vec::new(),
             context_alert_percentages: Vec::new(),
         };
@@ -5282,7 +5282,7 @@ mod tests {
     fn empty_team_config(context_alert_percentages: Vec<u8>) -> TeamConfigResult {
         TeamConfigResult {
             agents: Vec::new(),
-            coordinator: String::new(),
+            orchestrator: String::new(),
             repos: Vec::new(),
             context_alert_percentages,
         }
@@ -5756,7 +5756,7 @@ mod tests {
         create_test_agent(&base, "beta", "Beta");
         let initial = TeamConfigResult {
             agents: vec!["_agent_alpha".to_string()],
-            coordinator: "_agent_alpha".to_string(),
+            orchestrator: "_agent_alpha".to_string(),
             repos: Vec::new(),
             context_alert_percentages: vec![90, 50],
         };
@@ -6355,7 +6355,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_agent_coordinator_blocks_and_touches_nothing() {
+    fn delete_agent_orchestrator_blocks_and_touches_nothing() {
         let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
@@ -6378,7 +6378,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn delete_agent_case_mismatched_coordinator_blocks_on_windows() {
+    fn delete_agent_case_mismatched_orchestrator_blocks_on_windows() {
         let tmp = create_test_ac_root();
         let base = test_base(&tmp);
         let agent_dir = create_test_agent(&base, "DevRust", "Dev Rust");
@@ -7503,7 +7503,7 @@ mod tests {
 
     #[test]
     fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
-        use crate::config::coordinator_clocks::CoordinatorClocks;
+        use crate::config::orchestrator_clocks::OrchestratorClocks;
         use crate::config::session_context::sweep_context_cache_dir;
         use std::time::{Duration, SystemTime};
 
@@ -7519,7 +7519,7 @@ mod tests {
         std::fs::create_dir_all(&wg2).unwrap();
 
         // Seed clocks: target wg, sibling wg, origin agent.
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("Proj:wg-1-team/coord", ts);
         clocks.note_user_message("Proj:wg-2-team/coord", ts);
         clocks.seed_if_absent("Proj/architect", ts);
@@ -7575,10 +7575,10 @@ mod tests {
         // (#621 LOW-3b) delete_team loops its wg-N-<team> dirs; each removal drops that
         // wg's keys. A non-team wg and an origin agent survive. Mirrors the §3.3 loop's
         // per-wg `remove_workgroup` over multiple wgs (accumulator semantics).
-        use crate::config::coordinator_clocks::CoordinatorClocks;
+        use crate::config::orchestrator_clocks::OrchestratorClocks;
         let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
 
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         for k in [
             "Proj:wg-1-squad/coord",
             "Proj:wg-2-squad/coord",
@@ -7615,13 +7615,13 @@ mod tests {
         // (#621 LOW-3c) the clock cleanup is gated on a SUCCESSFUL dir delete (delete_workgroup
         // via `?` early-return; delete_team via the `else` success branch). Force a failed
         // remove and assert, applying that exact gate, that the key survives.
-        use crate::config::coordinator_clocks::CoordinatorClocks;
+        use crate::config::orchestrator_clocks::OrchestratorClocks;
         let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
 
         let tmp = tempfile::tempdir().expect("temp dir");
         let wg = tmp.path().join("wg-1-team");
         std::fs::create_dir_all(&wg).unwrap();
-        let mut clocks = CoordinatorClocks::default();
+        let mut clocks = OrchestratorClocks::default();
         clocks.note_user_message("Proj:wg-1-team/coord", ts);
 
         // Force the remove step to fail (rename succeeds, remove_dir_all errors -> Partial).

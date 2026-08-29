@@ -1458,7 +1458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_coordinator_rejects_user_resource_kill_before_any_side_effect() {
+    async fn full_orchestrator_rejects_user_resource_kill_before_any_side_effect() {
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let session = manager
             .read()
@@ -1679,7 +1679,7 @@ mod tests {
     // exactly as before: the transaction runs, the session finalizes once, and the
     // registry-only orphan path is never entered.
     #[tokio::test]
-    async fn live_public_session_still_uses_coordinator() {
+    async fn live_public_session_still_uses_orchestrator() {
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let session = manager
             .read()
@@ -1762,7 +1762,7 @@ mod tests {
     // implementation that keyed the orphan decision on "the PTY is gone" rather than "the
     // session row is gone" would silently divert this working path onto the new one.
     #[tokio::test]
-    async fn exited_row_still_uses_coordinator() {
+    async fn exited_row_still_uses_orchestrator() {
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let session = manager
             .read()
