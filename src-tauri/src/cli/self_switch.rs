@@ -44,7 +44,7 @@ or AC peer name. Use --list-coding-agents to print valid ids and profile letters
 sending a switch request. If the id is unknown, the daemon rejection lists configured ids.\n\n\
 Omitting both --coding-agent and --profile is allowed. It hard-resets the live running recipe \
 by respawning the same coding agent/profile fresh and then injecting the handoff prompt.\n\n\
-SCOPE: WG replicas only (__agent_* under a wg-* workgroup). Root Agent and origin matrix agents \
+SCOPE: Room replicas only (__agent_* under a room-* or legacy wg-* room). Root Agent and origin matrix agents \
 are rejected in v1.")]
 pub struct SelfSwitchArgs {
     /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;

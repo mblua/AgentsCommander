@@ -145,8 +145,8 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     mockState.sessions.alwaysShowSelectedWorkgroup = true;
     const { dispose, pinButton } = renderActionBar();
 
-    expect(pinButton.title).toBe("Always keep selected workgroup visible");
-    expect(pinButton.getAttribute("aria-label")).toBe("Always keep selected workgroup visible");
+    expect(pinButton.title).toBe("Always keep selected room visible");
+    expect(pinButton.getAttribute("aria-label")).toBe("Always keep selected room visible");
     expect(pinButton.getAttribute("aria-pressed")).toBe("true");
     expect(pinButton.getAttribute("data-ac-state")).toBe("pinned");
     expect(pinButton.title).not.toContain("Don't force");
@@ -158,8 +158,8 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     mockState.sessions.alwaysShowSelectedWorkgroup = false;
     const { dispose, pinButton } = renderActionBar();
 
-    expect(pinButton.title).toBe("Always keep selected workgroup visible");
-    expect(pinButton.getAttribute("aria-label")).toBe("Always keep selected workgroup visible");
+    expect(pinButton.title).toBe("Always keep selected room visible");
+    expect(pinButton.getAttribute("aria-label")).toBe("Always keep selected room visible");
     expect(pinButton.getAttribute("aria-pressed")).toBe("false");
     expect(pinButton.getAttribute("data-ac-state")).toBe("default");
     expect(pinButton.title).not.toContain("Don't force");

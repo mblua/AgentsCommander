@@ -800,7 +800,7 @@ describe("AgentPickerModal", () => {
 
     const targets = target("agentPicker.targets");
     expect(targets).toBeTruthy();
-    expect(text("agentPicker.targets")).toContain("3 replica(s) across 3 workgroup(s)");
+    expect(text("agentPicker.targets")).toContain("3 replica(s) across 3 room(s)");
     expect(text("agentPicker.targets")).toContain("3 live session(s)");
     // A replica with two live sessions is surfaced per-row.
     const rows = targets.querySelectorAll('[data-ac-role="row"]');

@@ -66,7 +66,7 @@ pub async fn deliver_loop_prompt(
             return LoopDeliveryReport {
                 kind: LoopAuditKind::SkippedBusy,
                 message: format!(
-                    "purge-wg in progress for '{}'; loop delivery skipped",
+                    "purge-room in progress for '{}'; loop delivery skipped",
                     target_fqn
                 ),
                 target: Some(target_fqn),

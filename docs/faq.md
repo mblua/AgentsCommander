@@ -32,7 +32,7 @@ Yes — that is what [portable instances](features/portable-instances.md) are fo
 
 ## How do agents coordinate?
 
-Through plain markdown files in `<workgroup-root>/messaging/`. The sender writes a file; the CLI injects a short notification into the recipient's PTY; the recipient reads the file from disk. See [Inter-agent messaging](agents/inter-agent-messaging.md).
+Through plain markdown files in `<room-root>/messaging/`. The sender writes a file; the CLI injects a short notification into the recipient's PTY; the recipient reads the file from disk. See [Inter-agent messaging](agents/inter-agent-messaging.md).
 
 ## Why files instead of a database?
 

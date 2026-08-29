@@ -93,4 +93,4 @@ See [Settings reference](../reference/settings.md#window--ui) for the group this
 
 - [App windows](app-windows.md) - the other windows AC opens beside the main one
 - [Settings reference](../reference/settings.md#window--ui) - `specBoardEnabled` and its neighbours
-- [Concepts](../concepts.md) - sessions, workgroups, and the vocabulary this page uses
+- [Concepts](../concepts.md) - sessions, rooms, and the vocabulary this page uses

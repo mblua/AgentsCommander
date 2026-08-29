@@ -1,6 +1,6 @@
 # The AgentsCommander RTK hook for Claude Code
 
-For operators who want to know what a Claude Code agent actually ran, not what it reported. AgentsCommander seeds three hooks into every workgroup replica: a `PreToolUse` hook for the `Bash` tool, a `PreToolUse` hook for the `PowerShell` tool, and a third registered on both `PreToolUse` and `PostToolUse` for the six native file tools. After this page you can read the two files they produce and say which shell command landed in which one, from which shell and why, and which native-tool call is recorded in the database.
+For operators who want to know what a Claude Code agent actually ran, not what it reported. AgentsCommander seeds three hooks into every room replica: a `PreToolUse` hook for the `Bash` tool, a `PreToolUse` hook for the `PowerShell` tool, and a third registered on both `PreToolUse` and `PostToolUse` for the six native file tools. After this page you can read the two files they produce and say which shell command landed in which one, from which shell and why, and which native-tool call is recorded in the database.
 
 The hooks, the module two of them share, their registration and the status line are copied into this directory so you can review them without opening a replica:
 
@@ -15,15 +15,15 @@ All six are faithful copies of `<workspace>/.ac/default.claude/`, the seed AC in
 
 ## What the hooks are and where they land
 
-AC seeds `.ac/default.claude/` into each workgroup replica when it creates the replica. A replica ends up with:
+AC seeds `.ac/default.claude/` into each room replica when it creates the replica. A replica ends up with:
 
 ```text
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_Bash.js
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_PowerShell.js
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_Tools.js
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/hooks/ac_rtk_shared.js
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/settings.local.json
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.claude/statusline.sh
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_Bash.js
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_PowerShell.js
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/hooks/ac_rtk_claude_Tools.js
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/hooks/ac_rtk_shared.js
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/settings.local.json
+<workspace>/.ac/<room-N-name>/__agent_<name>/.claude/statusline.sh
 ```
 
 `settings.local.json` registers all three hooks across two events, and the whole registration is this:
@@ -310,7 +310,7 @@ The `exec 2> >(grep ...)` line the Bash hook prepends to every rewrite silences 
 
 ## `rtk-ignored-tools-claude.md`
 
-### Only workgroup replicas write it
+### Only room replicas write it
 
 Each hook derives the target from its own location: two levels up from `.claude/hooks/` is the replica root, and the Matrix folder is the replica's name with one leading underscore dropped, so `__agent_foo` writes to `_agent_foo`.
 

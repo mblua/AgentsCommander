@@ -417,7 +417,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 .try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
                 .is_some_and(|guard| guard.blocks_session(uuid))
             {
-                return Err("purge-wg in progress for this session; input rejected".to_string());
+                return Err("purge-room in progress for this session; input rejected".to_string());
             }
             crate::pty::manager::PtyManager::write_with_permit(&permit, &data)
                 .map_err(|error| error.to_string())?;

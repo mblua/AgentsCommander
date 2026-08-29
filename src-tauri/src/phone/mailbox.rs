@@ -113,7 +113,7 @@ impl InternalSystemTarget {
         let layout = crate::config::ac_root::wg_replica_layout_from_agent_dir(&canonical)?
             .ok_or_else(|| {
                 format!(
-                    "Internal system target replica '{}' is not a canonical workgroup replica",
+                    "Internal system target replica '{}' is not a canonical room replica",
                     canonical.display()
                 )
             })?;
@@ -309,7 +309,7 @@ fn canonical_cwd_owned_by_replica(cwd: &str, replica_dir: &Path) -> Result<bool,
     };
     for (path, label) in [
         (lexical_replica, "replica"),
-        (lexical_workgroup, "workgroup"),
+        (lexical_workgroup, "room"),
         (lexical_ac_root, "Project AC Root"),
     ] {
         let metadata = std::fs::symlink_metadata(path).map_err(|error| {
@@ -379,7 +379,7 @@ fn inline_body_from_file_notification(
     }
 
     let wg_root = crate::phone::messaging::workgroup_root(sender_root)
-        .map_err(|e| format!("sender workgroup could not be resolved: {}", e))?;
+        .map_err(|e| format!("sender room could not be resolved: {}", e))?;
     let allowed_messaging_dir = crate::phone::messaging::messaging_dir(&wg_root)
         .map_err(|e| format!("sender messaging directory could not be resolved: {}", e))?;
     let canon_allowed = std::fs::canonicalize(&allowed_messaging_dir)
@@ -665,7 +665,7 @@ fn validate_root_sender_route(
     }
 
     if crate::config::teams::verified_wg_coordinator_target(to, project_paths).is_none() {
-        return Err("Root Agent can only message verified WG orchestrator replicas");
+        return Err("Root Agent can only message verified Room orchestrator replicas");
     }
 
     Ok(())
@@ -676,7 +676,7 @@ fn validate_coordinator_to_root_route(
     project_paths: &[String],
 ) -> Result<(), &'static str> {
     if crate::config::teams::verified_wg_coordinator_target(from, project_paths).is_none() {
-        return Err("Only verified WG orchestrator replicas may message the Root Agent");
+        return Err("Only verified Room orchestrator replicas may message the Root Agent");
     }
     Ok(())
 }
@@ -1408,13 +1408,13 @@ fn resolve_switch_targets(
 fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result<PathBuf, String> {
     let name = cwd.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
         format!(
-            "self-handoff-and-switch is only supported from a WG replica (__agent_* under wg-*); '{}' has no valid final path component",
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); '{}' has no valid final path component",
             cwd.display()
         )
     })?;
     if !name.starts_with("__agent_") {
         return Err(format!(
-            "self-handoff-and-switch is only supported from a WG replica (__agent_* under wg-*); got '{}'",
+            "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* or legacy wg-*); got '{}'",
             cwd.display()
         ));
     }
@@ -1422,7 +1422,7 @@ fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result
         crate::config::coding_agent_profiles::validate_profile_selection_agent_path(settings, cwd)
             .map_err(|e| {
                 format!(
-                    "self-handoff-and-switch is only supported from a configured WG replica: {}",
+                    "self-handoff-and-switch is only supported from a configured Room replica: {}",
                     e
                 )
             })?;
@@ -1433,7 +1433,7 @@ fn validate_self_switch_wg_replica(settings: &AppSettings, cwd: &Path) -> Result
         .unwrap_or("");
     if !validated_name.starts_with("__agent_") {
         return Err(format!(
-            "self-handoff-and-switch is only supported from a WG replica; validated target was '{}'",
+            "self-handoff-and-switch is only supported from a Room replica; validated target was '{}'",
             validated.launch_path.display()
         ));
     }
@@ -2154,7 +2154,7 @@ fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
 fn resolve_wg_path_from_session_dirs(dirs: &[(Uuid, String)], agent_name: &str) -> Option<String> {
     let (target_project, local) = crate::config::teams::split_project_prefix(agent_name);
     let (wg_name, agent_short) = local.split_once('/')?;
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return None;
     }
 
@@ -6842,7 +6842,7 @@ impl MailboxPoller {
         if msg.action.as_deref() == Some(PURGE_WG_ACTION) {
             if !saw_session_token {
                 return self
-                    .reject_message(path, &msg, "purge-wg requires a session token")
+                    .reject_message(path, &msg, "purge-room requires a session token")
                     .await;
             }
             return self.handle_purge_wg(app, path, &msg, is_app_outbox).await;
@@ -7082,7 +7082,7 @@ impl MailboxPoller {
         {
             if g.blocks_agent(&msg.to) {
                 return Err(format!(
-                    "purge-wg in progress for '{}'; wake deferred",
+                    "purge-room in progress for '{}'; wake deferred",
                     msg.to
                 ));
             }
@@ -7474,7 +7474,7 @@ impl MailboxPoller {
         if let Some(purge) = app.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>() {
             if purge.blocks_agent(target.fqn()) {
                 return Err(format!(
-                    "purge-wg in progress for '{}'; context alert deferred",
+                    "purge-room in progress for '{}'; context alert deferred",
                     target.fqn()
                 ));
             }
@@ -9416,7 +9416,7 @@ impl MailboxPoller {
         // 1. Identity gate — already enforced by the caller (§5.5b).
         debug_assert!(
             msg.token.is_some(),
-            "purge-wg requires a session token; caller must enforce"
+            "purge-room requires a session token; caller must enforce"
         );
 
         // 2. Resolve WG scope and authorization, one call (§3.6).
@@ -9444,24 +9444,23 @@ impl MailboxPoller {
             }
             paths
         };
-        let wg = match crate::config::teams::verified_wg_coordinator_target(
-            &msg.from,
-            &effective_paths,
-        ) {
-            Some(wg) => wg,
-            None => {
-                return self
+        let wg =
+            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
+            {
+                Some(wg) => wg,
+                None => {
+                    return self
                         .reject_message(
                             path,
                             msg,
                             &format!(
-                            "Not authorized: '{}' is not the verified orchestrator of its workgroup",
-                            msg.from
-                        ),
+                                "Not authorized: '{}' is not the verified orchestrator of its room",
+                                msg.from
+                            ),
                         )
                         .await;
-            }
-        };
+                }
+            };
 
         // 3. --wg assertion (§3.6: interlock, not selector).
         if let Some(ref t) = msg.target {
@@ -9471,7 +9470,7 @@ impl MailboxPoller {
                         path,
                         msg,
                         &format!(
-                            "purge-wg: --wg assertion '{}' does not match resolved workgroup '{}'",
+                            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
                             t, wg.wg_name
                         ),
                     )
@@ -9485,7 +9484,7 @@ impl MailboxPoller {
             Some(d) => d,
             None => {
                 return self
-                    .reject_message(path, msg, "purge-wg: cannot resolve WG directory")
+                    .reject_message(path, msg, "purge-room: cannot resolve Room directory")
                     .await;
             }
         };
@@ -11203,7 +11202,7 @@ impl MailboxPoller {
         // project filter. §DR2-4 composition: push + break within a single `rp`
         // (an FQN matches at most one replica dir per project) but continue the
         // outer loop so ambiguity across projects is detected.
-        if target_local.starts_with("wg-") {
+        if crate::config::entity_prefix::has_entity_prefix(target_local) {
             if let Some((wg_name, agent_short)) = target_local.split_once('/') {
                 let replica_dir = format!("__agent_{}", agent_short);
 
@@ -15697,7 +15696,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a/tech-lead", &paths, false, true, true),
-            Err("Root Agent can only message verified WG orchestrator replicas")
+            Err("Root Agent can only message verified Room orchestrator replicas")
         );
     }
 
@@ -15707,7 +15706,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a:wg-1-dev-team/tech-lead", &paths, false, true, true,),
-            Err("Root Agent can only message verified WG orchestrator replicas")
+            Err("Root Agent can only message verified Room orchestrator replicas")
         );
     }
 
@@ -15729,7 +15728,7 @@ mod tests {
 
         assert_eq!(
             validate_root_sender_route("proj-a/tech-lead", &paths, true, false, false),
-            Err("Root Agent can only message verified WG orchestrator replicas")
+            Err("Root Agent can only message verified Room orchestrator replicas")
         );
     }
 
@@ -15848,7 +15847,7 @@ mod tests {
         let (_temp, paths) = make_root_route_fixture(false);
         assert_eq!(
             validate_coordinator_to_root_route("proj-a:wg-1-dev-team/dev-rust", &paths),
-            Err("Only verified WG orchestrator replicas may message the Root Agent")
+            Err("Only verified Room orchestrator replicas may message the Root Agent")
         );
     }
 
@@ -15857,7 +15856,7 @@ mod tests {
         let (_temp, paths) = make_root_route_fixture(true);
         assert_eq!(
             validate_coordinator_to_root_route("proj-a:wg-1-dev-team/tech-lead", &paths),
-            Err("Only verified WG orchestrator replicas may message the Root Agent")
+            Err("Only verified Room orchestrator replicas may message the Root Agent")
         );
     }
 
@@ -19308,7 +19307,7 @@ mod tests {
             .unwrap();
 
         let reason = read_reject_reason(&fixture._origin, "msg-ss-origin").unwrap();
-        assert!(reason.contains("WG replica"), "{reason}");
+        assert!(reason.contains("Room replica"), "{reason}");
         assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
         assert_eq!(pending_self_clear_len(&app).await, 0);
     }
@@ -19339,7 +19338,7 @@ mod tests {
             .unwrap();
 
         let reason = read_reject_reason(&fake, "msg-ss-fake").unwrap();
-        assert!(reason.contains("configured WG replica"), "{reason}");
+        assert!(reason.contains("configured Room replica"), "{reason}");
         assert!(!reason.contains("SELF-HANDOFF"), "{reason}");
         assert_eq!(pending_self_clear_len(&app).await, 0);
     }

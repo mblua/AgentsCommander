@@ -755,7 +755,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const dialogId = `agent.delete.dialog.${automationIdPart(originAgentPath)}`;
     const cancelId = `agent.delete.cancel.${automationIdPart(originAgentPath)}`;
     await waitFor(() => expect(document.querySelector(`[data-ac-testid="${dialogId}"]`)).not.toBeNull());
-    expect(document.body.textContent).toContain("workgroup replicas");
+    expect(document.body.textContent).toContain("room replicas");
 
     click(document.querySelector(`[data-ac-testid="${cancelId}"]`)!);
 

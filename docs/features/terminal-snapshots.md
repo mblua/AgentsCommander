@@ -1,6 +1,6 @@
 # Terminal snapshots
 
-Terminal snapshots let an authorized Root Agent or workgroup Orchestrator read one live backend terminal viewport as versioned JSON or a deterministic PNG without changing the target terminal.
+Terminal snapshots let an authorized Root Agent or room Orchestrator read one live backend terminal viewport as versioned JSON or a deterministic PNG without changing the target terminal.
 
 Use this feature when you need the current terminal state of a hidden, minimized, detached, or never-mounted session. A snapshot is not a transcript, frontend screenshot, or request to wake an agent.
 
@@ -47,8 +47,8 @@ Pass the returned `name` exactly to `terminal-snapshot --to`.
 
 This discovery view is not authorization and does not reveal session liveness:
 
-- Root receives verified workgroup Orchestrators and members from active registered projects.
-- A verified workgroup Orchestrator receives non-Orchestrator members from the same physical project and workgroup.
+- Root receives verified room Orchestrators and members from active registered projects.
+- A verified room Orchestrator receives non-Orchestrator members from the same physical project and room.
 - Workers and origin agents receive `[]`.
 - Identity-only entries report `working=false`, `sessionStatus="unknown"`, `waitingForInput=false`, no `contextPercent`, and no `roleSummary`. `reachable` continues to describe ordinary messaging, not snapshot permission.
 - The view does not read `sessions.json`, create peer directories, or change default `list-peers-lean` behavior.
@@ -63,7 +63,7 @@ Use `--peer <exact-fqn>` to filter this view. `list-peers --snapshot-targets` is
 agentscommander terminal-snapshot \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 ```
 
 `--format json` is optional because JSON is the default. Success writes exactly one compact ASCII-only JSON document followed by LF to stdout.
@@ -74,7 +74,7 @@ agentscommander terminal-snapshot \
 agentscommander terminal-snapshot \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --to "project:wg-1-team/member" \
+  --to "project:room-1-team/member" \
   --format png \
   --output "/absolute/new/snapshot.png"
 ```
@@ -104,14 +104,14 @@ Use the helper without supplying either secret on the command line:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 ```
 
 For PNG:
 
 ```bash
 agentscommander-api-helper terminal-snapshot \
-  --to "project:wg-1-team/member" \
+  --to "project:room-1-team/member" \
   --format png \
   --output "/workspace/evidence/snapshot.png" \
   --timeout 15
@@ -127,12 +127,12 @@ Terminal snapshots use a separate read capability. They do not broaden ordinary 
 
 | Requester | Authorized target | Plane |
 |---|---|---|
-| Live verified canonical Root Agent | Any verified workgroup Orchestrator or member in active registered project paths | Host only |
-| Live verified workgroup Orchestrator | One verified non-Orchestrator member in the same exact project and workgroup | Host |
-| Automatically bound live container Orchestrator with `terminal-snapshot` scope | One verified non-Orchestrator member in the same exact project and workgroup | Container API |
+| Live verified canonical Root Agent | Any verified room Orchestrator or member in active registered project paths | Host only |
+| Live verified room Orchestrator | One verified non-Orchestrator member in the same exact project and room | Host |
+| Automatically bound live container Orchestrator with `terminal-snapshot` scope | One verified non-Orchestrator member in the same exact project and room | Container API |
 | Worker, origin agent, origin Orchestrator, manual API client, stale session, or static Root/master credential | None | None |
 
-Orchestrator-to-Orchestrator, Orchestrator-to-Root, self, cross-workgroup, cross-project, Root-to-Root, Root-to-origin, aliases, wildcards, filesystem directory names, and session IDs are not authorized targets.
+Orchestrator-to-Orchestrator, Orchestrator-to-Root, self, cross-room, cross-project, Root-to-Root, Root-to-origin, aliases, wildcards, filesystem directory names, and session IDs are not authorized targets.
 
 AgentsCommander verifies the physical requester-to-target route before it looks up a target session, parser, backend, or liveness. Shape-valid unauthorized and nonexistent targets therefore return the same `not_authorized` response and do not expose target liveness. Local filesystem cache timing is outside that no-liveness guarantee.
 
@@ -165,8 +165,8 @@ The top-level document is closed and versioned. This one-row example is structur
   "schemaVersion": 1,
   "requestId": "22222222-2222-4222-8222-222222222222",
   "capturedAt": "2026-07-31T03:30:00.123Z",
-  "requester": "project:wg-1-team/coordinator",
-  "target": "project:wg-1-team/member",
+  "requester": "project:room-1-team/coordinator",
+  "target": "project:room-1-team/member",
   "session": {
     "id": "11111111-1111-4111-8111-111111111111",
     "backend": "localProcess"
@@ -266,8 +266,8 @@ The top-level document is closed and versioned. This one-row example is structur
 | `schemaVersion` | Exactly `1`. |
 | `requestId` | Canonical lowercase UUID v4 generated for this read. |
 | `capturedAt` | Canonical UTC RFC 3339 timestamp with exactly millisecond precision. |
-| `requester` | Exact workgroup FQN, or `agentscommander://root-agent` on host Root responses. |
-| `target` | Exact canonical workgroup FQN. |
+| `requester` | Exact room FQN, or `agentscommander://root-agent` on host Root responses. |
+| `target` | Exact canonical room FQN. |
 | `session.backend` | `localProcess` or `containerTransport`. |
 | `screen.dimensions` | Nonzero, at most 200 rows, 400 columns, and 40,000 cells. |
 | `screen.sequence` | Saturating count of processed PTY output chunks. Resize does not increment it. |
@@ -353,7 +353,7 @@ The container helper calls `POST /api/v1/terminal-snapshot` with `Authorization:
 {
   "apiVersion": "1",
   "requestId": "22222222-2222-4222-8222-222222222222",
-  "to": "project:wg-1-team/member",
+  "to": "project:room-1-team/member",
   "format": "json"
 }
 ```
@@ -410,7 +410,7 @@ Host transport uses dedicated transient directories below the verified requester
 <requester-root>/<agent-local-dir>/terminal-snapshot-responses/
 ```
 
-It does not put snapshot content in workgroup `messaging/`, ordinary delivered or rejected message state, conversations, the standard message database, or PTY-input state.
+It does not put snapshot content in room `messaging/`, ordinary delivered or rejected message state, conversations, the standard message database, or PTY-input state.
 
 The CLI removes a validated response after use. The daemon tracks protocol requests, processing files, temporary files, cancellations, and unread responses and sweeps identity-stable entries after 60 seconds. Startup performs a bounded sweep of discoverable verified Root and replica directories. A crash followed by removal of the only registered or archived project path can leave a protocol file undiscoverable. In that residual case, stop AgentsCommander and inspect the two exact directories above. Remove only protocol-shaped files that you own and recognize; an identity mismatch is intentionally left untouched.
 

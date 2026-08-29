@@ -6,6 +6,7 @@ import type {
   ProfileCellConfig,
   Session,
 } from "./types";
+import { isEntityDirName } from "./entity-prefix";
 
 export const PROFILE_LETTERS = Array.from({ length: 26 }, (_, index) =>
   String.fromCharCode("A".charCodeAt(0) + index)
@@ -121,7 +122,7 @@ export function deriveMatrixRoot(replicaPath: string | null | undefined): string
   const parts = replicaPath.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
-  if (!/^__agent_/.test(leaf) || !/^wg-/.test(parent)) return null;
+  if (!/^__agent_/.test(leaf) || !isEntityDirName(parent)) return null;
   const name = leaf.replace(/^__agent_/, "");
   const sep = replicaPath.includes("\\") ? "\\" : "/";
   return `${acRoot}${sep}_agent_${name}`;
@@ -469,7 +470,7 @@ export function isWgReplicaPath(path: string | null | undefined): boolean {
   const parts = path.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
-  return parts.includes(".ac") && /^__agent_/.test(leaf) && /^wg-/.test(parent);
+  return parts.includes(".ac") && /^__agent_/.test(leaf) && isEntityDirName(parent);
 }
 
 export function shouldOfferRestartAfterAssign(

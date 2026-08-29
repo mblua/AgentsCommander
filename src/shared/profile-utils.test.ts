@@ -7,6 +7,7 @@ import {
   commandExecutableBasename,
   composeEffectiveCommand,
   defaultInstructionsFilename,
+  deriveMatrixRoot,
   effectiveEnvProjection,
   executableBasename,
   expandAcPlaceholdersPreview,
@@ -520,5 +521,40 @@ describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
     expect(shouldMaskEnvValue("OPENAI_API_KEY")).toBe(false);
     expect(shouldMaskEnvValue("MY_PASSWORD")).toBe(false);
     expect(shouldMaskEnvValue("DB_PASSWORD")).toBe(false);
+  });
+});
+
+// #1614 section 9.1 frontend tests / section 15.4. F2 (`profile-utils.ts:124`,
+// inside `deriveMatrixRoot`) and F3 (`:472`, `isWgReplicaPath`). Left
+// unrewired, both silently refuse to recognise a Room replica for profile
+// scope. The function names keep the retired word (Rule P0, out of scope, so
+// #1615 owns them); only the predicate widened.
+describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
+  it("isWgReplicaPath accepts a Room replica and still accepts a legacy one", () => {
+    expect(isWgReplicaPath("C:/repo/.ac/room-7-dev-team/__agent_dev-webpage-ui")).toBe(true);
+    expect(isWgReplicaPath("C:\\repo\\.ac\\room-7-dev-team\\__agent_dev-webpage-ui")).toBe(true);
+    // Rule P2: the legacy case is not converted, it is kept beside.
+    expect(isWgReplicaPath("C:/repo/.ac/wg-7-dev-team/__agent_dev-webpage-ui")).toBe(true);
+    // Neither prefix, and the matrix root, are still rejected.
+    expect(isWgReplicaPath("C:/repo/.ac/roomy-7-dev-team/__agent_x")).toBe(false);
+    expect(isWgReplicaPath("C:/repo/.ac/_agent_architect")).toBe(false);
+  });
+
+  it("isWgReplicaPath stays case-sensitive, as the backend gate is", () => {
+    expect(isWgReplicaPath("C:/repo/.ac/ROOM-7-dev-team/__agent_x")).toBe(false);
+    expect(isWgReplicaPath("C:/repo/.ac/WG-7-dev-team/__agent_x")).toBe(false);
+  });
+
+  it("deriveMatrixRoot resolves a Room replica to its Agent Matrix", () => {
+    expect(deriveMatrixRoot("C:/repo/.ac/room-7-dev-team/__agent_dev-rust")).toBe(
+      "C:/repo/.ac/_agent_dev-rust",
+    );
+    expect(deriveMatrixRoot("C:\\repo\\.ac\\room-7-dev-team\\__agent_dev-rust")).toBe(
+      "C:\\repo\\.ac\\_agent_dev-rust",
+    );
+    expect(deriveMatrixRoot("C:/repo/.ac/wg-7-dev-team/__agent_dev-rust")).toBe(
+      "C:/repo/.ac/_agent_dev-rust",
+    );
+    expect(deriveMatrixRoot("C:/repo/.ac/roomy-7/__agent_dev-rust")).toBeNull();
   });
 });

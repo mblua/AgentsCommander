@@ -142,7 +142,7 @@ pub fn wg_replica_layout_from_agent_dir(
     let Some(wg_name) = wg_dir.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
     };
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Ok(None);
     }
 

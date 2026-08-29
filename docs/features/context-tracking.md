@@ -2,7 +2,7 @@
 
 For developers who want to see how much of a coding agent's context window is gone before it runs out. After this page you can turn the reading on for an agent, read the badge on a session row, set per-team alert thresholds, and know exactly when AC notifies an orchestrator and when it does not.
 
-AC scrapes the context percentage out of an agent's own terminal output using a pattern you configure, shows it as a badge on the session row, and can notify a workgroup's orchestrator when a member crosses a threshold you set. It never acts on the reading itself.
+AC scrapes the context percentage out of an agent's own terminal output using a pattern you configure, shows it as a badge on the session row, and can notify a room's orchestrator when a member crosses a threshold you set. It never acts on the reading itself.
 
 ## What it tracks
 
@@ -30,7 +30,7 @@ The badge appears only when the session's coding agent has a non-blank `contextR
 
 ## Context alerts
 
-A team can carry up to **three** context alert thresholds. When a member session crosses one, AC sends that workgroup's orchestrator an informational message. **No automatic action is taken**: no session is cleared, closed, restarted, handed off, or reassigned.
+A team can carry up to **three** context alert thresholds. When a member session crosses one, AC sends that room's orchestrator an informational message. **No automatic action is taken**: no session is cleared, closed, restarted, handed off, or reassigned.
 
 The thresholds are validated when you save them:
 
@@ -56,7 +56,7 @@ The last three drop the session's whole alert state, latches included.
 
 ## Setting thresholds for a team
 
-Thresholds are edited in the team modals, in a section headed `Context usage alerts (optional)`. They apply to **every workgroup of that team**.
+Thresholds are edited in the team modals, in a section headed `Context usage alerts (optional)`. They apply to **every room of that team**.
 
 The editor works one threshold at a time:
 
@@ -75,7 +75,7 @@ The message AC injects is a template with the id `context-alert`, and it ships p
 [AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
 ```
 
-Three tokens are substituted: `%MEMBER%` for the member that crossed, `%WORKGROUP%` for the workgroup it belongs to, and `%THRESHOLDS%` for the threshold or thresholds crossed in that reading.
+Three tokens are substituted: `%MEMBER%` for the member that crossed, `%WORKGROUP%` for the room it belongs to, and `%THRESHOLDS%` for the threshold or thresholds crossed in that reading.
 
 The template is operator-editable. If you have changed it and want the shipped default back:
 

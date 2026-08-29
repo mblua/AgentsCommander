@@ -1,8 +1,8 @@
 # Reclaiming build artifacts
 
-For operators and agents who maintain workgroup repo clones. How to recover disk space taken by regenerable Rust/Tauri build output, safely and repeatably.
+For operators and agents who maintain room repo clones. How to recover disk space taken by regenerable Rust/Tauri build output, safely and repeatably.
 
-Workgroup clones accumulate large Cargo/Tauri build artifacts whenever an agent or operator runs a build inside a clone. The bytes are fully regenerable, so they are safe to delete, but they recur and can consume many gigabytes across a set of clones. `scripts/reclaim-build-artifacts.mjs` is a maintenance/process script (not an app feature, UI action, or app command) that reclaims them.
+Room clones accumulate large Cargo/Tauri build artifacts whenever an agent or operator runs a build inside a clone. The bytes are fully regenerable, so they are safe to delete, but they recur and can consume many gigabytes across a set of clones. `scripts/reclaim-build-artifacts.mjs` is a maintenance/process script (not an app feature, UI action, or app command) that reclaims them.
 
 ## What it removes
 
@@ -31,11 +31,11 @@ Apply the deletion:
 npm run reclaim:artifacts:apply
 ```
 
-Scan somewhere other than this repo, for example a whole workgroup or a parent holding several workgroups. Pass roots positionally or with `--root` (repeatable). Combine with `--apply` to delete:
+Scan somewhere other than this repo, for example a whole room or a parent holding several rooms. Pass roots positionally or with `--root` (repeatable). Combine with `--apply` to delete:
 
 ```
-# dry run across a workgroup dir's repo-* clones
-node scripts/reclaim-build-artifacts.mjs "C:\path\to\.ac\wg-13-dev-v4-team"
+# dry run across a room dir's repo-* clones
+node scripts/reclaim-build-artifacts.mjs "C:\path\to\.ac\room-13-dev-v4-team"
 
 # apply across several roots
 node scripts/reclaim-build-artifacts.mjs --apply --root "C:\path\to\clone-a" --root "C:\path\to\clone-b"
@@ -58,10 +58,10 @@ node scripts/reclaim-build-artifacts.mjs --json
 A scan root may be any of:
 
 - a single repo clone (has `Cargo.toml`, `package.json`, or `src-tauri`),
-- a workgroup dir (`wg-*`) that holds `repo-*` clones, or
-- a parent dir that holds several `repo-*` clones and/or `wg-*` workgroup dirs.
+- a room dir (`room-*`) that holds `repo-*` clones, or
+- a parent dir that holds several `repo-*` clones and/or `room-*` room dirs.
 
-Discovery is bounded to two levels: the root itself, its `repo-*` children, and `repo-*` grandchildren under `wg-*` dirs. It does not walk arbitrarily deep.
+Discovery is bounded to two levels: the root itself, its `repo-*` children, and `repo-*` grandchildren under `room-*` dirs. It does not walk arbitrarily deep.
 
 ## Safety guardrails
 
@@ -82,7 +82,7 @@ Discovery is bounded to two levels: the root itself, its `repo-*` children, and 
 
 ## When to run it
 
-- Periodically on machines that host workgroup clones, after heavy build activity.
+- Periodically on machines that host room clones, after heavy build activity.
 - Before archiving or duplicating a clone set, to avoid copying regenerable bytes.
 - Any time disk pressure traces back to `target` / `src-tauri/target` under clones.
 

@@ -14,7 +14,7 @@ Auto-close applies to **teams only**: orchestrator sessions and agent-owned memb
 | Agent-owned member session (a replica running a coding agent) | Yes |
 | Ad-hoc user shell (no coding agent, not an orchestrator) | Never |
 
-A session counts as a team member only if it is an orchestrator or has a coding agent attached, and its working directory resolves to a team key `<project>:<wg>`. Everything else is left alone.
+A session counts as a team member only if it is an orchestrator or has a coding agent attached, and its working directory resolves to a team key `<project>:<room>`. Everything else is left alone.
 
 Two more conditions gate an actual close:
 

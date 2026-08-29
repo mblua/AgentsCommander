@@ -670,11 +670,11 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
               <div
                 class="rm-filter-group"
                 role="group"
-                aria-label="Filter by workgroup"
+                aria-label="Filter by room"
                 data-ac-testid="resourceMonitor.filter.workgroup"
                 data-ac-role="group"
               >
-                <span class="rm-filter-label">Workgroup</span>
+                <span class="rm-filter-label">Room</span>
                 <For each={workgroupOptions()}>
                   {(value) => (
                     <button

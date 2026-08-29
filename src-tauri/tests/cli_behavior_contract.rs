@@ -142,9 +142,13 @@ fn create_send_fixture(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, P
             "Build",
         ],
     );
+    // #1614 requirement (A): creation produces `room-<N>-<team>`. This fixture
+    // names the directory the product CREATES, so it moves with the creation
+    // prefix; the legacy `wg-*` fixtures that prove dual-prefix ACCEPTANCE are
+    // untouched (Rule P2).
     let sender = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_architect");
     assert!(sender.is_dir(), "sender replica root should exist");
     (project, sender)
@@ -175,7 +179,10 @@ fn root_help_lists_public_subcommands() {
         "open-project",
         "new-project",
         "telegram-send-image",
-        "workgroup",
+        // #1614: `room` is the canonical subcommand; `workgroup` remains an
+        // accepted deprecated alias, and D9 hides an alias from help on purpose,
+        // so root help must list `room` and must NOT list `workgroup`.
+        "room",
         "team",
         "harness",
     ] {
@@ -303,16 +310,17 @@ fn public_subcommand_help_contracts() {
         (&["open-project", "--help"], &["PATH"]),
         (&["new-project", "--help"], &["PATH"]),
         (&["telegram-send-image", "--help"], &["--path", "--caption"]),
-        (&["workgroup", "--help"], &["list", "add", "remove"]),
-        (&["workgroup", "list", "--help"], &["--project"]),
+        (&["room", "--help"], &["list", "add", "remove"]),
+        (&["room", "list", "--help"], &["--project"]),
         (
-            &["workgroup", "add", "--help"],
+            &["room", "add", "--help"],
             &["--project", "--team", "--title"],
         ),
-        (
-            &["workgroup", "remove", "--help"],
-            &["--project", "--workgroup"],
-        ),
+        (&["room", "remove", "--help"], &["--project", "--room"]),
+        // The deprecated spelling still reaches the same help, and help renders
+        // the CANONICAL name for it (section 5.8 fact 4).
+        (&["workgroup", "--help"], &["list", "add", "remove"]),
+        (&["workgroup", "remove", "--help"], &["--project", "--room"]),
         (
             &["team", "--help"],
             &["create", "list", "add-member", "remove-member"],
@@ -324,11 +332,11 @@ fn public_subcommand_help_contracts() {
         (&["team", "list", "--help"], &["--project"]),
         (
             &["team", "add-member", "--help"],
-            &["--project", "--workgroup", "--agent"],
+            &["--project", "--room", "--agent"],
         ),
         (
             &["team", "remove-member", "--help"],
-            &["--project", "--workgroup", "--agent"],
+            &["--project", "--room", "--agent"],
         ),
         (&["harness", "--help"], &["--dry-run", "--raw-command"]),
         (&["test-reset", "--help"], &["--confirm-testeable"]),
@@ -706,7 +714,7 @@ fn simple_bad_path_contracts() {
     let send_config = config_dir_for_bin(&send_bin);
     let (project, sender) = create_send_fixture(send_tmp.path(), &send_bin, &send_config);
     let sender_s = sender.to_string_lossy().to_string();
-    let peer = "ProjectAlpha:wg-1-dev-team/dev-rust";
+    let peer = "ProjectAlpha:room-1-dev-team/dev-rust";
     let (code, stdout, stderr) = run(
         &send_bin,
         &[
@@ -738,7 +746,7 @@ fn simple_bad_path_contracts() {
     assert!(
         !project
             .join(".ac")
-            .join("wg-1-dev-team")
+            .join("room-1-dev-team")
             .join("__agent_dev-rust")
             .join(".agentscommander-new")
             .join("outbox")

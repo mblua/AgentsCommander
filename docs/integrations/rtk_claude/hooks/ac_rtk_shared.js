@@ -54,7 +54,7 @@ function rtkRewrite(cmd) {
 function ignoredLogPath(hookDir) {
   const replicaRoot = path.resolve(hookDir, "..", "..");
   const replicaName = path.basename(replicaRoot);
-  if (!replicaName.startsWith("__")) return null; // not a WG replica: no Matrix above us
+  if (!replicaName.startsWith("__")) return null; // not a Room replica: no Matrix above us
   return path.join(path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk-ignored-tools-claude.md");
 }
 

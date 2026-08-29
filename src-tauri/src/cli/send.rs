@@ -22,13 +22,13 @@ ROUTING: Before delivery, the CLI validates that the sender can reach the destin
 membership and orchestrator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names for --to. The \"name\" field in the JSON output \
 is the value to use.\n\n\
-FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For WG \
-replicas the file is resolved from <workgroup-root>/messaging/<filename>. \
+FILE-BASED MESSAGING: --send <filename> delivers a Markdown file. For Room \
+replicas the file is resolved from <room-root>/messaging/<filename>. \
 For the Root Agent the file is resolved from <root-agent-dir>/messaging/<filename>. \
 `--send` is a filename only, never a path. Root Agent --to targets must be \
-verified WG orchestrator replica names returned by list-peers-lean. \
+verified Room orchestrator replica names returned by list-peers-lean. \
 Orchestrator --to targets may include the Root Agent canonical name \
-`agentscommander://root-agent`; only identity-verified WG orchestrator \
+`agentscommander://root-agent`; only identity-verified Room orchestrator \
 replicas may use it.\n\n\
 PRIVILEGED PTY INPUT: --pty-input and --pty-input-stdin submit validated exact UTF-8 text to one authorized coding-agent PTY. This never directly executes a host or container OS shell command. The caller's shell performs quoting and expansion before AC receives an argument, so prefer stdin for multiline, leading-hyphen, clipboard, process-list-sensitive, or otherwise sensitive text. `Queued` is not `Injected`; after a confirmation timeout keep the reported operation ID and do not resubmit under a new ID.\n\n\
 DELIVERY CONFIRMATION: After queuing, send blocks up to --confirm-timeout seconds (default 90) \
@@ -50,7 +50,7 @@ pub struct SendArgs {
     pub to: String,
 
     /// Filename (not path) of a message file that already exists in
-    /// <workgroup-root>/messaging/. Sender writes the file BEFORE calling send.
+    /// <room-root>/messaging/. Sender writes the file BEFORE calling send.
     /// Mutually exclusive with --command and the PTY input forms.
     #[arg(long)]
     pub send: Option<String>,
@@ -249,7 +249,7 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
 fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {
     let ac_root = wg_root.parent().ok_or_else(|| {
         format!(
-            "workgroup root '{}' has no parent Project AC Root directory",
+            "room root '{}' has no parent Project AC Root directory",
             wg_root.display()
         )
     })?;
@@ -896,7 +896,7 @@ pub fn execute(args: SendArgs) -> i32 {
     if root_is_root_agent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
-                "Error: root-agent routing rejected — '{}' is not a verified WG orchestrator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
+                "Error: root-agent routing rejected — '{}' is not a verified Room orchestrator replica. Use list-peers-lean from the Root Agent and pass one of its name values.",
                 resolved_to
             );
             return 1;
@@ -909,7 +909,7 @@ pub fn execute(args: SendArgs) -> i32 {
         // cheap.
         if !coordinator_to_root_target_allowed(&sender, &effective_project_paths) {
             eprintln!(
-                "Error: routing rejected — '{}' is not a verified WG orchestrator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified WG orchestrators.",
+                "Error: routing rejected — '{}' is not a verified Room orchestrator replica and cannot message '{}'. Replies to the Root Agent are reserved for verified Room orchestrators.",
                 sender,
                 crate::config::root_agent::ROOT_AGENT_SENDER
             );
@@ -955,7 +955,7 @@ pub fn execute(args: SendArgs) -> i32 {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!(
-                        "Error: --send requires --root under a wg-<N>-* ancestor unless --root is the canonical Root Agent directory; {}",
+                        "Error: --send requires --root under a `room-*` or legacy `wg-*` Room directory unless --root is the canonical Root Agent directory; {}",
                         e
                     );
                     return 1;
@@ -1005,7 +1005,7 @@ pub fn execute(args: SendArgs) -> i32 {
         if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
             eprintln!(
                 "Error: notification exceeds PTY-safe length (body {} + overhead {} > {}). \
-                 Shorten slug or move workgroup to a shallower path.",
+                 Shorten slug or move room to a shallower path.",
                 body.len(),
                 overhead,
                 crate::phone::messaging::PTY_SAFE_MAX

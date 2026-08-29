@@ -15,7 +15,7 @@ OUTPUT: JSON array of team peers. Each entry contains:\n  \
   path              Full filesystem path to the agent's root directory\n  \
   status            Legacy: \"active\" iff working==true, else \"unknown\"\n  \
   working           true iff peer has a Running or Active session not\n                    \
-                  waiting for input. For WG peers this matches the\n                    \
+                  waiting for input. For Room peers this matches the\n                    \
                   Sidebar running-peer badge exactly.\n  \
   sessionStatus     One of: \"active\", \"running\", \"idle\", \"waiting\",\n                    \
                   \"exited\", \"none\"\n  \
@@ -38,9 +38,9 @@ PEER FILTER (--peer):\n  \
   (reachable=false) are still returned when their name matches —\n  \
   filtering is by name only.\n\n\
 NOTES:\n  \
-  - Canonical Root Agent roots return verified WG orchestrator replicas only.\n    \
-    Origin orchestrators and non-orchestrator WG replicas are omitted for Root Agent discovery in #277.\n  \
-  - Identity-verified WG orchestrator replicas additionally see a synthetic\n    \
+  - Canonical Root Agent roots return verified Room orchestrator replicas only.\n    \
+    Origin orchestrators and non-orchestrator Room replicas are omitted for Root Agent discovery in #277.\n  \
+  - Identity-verified Room orchestrator replicas additionally see a synthetic\n    \
     peer with `name=agentscommander://root-agent`, representing the Root\n    \
     Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
     to a root-originated message. Other replicas do not see this entry.\n    \
@@ -52,7 +52,7 @@ NOTES:\n  \
   - `pendingReview` is a frontend-only state, invisible to the CLI. A\n    \
     peer whose agent has finished but the user has not yet acknowledged in\n    \
     the sidebar will be reported as working/running by this command.\n  \
-  - WG peers match by session name (`<wg>/<agent>`); non-WG peers match\n    \
+  - Room peers match by session name (`<room>/<agent>`); non-Room peers match\n    \
     by working-directory only.\n  \
   See issue #206 for the full rationale.\n\n\
 All agents that belong to your team(s) are listed. Agents you cannot directly\n\
@@ -101,12 +101,12 @@ sessionId, exitCode, legacy status. Use `list-peers` if any of those are\n\
 needed.\n\n\
 PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
 share a single discovery function (see issue #252). For canonical Root Agent\n\
-roots this set contains verified WG orchestrator replicas only; origin\n\
-orchestrators and non-orchestrator WG replicas are omitted in #277.\n\n\
+roots this set contains verified Room orchestrator replicas only; origin\n\
+orchestrators and non-orchestrator Room replicas are omitted in #277.\n\n\
 SNAPSHOT TARGETS: `--snapshot-targets` switches only this lean verb to the\n\
 identity-only terminal snapshot capability view. Canonical Root lists every\n\
-verified WG Orchestrator and member in registered projectPaths. A verified WG\n\
-Orchestrator lists non-Orchestrator members of its own workgroup. Workers and\n\
+verified Room Orchestrator and member in registered projectPaths. A verified Room\n\
+Orchestrator lists non-Orchestrator members of its own room. Workers and\n\
 origin agents receive `[]`. This view reads no sessions.json, creates no peer\n\
 directories, and grants no authority. Use the returned exact name with\n\
 `terminal-snapshot --to`.\n\n\
@@ -124,12 +124,12 @@ PEER FILTER (--peer):\n  \
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance that wrote\n    \
     sessions.json (same caveat as `list-peers`).\n  \
-  - Identity-verified WG orchestrator replicas additionally see a synthetic\n    \
+  - Identity-verified Room orchestrator replicas additionally see a synthetic\n    \
     peer with `name=agentscommander://root-agent`, representing the Root\n    \
     Agent reply target. Pass that name verbatim to `send --to` when replying\n    \
     to a root-originated message. Other replicas do not see this entry.\n    \
     See issue #293.\n  \
-  - Side effect: discovering WG peers creates `inbox/` and `outbox/`\n    \
+  - Side effect: discovering Room peers creates `inbox/` and `outbox/`\n    \
     subdirectories under each peer's local config dir (inherited from\n    \
     `list-peers`). The verb is read-only w.r.t. the daemon mailbox, NOT\n    \
     filesystem-side-effect-free.\n  \
@@ -220,7 +220,7 @@ const ROLE_SUMMARY_MAX: usize = 80;
 /// back to — which may not be a true role description. Treat the field as
 /// a hint, not authoritative.
 fn lean_role_summary(role: &str) -> String {
-    const NO_ROLE_SENTINELS: &[&str] = &["No role description available.", "WG replica agent."];
+    const NO_ROLE_SENTINELS: &[&str] = &["No role description available.", "Room replica agent."];
     // Standard AgentsCommander preamble openings. These appear verbatim in
     // every replica's CLAUDE.md by design, so when they surface through the
     // `extract_role_section` fallback they carry no discriminating signal —
@@ -576,12 +576,12 @@ fn read_wg_role(replica_dir: &Path) -> String {
                 replica_dir.display(),
                 e
             );
-            return "WG replica agent.".to_string();
+            return "Room replica agent.".to_string();
         }
     };
     let role_path = matrix_dir.join("Role.md");
     match std::fs::read_to_string(&role_path) {
-        Ok(content) => extract_role_section(&content, 3, "WG replica agent."),
+        Ok(content) => extract_role_section(&content, 3, "Room replica agent."),
         Err(_) => read_role(&matrix_dir.to_string_lossy()),
     }
 }
@@ -651,12 +651,12 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     if coordinator.is_none() {
         if std::env::var("AC_MACHINE_OUTPUT").is_err() {
             eprintln!(
-                "Warning: no orchestrator found for WG '{}', showing all replicas",
+                "Warning: no orchestrator found for Room '{}', showing all replicas",
                 wg.my_wg_name
             );
         } else {
             log::warn!(
-                "Warning: no orchestrator found for WG '{}', showing all replicas",
+                "Warning: no orchestrator found for Room '{}', showing all replicas",
                 wg.my_wg_name
             );
         }
@@ -704,7 +704,12 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
                     continue;
                 }
                 let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") && n != wg.my_wg_name => n.to_string(),
+                    Some(n)
+                        if crate::config::entity_prefix::has_entity_prefix(n)
+                            && n != wg.my_wg_name =>
+                    {
+                        n.to_string()
+                    }
                     _ => continue,
                 };
 
@@ -904,12 +909,12 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                     continue;
                 }
                 let wg_name = match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") => n.to_string(),
+                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => n.to_string(),
                     _ => continue,
                 };
-                // Derive team name from WG name: "wg-1-ac-devs" → "ac-devs"
-                let wg_team = wg_name
-                    .strip_prefix("wg-")
+                // Derive team name from the entity name: "room-1-ac-devs" or
+                // the legacy "wg-1-ac-devs" → "ac-devs"
+                let wg_team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
                     .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
                     .unwrap_or(&wg_name)
                     .to_string();
@@ -1006,7 +1011,7 @@ fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) 
                     continue;
                 }
                 match wg_path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) if n.starts_with("wg-") => {}
+                    Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {}
                     _ => continue,
                 }
 
@@ -2249,7 +2254,7 @@ mod tests {
         assert_eq!(lean_role_summary(""), "");
         assert_eq!(lean_role_summary("   \n  \n"), "");
         assert_eq!(lean_role_summary("No role description available."), "");
-        assert_eq!(lean_role_summary("WG replica agent."), "");
+        assert_eq!(lean_role_summary("Room replica agent."), "");
     }
 
     #[test]

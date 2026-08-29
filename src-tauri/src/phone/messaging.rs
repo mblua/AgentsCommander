@@ -121,7 +121,7 @@ pub fn validate_root_notification_filename(filename: &str) -> Result<(), Messagi
 
 #[derive(Debug, thiserror::Error)]
 pub enum MessagingError {
-    #[error("no workgroup ancestor found for '{0}'")]
+    #[error("no room ancestor found for '{0}'")]
     NoWorkgroup(String),
     #[error("slug is empty after sanitization")]
     EmptySlug,
@@ -370,7 +370,7 @@ pub fn resolve_existing_message(
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 fn is_wg_dir(name: &str) -> bool {
-    let rest = match name.strip_prefix("wg-") {
+    let rest = match crate::config::entity_prefix::strip_entity_prefix(name) {
         Some(r) => r,
         None => return false,
     };
@@ -383,13 +383,14 @@ fn is_wg_dir(name: &str) -> bool {
 }
 
 fn parse_wg_prefix(prefix: &str) -> Option<String> {
-    let rest = prefix.strip_prefix("wg-")?;
+    let matched = crate::config::entity_prefix::entity_prefix_of(prefix)?;
+    let rest = &prefix[matched.len()..];
     let n_end = rest.find('-')?;
     let digits = &rest[..n_end];
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(format!("wg{}", digits))
+    Some(format!("{}{}", matched.trim_end_matches('-'), digits))
 }
 
 fn sanitize(s: &str) -> String {

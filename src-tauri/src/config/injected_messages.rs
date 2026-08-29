@@ -75,7 +75,7 @@ const CONTEXT_ALERT_DOC_COMMENT: &str = "\
 # context-usage threshold.
 # Placeholders:
 #   %MEMBER%      name of the observed member, e.g. dev-rust
-#   %WORKGROUP%   workgroup name, e.g. wg-2-dev-team
+#   %WORKGROUP%   room name, e.g. room-2-dev-team
 #   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)";
 
@@ -1287,6 +1287,55 @@ mod tests {
 
     // ---- fixtures ---------------------------------------------------------
 
+    /// #1614 AC7.12 / D17, recognizer family 5. `injected-messages.toml` is a
+    /// USER-OWNED file: an entry the user has not edited is refreshed
+    /// automatically when a new default ships, and reconciliation decides that
+    /// by hashing the user's `template` against `known_default_sha256`.
+    ///
+    /// This change touches exactly ONE line in this module, the `%WORKGROUP%`
+    /// DESCRIPTION inside the doc comment, and that line is never hashed. So:
+    /// the hash list must still be a SINGLE entry (a second hash appended here
+    /// would mean someone moved the template's bytes), the template must still
+    /// be 125 bytes, and `%WORKGROUP%` must still expand -- it appears in every
+    /// user-edited template on disk and renaming it would silently stop
+    /// expansion in each one.
+    #[test]
+    fn injected_messages_recognizer_is_untouched() {
+        let spec = KNOWN_MESSAGES
+            .iter()
+            .find(|s| s.id == CONTEXT_ALERT_MESSAGE_ID)
+            .expect("context-alert spec");
+
+        assert_eq!(
+            spec.known_default_sha256,
+            &["e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f"],
+            "known_default_sha256 must stay exactly one entry; a second hash here means the \
+             shipped default's bytes moved and every pristine entry stops auto-refreshing"
+        );
+        assert_eq!(
+            DEFAULT_CONTEXT_ALERT_TEMPLATE.len(),
+            125,
+            "the shipped default template must not be resized by this rename"
+        );
+        assert!(DEFAULT_CONTEXT_ALERT_TEMPLATE.contains(TOKEN_WORKGROUP));
+        assert_eq!(TOKEN_WORKGROUP, "%WORKGROUP%");
+
+        let (out, missing) = expand_tokens(
+            "member=%MEMBER% entity=%WORKGROUP%",
+            &[
+                (TOKEN_MEMBER, "dev-rust"),
+                (TOKEN_WORKGROUP, "room-2-dev-team"),
+            ],
+        );
+        assert_eq!(out, "member=dev-rust entity=room-2-dev-team");
+        assert!(missing.is_empty(), "{missing:?}");
+
+        // The one Rule R edit: the token's human DESCRIPTION says Room, while
+        // the token itself is untouched.
+        assert!(CONTEXT_ALERT_DOC_COMMENT.contains("%WORKGROUP%   room name"));
+        assert!(!CONTEXT_ALERT_DOC_COMMENT.contains("workgroup name"));
+    }
+
     const PINNED_SHA256: &str = "e672581d47e7e4a4749b510f23eff72982ff3fa5261109122b3bdf8fdfda153f";
 
     /// A hypothetical next shipped default, with the v1 default recorded as a
@@ -1328,7 +1377,7 @@ coverage_version = 1
 # context-usage threshold.
 # Placeholders:
 #   %MEMBER%      name of the observed member, e.g. dev-rust
-#   %WORKGROUP%   workgroup name, e.g. wg-2-dev-team
+#   %WORKGROUP%   room name, e.g. room-2-dev-team
 #   %THRESHOLDS%  thresholds just crossed, already formatted, e.g. 50%, 75%
 #   %OBSERVED%    observed context use, e.g. 91% (best-effort human signal)
 template = '''
@@ -1668,7 +1717,7 @@ template = '''
         );
 
         // Against the transcribed literal, never against the generator.
-        assert_eq!(EXPECTED_SEED.len(), 1534, "the pinned seed is 1534 bytes");
+        assert_eq!(EXPECTED_SEED.len(), 1531, "the pinned seed is 1531 bytes");
         assert!(!EXPECTED_SEED.contains('\r'), "the pinned seed is LF");
         let written = read(&main_path(dir.path()));
         assert_eq!(written, EXPECTED_SEED);

@@ -441,8 +441,10 @@ pub fn validate_loop_config(project_dir: &Path, config: &LoopConfigToml) -> Resu
         return Err("Loop timezone must be 'local' for the MVP".to_string());
     }
     validate_cron_expr(&config.trigger.expr)?;
-    if !config.target.workgroup.starts_with("wg-") {
-        return Err("Loop target workgroup must be a wg-* directory name".to_string());
+    if !crate::config::entity_prefix::has_entity_prefix(&config.target.workgroup) {
+        return Err(
+            "Loop target room must be a `room-*` or legacy `wg-*` Room directory name".to_string(),
+        );
     }
     validate_workgroup_name(&config.target.workgroup)?;
     if config.prompt.body.trim().is_empty() {
@@ -465,7 +467,7 @@ pub fn resolve_loop_target(
     let wg_dir = ac_root.join(&config.target.workgroup);
     if !wg_dir.is_dir() {
         return Err(format!(
-            "Workgroup '{}' not found in project {}",
+            "Room '{}' not found in project {}",
             config.target.workgroup,
             project_dir.display()
         ));
@@ -473,7 +475,7 @@ pub fn resolve_loop_target(
     let resolved = crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
         .ok_or_else(|| {
             format!(
-                "Workgroup '{}' has no identity-verified orchestrator",
+                "Room '{}' has no identity-verified orchestrator",
                 config.target.workgroup
             )
         })?;
@@ -643,12 +645,11 @@ pub fn prompt_preview(body: &str) -> String {
 
 fn validate_workgroup_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("Workgroup name cannot be empty".to_string());
+        return Err("Room name cannot be empty".to_string());
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(
-            "Invalid Workgroup name: only alphanumeric characters and hyphens are allowed"
-                .to_string(),
+            "Invalid Room name: only alphanumeric characters and hyphens are allowed".to_string(),
         );
     }
     Ok(())

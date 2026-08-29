@@ -49,7 +49,7 @@ pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<S
     let overhead = crate::phone::messaging::PTY_WRAP_FIXED + from.len();
     if body.len() + overhead > crate::phone::messaging::PTY_SAFE_MAX {
         return Err(ApiError::BadRequest(
-            "notification exceeds PTY-safe length; shorten the slug or use a shallower workgroup path"
+            "notification exceeds PTY-safe length; shorten the slug or use a shallower room path"
                 .to_string(),
         ));
     }
@@ -91,9 +91,8 @@ fn resolve_send_file_path(
         .map_err(|e| ApiError::BadRequest(format!("invalid filename: {}", e)))?;
 
     let agent_root = Path::new(bound_root);
-    let wg_root = crate::phone::messaging::workgroup_root(agent_root).map_err(|e| {
-        ApiError::BadRequest(format!("bound replica is not under a workgroup: {}", e))
-    })?;
+    let wg_root = crate::phone::messaging::workgroup_root(agent_root)
+        .map_err(|e| ApiError::BadRequest(format!("bound replica is not under a room: {}", e)))?;
     let msg_dir = crate::phone::messaging::messaging_dir(&wg_root)
         .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {}", e)))?;
     let abs = crate::phone::messaging::resolve_existing_message(&msg_dir, basename)
@@ -183,6 +182,32 @@ mod tests {
         assert!(body.starts_with(crate::phone::messaging::FILE_NOTIFICATION_PREFIX));
         assert!(body.contains(fname));
         // The container path is never embedded: the body carries a host path.
+        assert!(!body.contains("/workspace/"));
+    }
+
+    /// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+    /// The `wg-` fixture above is deliberately NOT converted (Rule P2); the
+    /// Room case is added beside it, carrying the `room1-` short token that
+    /// section 5.9's `parse_wg_prefix` now produces for a Room replica.
+    #[test]
+    fn build_send_body_resolves_a_room_replica_message() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let room_root = temp.path().join("proj-x").join(".ac").join("room-1-team");
+        let replica = room_root.join("__agent_dev-rust");
+        let messaging = room_root.join("messaging");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let fname = "20260704-000000-room1-a-to-room1-b-hello.md";
+        std::fs::write(messaging.join(fname), "hi").unwrap();
+
+        let body = build_send_body(
+            replica.to_str().unwrap(),
+            fname,
+            "proj-x:room-1-team/dev-rust",
+        )
+        .expect("existing Room message should resolve");
+        assert!(body.starts_with(crate::phone::messaging::FILE_NOTIFICATION_PREFIX));
+        assert!(body.contains(fname));
         assert!(!body.contains("/workspace/"));
     }
 

@@ -848,7 +848,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
 
         <Show when={isAllSessions() && workgroupOptions().length > 0}>
           <div class="watchers-filter-group" data-ac-testid="watchers.filter.workgroup">
-            <span class="watchers-filter-label">Workgroup</span>
+            <span class="watchers-filter-label">Room</span>
             <For each={workgroupOptions()}>
               {(value) => (
                 <button

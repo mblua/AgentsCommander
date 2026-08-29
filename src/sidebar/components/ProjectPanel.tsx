@@ -811,7 +811,7 @@ const ProjectPanel: Component = () => {
             closeWgDeleteModal();
           } catch (e: any) {
             if (myGen !== retryGen) return;
-            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete workgroup";
+            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
             if (msg.startsWith("BLOCKERS:")) {
               try {
                 const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -824,7 +824,7 @@ const ProjectPanel: Component = () => {
               } catch (parseErr) {
                 console.error("Failed to parse BLOCKERS: payload on retry:", parseErr);
                 setWgBlockers(null);
-                setWgDeleteError("Workgroup is still locked, but the blocker report could not be parsed. Try again.");
+                setWgDeleteError("Room is still locked, but the blocker report could not be parsed. Try again.");
                 setWgRetryInProgress(false);
                 return;
               }
@@ -990,9 +990,9 @@ const ProjectPanel: Component = () => {
           wg.agents.some((replica) => replicaMatches(replica, wg));
         const filteredReplicasForWorkgroup = (wg: AcWorkgroup, rowContext: string) => {
           const sectionLabel = rowContext === "selected"
-            ? "Selected Workgroup"
+            ? "Selected Room"
             : rowContext === "workgroups"
-              ? "Workgroups"
+              ? "Rooms"
               : undefined;
           if (!filterActive() || matchesFilterText(sectionLabel) || workgroupOwnMatches(wg, sectionLabel)) {
             return wg.agents;
@@ -1054,8 +1054,8 @@ const ProjectPanel: Component = () => {
         const groupVisibleWorkgroups = createMemo(() => proj.workgroups.filter(groupPredicate));
         const filteredWorkgroups = createMemo(() => {
           const base = groupVisibleWorkgroups();
-          if (!filterActive() || matchesFilterText("Workgroups")) return base;
-          return base.filter((wg) => workgroupMatches(wg, "Workgroups"));
+          if (!filterActive() || matchesFilterText("Rooms")) return base;
+          return base.filter((wg) => workgroupMatches(wg, "Rooms"));
         });
         const filteredAgents = createMemo(() => {
           if (!filterActive() || matchesFilterText("Agents")) return proj.agents;
@@ -1068,7 +1068,7 @@ const ProjectPanel: Component = () => {
         const selectedWorkgroupVisible = () => {
           const wg = selectedWorkgroup();
           if (!wg || !groupPredicate(wg)) return false;
-          return !filterActive() || matchesFilterText("Selected Workgroup") || workgroupMatches(wg, "Selected Workgroup");
+          return !filterActive() || matchesFilterText("Selected Room") || workgroupMatches(wg, "Selected Room");
         };
         const loopStatusText = (loop: AcLoopSummary) =>
           loop.lastResult?.message ?? (loop.nextDueAt ? `Next: ${new Date(loop.nextDueAt).toLocaleString()}` : "No runs yet");
@@ -1431,7 +1431,7 @@ const ProjectPanel: Component = () => {
                 {/* #777: built-in Non-stop slot, pinned above the user groups. */}
                 <button
                   class="session-context-option session-context-group-option session-context-group-option-nonstop"
-                  title={`Watch this workgroup in the ${DEFAULT_NON_STOP_NAME} group`}
+                  title={`Watch this room in the ${DEFAULT_NON_STOP_NAME} group`}
                   onClick={() => void toggleNonStop(wg)}
                   data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
                 >
@@ -1448,11 +1448,11 @@ const ProjectPanel: Component = () => {
                     const customMembership = () => selected() && !removable();
                     const disabled = () => !valid() || customMembership();
                     const title = () => {
-                      if (!valid()) return "Fix this group's regex before adding a workgroup";
+                      if (!valid()) return "Fix this group's regex before adding a room";
                       if (customMembership()) {
                         return "Membership comes from a custom regex. Use Edit groups to change it.";
                       }
-                      return selected() ? "Remove this workgroup from the group" : group.regex;
+                      return selected() ? "Remove this room from the group" : group.regex;
                     };
                     return (
                       <button
@@ -2539,7 +2539,7 @@ const ProjectPanel: Component = () => {
                     ref={filterInputEl}
                     class="project-filter-input"
                     value={filterPattern()}
-                    placeholder="wg-2.*"
+                    placeholder="room-2.*"
                     aria-label="Sidebar regex filter"
                     aria-invalid={!!filterError()}
                     data-ac-testid="project.regexFilter.input"
@@ -2613,7 +2613,7 @@ const ProjectPanel: Component = () => {
                       setNewWorkgroupTarget({ projectPath: proj.path });
                     }}
                   >
-                    New Workgroup
+                    New Room
                   </button>
                   <button
                     class="session-context-option"
@@ -2700,12 +2700,12 @@ const ProjectPanel: Component = () => {
                             &#x25BE;
                           </span>
                           <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Selected Workgroup</span>
+                            <span class="ac-wg-name">Selected Room</span>
                           </div>
                           <span class="ac-team-count">{selectedWorkgroup() ? 1 : 0}</span>
                         </div>
                         <Show when={!isPanelCollapsed(selectedWorkgroupCollapsedKey)}>
-                          <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected workgroup</div>}>
+                          <Show when={selectedWorkgroup()} fallback={<div class="ac-empty-hint">No selected room</div>}>
                             <For each={[selectedWorkgroup()!]}>
                               {(wg) => renderWorkgroupSubgroup(wg, "selected")}
                             </For>
@@ -2746,7 +2746,7 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
-                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Workgroups") || filteredWorkgroups().length > 0)}>
+                    <Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Rooms") || filteredWorkgroups().length > 0)}>
                     <div class="ac-wg-group">
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
@@ -2757,14 +2757,14 @@ const ProjectPanel: Component = () => {
                           &#x25BE;
                         </span>
                         <div class="ac-wg-header-text">
-                          <span class="ac-wg-name">Workgroups</span>
+                          <span class="ac-wg-name">Rooms</span>
                         </div>
                         <span class="ac-team-count">{filteredWorkgroups().length}</span>
                       </div>
                       <Show when={!isPanelCollapsed(workgroupsCollapsedKey)}>
                         <Show
                           when={filteredWorkgroups().length > 0}
-                          fallback={<div class="ac-empty-hint">No workgroups</div>}
+                          fallback={<div class="ac-empty-hint">No rooms</div>}
                         >
                           <For each={filteredWorkgroups()}>
                             {(wg) => renderWorkgroupSubgroup(wg, "workgroups")}
@@ -2792,7 +2792,7 @@ const ProjectPanel: Component = () => {
                               setNewWorkgroupTarget({ projectPath: proj.path });
                             }}
                           >
-                            New Workgroup
+                            New Room
                           </button>
                         </div>
                       </Portal>
@@ -3114,7 +3114,7 @@ const ProjectPanel: Component = () => {
                             </div>
                             <div class="new-agent-form">
                               <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
-                                Delete agent <strong>{deletingAgent()!.name.slice(deletingAgent()!.name.lastIndexOf("/") + 1)}</strong>? This will remove the agent matrix, its workgroup replicas, and team assignments. This action cannot be undone.
+                                Delete agent <strong>{deletingAgent()!.name.slice(deletingAgent()!.name.lastIndexOf("/") + 1)}</strong>? This will remove the agent matrix, its room replicas, and team assignments. This action cannot be undone.
                               </p>
                               <Show when={agentDeleteError()}>
                                 <div
@@ -3358,7 +3358,7 @@ const ProjectPanel: Component = () => {
                       <polyline points="3 6 5 6 21 6" />
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
-                    Delete Workgroup
+                    Delete Room
                   </button>
                 </div>
               </Portal>
@@ -3770,11 +3770,11 @@ const ProjectPanel: Component = () => {
                 <div class="modal-overlay">
                   <div class="agent-modal" style={{ "max-width": "360px" }}>
                     <div class="agent-modal-header">
-                      <span class="agent-modal-title">Delete Workgroup</span>
+                      <span class="agent-modal-title">Delete Room</span>
                     </div>
                     <div class="new-agent-form">
                       <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
-                        Delete workgroup <strong>{deletingWg()!.name}</strong>? This will remove the workgroup directory and all its contents. This action cannot be undone.
+                        Delete room <strong>{deletingWg()!.name}</strong>? This will remove the room directory and all its contents. This action cannot be undone.
                       </p>
                       <Show when={activeReplicas().length > 0}>
                         <div style={{
@@ -3832,7 +3832,7 @@ const ProjectPanel: Component = () => {
                               "font-size": "12px",
                               "line-height": "1.5",
                             }}>
-                              <strong>Cannot delete:</strong> Windows reported the workgroup is locked.
+                              <strong>Cannot delete:</strong> Windows reported the room is locked.
                               <Show when={liveSessions().length > 0}>
                                 <div style={{ "margin-top": "6px" }}><strong>Live AC sessions</strong></div>
                                 <ul style={{ margin: "4px 0 6px 16px", padding: "0" }}>
@@ -3896,7 +3896,7 @@ const ProjectPanel: Component = () => {
                               </Show>
                               <Show
                                 when={liveSessions().length > 0 || externalProcesses().length > 0}
-                                fallback={<div style={{ "margin-top": "8px" }}>Close any app that may be using files in this workgroup, then click <strong>Retry</strong> below.</div>}
+                                fallback={<div style={{ "margin-top": "8px" }}>Close any app that may be using files in this room, then click <strong>Retry</strong> below.</div>}
                               >
                                 <div style={{ "margin-top": "8px" }}>
                                   Close the listed sessions or quit the listed processes, then click <strong>Retry</strong> below.
@@ -3946,7 +3946,7 @@ const ProjectPanel: Component = () => {
                           } catch (e: any) {
                             if (myGen !== retryGen) return;
                             console.error("delete_workgroup failed:", e);
-                            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete workgroup";
+                            const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
                             if (msg.startsWith("BLOCKERS:")) {
                               try {
                                 const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -3958,7 +3958,7 @@ const ProjectPanel: Component = () => {
                                 return;
                               } catch (parseErr) {
                                 console.error("Failed to parse BLOCKERS: payload:", parseErr);
-                                setWgDeleteError("Workgroup is locked, but the blocker report could not be parsed. Try again.");
+                                setWgDeleteError("Room is locked, but the blocker report could not be parsed. Try again.");
                                 setWgDeleteInProgress(false);
                                 return;
                               }
@@ -3995,7 +3995,7 @@ const ProjectPanel: Component = () => {
                     </div>
                     <div class="new-agent-form">
                       <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
-                        Delete team <strong>{deletingTeam()!.name}</strong>? This will remove the team configuration and all associated workgroups. This action cannot be undone.
+                        Delete team <strong>{deletingTeam()!.name}</strong>? This will remove the team configuration and all associated rooms. This action cannot be undone.
                       </p>
                       <Show when={deleteError()}>
                         <div class="new-agent-error">{deleteError()}</div>

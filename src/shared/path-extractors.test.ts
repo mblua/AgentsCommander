@@ -133,3 +133,40 @@ describe('computeTrailingText', () => {
     expect(computeTrailingText(w, null)).toBe('alice@repo-AC');
   });
 });
+
+// #1614 section 9.1 frontend tests / section 15.4. F1 (`path-extractors.ts:25`)
+// feeds the `titlebar-wg-badge` in BOTH sidebar and terminal titlebars, so an
+// unrewired F1 renders no badge at all for a Room, silently. The legacy cases
+// above are deliberately kept (Rule P2): the badge is an IDENTITY, so a Room
+// and a legacy Workgroup must stay distinguishable in the mixed root.
+describe('path-extractors, Room (#1614 F1)', () => {
+  it('agent_in_room_returns_all_three', () => {
+    const w = 'C:\\foo\\.ac\\room-19-dev-team\\__agent_tech-lead';
+    expect(extractProjectName(w)).toBe('foo');
+    expect(extractWorkgroupName(w)).toBe('ROOM-19-DEV-TEAM');
+    expect(extractAgentName(w)).toBe('tech-lead');
+  });
+
+  it('room_and_legacy_at_the_same_slot_render_different_badges', () => {
+    expect(extractWorkgroupName('C:\\p\\.ac\\room-1-team\\__agent_x')).toBe('ROOM-1-TEAM');
+    expect(extractWorkgroupName('C:\\p\\.ac\\wg-1-team\\__agent_x')).toBe('WG-1-TEAM');
+  });
+
+  it('room_forward_slashes_and_unc_handled', () => {
+    expect(extractWorkgroupName('/foo/.ac/room-1/__agent_x')).toBe('ROOM-1');
+    expect(extractWorkgroupName('\\\\?\\C:\\proj\\.ac\\room-1\\__agent_x')).toBe('ROOM-1');
+  });
+
+  it('lax_room_segment_rejected_no_digits', () => {
+    const w = 'C:\\foo\\.ac\\room-foo\\__agent_x';
+    expect(extractWorkgroupName(w)).toBeNull();
+    expect(extractAgentName(w)).toBe('x');
+  });
+
+  it('room_repo_returns_project_and_room_no_agent', () => {
+    const w = 'C:\\foo\\.ac\\room-19-dev-team\\repo-X';
+    expect(extractProjectName(w)).toBe('foo');
+    expect(extractWorkgroupName(w)).toBe('ROOM-19-DEV-TEAM');
+    expect(extractAgentName(w)).toBeNull();
+  });
+});

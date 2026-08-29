@@ -89,7 +89,7 @@ Matches land in a separate window titled `Watcher Activity`.
 
 The window is scoped: a selector at the top chooses one agent session or `All agents`. The scope decides what is fetched and how much is kept, and the cap is **per session in both scopes**: 500 rows per session when you scope to one, 100 rows per session under `All agents`. Ten agents in the wider scope therefore retain up to a thousand rows between them, not a hundred.
 
-Each row carries the watcher id, the agent it fired on, the workgroup, and the matched text; selecting a row expands it. Four filters narrow the list, by watcher, by agent, by workgroup, and by free text, and they combine. Alongside the rows the window reports which watchers are currently active, which are degraded, whether the activity was truncated, and how many frames may have been missed.
+Each row carries the watcher id, the agent it fired on, the room, and the matched text; selecting a row expands it. Four filters narrow the list, by watcher, by agent, by room, and by free text, and they combine. Alongside the rows the window reports which watchers are currently active, which are degraded, whether the activity was truncated, and how many frames may have been missed.
 
 The window remembers its own position and size. That geometry is what `watchersGeometry` holds, which is why the window reopens where you left it.
 
@@ -118,4 +118,4 @@ See [Settings reference](../reference/settings.md#watchers) for the full `Watche
 
 - [Context tracking](context-tracking.md) - the per-agent `contextRegex` reading and its badge
 - [Settings reference](../reference/settings.md#watchers) - the `WatcherConfig` schema
-- [Concepts](../concepts.md) - session, workgroup and agent vocabulary
+- [Concepts](../concepts.md) - session, room and agent vocabulary

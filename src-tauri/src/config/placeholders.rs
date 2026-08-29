@@ -28,7 +28,7 @@ const AC_REPLICA_ROOT_ERROR: &str =
     "%AC_REPLICA_ROOT% requires an AC replica or root-agent launch root";
 const AC_WORKSPACE_ROOT_ERROR: &str =
     "%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace";
-const AC_MATRIX_ROOT_ERROR: &str = "%AC_MATRIX_ROOT% requires an AC workgroup replica launch root";
+const AC_MATRIX_ROOT_ERROR: &str = "%AC_MATRIX_ROOT% requires an AC room replica launch root";
 const AC_PLACEHOLDER_LAUNCH_ROOT_ERROR: &str = "AC path placeholders require an AC launch root";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +270,7 @@ fn is_ac_replica_dir(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("wg-"))
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix)
 }
 
 fn is_root_agent_dir(path: &Path) -> bool {

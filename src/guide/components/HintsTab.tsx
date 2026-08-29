@@ -67,7 +67,7 @@ const sections: HintSection[] = [
     hints: [
       {
         title: "Isolation and sandboxes",
-        body: "For tasks that may touch local state, isolate the work before you delegate it. Disposable git worktrees, containers, and VMs are useful options. AgentsCommander workgroup replicas are stronger but heavier: each workgroup gets its own repo copy, agent session directories, messaging area, write zones, and executable, which keeps team context and test builds separated.",
+        body: "For tasks that may touch local state, isolate the work before you delegate it. Disposable git worktrees, containers, and VMs are useful options. AgentsCommander room replicas are stronger but heavier: each room gets its own repo copy, agent session directories, messaging area, write zones, and executable, which keeps team context and test builds separated.",
       },
       {
         title: "Specification first",

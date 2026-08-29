@@ -433,7 +433,7 @@ const AgentPickerModal: Component<{
     const count = scopePreview()?.targetCount ?? 0;
     if (scope === "kind") return `Overwrite ${count} of this kind`;
     const wg = props.scopeContext?.workgroupName;
-    return `Overwrite ${count}${wg ? ` in ${wg}` : " in this workgroup"}`;
+    return `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
   });
 
   const currentProfileLetter = createMemo(() => {
@@ -941,12 +941,12 @@ const AgentPickerModal: Component<{
                   checked={selectedScope() === "workgroup"}
                   onChange={() => setSelectedScope("workgroup")}
                 />
-                Entire workgroup <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
+                Entire room <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
               </label>
             </div>
             <div class="agent-scope-live-note">
               <span class="agent-scope-live-tag">live</span>
-              Counts are read from the current workgroup; the backend re-enumerates targets before applying.
+              Counts are read from the current room; the backend re-enumerates targets before applying.
             </div>
           </Show>
 
@@ -969,7 +969,7 @@ const AgentPickerModal: Component<{
               data-ac-role="list"
             >
               <div class="agent-scope-targets-head">
-                {scopePreview()!.targetCount} replica(s) across {distinctWorkgroupCount()} workgroup(s) ·{" "}
+                {scopePreview()!.targetCount} replica(s) across {distinctWorkgroupCount()} room(s) ·{" "}
                 {scopePreview()!.liveSessionCount} live session(s)
               </div>
               <For each={scopePreview()!.targets}>

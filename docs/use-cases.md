@@ -9,7 +9,7 @@ Every example assumes you have the [Quickstart](quickstart.md) finished: a proje
 **Setup**: Two worker agents own different modules; an orchestrator routes work between them.
 
 ```
-wg-1-feature-x/
+room-1-feature-x/
   __agent_tech-lead/         # orchestrator — Claude Code
   __agent_dev-backend/       # backend module
   __agent_dev-frontend/      # frontend module
@@ -29,7 +29,7 @@ You watch all three terminals at once. When the green dot lights up on the orche
 **Setup**: One agent ships a PR; two others review it independently using different models.
 
 ```
-wg-2-review/
+room-2-review/
   __agent_shipper/           # opens the PR — Codex
   __agent_reviewer-claude/   # Claude Code
   __agent_reviewer-antigravity/   # Antigravity
@@ -47,7 +47,7 @@ Workflow:
 **Setup**: A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish.
 
 ```
-wg-3-refactor-auth/
+room-3-refactor-auth/
   __agent_arch/              # orchestrator — Claude Code, runs for hours
   __agent_dev-1/             # worker
   __agent_dev-2/             # worker
@@ -84,8 +84,8 @@ A few configurations that look reasonable but cause pain:
 
 - **One agent doing everything.** AC's value is multi-agent. If you only have one agent, you are paying for a Tauri shell around the coding agent CLI you already have — use the CLI directly.
 - **Two role prompts in one directory.** Forbidden. The second agent will read the first one's role file and lose its identity. One agent = one directory.
-- **Sharing `TASK.md` across teams.** Each workgroup has its own brief. Sharing one brief across teams will produce orchestrator conflicts on the YAML frontmatter title.
-- **Assuming orchestrators cannot talk to each other.** Orchestrators of any teams can message each other directly (cross-team orchestrator chat is allowed by the routing rules). The Root Agent (Project AC Root-level) is the top-level orchestrator that sees every workgroup orchestrator as a peer and can route work across the whole project.
+- **Sharing `TASK.md` across teams.** Each room has its own brief. Sharing one brief across teams will produce orchestrator conflicts on the YAML frontmatter title.
+- **Assuming orchestrators cannot talk to each other.** Orchestrators of any teams can message each other directly (cross-team orchestrator chat is allowed by the routing rules). The Root Agent (Project AC Root-level) is the top-level orchestrator that sees every room orchestrator as a peer and can route work across the whole project.
 
 ---
 

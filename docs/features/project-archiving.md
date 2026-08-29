@@ -2,7 +2,7 @@
 
 For developers whose sidebar has collected projects they are done with. After this page you can archive a project, understand exactly what that does and does not touch, get it back, and read the message that tells you why an archive was refused.
 
-Archiving hides a project from the sidebar. It is a change to AC's registration list, not to your files: the project's folder, its `.ac` directory, its workgroups and its history stay exactly where they are.
+Archiving hides a project from the sidebar. It is a change to AC's registration list, not to your files: the project's folder, its `.ac` directory, its rooms and its history stay exactly where they are.
 
 ## What archiving does
 
@@ -12,7 +12,7 @@ Archiving moves one path from AC's active project list to its archived list. Tha
 
 What changes for you:
 
-- The project disappears from the sidebar and from the workgroup rail.
+- The project disappears from the sidebar and from the room rail.
 - It stops taking part in startup restoration and team discovery.
 - No session can start inside it while it is archived. That is enforced, not a convention, and it is why the auto-unarchive flow below exists.
 

@@ -133,7 +133,7 @@ pub struct CloseSessionArgs {
 
     /// Target agent name to close. Use `list-peers-lean` to discover valid names.
     /// Accepts FQN form (e.g., "myproject:wg-1-ac-devs/dev-rust" — preferred,
-    /// matches the `name` field returned by `list-peers-lean`) or WG-local form
+    /// matches the `name` field returned by `list-peers-lean`) or Room-local form
     /// (e.g., "wg-1-ac-devs/dev-rust" — auto-resolved when unambiguous across
     /// your project paths).
     #[arg(long)]

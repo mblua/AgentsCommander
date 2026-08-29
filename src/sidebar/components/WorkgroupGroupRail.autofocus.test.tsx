@@ -391,13 +391,13 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
       // Collapse the "Workgroups" sub-section header in ProjectB before auto-focus.
       const workgroupsHeaderB = Array.from(
         rendered.root.querySelectorAll<HTMLElement>(".ac-wg-header--collapsible")
-      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Workgroups");
+      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Rooms");
       if (!workgroupsHeaderB) throw new Error("Workgroups sub-header not found in ProjectB");
       // First locate ProjectB's panel to scope the sub-header lookup.
       const projectBPanel = findProjectHeader(rendered.root, projectPathB).closest(".project-panel");
       const workgroupsHeaderInB = Array.from(
         projectBPanel!.querySelectorAll<HTMLElement>(".ac-wg-header--collapsible")
-      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Workgroups");
+      ).find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === "Rooms");
       if (!workgroupsHeaderInB) throw new Error("Workgroups sub-header not found inside ProjectB panel");
       click(workgroupsHeaderInB);
       await waitFor(() => {

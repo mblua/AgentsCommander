@@ -88,7 +88,7 @@ describe("TeamContextAlertsEditor", () => {
     expect(mounted.root.textContent).toContain("Context usage alerts (optional)");
     expect(mounted.root.textContent).toContain("No context alerts configured.");
     expect(mounted.root.textContent).toContain("0 of 3 thresholds");
-    expect(mounted.root.textContent).toContain("Applies to every workgroup of this team.");
+    expect(mounted.root.textContent).toContain("Applies to every room of this team.");
     expect(mounted.root.textContent).toContain("best-effort");
     expect(mounted.root.textContent).toContain("contextRegex");
     expect(mounted.root.textContent).toContain("No automatic action is taken");

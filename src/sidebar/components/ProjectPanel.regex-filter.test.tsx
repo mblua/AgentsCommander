@@ -368,7 +368,7 @@ describe("ProjectPanel regex filter", () => {
 
       const workgroupsCount = () => {
         const header = Array.from(rendered.root.querySelectorAll(".ac-wg-header")).find(
-          (h) => h.querySelector(".ac-wg-name")?.textContent === "Workgroups"
+          (h) => h.querySelector(".ac-wg-name")?.textContent === "Rooms"
         );
         return header?.querySelector(".ac-team-count")?.textContent ?? null;
       };

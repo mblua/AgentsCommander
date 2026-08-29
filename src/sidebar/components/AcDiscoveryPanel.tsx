@@ -260,7 +260,7 @@ const AcDiscoveryPanel: Component = () => {
             <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
               &#x25BE;
             </span>
-            <span class="ac-discovery-title">Workgroups</span>
+            <span class="ac-discovery-title">Rooms</span>
             <span class="ac-discovery-count">{workgroups().length}</span>
           </button>
           <Show when={!wgCollapsed()}>

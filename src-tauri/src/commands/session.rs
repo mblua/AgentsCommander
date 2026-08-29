@@ -5389,7 +5389,11 @@ mod tests {
         let err = container_path_context_for_cwd(link.to_str().unwrap())
             .expect_err("junction to workgroup root must be refused");
 
-        assert!(err.contains("workgroup root"), "{err}");
+        // #1614 section 9.3 clause 1: the string this pins is produced in a
+        // DIFFERENT file, pty/container_paths.rs, which section 5.3 renames
+        // under Rule R. The fixture below stays a legacy `wg-*` directory
+        // (Rule P2) precisely so this proves the refusal still fires for one.
+        assert!(err.contains("room root"), "{err}");
         assert!(err.contains("selected path"), "{err}");
         assert!(err.contains("canonical path"), "{err}");
     }

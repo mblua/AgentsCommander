@@ -1,12 +1,12 @@
 # Project Loops
 
-For developers who want an orchestrator prompted on a schedule instead of remembering to do it. After this page you can create a Loop that wakes a workgroup's orchestrator on a cron expression, choose what happens when that orchestrator is busy, and read the toast that tells you what the Loop did.
+For developers who want an orchestrator prompted on a schedule instead of remembering to do it. After this page you can create a Loop that wakes a room's orchestrator on a cron expression, choose what happens when that orchestrator is busy, and read the toast that tells you what the Loop did.
 
-A Project Loop is a scheduled prompt. You give it a cron expression, a target workgroup, and the text to send; AC delivers that text to the workgroup's orchestrator when the schedule comes due, waking or respawning the session if it is not running.
+A Project Loop is a scheduled prompt. You give it a cron expression, a target room, and the text to send; AC delivers that text to the room's orchestrator when the schedule comes due, waking or respawning the session if it is not running.
 
 ## What a Loop is
 
-A Loop belongs to one registered project and targets one workgroup inside it. It carries four things: an id, a cron expression, the target workgroup whose **orchestrator** receives the prompt, and the prompt text.
+A Loop belongs to one registered project and targets one room inside it. It carries four things: an id, a cron expression, the target room whose **orchestrator** receives the prompt, and the prompt text.
 
 Two more properties control its behavior: whether it is enabled, and its busy policy, which decides what happens when the orchestrator is mid-task at delivery time.
 
@@ -22,14 +22,14 @@ The `New Loop` modal has four fields and two checkboxes:
 |---|---|
 | `Name` | A human-readable name, for example `Weekday standup`. |
 | `Cron` | A five-field cron expression, for example `0 9 * * 1-5`. |
-| `Workgroup Orchestrator` | The target workgroup, chosen from a list. Starts on `Select an orchestrator...`. |
+| `Room Orchestrator` | The target room, chosen from a list. Starts on `Select an orchestrator...`. |
 | `Prompt` | The text to inject into the orchestrator. |
 | `Enabled` | On by default. Off creates the Loop without scheduling it. |
 | `Force inject even if orchestrator is busy` | Off by default. See [Busy sessions and respawn](#busy-sessions-and-respawn). |
 
 The modal checks the cron expression while you type. It shows `Checking schedule...` while it asks the backend, then `Next run: <time>` when the expression parses. A wrong field count is rejected up front with `Cron expression must have exactly five fields`, and an expression the backend rejects shows `Invalid cron expression`. **`Create` stays disabled until the preview is ready**, so a Loop with an unparseable schedule cannot be created.
 
-If the project has no workgroup with a verified orchestrator, the picker is empty and the modal says `A workgroup with a verified orchestrator is required.` Create the orchestrator first.
+If the project has no room with a verified orchestrator, the picker is empty and the modal says `A room with a verified orchestrator is required.` Create the orchestrator first.
 
 `Ctrl+Enter` creates the Loop, `Escape` closes the modal.
 
@@ -40,7 +40,7 @@ agentscommander loop create \
   --project MyProject \
   --name "Daily sync" \
   --cron "0 9 * * 1-5" \
-  --workgroup wg-1-dev-team \
+  --room room-1-dev-team \
   --prompt "Check status and ask for blockers."
 ```
 
@@ -62,10 +62,10 @@ AC scans each Loop on a schedule and compares the expression against the window 
 
 ## Delivery: what happens when a Loop fires
 
-Delivery targets the orchestrator of the Loop's workgroup, in this order:
+Delivery targets the orchestrator of the Loop's room, in this order:
 
-1. AC resolves the target workgroup and its orchestrator replica.
-2. If a workgroup purge is destroying that agent right now, delivery is skipped with `purge-wg in progress for '<agent>'; loop delivery skipped`. A Loop tick never resurrects an agent a purge is removing.
+1. AC resolves the target room and its orchestrator replica.
+2. If a room purge is destroying that agent right now, delivery is skipped with `purge-room in progress for '<agent>'; loop delivery skipped`. A Loop tick never resurrects an agent a purge is removing.
 3. If a live orchestrator session exists, it is used. If not, AC clears any stale session records and **spawns the orchestrator session**.
 4. AC checks whether the orchestrator is busy and applies the Loop's busy policy.
 5. The prompt is injected into the session, exactly as if you had typed it, and becomes that session's last prompt.
@@ -96,7 +96,7 @@ Every one of them carries the backend's own message when it has one, so the text
 - A session that has **exited** is respawned.
 - A session that is listed but has **no terminal** (dormant, never mounted, or left over from a previous run) is also respawned, and its stale record is cleared first.
 
-The practical consequence: a Loop wakes a workgroup you closed yesterday. If you do not want that, disable the Loop rather than closing the session.
+The practical consequence: a Loop wakes a room you closed yesterday. If you do not want that, disable the Loop rather than closing the session.
 
 ## Where the configuration lives
 
@@ -120,10 +120,10 @@ See [`loop`](../reference/cli.md#loop) for the command surface.
 
 **"`Create` stays greyed out."** One of the required fields is empty, or the cron preview is not in its ready state. The preview must show `Next run: <time>` before `Create` enables.
 
-**"The workgroup picker is empty."** The project has no workgroup with a verified orchestrator, and the modal says so. Create the orchestrator, then reopen the modal.
+**"The room picker is empty."** The project has no room with a verified orchestrator, and the modal says so. Create the orchestrator, then reopen the modal.
 
 ## See also
 
 - [`loop` CLI reference](../reference/cli.md#loop) - every flag, and the JSON each subcommand prints
-- [Non-stop mode](non-stop-mode.md) - the other way AC acts on a workgroup without you
-- [Concepts](../concepts.md) - orchestrator, workgroup, and session
+- [Non-stop mode](non-stop-mode.md) - the other way AC acts on a room without you
+- [Concepts](../concepts.md) - orchestrator, room, and session

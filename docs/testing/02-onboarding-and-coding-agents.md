@@ -1,6 +1,6 @@
 # 02 Onboarding And Coding Agents
 
-These cases validate the first-run and settings surfaces that let a user configure the coding agents AgentsCommander can launch. Run them before project, agent, team, or workgroup journeys that depend on a configured coding agent.
+These cases validate the first-run and settings surfaces that let a user configure the coding agents AgentsCommander can launch. Run them before project, agent, team, or room journeys that depend on a configured coding agent.
 
 Use the deterministic testable app mode from `README.md#deterministic-testable-app`. Run `agentscommander_testeable.exe test-reset --confirm-testeable` before first-run cases that require clean disposable state, and only when the testable GUI is not active.
 
@@ -14,7 +14,7 @@ Tester: ac-cli-and-gui-tester
 
 App under test: `target\release\agentscommander_testeable.exe --app --ui-automation`
 
-Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\wg-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
+Evidence root: `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-14-acceptance-testing\__agent_ac-cli-and-gui-tester\evidence\ui-regression-baseline-20260613-191000`
 
 Result summary:
 

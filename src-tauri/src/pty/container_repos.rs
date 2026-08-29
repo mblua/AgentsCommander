@@ -133,7 +133,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
     let is_workgroup_root = wg_root
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("wg-"))
+        .map(crate::config::entity_prefix::has_entity_prefix)
         .unwrap_or(false)
         && crate::config::ac_root::find_ac_root_ancestor(&wg_root).is_some();
     if !is_workgroup_root {
@@ -195,7 +195,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
             // check(s).
             return Err(format!(
                 "container repo mount refused: repos[] entry '{}' resolves to '{}', which is not an \
-                 admissible repo-* directory directly under the workgroup root \
+                 admissible repo-* directory directly under the room root \
                  (direct_wg_child={}, repo_prefix={}, is_dir={}, not_reserved={})",
                 entry,
                 crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical),

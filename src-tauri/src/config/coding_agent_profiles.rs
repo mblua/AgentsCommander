@@ -211,20 +211,20 @@ fn validate_authoritative_matrix_dir(matrix_dir: &Path) -> Result<PathBuf, Strin
 }
 
 fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let replica_dir = canonical_existing_dir(replica_dir, "WG replica")?;
+    let replica_dir = canonical_existing_dir(replica_dir, "Room replica")?;
     let dir_name = replica_dir
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("WG replica '{}' has no valid name", replica_dir.display()))?;
+        .ok_or_else(|| format!("Room replica '{}' has no valid name", replica_dir.display()))?;
     if !dir_name.starts_with("__agent_") {
         return Err(format!(
-            "WG replica '{}' must be named '__agent_<name>'",
+            "Room replica '{}' must be named '__agent_<name>'",
             replica_dir.display()
         ));
     }
     let wg_dir = replica_dir.parent().ok_or_else(|| {
         format!(
-            "WG replica '{}' has no parent workgroup",
+            "Room replica '{}' has no parent room",
             replica_dir.display()
         )
     })?;
@@ -232,9 +232,9 @@ fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, PathBuf), St
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if !wg_name.starts_with("wg-") {
+    if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
-            "WG replica '{}' is not inside a wg-* workgroup",
+            "Room replica '{}' is not inside a `room-*` or legacy `wg-*` Room directory",
             replica_dir.display()
         ));
     }
@@ -294,7 +294,7 @@ pub fn validate_profile_selection_agent_path(
     }
 
     Err(format!(
-        "Agent path '{}' is not an Agent Matrix or WG replica",
+        "Agent path '{}' is not an Agent Matrix or Room replica",
         launch_path.display()
     ))
 }
@@ -469,7 +469,7 @@ pub fn set_replica_coding_agent_selection(
         .unwrap_or("");
     if !name.starts_with("__agent_") {
         return Err(format!(
-            "Profile assignment target '{}' must be a WG replica",
+            "Profile assignment target '{}' must be a Room replica",
             validated.launch_path.display()
         ));
     }

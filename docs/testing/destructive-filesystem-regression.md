@@ -140,7 +140,7 @@ Expected result:
 
 The automated test creates its own temp root and junction. Creating this manual junction does not make a skipped automated test pass; it only provides equivalent manual evidence.
 
-## Workgroup Long Path Check
+## Room Long Path Check
 
 Automated test:
 
@@ -166,14 +166,14 @@ New-Item -ItemType Directory -Path $ConfigDir | Out-Null
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ConfigDir "settings.json")
 ```
 
-3. Create `ProjectAlpha`, `.ac`, `_agent_architect`, and a workgroup with the CLI:
+3. Create `ProjectAlpha`, `.ac`, `_agent_architect`, and a room with the CLI:
 
 ```powershell
 $Project = Join-Path $Root "ProjectAlpha"
 $Agent = Join-Path $Project ".ac\_agent_architect"
 New-Item -ItemType Directory -Path (Join-Path $Agent "memory") | Out-Null
 Set-Content -LiteralPath (Join-Path $Agent "Role.md") -Value "# architect"
-& $Bin workgroup add --project ProjectAlpha --team "Dev Team" --title "Build" --coordinator architect
+& $Bin room add --project ProjectAlpha --team "Dev Team" --title "Build" --coordinator architect
 ```
 
 4. Inside `.ac\wg-1-dev-team`, create a long nested path and payload file:
@@ -188,7 +188,7 @@ Set-Content -LiteralPath (Join-Path $Deep "payload.txt") -Value "payload"
 5. Run:
 
 ```powershell
-& $Bin workgroup remove --project ProjectAlpha --workgroup wg-1-dev-team --force-dirty
+& $Bin room remove --project ProjectAlpha --room room-1-dev-team --force-dirty
 ```
 
 Expected result:
@@ -199,7 +199,7 @@ Expected result:
 - `$Outside` remains.
 - Any sibling path outside `.ac\wg-1-dev-team` remains.
 
-## Workgroup Reparse Root Check
+## Room Reparse Root Check
 
 Automated test:
 
@@ -232,10 +232,10 @@ $Project = Join-Path $Root "ProjectAlpha"
 $Agent = Join-Path $Project ".ac\_agent_architect"
 New-Item -ItemType Directory -Path (Join-Path $Agent "memory") | Out-Null
 Set-Content -LiteralPath (Join-Path $Agent "Role.md") -Value "# architect"
-& $Bin workgroup add --project ProjectAlpha --team "Dev Team" --title "Build" --coordinator architect
+& $Bin room add --project ProjectAlpha --team "Dev Team" --title "Build" --coordinator architect
 ```
 
-4. Remove the real workgroup directory and replace it with a junction:
+4. Remove the real room directory and replace it with a junction:
 
 ```powershell
 $Wg = Join-Path $Root "ProjectAlpha\.ac\wg-1-dev-team"
@@ -249,7 +249,7 @@ cmd /C mklink /J "$Wg" "$Real"
 5. Run:
 
 ```powershell
-& $Bin workgroup remove --project ProjectAlpha --workgroup wg-1-dev-team --force-dirty
+& $Bin room remove --project ProjectAlpha --room room-1-dev-team --force-dirty
 ```
 
 Expected result:
@@ -274,7 +274,7 @@ cargo test commands::entity_creation::tests::validate_delete_root_rejects_repars
 Manual fallback if the automated test prints a skip:
 
 1. Create `$Root` and `$Outside` as described above.
-2. Create a real directory and a junction named like a workgroup:
+2. Create a real directory and a junction named like a room:
 
 ```powershell
 $Real = Join-Path $Root "real"

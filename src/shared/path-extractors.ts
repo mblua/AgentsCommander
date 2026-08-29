@@ -1,4 +1,5 @@
 import { CANONICAL_AC_ROOT_DIR } from './constants';
+import { isNumberedEntityDirName } from './entity-prefix';
 
 function pathParts(workDir: string): string[] {
   return workDir.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
@@ -22,7 +23,7 @@ export function extractWorkgroupName(workDir: string): string | null {
   const idx = lastAcRootIndex(parts);
   if (idx < 0 || idx + 1 >= parts.length) return null;
   const wg = parts[idx + 1];
-  return /^wg-\d+/.test(wg) ? wg.toUpperCase() : null;
+  return isNumberedEntityDirName(wg) ? wg.toUpperCase() : null;
 }
 
 export function extractAgentName(workDir: string): string | null {

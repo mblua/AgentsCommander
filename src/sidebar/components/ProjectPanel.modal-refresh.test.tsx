@@ -189,7 +189,7 @@ function findButtonByText(label: string): HTMLButtonElement {
  *  context-menu button of the same label, which lives in a .session-context-menu). */
 function newWorkgroupModalOpen(): boolean {
   return Array.from(document.querySelectorAll<HTMLElement>(".modal-overlay")).some(
-    (el) => el.querySelector(".agent-modal-title")?.textContent?.trim() === "New Workgroup",
+    (el) => el.querySelector(".agent-modal-title")?.textContent?.trim() === "New Room",
   );
 }
 
@@ -238,8 +238,8 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
 
     contextMenu(rendered.root.querySelector(".project-header")!);
-    await waitFor(() => expect(findButtonByText("New Workgroup")).toBeTruthy());
-    click(findButtonByText("New Workgroup"));
+    await waitFor(() => expect(findButtonByText("New Room")).toBeTruthy());
+    click(findButtonByText("New Room"));
 
     await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
     const titleInput = workgroupTaskTitleInput();

@@ -91,16 +91,16 @@ Click **Publish release** when verified.
 
 GitHub Releases is the source of truth for per-release detail, but `CHANGELOG.md` at the repo root carries the human-readable summary. Append a section under the new version with the highlights and a link to the release.
 
-## Workgroup-specific builds
+## Room-specific builds
 
-The shipper builds a workgroup-suffixed exe alongside the canonical one:
+The shipper builds a room-suffixed exe alongside the canonical one:
 
 ```
 target/release/agentscommander.exe                # canonical
-target/release/agentscommander_standalone_wg-N.exe # workgroup build
+target/release/agentscommander_standalone_wg-N.exe # room build
 ```
 
-**Hard rule**: a workgroup build **never overwrites** the bare `agentscommander_standalone.exe`. The shipper's Step 8 enforces this. If you see the bare exe being replaced by a wg-N build, the shipper's workflow is misconfigured — stop and fix it before publishing.
+**Hard rule**: a room build **never overwrites** the bare `agentscommander_standalone.exe`. The shipper's Step 8 enforces this. If you see the bare exe being replaced by a wg-N build, the shipper's workflow is misconfigured — stop and fix it before publishing.
 
 ## Hotfixes
 

@@ -289,7 +289,35 @@ pub fn is_root_agent_target(target: &str) -> bool {
 
 const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str = "Direct file-based workgroup messaging is not available from the root-agent directory yet: `send --send` currently requires a workgroup replica root. Do not claim that you can autonomously message workgroup peers until a future root messaging feature adds explicit root-aware send instructions.";
 
-const ROOT_COORDINATION_MESSAGING_PARAGRAPH: &str = r#"You may message verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
+const ROOT_COORDINATION_MESSAGING_PARAGRAPH: &str = r#"You may message verified room orchestrator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
+
+Root messaging is file-based:
+
+1. Write the message to `messaging/` inside this `ac-root-agent` directory.
+2. Use a filename shaped like `YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md`.
+3. Send it with:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --send <filename> --mode wake
+```
+
+Never send to origin coordinators or non-coordinator specialist/member agents from this root session.
+
+Coordinators may reply by sending to `agentscommander://root-agent`; their replies appear in this session as standard file notifications."#;
+
+/// #1614 D8c: `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
+/// through base commit d7008b34. The live constant is DUAL-USE: it is the
+/// paragraph the deferred-messaging migration writes into the user's live
+/// Role.md, and it is simultaneously interpolated into
+/// `OLD_ROOT_CONTEXT_WITH_COORDINATION_MD`, which is entry 2 of the frozen
+/// `old_generated` array. Rule R forces the first to change and Rule P3
+/// forces the second not to, so the two are split and the RECOGNIZER reads
+/// this frozen half. Never edit.
+/// Provenance: the d7008b34 blob, root_agent.rs lines 292-306; declaration
+/// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
+/// sha256 FC2164A2...F207 (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME: &str = r#"You may message verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
 
 Root messaging is file-based:
 
@@ -368,7 +396,7 @@ You are not a workgroup replica and you do not have an origin Agent Matrix. Use 
 
 Use the AgentsCommander CLI only for commands that are valid from this root-agent directory. Follow the write restrictions in the common context exactly.
 
-{ROOT_COORDINATION_MESSAGING_PARAGRAPH}
+{ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME}
 "#
     )
 });
@@ -684,6 +712,67 @@ You are the AgentsCommander Root Agent, the top-level orchestrator for this Agen
 
 ## Responsibility
 
+Act as the top-level planning and oversight agent for sessions, rooms, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
+
+## State
+
+Your own durable state lives in the canonical `ac-root-agent` directory:
+
+- `memory/`
+- `plans/`
+- `skills/`
+- `Role.md`
+
+You are not a room replica and you have no origin Agent Matrix; use the canonical root directory for your durable state.
+
+## Coordination
+
+Coordinate across rooms at a high level: delegate specialized implementation work to the appropriate team orchestrators and synthesize their results for the user.
+
+## Team and room setup
+
+When asked to set up a new team for automation, use this order:
+
+1. Create any missing agents with `create-agent-matrix`.
+2. Create the team with `team create`, choosing one orchestrator and the worker agents.
+3. Activate a room with `room add` using only `--project`, `--team`, and `--title`.
+
+Agents must exist before team creation. Team creation defines membership and repo access; room activation uses the existing team definition.
+
+## Governance Boundary Audits
+
+Load and apply `skills/role-skill-boundary-audit/SKILL.md` before finalizing any work that creates, modifies, approves, or audits agents, `Role.md` files, skills, role templates, workflow instructions, or Agent Matrix structure, and when a role grows unusually large, a role contains repeatable operational procedure, a skill contains authority or ownership language, similar instructions appear in multiple roles, someone proposes another agent for a bounded capability, or periodic matrix hygiene is requested.
+
+The audit is a review lens: produce a structured recommendation before any refactor, never silently rewrite roles, skills, or agent boundaries.
+
+## Agency Agents Roles
+
+Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
+"#;
+
+/// #1614 D8a: `ROOT_ROLE_MD` exactly as it shipped through base commit
+/// d7008b34, frozen so a pristine pre-rename root context keeps being
+/// recognized. Wired into BOTH root lists: the `old_generated` array in
+/// `is_known_generated_root_context_template` AND `migrate_root_role_file`'s
+/// independent pristine-generation list. A snapshot wired into only one of
+/// the two reclassifies every pristine pre-rename root Role.md on the
+/// migration path while the recognizer test stays green. Never edit.
+/// Provenance: the d7008b34 blob, root_agent.rs lines 675-723; declaration
+/// 2501 bytes sha256 97136810...A095 (plan 3.12 Table A), value 2467 bytes
+/// sha256 7F82F28C...C52D (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD: &str = r#"---
+name: 'agents-commander'
+description: 'Static supplemental root context for AgentsCommander.'
+type: agent
+---
+
+# Agents Commander
+
+You are the AgentsCommander Root Agent, the top-level orchestrator for this AgentsCommander binary.
+
+## Responsibility
+
 Act as the top-level planning and oversight agent for sessions, workgroups, and agents available to this AgentsCommander instance: help the user inspect available work, plan delegation, track status, and synthesize results.
 
 ## State
@@ -721,7 +810,6 @@ The audit is a review lens: produce a structured recommendation before any refac
 
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
-
 pub(crate) fn default_root_context_template() -> &'static str {
     ROOT_ROLE_MD
 }
@@ -736,6 +824,7 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD),
         normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD),
+        normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD),
         normalize_role_text(ROOT_ROLE_MD),
     ];
     old_generated.contains(&normalized)
@@ -1048,6 +1137,7 @@ fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD)
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD)
+        || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
         if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
@@ -2110,9 +2200,9 @@ mod tests {
         assert!(ROOT_ROLE_MD.contains("skills/agency-agents-roles/SKILL.md"));
         assert!(ROOT_ROLE_MD.contains("create-agent-matrix"));
         assert!(ROOT_ROLE_MD.contains("team create"));
-        assert!(ROOT_ROLE_MD.contains("workgroup add"));
+        assert!(ROOT_ROLE_MD.contains("room add"));
         assert!(ROOT_ROLE_MD.contains("Agents must exist before team creation"));
-        assert!(!ROOT_ROLE_MD.contains("workgroup add --coordinator"));
+        assert!(!ROOT_ROLE_MD.contains("room add --coordinator"));
         assert!(ROOT_ROLE_MD.contains("role-skill-boundary-audit"));
         assert!(ROOT_ROLE_MD.contains("`Role.md` files"));
         assert!(ROOT_ROLE_MD.contains("skills"));
@@ -2327,6 +2417,119 @@ mod tests {
         );
     }
 
+    /// #1614 AC7.9 and AC7.10. ONE fixture (the frozen pre-Room-rename bytes)
+    /// drives BOTH root paths, modelled on
+    /// `frozen_v5_root_context_is_recognized_and_migrated_on_both_paths`, whose
+    /// doc comment says a list edited in only one place cannot pass silently.
+    /// The recognizer list and `migrate_root_role_file`'s independent pristine
+    /// list are separate, and D8a wires the snapshot into both.
+    #[test]
+    fn frozen_pre_room_rename_root_context_migrates_on_the_role_path_too() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::write(root.join("Role.md"), ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
+            .expect("write pristine pre-Room-rename role");
+        let template_path = temp
+            .path()
+            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&template_path, ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
+            .expect("write pristine pre-Room-rename template");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("Role.md")).expect("read role"),
+            MINIMAL_ROOT_ROLE_MD,
+            "a pristine pre-Room-rename Role.md must reduce to the minimal role; this is \
+             migrate_root_role_file's OWN list, not old_generated"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&template_path).expect("read template"),
+            default_root_context_template(),
+            "a pristine pre-Room-rename Context.root-agent.md must auto-upgrade (recognizer list)"
+        );
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD
+        ));
+    }
+
+    /// #1614 AC7.9 for the root spec.
+    #[test]
+    fn frozen_pre_room_rename_root_context_is_recognized() {
+        assert!(is_known_generated_root_context_template(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD
+        ));
+        assert_ne!(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD, ROOT_ROLE_MD,
+            "the Room rename must actually change ROOT_ROLE_MD or the freeze is pointless"
+        );
+        assert!(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.contains("workgroup add"));
+        assert!(!ROOT_ROLE_MD.to_lowercase().contains("workgroup"));
+    }
+
+    /// #1614 AC7.3 and AC7.5. Expected values taken from the frozen base and
+    /// written into the plan (section 3.12 Table B), never read back from the
+    /// constants they check.
+    #[test]
+    fn frozen_snapshots_are_byte_exact_at_d7008b34() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(
+            ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.len(),
+            2467,
+            "frozen pre-Room-rename root context must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD.as_bytes())
+            ),
+            "7f82f28c70221c8476bb957f5978433173f60e388a9f18db729e5c2bf014c52d",
+            "frozen root snapshot changed; every pristine pre-rename root Role.md would be orphaned"
+        );
+
+        assert_eq!(
+            ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME.len(),
+            897,
+            "frozen pre-Room-rename coordination paragraph must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "fc2164a2a56957e481debca460f9df3cc681a634edda58f5270939c85668f207",
+            "the frozen half of the D8c split changed; old_generated[1] is no longer the shipped bytes"
+        );
+    }
+
+    /// #1614 AC7.6 / D8d. `OLD_DEFERRED_MESSAGING_PARAGRAPH` is NOT compared for
+    /// equality; it is searched for INSIDE the user's live Role.md, and on a hit
+    /// the migration substitutes the coordination paragraph for it. Editing it
+    /// would silently disable that migration for every installation still on the
+    /// deferred-messaging generation: the `contains` stops matching, the branch
+    /// never fires, and nothing reports it. It has no live twin, so there is
+    /// nothing to split and it takes NO edit -- which is exactly why it gets a
+    /// byte pin rather than a code comment.
+    #[test]
+    fn old_deferred_messaging_paragraph_is_frozen() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            OLD_DEFERRED_MESSAGING_PARAGRAPH.len(),
+            293,
+            "OLD_DEFERRED_MESSAGING_PARAGRAPH must stay the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(OLD_DEFERRED_MESSAGING_PARAGRAPH.as_bytes())
+            ),
+            "6e12e68e51c3c6df2386728dfd0ed98bfe06a8a0c3f6383bfaf8fd4463c7a463",
+            "editing this silently and permanently disables the deferred-messaging migration"
+        );
+    }
+
     /// #1005 S5 / G3: the frozen v4 root snapshot must stay byte-identical to what
     /// the #698..409b7f90 builds shipped. Expected values captured by a one-off run
     /// of `default_root_context_template()` AT base commit 409b7f90, never from
@@ -2399,8 +2602,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 7,
-            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 8,
+            "root_spec current_version must be bumped to 8 by the #1614 room rename"
         );
     }
 
@@ -2468,8 +2671,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 7,
-            "root_spec current_version must be bumped to 7 by the #1571 orchestrator rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 8,
+            "root_spec current_version must be bumped to 8 by the #1614 room rename"
         );
     }
 

@@ -10,10 +10,10 @@ Messages between agents are plain markdown files. Files are inspectable with `ca
 
 ## File layout
 
-For a workgroup `wg-<N>-<team>`:
+For a room `room-<N>-<team>`:
 
 ```
-wg-<N>-<team>/
+room-<N>-<team>/
 └── messaging/
     ├── 20260527-150000-wg1-tech-lead-to-wg1-dev-rust-kickoff.md
     ├── 20260527-150412-wg1-dev-rust-to-wg1-tech-lead-status.md
@@ -23,14 +23,14 @@ wg-<N>-<team>/
 Filename pattern (the CLI rejects anything else):
 
 ```
-YYYYMMDD-HHMMSS-wg<N>-<from>-to-wg<N>-<to>-<slug>.md
+YYYYMMDD-HHMMSS-room<N>-<from>-to-room<N>-<to>-<slug>.md
 ```
 
 | Field | Rules |
 |---|---|
 | `YYYYMMDD-HHMMSS` | UTC timestamp at write time. UTC on a non-UTC host will differ from the local wall clock. |
-| `wg<N>` | The workgroup number (sender's). |
-| `<from>` / `<to>` | Local agent name within the workgroup (e.g. `tech-lead`, `dev-rust`). |
+| `room<N>` | The room number (sender's). |
+| `<from>` / `<to>` | Local agent name within the room (e.g. `tech-lead`, `dev-rust`). |
 | `<slug>` | Sanitised kebab-case, `[a-z0-9-]+`, ≤50 characters. |
 | `.md` | Always markdown. |
 
@@ -40,7 +40,7 @@ Collisions (same second + same slug) get a numeric suffix: `…-status.1.md`, `�
 
 Sending a message is always two steps:
 
-1. **Write the file.** Put your message in a new file under the workgroup's `messaging/` directory using the filename pattern above.
+1. **Write the file.** Put your message in a new file under the room's `messaging/` directory using the filename pattern above.
 2. **Fire `send`.**
 
    ```bash
@@ -52,7 +52,7 @@ Sending a message is always two steps:
      --mode wake
    ```
 
-`--send` takes the **filename only**, never a path. The CLI resolves it against `<workgroup-root>/messaging/`:
+`--send` takes the **filename only**, never a path. The CLI resolves it against `<room-root>/messaging/`:
 
 ```bash
 # bad — triggers "filename contains path separators or traversal"
@@ -65,7 +65,7 @@ agentscommander send ... --send "20260527-150000-wg1-a-to-wg1-b-hi.md"
 The recipient's PTY receives a short notification pointing to the file's absolute path:
 
 ```
-[file notification] /path/to/wg-1-team/messaging/20260527-150000-wg1-a-to-wg1-b-hi.md
+[file notification] /path/to/room-1-team/messaging/20260527-150000-room1-a-to-room1-b-hi.md
 ```
 
 The agent reads the file from disk. PTY size limits do not apply.
@@ -85,7 +85,7 @@ JSON output (one entry per peer):
 ```json
 [
   {
-    "name": "my-project:wg-1-feature-x/dev-rust",
+    "name": "my-project:room-1-feature-x/dev-rust",
     "working": false,
     "sessionStatus": "idle",
     "waitingForInput": true,
@@ -128,10 +128,10 @@ The CLI validates routing **before** delivery. If the call would be rejected the
 | Sender | Allowed recipients |
 |---|---|
 | Worker (non-orchestrator) | The team's orchestrator + peers sharing a team. |
-| Orchestrator | Any team member; any other orchestrator directly, with no Root Agent relay; the Root Agent directly, from a verified workgroup orchestrator replica. |
-| Root Agent | Verified WG orchestrator replicas only. |
+| Orchestrator | Any team member; any other orchestrator directly, with no Root Agent relay; the Root Agent directly, from a verified room orchestrator replica. |
+| Root Agent | Verified Room orchestrator replicas only. |
 
-**Known deviation, tracked in #1041:** "sharing a team" currently ignores the workgroup number, so two replicas of the same team in different workgroups can address each other directly, bypassing both orchestrators. This is a defect, not intended behavior, and it contradicts the orchestrator-only rule above. #1041 makes the same-team rule workgroup-aware; when it lands, this note is removed. Reaching a *different* team's workgroup is already orchestrator-to-orchestrator only.
+**Known deviation, tracked in #1041:** "sharing a team" currently ignores the room number, so two replicas of the same team in different rooms can address each other directly, bypassing both orchestrators. This is a defect, not intended behavior, and it contradicts the orchestrator-only rule above. #1041 makes the same-team rule room-aware; when it lands, this note is removed. Reaching a *different* team's room is already orchestrator-to-orchestrator only.
 
 `reachable: false` peers appear in `list-peers-lean` (so you know they exist) but cannot be addressed directly.
 
@@ -203,11 +203,11 @@ Authorization is narrower than ordinary messaging:
 
 | Sender | Valid PTY-input target | Plane |
 |---|---|---|
-| Live verified workgroup orchestrator replica | One verified non-orchestrator member in the same exact project and workgroup | Local host filesystem, or automatically bound container API credential |
-| Live canonical local Root Agent | One verified workgroup orchestrator replica | Local host filesystem only |
+| Live verified room orchestrator replica | One verified non-orchestrator member in the same exact project and room | Local host filesystem, or automatically bound container API credential |
+| Live canonical local Root Agent | One verified room orchestrator replica | Local host filesystem only |
 | Worker, origin orchestrator, manual API client, stale session, or master credential without a live session | None | None |
 
-Orchestrator-to-orchestrator, orchestrator-to-Root, Root-to-worker, cross-workgroup, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
+Orchestrator-to-orchestrator, orchestrator-to-Root, Root-to-worker, cross-room, cross-project, origin, self, wildcard, alias, filesystem-directory, and session-id targets are invalid. Resolve the exact canonical target with `list-peers-lean` and pass its `name` byte-for-byte.
 
 Text must be valid UTF-8 and 1 through 65,536 bytes. Spaces, LF, TAB, Unicode, leading hyphens, quotes, and shell metacharacters are preserved. Control, bidi, CR, and Unicode line-separator scalars are rejected. Prefer stdin because the caller's shell processes an argument before AC sees it.
 
@@ -227,7 +227,7 @@ Host confirmation uses metadata-only artifacts in `outbox/delivered`, `outbox/re
 
 A snapshot:
 
-- does not create a workgroup `messaging/*.md` file;
+- does not create a room `messaging/*.md` file;
 - does not use ordinary outbox delivery, conversations, delivered or rejected message artifacts, the message database, or PTY-input queue state;
 - does not wake, spawn, focus, select, resize, repaint, or write to the target;
 - does not change ordinary messaging `reachable` semantics or PTY-input authority; and
@@ -248,10 +248,10 @@ This is shape-only identity discovery, not authorization or a session-liveness v
 agentscommander terminal-snapshot \
   --token "$AGENTSCOMMANDER_TOKEN" \
   --root "$AGENTSCOMMANDER_ROOT" \
-  --to "project:wg-1-team/member"
+  --to "project:room-1-team/member"
 ```
 
-Root can read verified workgroup members and Orchestrators in active registered projects through the host plane. A verified workgroup Orchestrator can read a non-Orchestrator member in the same exact project and workgroup. An automatically bound container Orchestrator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
+Root can read verified room members and Orchestrators in active registered projects through the host plane. A verified room Orchestrator can read a non-Orchestrator member in the same exact project and room. An automatically bound container Orchestrator uses `agentscommander-api-helper terminal-snapshot` and the separate `terminal-snapshot` API scope. Root cannot use the API plane.
 
 The host transport uses only these transient requester-side protocol directories:
 
@@ -260,7 +260,7 @@ The host transport uses only these transient requester-side protocol directories
 <requester-root>/<agent-local-dir>/terminal-snapshot-responses/
 ```
 
-The CLI removes a consumed response, and the daemon performs identity-safe 60-second cleanup while files remain discoverable. It never places snapshot content in the canonical workgroup `messaging/` directory. See [Terminal snapshots](../features/terminal-snapshots.md) for the schema, renderer, privacy warning, stable errors, authorization checks, output-file contract, and crash residual.
+The CLI removes a consumed response, and the daemon performs identity-safe 60-second cleanup while files remain discoverable. It never places snapshot content in the canonical room `messaging/` directory. See [Terminal snapshots](../features/terminal-snapshots.md) for the schema, renderer, privacy warning, stable errors, authorization checks, output-file contract, and crash residual.
 
 ## Common errors
 
@@ -275,7 +275,7 @@ More cases: [`docs/troubleshooting.md#inter-agent-messaging`](../troubleshooting
 
 ## See also
 
-- [Teams and workgroups](teams-and-workgroups.md)
+- [Teams and rooms](teams-and-workgroups.md)
 - [CLI reference — `send`](../reference/cli.md#send)
 - [Security model — inter-agent routing](../security.md#inter-agent-routing)
 - [Terminal snapshots](../features/terminal-snapshots.md)

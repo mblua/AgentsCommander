@@ -255,7 +255,7 @@ fn create_basic_workgroup(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf
             "architect",
         ],
     );
-    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("room-1-dev-team");
     assert_same_path(created["path"].as_str().expect("path"), &wg_dir);
     (project, wg_dir)
 }
@@ -353,7 +353,8 @@ fn assert_no_side_effect_dirs(root: &Path) {
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
                 assert!(
-                    !(name.starts_with("wg-")
+                    !(name.starts_with("room-")
+                        || name.starts_with("wg-")
                         || name.starts_with("_team_")
                         || name.starts_with("_agent_")),
                     "unexpected side-effect directory {}",
@@ -371,12 +372,12 @@ fn team_help_describes_existing_agents_and_workgroup_scoped_membership() {
     let bin = copy_binary_into(tmp.path());
 
     let team_help = run_stdout(&bin, &["team", "--help"]);
-    assert!(team_help.contains("Manage teams and scoped workgroup membership"));
+    assert!(team_help.contains("Manage teams and scoped room membership"));
 
     let create_help = run_stdout(&bin, &["team", "create", "--help"]);
     assert!(create_help.contains("Create a team configuration from existing agents"));
     assert!(create_help.contains("Existing agent matrix name or _agent_<name> reference"));
-    assert!(create_help.contains("Define a repo available to the team when workgroups are created"));
+    assert!(create_help.contains("Define a repo available to the team when rooms are created"));
 }
 
 #[test]
@@ -499,7 +500,7 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
         ],
     );
 
-    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("room-1-dev-team");
     assert_same_path(json["path"].as_str().expect("path"), &wg_dir);
     assert!(wg_dir.join("TASK.md").is_file());
     assert!(wg_dir.join("messaging").is_dir());
@@ -530,7 +531,7 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
 
     let list = run_json(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
     assert_eq!(list.as_array().expect("array").len(), 1);
-    assert_eq!(list[0]["name"], "wg-1-dev-team");
+    assert_eq!(list[0]["name"], "room-1-dev-team");
     assert_eq!(list[0]["team"], "dev-team");
     assert_eq!(list[0]["hasTask"], true);
     assert_eq!(list[0]["hasMessaging"], true);
@@ -547,8 +548,8 @@ fn workgroup_add_creates_task_messaging_replicas_and_lists() {
     assert_refresh_request(
         find_refresh_request(&requests, "workgroupCreated"),
         &project,
-        ".ac/wg-1-dev-team",
-        "wg-1-dev-team",
+        ".ac/room-1-dev-team",
+        "room-1-dev-team",
         "workgroupCreated",
     );
 }
@@ -560,7 +561,7 @@ fn workgroup_add_uses_global_lowest_free_number() {
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect"]);
-    std::fs::create_dir_all(project.join(".ac").join("wg-1-dev-team")).expect("wg1");
+    std::fs::create_dir_all(project.join(".ac").join("room-1-dev-team")).expect("wg1");
 
     let _team = run_json(
         &bin,
@@ -592,7 +593,7 @@ fn workgroup_add_uses_global_lowest_free_number() {
     assert!(json["path"]
         .as_str()
         .expect("path")
-        .ends_with("wg-2-qa-team"));
+        .ends_with("room-2-qa-team"));
 }
 
 #[test]
@@ -618,7 +619,7 @@ fn workgroup_remove_deletes_and_reuses_number() {
             "architect",
         ],
     );
-    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("room-1-dev-team");
     assert_same_path(created["path"].as_str().expect("path"), &wg_dir);
     assert!(wg_dir.is_dir());
 
@@ -630,7 +631,7 @@ fn workgroup_remove_deletes_and_reuses_number() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
         ],
     );
     assert_eq!(removed["removed"], true);
@@ -640,8 +641,8 @@ fn workgroup_remove_deletes_and_reuses_number() {
     assert_refresh_request(
         find_refresh_request(&requests, "workgroupRemoved"),
         &project,
-        ".ac/wg-1-dev-team",
-        "wg-1-dev-team",
+        ".ac/room-1-dev-team",
+        "room-1-dev-team",
         "workgroupRemoved",
     );
 
@@ -663,7 +664,7 @@ fn workgroup_remove_deletes_and_reuses_number() {
     assert!(recreated["path"]
         .as_str()
         .expect("path")
-        .ends_with("wg-1-qa-team"));
+        .ends_with("room-1-qa-team"));
 }
 
 #[test]
@@ -689,7 +690,7 @@ fn workgroup_remove_refuses_dirty_repo_without_force() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
         ],
     );
     assert!(stderr.contains("pending work"));
@@ -725,7 +726,7 @@ fn workgroup_remove_force_dirty_deletes_dirty_repo() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--force-dirty",
         ],
     );
@@ -758,7 +759,7 @@ fn workgroup_remove_refuses_live_persisted_session_even_with_force() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--force-dirty",
         ],
     );
@@ -792,7 +793,7 @@ fn workgroup_remove_locked_file_reports_blockers_without_refresh() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--force-dirty",
         ],
     );
@@ -832,7 +833,7 @@ fn workgroup_remove_deletes_long_path_tree() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--force-dirty",
         ],
     );
@@ -869,7 +870,7 @@ fn workgroup_remove_refuses_reparse_root() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--force-dirty",
         ],
     );
@@ -992,21 +993,21 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
     );
     let replica = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_dev-rust");
     assert_eq!(added["added"], true);
     assert!(replica.join("config.json").is_file());
 
     let sender_root = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_architect");
     let out = Command::new(&bin)
         .args([
@@ -1026,7 +1027,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     );
     let peers: serde_json::Value = serde_json::from_slice(&out.stdout).expect("peers");
     let found = peers.as_array().expect("array").iter().any(|peer| {
-        peer["name"] == "ProjectAlpha:wg-1-dev-team/dev-rust" && peer["reachable"] == true
+        peer["name"] == "ProjectAlpha:room-1-dev-team/dev-rust" && peer["reachable"] == true
     });
     assert!(found, "added peer should be reachable: {}", peers);
     let requests = read_project_refresh_requests(&config_dir);
@@ -1034,8 +1035,8 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     assert_refresh_request(
         find_refresh_request(&requests, "teamMembershipChanged"),
         &project,
-        ".ac/wg-1-dev-team/__agent_dev-rust",
-        "wg-1-dev-team/dev-rust",
+        ".ac/room-1-dev-team/__agent_dev-rust",
+        "room-1-dev-team/dev-rust",
         "teamMembershipChanged",
     );
 
@@ -1047,7 +1048,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
@@ -1059,8 +1060,8 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     assert_refresh_request(
         find_refresh_request(&requests, "teamMembershipRemoved"),
         &project,
-        ".ac/wg-1-dev-team/__agent_dev-rust",
-        "wg-1-dev-team/dev-rust",
+        ".ac/room-1-dev-team/__agent_dev-rust",
+        "room-1-dev-team/dev-rust",
         "teamMembershipRemoved",
     );
 }
@@ -1110,7 +1111,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
@@ -1118,7 +1119,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
 
     let replica = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_dev-rust");
     assert!(replica.join("config.json").is_file());
 
@@ -1126,7 +1127,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
     // carrying a context reading. `..PersistedSession::default()` leaves every other
     // field (incl. legacy) at its default; only context_percent is set here.
     let sessions = vec![PersistedSession {
-        name: "wg-1-dev-team/dev-rust".to_string(),
+        name: "room-1-dev-team/dev-rust".to_string(),
         shell: "codex".to_string(),
         shell_args: Vec::new(),
         working_directory: replica.to_string_lossy().to_string(),
@@ -1145,7 +1146,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
 
     let sender_root = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_architect");
 
     for verb in ["list-peers", "list-peers-lean"] {
@@ -1168,7 +1169,7 @@ fn list_peers_surfaces_context_percent_for_matching_live_session() {
         let peers: serde_json::Value = serde_json::from_slice(&out.stdout).expect("peers json");
         let mut saw_dev = false;
         for peer in peers.as_array().expect("array") {
-            if peer["name"] == "ProjectAlpha:wg-1-dev-team/dev-rust" {
+            if peer["name"] == "ProjectAlpha:room-1-dev-team/dev-rust" {
                 saw_dev = true;
                 assert_eq!(
                     peer["contextPercent"], 63,
@@ -1334,7 +1335,7 @@ fn workgroup_add_existing_team_refuses_legacy_flags_without_rewrite() {
             "dev-rust",
         ],
     );
-    assert!(stderr.contains("workgroup add` no longer updates team configuration"));
+    assert!(stderr.contains("room add` no longer updates team configuration"));
     assert_eq!(std::fs::read(&config_path).expect("after"), before);
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(config_path).expect("config"))
@@ -1471,7 +1472,7 @@ fn workgroup_remove_does_not_create_a_manifest_when_no_scope_was_recorded() {
             "architect",
         ],
     );
-    let wg_dir = project.join(".ac").join("wg-1-dev-team");
+    let wg_dir = project.join(".ac").join("room-1-dev-team");
     assert!(wg_dir.is_dir());
 
     let removed = run_json_machine(
@@ -1482,7 +1483,7 @@ fn workgroup_remove_does_not_create_a_manifest_when_no_scope_was_recorded() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
         ],
     );
     assert_eq!(removed["removed"], true);
@@ -1535,14 +1536,14 @@ fn team_remove_member_does_not_create_a_manifest_when_no_scope_was_recorded() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
     );
     let replica = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_dev-rust");
     assert!(replica.join("config.json").is_file());
 
@@ -1554,7 +1555,7 @@ fn team_remove_member_does_not_create_a_manifest_when_no_scope_was_recorded() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
@@ -1614,18 +1615,18 @@ fn team_remove_member_prunes_recorded_replica_config_scope() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
     );
     let replica = project
         .join(".ac")
-        .join("wg-1-dev-team")
+        .join("room-1-dev-team")
         .join("__agent_dev-rust");
     assert!(replica.join("config.json").is_file());
     let manifest = project.join(".ac").join("seed-manifest.toml");
-    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "dev-rust");
+    write_recorded_config_manifest(&manifest, "room-1-dev-team", "dev-rust");
 
     let removed = run_json_machine(
         &bin,
@@ -1635,7 +1636,7 @@ fn team_remove_member_prunes_recorded_replica_config_scope() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
             "--agent",
             "dev-rust",
         ],
@@ -1677,7 +1678,7 @@ fn workgroup_creation_and_scopeless_removal_leave_no_manifest() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
         ],
     );
     assert_eq!(removed["removed"], true);
@@ -1729,7 +1730,7 @@ fn workgroup_remove_prunes_recorded_config_scope() {
     let config_dir = config_dir_for_bin(&bin);
     let (project, wg_dir) = create_basic_workgroup(tmp.path(), &bin, &config_dir);
     let manifest = project.join(".ac").join("seed-manifest.toml");
-    write_recorded_config_manifest(&manifest, "wg-1-dev-team", "architect");
+    write_recorded_config_manifest(&manifest, "room-1-dev-team", "architect");
 
     let removed = run_json_machine(
         &bin,
@@ -1739,14 +1740,14 @@ fn workgroup_remove_prunes_recorded_config_scope() {
             "--project",
             "ProjectAlpha",
             "--workgroup",
-            "wg-1-dev-team",
+            "room-1-dev-team",
         ],
     );
     assert_eq!(removed["removed"], true);
     assert!(!wg_dir.exists(), "the workgroup directory is removed");
     let after = std::fs::read_to_string(&manifest).expect("manifest persists after removal");
     assert!(
-        !after.contains("wg-1-dev-team"),
+        !after.contains("room-1-dev-team"),
         "the workgroup's config scope must be pruned: {after}"
     );
     assert!(
@@ -1885,4 +1886,302 @@ fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
         "delete_workgroup (LifecycleWorkgroupRemoval GUI site) must construct and thread the token \
          into gated_workgroup_delete_with"
     );
+}
+
+// ===========================================================================
+// #1614 section 9.1 "Rust integration tests" / section 15.4.
+//
+// Round 5 measured ZERO new test functions in src-tauri/tests/ across the whole
+// 12-commit range, so AC3, AC4 and AC6 rested on unrecorded manual checks. The
+// four below are those gates, written rather than substituted for.
+// ===========================================================================
+
+/// AC3 and requirement (A): creation produces a Room.
+#[test]
+fn room_add_creates_a_room_directory() {
+    let tmp = Tmp::new("cli-room-add");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect"]);
+
+    // The canonical spelling, not the deprecated alias.
+    let created = run_json(
+        &bin,
+        &[
+            "room",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+
+    let room_dir = project.join(".ac").join("room-1-dev-team");
+    assert_same_path(created["path"].as_str().expect("path"), &room_dir);
+    assert!(room_dir.is_dir(), "room-1-dev-team must exist on disk");
+
+    // Requirement (A) is unqualified: no production path may produce a wg-*
+    // directory, so the legacy name must NOT also appear.
+    assert!(
+        !project.join(".ac").join("wg-1-dev-team").exists(),
+        "creation must never produce a wg-* directory"
+    );
+
+    // (E): the parent-repo exclusion must already carry room-*/, and it is
+    // written BEFORE the directory is created, so it is present on the very
+    // first Room.
+    let ignore = std::fs::read_to_string(project.join(".ac").join(".gitignore"))
+        .expect("read .ac/.gitignore");
+    assert!(
+        ignore.lines().any(|l| l.trim() == "room-*/"),
+        ".ac/.gitignore must carry room-*/:\n{ignore}"
+    );
+    assert!(
+        ignore.lines().any(|l| l.trim() == "wg-*/"),
+        ".ac/.gitignore must keep wg-*/:\n{ignore}"
+    );
+}
+
+/// Requirement (F): the deprecated subcommand spelling is the same command.
+/// Byte-identical stdout on the same root.
+#[test]
+fn room_list_and_workgroup_list_produce_identical_stdout() {
+    let tmp = Tmp::new("cli-room-list-alias");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    project_with_agents(tmp.path(), &["architect"]);
+    run_json(
+        &bin,
+        &[
+            "room",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+
+    let canonical = run_stdout(&bin, &["room", "list", "--project", "ProjectAlpha"]);
+    let deprecated = run_stdout(&bin, &["workgroup", "list", "--project", "ProjectAlpha"]);
+
+    assert_eq!(
+        canonical, deprecated,
+        "`room list` and `workgroup list` must produce byte-identical stdout"
+    );
+    assert!(
+        canonical.contains("room-1-dev-team"),
+        "stdout should name the Room:\n{canonical}"
+    );
+}
+
+/// AC4: the mixed root. A legacy Workgroup and a Room, both at slot 1, are two
+/// distinct entities distinguished by their full directory name (residual R1).
+#[test]
+fn room_list_reports_a_mixed_root() {
+    let tmp = Tmp::new("cli-room-list-mixed");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+    let project = project_with_agents(tmp.path(), &["architect"]);
+
+    // A pre-existing legacy Workgroup, seeded on disk exactly as an older
+    // release left it. Rule P2: it stays wg-*, it is not converted.
+    let legacy = project.join(".ac").join("wg-1-dev-team");
+    std::fs::create_dir_all(legacy.join("__agent_architect")).expect("seed legacy wg");
+
+    run_json(
+        &bin,
+        &[
+            "room",
+            "add",
+            "--project",
+            "ProjectAlpha",
+            "--team",
+            "Dev Team",
+            "--title",
+            "Build",
+            "--coordinator",
+            "architect",
+        ],
+    );
+
+    // (B): the Room allocator does not count wg-*, so the new Room is slot 1
+    // even though wg-1-dev-team already holds slot 1.
+    assert!(
+        project.join(".ac").join("room-1-dev-team").is_dir(),
+        "the Room allocator must ignore legacy wg-* slots"
+    );
+
+    let listed = run_json(&bin, &["room", "list", "--project", "ProjectAlpha"]);
+    let items = listed.as_array().expect("list returns an array");
+    let mut names: Vec<&str> = items
+        .iter()
+        .map(|i| i["name"].as_str().expect("name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["room-1-dev-team", "wg-1-dev-team"],
+        "a mixed root must list both kinds"
+    );
+
+    // Both teams resolve, from the suffix, through the same parser.
+    for item in items {
+        assert_eq!(
+            item["team"].as_str().expect("team"),
+            "dev-team",
+            "both entities derive the same team: {item}"
+        );
+    }
+
+    // The legacy directory is never renamed, moved or removed (no migration).
+    assert!(
+        legacy.is_dir(),
+        "the legacy Workgroup must survive untouched"
+    );
+    assert!(legacy.join("__agent_architect").is_dir());
+}
+
+/// Requirement (F)'s committed regression gate, and AC6's observable half.
+///
+/// The obstacle round 5 recorded is a WAITING problem, not an observability
+/// one: `cli/purge_wg.rs` writes the outbox file and only THEN enters the
+/// response wait. So the artifact is observable without a daemon by spawning
+/// the child, polling for the file, and killing the child rather than sitting
+/// out the wait (which is a fixed 90s on the non-graceful path, not
+/// `--timeout`; the plan's note says `--timeout` and that holds only under
+/// `--graceful`).
+#[test]
+fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
+    let tmp = Tmp::new("cli-purge-alias");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    write_settings(&config_dir, tmp.path());
+
+    // A session token is any UUID; nothing before the outbox write verifies an
+    // orchestrator identity, which is what makes this observable offline.
+    let token = "00000000-0000-0000-0000-000000001614";
+
+    let mut payloads = Vec::new();
+    for (sub, flag, slot) in [
+        ("purge-wg", "--wg", "a"),
+        ("purge-room", "--room", "b"),
+        ("purge-wg", "--room", "c"),
+        ("purge-room", "--wg", "d"),
+    ] {
+        // A root per invocation, so the four runs cannot race on one outbox.
+        let root = tmp.path().join(format!("root-{}", slot));
+        std::fs::create_dir_all(&root).expect("create agent root");
+
+        let mut child = Command::new(&bin)
+            .args([
+                sub,
+                "--token",
+                token,
+                "--root",
+                root.to_string_lossy().as_ref(),
+                flag,
+                "room-1-dev-team",
+                "--dry-run",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn purge");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut found = None;
+        while std::time::Instant::now() < deadline {
+            let files = outbox_files(&root);
+            if !files.is_empty() {
+                found = Some(files[0].clone());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let path = found.unwrap_or_else(|| {
+            panic!(
+                "{sub} {flag}: no outbox message was written under {}",
+                root.display()
+            )
+        });
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read outbox"))
+                .expect("outbox json");
+
+        // The wire value is Rule P0 (section 3.10, D13) and must survive the
+        // rename verbatim, or an in-flight message breaks across versions.
+        assert_eq!(
+            v["action"].as_str(),
+            Some("purge-wg"),
+            "{sub} {flag}: the outbox action value is a wire value and must not move"
+        );
+        assert_eq!(
+            v["target"].as_str(),
+            Some("room-1-dev-team"),
+            "{sub} {flag}: both flag spellings must bind the identical value"
+        );
+
+        // The three fields that are unique per invocation by construction.
+        // OutboxMessage is `#[serde(rename_all = "camelCase")]`, so the wire
+        // key is `requestId`; asserting the wire spelling is part of the point.
+        for unique in ["id", "requestId", "timestamp"] {
+            assert!(
+                !v[unique].is_null(),
+                "{sub} {flag}: {unique} should be present before it is erased"
+            );
+            v[unique] = serde_json::Value::Null;
+        }
+        // `from` is derived from --root, which differs per invocation.
+        v["from"] = serde_json::Value::Null;
+        payloads.push((format!("{sub} {flag}"), v));
+    }
+
+    let (first_label, first) = &payloads[0];
+    for (label, v) in &payloads[1..] {
+        assert_eq!(
+            first, v,
+            "`{label}` and `{first_label}` must produce identical outbox messages \
+             once id, request_id, timestamp and the per-run root are erased"
+        );
+    }
+}
+
+/// Every `<root>/<agent local dir>/outbox/*.json`, sorted. The local dir name
+/// is derived from the binary's own stem, so it is discovered rather than
+/// hard-coded.
+fn outbox_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let outbox = entry.path().join("outbox");
+        let Ok(files) = std::fs::read_dir(&outbox) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("json") {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
 }

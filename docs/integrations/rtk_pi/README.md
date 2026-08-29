@@ -1,6 +1,6 @@
 # The AgentsCommander RTK integration for pi
 
-For operators who want to know what a pi agent actually ran, not what it reported. AgentsCommander seeds one pi extension and one wrapper script into every workgroup replica; the extension intercepts pi's `tool_call` events, rewrites commands so they run through RTK, and registers file reads and writes. After this page you can read the two files they produce and say which tool call landed in which one, and why.
+For operators who want to know what a pi agent actually ran, not what it reported. AgentsCommander seeds one pi extension and one wrapper script into every room replica; the extension intercepts pi's `tool_call` events, rewrites commands so they run through RTK, and registers file reads and writes. After this page you can read the two files they produce and say which tool call landed in which one, and why.
 
 The two seeded files are copied into this directory so you can review them without opening a replica:
 
@@ -13,11 +13,11 @@ There is no registration file to mirror. The Claude Code integration needs `sett
 
 ## What the integration is and where it lands
 
-AC seeds `.ac/default.pi/` into each workgroup replica when it creates the replica. A replica ends up with:
+AC seeds `.ac/default.pi/` into each room replica when it creates the replica. A replica ends up with:
 
 ```text
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.pi/extensions/tool-hook.ts
-<workspace>/.ac/<wg-N-name>/__agent_<name>/.pi/rtk/ac-rtk.sh
+<workspace>/.ac/<room-N-name>/__agent_<name>/.pi/extensions/tool-hook.ts
+<workspace>/.ac/<room-N-name>/__agent_<name>/.pi/rtk/ac-rtk.sh
 ```
 
 pi loads `tool-hook.ts` because it sits in `.pi/extensions/` (project-local, loaded only after the project is trusted). Before every tool call, pi fires the `tool_call` event and the extension decides what to do with the call. It mutates `event.input.command` for shell commands it routes, and pi executes the mutated input. It never blocks: no path out of the handler denies a call.
@@ -157,10 +157,10 @@ console.log(ev.input.command);
 
 ```text
 exec 2> >(grep --line-buffered -v 'No hook installed' >&2)
-D:/<workspace>/<wg-N-name>/__agent_<name>/.pi/rtk/ac-rtk.sh ls -la
+D:/<workspace>/<room-N-name>/__agent_<name>/.pi/rtk/ac-rtk.sh ls -la
 ```
 
-Run it from a scratch replica layout, not from a real one: the extension derives `LOG_FILE` and the launcher path from its own location, so where you copy it decides where the log line and the `rtk read` spawn go (see [the log derivation](#only-workgroup-replicas-write-it)). Set `RTK_DB_PATH` to a scratch file before the run if you want to watch the database rows land. A passed-through command leaves `event.input.command` untouched and appends a line to the derived log.
+Run it from a scratch replica layout, not from a real one: the extension derives `LOG_FILE` and the launcher path from its own location, so where you copy it decides where the log line and the `rtk read` spawn go (see [the log derivation](#only-room-replicas-write-it)). Set `RTK_DB_PATH` to a scratch file before the run if you want to watch the database rows land. A passed-through command leaves `event.input.command` untouched and appends a line to the derived log.
 
 ### What the extension prepends, and what the wrapper does
 
@@ -201,15 +201,15 @@ Two things to know about the record it leaves:
 `write` and `edit` calls append one line to the ignored log (`tool-hook.ts:275-281`), with the tool field `Write:` or `Edit:` and the target path, timestamped in the same local-time format as bash entries. Path only, no content. Verified lines from the live tech-lead log:
 
 ```text
-20260820_034823 Write: D:\0_repos\AgentsCommander_iac\.ac\wg-19-dev-v5-team\__agent_tech-lead\scratch-verify.txt
-20260820_034825 Edit: D:\0_repos\AgentsCommander_iac\.ac\wg-19-dev-v5-team\__agent_tech-lead\scratch-verify.txt
+20260820_034823 Write: D:\0_repos\AgentsCommander_iac\.ac\room-19-dev-v5-team\__agent_tech-lead\scratch-verify.txt
+20260820_034825 Edit: D:\0_repos\AgentsCommander_iac\.ac\room-19-dev-v5-team\__agent_tech-lead\scratch-verify.txt
 ```
 
 These are the pi port's answer to the gap the Claude page describes: under Claude Code, an agent that does its work through `Read` and `Edit` leaves nothing in either file, with nothing marking the gap. Under pi, file writes and edits are on the record.
 
 ## `rtk-ignored-tools-pi.md`
 
-### Only workgroup replicas write it
+### Only room replicas write it
 
 The extension derives the target from its own location (`LOG_FILE`, `tool-hook.ts:56-64`): two levels up from `.pi/extensions/` is the replica root, and the Matrix folder is the replica's name with one leading `_` dropped, so `__agent_foo` writes to `_agent_foo`. Verified end to end: an extension run from a scratch `__pi-replica/.pi/extensions/` wrote its lines to the derived `_pi-replica/rtk-ignored-tools-pi.md`.
 
@@ -220,7 +220,7 @@ The derivation is mechanical, with no shape check, and that has one consequence 
 The extension appends to the file. One line per entry, no header:
 
 ```text
-20260820_034343 Write: D:\0_repos\AgentsCommander_iac\.ac\wg-19-dev-v5-team\__agent_tech-lead\scratch-test-we.txt
+20260820_034343 Write: D:\0_repos\AgentsCommander_iac\.ac\room-19-dev-v5-team\__agent_tech-lead\scratch-test-we.txt
 20260820_035046 Bash: "$AGENTSCOMMANDER_BINARY_PATH" list-peers-lean --token "$AGENTSCOMMANDER_TOKEN" 2>&1
 20260820_035847 Bash: cd /tmp && export X=1
 ```

@@ -166,7 +166,7 @@ The copied file is a full-account credential (access token plus long-lived refre
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-workgroup Orchestrators to read a live backend terminal viewport as JSON or PNG. |
+| `terminalSnapshotsEnabled` | bool | `false` | Permit identity-authorized Root Agents and same-room Orchestrators to read a live backend terminal viewport as JSON or PNG. |
 
 This is a disclosure gate, not a display preference. Terminal screens can contain passwords, tokens, source code, prompts, and personal data. AgentsCommander performs no automatic redaction.
 
@@ -238,7 +238,7 @@ See [Resource monitor](../features/resource-monitor.md).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `gitSweepConcurrency` | number | `1` | How many repositories the global git sweeper inspects at once. Clamped to `1..=4` when read. `1` is strictly sequential, which is what bounds concurrent `git.exe`; raise it to `2` only if one slow repository is delaying the others. |
-| `gitSweepMinIntervalSecs` | number | `10` | Lower bound, in seconds, on one sweeper round. Clamped to `1..=3600` when read; `0` is raised to `1`. The effective period is `max(this, round duration)`, so on a large workgroup set the round duration dominates and this never fires. |
+| `gitSweepMinIntervalSecs` | number | `10` | Lower bound, in seconds, on one sweeper round. Clamped to `1..=3600` when read; `0` is raised to `1`. The effective period is `max(this, round duration)`, so on a large room set the round duration dominates and this never fires. |
 
 See [Sidebar guide](../features/sidebar-guide.md).
 
@@ -263,7 +263,7 @@ Both are manual-only (no UI) and are read from the in-memory settings, so an edi
 | `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows-only. See [Screenshot capture](../features/screenshot-capture.md). |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
-| `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected workgroup visible in the sidebar. |
+| `alwaysShowSelectedWorkgroup` | bool | `true` | Keep the selected room visible in the sidebar. |
 | `railCollapsedProjects` | string[] | `[]` | Rail project sections the user collapsed by clicking their header. Entries are frontend-normalized project paths (lowercase, forward slashes, no trailing slash). Written only by the dedicated rail collapse action; whole-settings writers restore it from live memory. |
 | `railFavoritesCollapsed` | bool | `false` | Collapsed state of the rail's cross-project Favorites section. Same protection as `railCollapsedProjects`. |
 

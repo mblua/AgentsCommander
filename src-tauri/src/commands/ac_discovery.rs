@@ -1179,7 +1179,7 @@ pub async fn discover_ac_agents(
                 }
 
                 // Workgroups: wg-*
-                if dir_name.starts_with("wg-") {
+                if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
                     let (task, task_title) = read_task_fields(&path);
 
                     // Find first repo-* directory for CWD
@@ -1505,12 +1505,16 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
     // Each entry: (pattern, comment explaining why)
     let required_entries: &[(&str, &str)] = &[
         (
+            "room-*/",
+            "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
+        ),
+        (
             "wg-*/",
-            "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
+            "# AgentsCommander: exclude legacy room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.",
         ),
         (
             ".deleting-*/",
-            "# AgentsCommander: exclude temporary workgroup delete sentinels/orphans.",
+            "# AgentsCommander: exclude temporary room delete sentinels/orphans.",
         ),
         (
             "_loop_*/state.json",
@@ -1954,7 +1958,7 @@ pub(crate) async fn discover_project_inner(
         }
 
         // Workgroups: wg-*
-        if dir_name.starts_with("wg-") {
+        if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
             let (task, task_title) = read_task_fields(&entry_path);
 
             let repo_path = std::fs::read_dir(&entry_path)
@@ -4511,6 +4515,73 @@ mod tests {
         assert!(err.contains("Project AC Root not found"));
     }
 
+    /// #1614 AC8, requirement (E). Creation moves to `room-`, so the Project AC
+    /// Root ignore file needs a `room-*/` entry or every Room created inside a
+    /// git-tracked project becomes tracked content of the PARENT repository and
+    /// the next parent `git checkout` or `git reset --hard` corrupts the child
+    /// clones. That is a data-loss defect, not a cosmetic one.
+    #[test]
+    fn ensure_ac_root_gitignore_creates_both_patterns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        assert!(
+            content.lines().any(|line| line.trim() == "room-*/"),
+            "a fresh Project AC Root .gitignore must exclude room-*/ from parent git tracking"
+        );
+        assert!(
+            content.lines().any(|line| line.trim() == "wg-*/"),
+            "the legacy wg-*/ exclusion must survive; existing Rooms are still supported"
+        );
+    }
+
+    /// #1614 AC8, the case that matters for EXISTING installations. The presence
+    /// test compares only the pattern line, so a `.gitignore` that already
+    /// carries `wg-*/` gains `room-*/` on the next call and keeps whatever
+    /// comment it already had, byte for byte. That asymmetry is intended and is
+    /// residual R2: rewriting the existing comment would mean editing a
+    /// user-owned file for cosmetics.
+    #[test]
+    fn ensure_ac_root_gitignore_appends_room_to_a_legacy_only_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+
+        // Exactly what a pre-#1614 installation has on disk.
+        const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\nwg-*/\n";
+        std::fs::write(ac_root.join(".gitignore"), LEGACY).expect("seed legacy .gitignore");
+
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+        assert!(
+            content.starts_with(LEGACY),
+            "the user's existing wg-*/ line AND its original comment must survive byte for byte"
+        );
+        assert!(
+            content.lines().any(|line| line.trim() == "room-*/"),
+            "room-*/ must be appended to a Project AC Root that only knew wg-*/"
+        );
+        assert_eq!(
+            content.lines().filter(|l| l.trim() == "wg-*/").count(),
+            1,
+            "the already-present wg-*/ pattern must not be duplicated"
+        );
+
+        // Idempotent: a second call adds nothing.
+        let before = content;
+        ensure_ac_root_gitignore(&ac_root).expect("ensure workspace .gitignore again");
+        assert_eq!(
+            std::fs::read_to_string(ac_root.join(".gitignore")).expect("re-read"),
+            before,
+            "a second call must be a no-op"
+        );
+    }
+
     #[test]
     fn ensure_ac_root_gitignore_includes_delete_sentinels_on_create() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5068,7 +5139,7 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
         let gitignore_path = ac_root.join(".gitignore");
-        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
+        let original = b"# User-authored rules\r\n!important.txt\r\n\r\n# AgentsCommander: exclude room cloned repos from parent git tracking.\r\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\r\nwg-*/\r\n"
             .to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 

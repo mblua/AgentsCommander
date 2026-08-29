@@ -157,12 +157,12 @@ pub enum Commands {
     RoleExperiment(role_experiment::RoleExperimentArgs),
     /// Close all sessions for a target agent (orchestrator authorization required)
     CloseSession(close_session::CloseSessionArgs),
-    /// Purge every agent in the caller's own workgroup (orchestrator-only, fail-closed busy gate)
-    #[command(name = "purge-wg")]
+    /// Purge every agent in the caller's own room (orchestrator-only, fail-closed busy gate)
+    #[command(name = "purge-room", alias = "purge-wg")]
     PurgeWg(purge_wg::PurgeWgArgs),
-    /// Set the title field in the workgroup TASK.md frontmatter (orchestrator-only)
+    /// Set the title field in the room TASK.md frontmatter (orchestrator-only)
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
-    /// Append text to the body of the workgroup TASK.md (orchestrator-only)
+    /// Append text to the body of the room TASK.md (orchestrator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
@@ -170,9 +170,10 @@ pub enum Commands {
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
-    /// Manage workgroups in an AC project
+    /// Manage rooms in an AC project
+    #[command(name = "room", alias = "workgroup")]
     Workgroup(workgroup::WorkgroupArgs),
-    /// Manage teams and scoped workgroup membership
+    /// Manage teams and scoped room membership
     Team(team::TeamArgs),
     /// Manage Project Loops
     Loop(loop_cmd::LoopArgs),
@@ -695,5 +696,158 @@ mod tests {
         assert!(parsed.window_maximized);
         assert!(parsed.ui_automation);
         assert!(parsed.command.is_none());
+    }
+
+    /// #1614 AC5 / D21: no retired token in ANY printed CLI help, complete by
+    /// construction rather than by enumeration.
+    ///
+    /// Round 1 enumerated 20 subcommands by hand and the list was missing the
+    /// only two commands that print the two defects round 1 shipped:
+    /// `team create` (the only command that prints team.rs's third `help`
+    /// string) and `role-experiment` (the only command that prints the
+    /// `--retain-room` value placeholder). An enumeration cannot gate a defect
+    /// class whose failure mode is omission, so this walks clap's own tree.
+    ///
+    /// It needs no built binary and no process spawn, so it runs under
+    /// `cargo test`. It runs on the `rust-regression` (windows) leg only,
+    /// because that is the only CI leg that runs the Rust test suite.
+    #[test]
+    fn no_clap_printed_help_carries_the_retired_token() {
+        use clap::CommandFactory;
+        let mut root = Cli::command();
+        root.build();
+        // The root command name is the package name, `agentscommander-new`,
+        // because `Cli` sets no `#[command(name = ...)]`. Take it before the
+        // walk consumes `root`, and derive every lookup key from it rather than
+        // hard-coding it.
+        let root_name = root.get_name().to_string();
+        // Carry the invocation path, so an assertion can name a leaf
+        // unambiguously ("create" alone is a name three different parents use).
+        let mut stack = vec![(String::new(), root)];
+        let mut walked: std::collections::BTreeMap<String, String> = Default::default();
+        while let Some((prefix, mut cmd)) = stack.pop() {
+            let path = if prefix.is_empty() {
+                cmd.get_name().to_string()
+            } else {
+                format!("{prefix} {}", cmd.get_name())
+            };
+            for sub in cmd.get_subcommands().cloned() {
+                stack.push((path.clone(), sub));
+            }
+            let help = cmd.render_long_help().to_string();
+            for needle in ["workgroup", "Workgroup", "WORKGROUP"] {
+                assert!(!help.contains(needle), "{path}: {needle}");
+            }
+            for token in help.split(|c: char| !c.is_ascii_alphanumeric()) {
+                assert_ne!(token, "WG", "{path}");
+            }
+            walked.insert(path, help);
+        }
+
+        // The real guard: the two omissions that caused G5 must be reachable,
+        // and the depth-2 one must have been RENDERED, not merely listed by its
+        // parent. A `!contains` assertion over a set that was never populated is
+        // vacuously true, which is why membership is asserted separately.
+        let team_create = walked
+            .get(&format!("{root_name} team create"))
+            .expect("`<root> team create` is not in the walked set");
+        assert!(
+            team_create.contains("Define a repo available to the team when rooms are created"),
+            "team create help did not render team.rs's third help string"
+        );
+        // The hidden parent must be walked at all (`hide = true` suppresses
+        // LISTING, not membership)...
+        assert!(
+            walked.contains_key(&format!("{root_name} role-experiment")),
+            "`<root> role-experiment` is not in the walked set"
+        );
+        // ...and the corrected placeholder renders on `role-experiment run`,
+        // which is the command that actually owns `RunArgs`. `role-experiment`
+        // is a PARENT command whose help renders only `<COMMAND>`, so asserting
+        // the placeholder on the parent panics on a CORRECT implementation.
+        // Plan section 9.4 AC5 targets `role-experiment run` for exactly this
+        // reason (round 5 corrected it; section 14 item 5 carries the same
+        // correction), and the round-3 probe crate could not have caught it
+        // because it was a synthetic flat tree with no parent/child argument
+        // split.
+        let role_exp_run = walked
+            .get(&format!("{root_name} role-experiment run"))
+            .expect("`<root> role-experiment run` is not in the walked set");
+        assert!(
+            role_exp_run.contains("--retain-room <RETAIN_ROOM>"),
+            "role-experiment run help did not render the corrected value placeholder"
+        );
+        assert!(
+            walked.contains_key(&format!("{root_name} role-experiment variant set")),
+            "`<root> role-experiment variant set` is not in the walked set"
+        );
+
+        // Vacuity floor, derived rather than round: 39 `Commands` variants (37
+        // unconditional plus two behind #[cfg(target_os = "windows")]) plus 35
+        // in nine nested Subcommand enums plus the root itself. clap's synthetic
+        // `help` nodes mirror the sibling tree and recurse, so the real
+        // `walked.len()` is far above this; the floor is a vacuity guard and the
+        // three membership assertions above are the criterion.
+        let expected_min = if cfg!(target_os = "windows") { 75 } else { 73 };
+        assert!(
+            walked.len() >= expected_min,
+            "walked {} commands, expected at least {expected_min}",
+            walked.len()
+        );
+    }
+
+    /// #1614 requirement (F): the deprecated spellings parse to the identical
+    /// value. All four combinations of {purge-wg, purge-room} x {--wg, --room}.
+    #[test]
+    fn purge_args_accept_both_flag_spellings() {
+        use clap::Parser;
+        for (sub, flag) in [
+            ("purge-wg", "--wg"),
+            ("purge-room", "--room"),
+            ("purge-wg", "--room"),
+            ("purge-room", "--wg"),
+        ] {
+            let cli = Cli::try_parse_from([
+                "agentscommander-new",
+                sub,
+                "--token",
+                "00000000-0000-0000-0000-000000000487",
+                "--root",
+                "C:/fake/root",
+                flag,
+                "room-1-dev-team",
+            ])
+            .unwrap_or_else(|e| panic!("{sub} {flag} must parse: {e}"));
+            match cli.command {
+                Some(Commands::PurgeWg(args)) => assert_eq!(
+                    args.wg.as_deref(),
+                    Some("room-1-dev-team"),
+                    "{sub} {flag} bound a different value"
+                ),
+                _ => panic!("{sub} {flag} did not dispatch to PurgeWg"),
+            }
+        }
+    }
+
+    /// #1614 requirement (F) for the room subcommand and its deprecated alias.
+    #[test]
+    fn room_subcommand_accepts_the_workgroup_alias() {
+        use clap::Parser;
+        for (sub, flag) in [("room", "--room"), ("workgroup", "--workgroup")] {
+            let cli = Cli::try_parse_from([
+                "agentscommander-new",
+                sub,
+                "remove",
+                "--project",
+                "ProjectAlpha",
+                flag,
+                "room-1-dev-team",
+            ])
+            .unwrap_or_else(|e| panic!("{sub} {flag} must parse: {e}"));
+            assert!(
+                matches!(cli.command, Some(Commands::Workgroup(_))),
+                "{sub} {flag} did not dispatch to the room subcommand"
+            );
+        }
     }
 }

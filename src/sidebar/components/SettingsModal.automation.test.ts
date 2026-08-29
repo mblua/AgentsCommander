@@ -1685,7 +1685,7 @@ describe("SettingsModal automation hooks", () => {
     expect(section?.querySelector(".settings-section-title")?.textContent).toBe(
       "Terminal snapshots",
     );
-    expect(warning).toContain("authorized Root Agents and same-workgroup Orchestrators");
+    expect(warning).toContain("authorized Root Agents and same-room Orchestrators");
     expect(warning).toContain("JSON or PNG");
     expect(warning).toContain("passwords, tokens, source code, prompts, and personal data");
     expect(warning).toContain("Disabled by default");

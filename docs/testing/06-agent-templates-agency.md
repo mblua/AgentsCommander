@@ -2,7 +2,7 @@
 
 These cases validate the GUI surfaces that expose local agent templates, agency-provided templates, install or update prompts, template metadata, filtering, and launching an agent from a selected template.
 
-Use clearly disposable test projects, workgroups, agents, templates, sessions, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
+Use clearly disposable test projects, rooms, agents, templates, sessions, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. TPL-001 captures target-window identity explicitly; later cases inherit it.
 

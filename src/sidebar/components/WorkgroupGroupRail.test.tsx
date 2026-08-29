@@ -20,6 +20,7 @@ import {
   exactGroupRegexForWorkgroup,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
+import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
 
 const projectPath = "C:\\Project";
@@ -860,5 +861,100 @@ describe("WorkgroupGroupRail", () => {
     } finally {
       rendered.cleanup();
     }
+  });
+});
+
+// #1614 section 9.1 frontend tests / section 15.4. F4 (`WorkgroupGroupRail.tsx:67`,
+// `wgNumber`, the rail SORT KEY) and F5 (`:72`, `wgTooltipLabel`, the visible
+// tooltip row). Left unrewired, F4 collapses every Room to
+// `Number.MAX_SAFE_INTEGER` and sorts it last, and F5 shows the raw directory
+// name instead of a short label. Neither fails loudly, which is why they get a
+// rendering test and not just a helper test.
+//
+// The legacy `wg-*` projects above are deliberately untouched (Rule P2): the
+// label is an IDENTITY, so decision D7 requires a Room to read ROOM1 and a
+// legacy Workgroup to keep reading WG1 in the very same rail.
+describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
+  beforeEach(() => {
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function mixedProject(): ProjectState {
+    return {
+      path: projectPath,
+      folderName: "Project",
+      // A mixed root: a Room and a legacy Workgroup, plus a second Room at a
+      // higher slot so the sort key is actually exercised.
+      workgroups: [wg("room-2-rust-team"), wg("wg-1-dev-team"), wg("room-1-dev-team")],
+      agents: [],
+      teams: [],
+      loops: [],
+      contextTemplateUpdates: [],
+    };
+  }
+
+  it("F5 labels a Room ROOM1 and a legacy Workgroup WG1 in the same tooltip", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
+    fake.onInvoke("update_project_groups", (args) => args.config);
+    sessionsStore.setSessions([
+      replicaSession("room-1-dev-team"),
+      replicaSession("wg-1-dev-team"),
+      replicaSession("room-2-rust-team"),
+    ]);
+
+    const rendered = renderWithFakeTransport(
+      () => <WorkgroupGroupRail projects={[mixedProject()]} />,
+      fake
+    );
+    try {
+      await waitFor(() => expect(railButtonOrder()).toContain("all"));
+      const tooltip = target<HTMLElement>("workgroupGroups.button.all").title;
+
+      // F5: the short label follows the REAL directory prefix (decision D7).
+      expect(tooltip).toContain("ROOM1:(dev-webpage-ui)");
+      expect(tooltip).toContain("ROOM2:(dev-webpage-ui)");
+      expect(tooltip).toContain("WG1:(dev-webpage-ui)");
+      // Never the raw directory name, which is what an unrewired F5 renders.
+      expect(tooltip).not.toContain("room-1-dev-team:(");
+
+      // F4: the sort key is the slot number, so ROOM1 and WG1 (both slot 1)
+      // precede ROOM2. An unrewired F4 returns MAX_SAFE_INTEGER for both Rooms
+      // and sorts them after the legacy Workgroup instead.
+      const room1 = tooltip.indexOf("ROOM1:(");
+      const wg1 = tooltip.indexOf("WG1:(");
+      const room2 = tooltip.indexOf("ROOM2:(");
+      expect(room1).toBeGreaterThan(-1);
+      expect(room2).toBeGreaterThan(Math.max(room1, wg1));
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("F4 gives a Room a real slot number, so it is not sorted last", () => {
+    // `wgNumber` and `wgTooltipLabel` are module-private one-line wrappers;
+    // their exact bodies are reproduced here so the semantics the rail depends
+    // on are pinned even though the functions are not exported.
+    const wgNumber = (name: string) => entityDirNumber(name) ?? Number.MAX_SAFE_INTEGER;
+    const wgTooltipLabel = (name: string) => entityShortLabel(name) ?? name;
+
+    expect(wgNumber("room-1-dev-team")).toBe(1);
+    expect(wgNumber("wg-1-dev-team")).toBe(1);
+    expect(wgNumber("room-12-dev-team")).toBe(12);
+    expect(wgNumber("not-an-entity")).toBe(Number.MAX_SAFE_INTEGER);
+
+    // Display-only, so deliberately case-INSENSITIVE, unlike F6's gate.
+    expect(wgNumber("ROOM-3-team")).toBe(3);
+    expect(wgTooltipLabel("room-1-dev-team")).toBe("ROOM1");
+    expect(wgTooltipLabel("wg-1-dev-team")).toBe("WG1");
+    expect(wgTooltipLabel("ROOM-1-dev-team")).toBe("ROOM1");
+    expect(wgTooltipLabel("not-an-entity")).toBe("not-an-entity");
   });
 });

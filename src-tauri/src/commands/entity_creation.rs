@@ -1081,17 +1081,16 @@ pub(crate) fn list_workgroup_dirs(ac_root: &Path) -> Vec<PathBuf> {
 }
 
 pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<String, String> {
-    let rest = workgroup_name
-        .strip_prefix("wg-")
-        .ok_or_else(|| format!("Invalid workgroup name '{}'", workgroup_name))?;
+    let rest = crate::config::entity_prefix::strip_entity_prefix(workgroup_name)
+        .ok_or_else(|| format!("Invalid room name '{}'", workgroup_name))?;
     let Some((number, team)) = rest.split_once('-') else {
-        return Err(format!("Invalid workgroup name '{}'", workgroup_name));
+        return Err(format!("Invalid room name '{}'", workgroup_name));
     };
     let parsed = number
         .parse::<u32>()
-        .map_err(|_| format!("Invalid workgroup number in '{}'", workgroup_name))?;
+        .map_err(|_| format!("Invalid room number in '{}'", workgroup_name))?;
     if parsed == 0 || team.is_empty() {
-        return Err(format!("Invalid workgroup name '{}'", workgroup_name));
+        return Err(format!("Invalid room name '{}'", workgroup_name));
     }
     validate_existing_name(team, "Team")?;
     Ok(team.to_string())
@@ -1177,13 +1176,18 @@ pub(crate) async fn create_workgroup_on_disk(
         };
 
     let wg_number = determine_next_wg_number(&base);
-    let wg_name = format!("wg-{}-{}", wg_number, safe_team);
+    let wg_name = format!(
+        "{}{}-{}",
+        crate::config::entity_prefix::ROOM_DIR_PREFIX,
+        wg_number,
+        safe_team
+    );
     let wg_dir = base.join(&wg_name);
     if wg_dir.exists() {
-        return Err(format!("Workgroup directory already exists: {}", wg_name));
+        return Err(format!("Room directory already exists: {}", wg_name));
     }
     std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create workgroup directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
     std::fs::write(wg_dir.join("TASK.md"), build_task_content(&task_title))
@@ -2841,13 +2845,18 @@ pub async fn create_workgroup(
     // Determine next WG number
     let wg_number = determine_next_wg_number(&base);
 
-    let wg_name = format!("wg-{}-{}", wg_number, safe_team);
+    let wg_name = format!(
+        "{}{}-{}",
+        crate::config::entity_prefix::ROOM_DIR_PREFIX,
+        wg_number,
+        safe_team
+    );
     let wg_dir = base.join(&wg_name);
     if wg_dir.exists() {
-        return Err(format!("Workgroup directory already exists: {}", wg_name));
+        return Err(format!("Room directory already exists: {}", wg_name));
     }
     std::fs::create_dir_all(&wg_dir)
-        .map_err(|e| format!("Failed to create workgroup directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {}", e))?;
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
 
@@ -2950,7 +2959,9 @@ struct TeamDeleteReport {
     failed_workgroups: Vec<String>,
 }
 
-/// Scan `base` for the present `wg-N-<team>` directories owned by `team_name`.
+/// Scan `base` for the present `room-N-<team>` and legacy `wg-N-<team>`
+/// directories owned by `team_name`. Deleting a team removes both kinds, which
+/// is the only coherent meaning of deleting a team (#1614).
 fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<PathBuf> {
     let wg_suffix = format!("-{}", team_name);
     let mut wg_dirs: Vec<PathBuf> = Vec::new();
@@ -2961,10 +2972,15 @@ fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<PathBuf> {
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
-                let middle = &name_str[3..name_str.len() - wg_suffix.len()];
-                if middle.parse::<u32>().is_ok() {
-                    wg_dirs.push(entry.path());
+            // #1614: the middle segment comes from the STRIPPED remainder, never
+            // from an index. The literal 3 was "wg-".len(); "room-".len() is 5,
+            // so an index form would mis-slice every Room name and, for a team
+            // name long enough, panic on a reversed range.
+            if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name_str) {
+                if let Some(middle) = rest.strip_suffix(&wg_suffix) {
+                    if middle.parse::<u32>().is_ok() {
+                        wg_dirs.push(entry.path());
+                    }
                 }
             }
         }
@@ -3183,7 +3199,7 @@ pub async fn delete_workgroup(
     workgroup_name: String,
     force: Option<bool>,
 ) -> Result<(), String> {
-    validate_existing_name(&workgroup_name, "Workgroup")?;
+    validate_existing_name(&workgroup_name, "Room")?;
 
     let base = selected_ac_root(Path::new(&project_path))?;
 
@@ -3203,7 +3219,7 @@ pub async fn delete_workgroup(
                 .join("\n");
             // DIRTY_REPOS: prefix is a sentinel the frontend uses to detect this error type
             return Err(format!(
-                "DIRTY_REPOS:Cannot delete workgroup: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+                "DIRTY_REPOS:Cannot delete room: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
                 list
             ));
         }
@@ -3235,7 +3251,7 @@ pub async fn delete_workgroup(
         )
     })
     .await
-    .map_err(|e| format!("Workgroup delete blocking preparation failed: {e}"))??;
+    .map_err(|e| format!("Room delete blocking preparation failed: {e}"))??;
     delete_workgroup_dir_backend_with_outcome(
         &wg_dir,
         &workgroup_name,
@@ -3320,14 +3336,14 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
-                "Partial workgroup delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
+                "Partial room delete: renamed '{}' to orphan '{}', but failed to remove orphan: {}",
                 wg_dir.display(),
                 orphan_path.display(),
                 error
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete workgroup directory: {}", e));
+            return Err(format!("Failed to delete room directory: {}", e));
         }
     }
     Ok(())
@@ -3485,10 +3501,15 @@ async fn sync_workgroup_repos_inner(
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
-                let middle = &name_str[3..name_str.len() - wg_suffix.len()];
-                if middle.parse::<u32>().is_ok() {
-                    wg_dirs.push(entry.path());
+            // #1614: the middle segment comes from the STRIPPED remainder, never
+            // from an index. The literal 3 was "wg-".len(); "room-".len() is 5,
+            // so an index form would mis-slice every Room name and, for a team
+            // name long enough, panic on a reversed range.
+            if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name_str) {
+                if let Some(middle) = rest.strip_suffix(&wg_suffix) {
+                    if middle.parse::<u32>().is_ok() {
+                        wg_dirs.push(entry.path());
+                    }
                 }
             }
         }
@@ -3829,8 +3850,8 @@ impl WgDeleteOutcome {
 ///
 /// Suffix scheme: `.deleting-<wg_name>-<uuid>` — leading `.` keeps any orphan
 /// (rare race: rename succeeds but remove_dir_all fails) invisible to the
-/// `starts_with("wg-")` filters in `ac_discovery` and `cli::list_peers`, so an
-/// orphan won't surface as a ghost workgroup. UUID is
+/// `entity_prefix::has_entity_prefix` filters in `ac_discovery` and
+/// `cli::list_peers`, so an orphan won't surface as a ghost room. UUID is
 /// used (already in `Cargo.toml`) to guarantee uniqueness across rapid retries.
 ///
 /// `pub(crate)` so unit tests can drive it directly.
@@ -3847,7 +3868,7 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
         None => {
             return WgDeleteOutcome::Other(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "workgroup directory has no parent",
+                "room directory has no parent",
             ));
         }
     };
@@ -3856,7 +3877,7 @@ pub(crate) fn try_atomic_delete_wg_with_remove(
         None => {
             return WgDeleteOutcome::Other(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "workgroup directory has no filename",
+                "room directory has no filename",
             ));
         }
     };
@@ -4262,21 +4283,25 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Scan the selected Project AC Root for existing `wg-<N>-{team_name}/` dirs and return the
+/// Scan the selected Project AC Root for existing `room-<N>-{team_name}/` dirs and return the
 /// **lowest free positive integer** starting at 1.
 ///
+/// #1614: legacy `wg-*` directories are deliberately NOT counted, because the
+/// Room and legacy Workgroup slot namespaces are independent; in a root that
+/// already holds `wg-1-{team}` the next Room is `room-1-{team}`.
+///
 /// Issue #177: previously this returned `max(existing) + 1`, which left
-/// permanent gaps after a workgroup was destroyed. The new policy reuses
+/// permanent gaps after a room was destroyed. The new policy reuses
 /// any freed numbers so the user-facing sequence stays compact.
 ///
 /// Filtering rules:
 /// - Only directories are considered (regular files are ignored).
-/// - The directory name must match `wg-<positive digits>-<team>`.
-/// - Team suffix is ignored for allocation, so workgroup numbers are unique
+/// - The directory name must match `room-<positive digits>-<team>`.
+/// - Team suffix is ignored for allocation, so room numbers are unique
 ///   across the whole project.
 ///
 /// Slot 1 is always reachable because the lowest-free search starts at
-/// 1 (see the `find` call below); a stray `wg-0-{team}` directory ends
+/// 1 (see the `find` call below); a stray `room-0-{team}` directory ends
 /// up in `taken` but is never tested by `find` and so cannot displace
 /// slot 1.
 ///
@@ -4285,7 +4310,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
 /// on Windows), the function returns `1` as a graceful fallback. The
 /// post-allocate `wg_dir.exists()` guard in `create_workgroup` will
 /// surface the real condition as an "already exists" error if a
-/// `wg-1-{team}` is in fact present; otherwise the slot-1 creation
+/// `room-1-{team}` is in fact present; otherwise the slot-1 creation
 /// succeeds with stale state. Surfacing the read error is tracked
 /// separately and is out of scope for #177.
 pub(crate) fn determine_next_wg_number(ac_root: &Path) -> u32 {
@@ -4298,7 +4323,8 @@ pub(crate) fn determine_next_wg_number(ac_root: &Path) -> u32 {
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if let Some(rest) = name_str.strip_prefix("wg-") {
+            if let Some(rest) = name_str.strip_prefix(crate::config::entity_prefix::ROOM_DIR_PREFIX)
+            {
                 if let Some((middle, team)) = rest.split_once('-') {
                     if team.is_empty() {
                         continue;
@@ -5122,7 +5148,7 @@ mod tests {
         .await
         .expect_err("partial delete must error before caller can refresh");
 
-        assert!(err.contains("Partial workgroup delete"));
+        assert!(err.contains("Partial room delete"));
         assert!(err.contains(&orphan.to_string_lossy().to_string()));
     }
 
@@ -6926,10 +6952,10 @@ mod tests {
 
     /// Suffix scheme invariant (#113 follow-up): the orphan name produced on a
     /// rename-success-then-remove-fails race must NOT match the
-    /// `starts_with("wg-")` filters used by `ac_discovery` and `cli::list_peers`.
-    /// We test this by asserting the format directly:
-    /// the temp name starts with `.deleting-`, which automatically dodges the
-    /// `wg-` prefix filter.
+    /// `entity_prefix::has_entity_prefix` filters used by `ac_discovery` and
+    /// `cli::list_peers`. We test this by asserting the format directly:
+    /// the temp name starts with `.deleting-`, which automatically dodges BOTH
+    /// the `room-` and the legacy `wg-` prefix.
     #[test]
     fn temp_name_format_dodges_workgroup_filter() {
         // Inline the same name construction `try_atomic_delete_wg` uses, so the
@@ -6941,8 +6967,8 @@ mod tests {
             "temp name must start with .deleting- so future cleanup tooling can identify orphans"
         );
         assert!(
-            !temp_name.starts_with("wg-"),
-            "temp name must NOT match the wg- discovery filter (would surface as ghost workgroup)"
+            !crate::config::entity_prefix::has_entity_prefix(&temp_name),
+            "temp name must NOT match the widened room-/wg- discovery filter (would surface as a ghost room)"
         );
     }
 
@@ -7157,114 +7183,114 @@ mod tests {
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
-    /// Contiguous allocation: `wg-1`, `wg-2`, `wg-3` already exist for the team
+    /// Contiguous allocation: `room-1`, `room-2`, `room-3` already exist for the team
     /// → next slot is 4 (no internal gap to reuse).
     #[test]
     fn determine_next_wg_number_returns_next_after_contiguous_block() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-1-dev-team");
-        touch_dir(tmp.path(), "wg-2-dev-team");
-        touch_dir(tmp.path(), "wg-3-dev-team");
+        touch_dir(tmp.path(), "room-1-dev-team");
+        touch_dir(tmp.path(), "room-2-dev-team");
+        touch_dir(tmp.path(), "room-3-dev-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 4);
     }
 
     /// Gap reuse — the load-bearing case from issue #177.
-    /// `wg-1` and `wg-3` exist (someone destroyed `wg-2`) → next slot is 2.
+    /// `room-1` and `room-3` exist (someone destroyed `room-2`) → next slot is 2.
     #[test]
     fn determine_next_wg_number_reuses_lowest_internal_gap() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-1-dev-team");
-        touch_dir(tmp.path(), "wg-3-dev-team");
+        touch_dir(tmp.path(), "room-1-dev-team");
+        touch_dir(tmp.path(), "room-3-dev-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
-    /// Leading gap — `wg-1` is free even though higher slots are taken.
+    /// Leading gap — `room-1` is free even though higher slots are taken.
     #[test]
     fn determine_next_wg_number_reuses_slot_one_when_only_higher_slots_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-2-dev-team");
-        touch_dir(tmp.path(), "wg-3-dev-team");
+        touch_dir(tmp.path(), "room-2-dev-team");
+        touch_dir(tmp.path(), "room-3-dev-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// Project scoping: dirs for any team block slot reuse.
-    /// `wg-1-dev-team` and `wg-3-qa-team` make slot 2 the next free slot.
+    /// `room-1-dev-team` and `room-3-qa-team` make slot 2 the next free slot.
     #[test]
     fn determine_next_wg_number_is_global_across_team_suffixes() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-1-dev-team");
-        touch_dir(tmp.path(), "wg-1-qa-team");
-        touch_dir(tmp.path(), "wg-3-qa-team");
+        touch_dir(tmp.path(), "room-1-dev-team");
+        touch_dir(tmp.path(), "room-1-qa-team");
+        touch_dir(tmp.path(), "room-3-qa-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 2);
     }
 
-    /// Invalid `wg-*` directory names must not occupy any slot.
-    /// - `wg-abc-dev-team`: non-numeric middle → parse fails → ignored.
-    /// - `wg--dev-team`:    empty middle (`[3..3]` slice) → parse fails → ignored.
+    /// Invalid `room-*` directory names must not occupy any slot.
+    /// - `room-abc-dev-team`: non-numeric middle → parse fails → ignored.
+    /// - `room--dev-team`:    empty middle (`[3..3]` slice) → parse fails → ignored.
     ///
-    /// Only `wg-2-dev-team` is real, so slot 1 is still free.
-    /// (The `wg-dev-team` no-number case is covered by its own test below
+    /// Only `room-2-dev-team` is real, so slot 1 is still free.
+    /// (The `room-dev-team` no-number case is covered by its own test below
     /// because it specifically exercises the checked-slicing guard.)
     #[test]
     fn determine_next_wg_number_ignores_invalid_directory_names() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-abc-dev-team");
-        touch_dir(tmp.path(), "wg--dev-team");
-        touch_dir(tmp.path(), "wg-2-dev-team");
+        touch_dir(tmp.path(), "room-abc-dev-team");
+        touch_dir(tmp.path(), "room--dev-team");
+        touch_dir(tmp.path(), "room-2-dev-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
-    /// `wg-0-<team>` does not block slot 1. The allocator's lowest-free
+    /// `room-0-<team>` does not block slot 1. The allocator's lowest-free
     /// search starts at 1, so any `0` that ends up in `taken` is never
     /// tested by `find` — slot 1 stays reachable. The allocator only ever
     /// produces values ≥ 1.
     #[test]
     fn determine_next_wg_number_ignores_zero_numbered_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-0-dev-team");
-        touch_dir(tmp.path(), "wg-2-dev-team");
+        touch_dir(tmp.path(), "room-0-dev-team");
+        touch_dir(tmp.path(), "room-2-dev-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
-    /// Files (not directories) named like a workgroup must not occupy a slot —
-    /// the allocator only considers real workgroup directories.
+    /// Files (not directories) named like a room must not occupy a slot —
+    /// the allocator only considers real room directories.
     #[test]
     fn determine_next_wg_number_ignores_files_named_like_workgroups() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(tmp.path().join("wg-1-dev-team"), b"not a dir").expect("write file");
+        std::fs::write(tmp.path().join("room-1-dev-team"), b"not a dir").expect("write file");
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
     /// Regression for the suffix-overlaps-prefix slice case: a directory
-    /// named `wg-{team}` (no number, e.g. `wg-dev-team`) passes both the
-    /// `starts_with("wg-")` and `ends_with("-{team}")` checks, but the
-    /// digits slice would be `&name_str[3..2]` — invalid. With `&str[..]`
-    /// indexing this panics; with `name_str.get(..)` it returns `None` and
-    /// the entry is silently ignored. This test locks in the no-panic
-    /// behavior so a future refactor cannot reintroduce the bug.
+    /// named `room-{team}` (no number, e.g. `room-dev-team`) passes both the
+    /// prefix and the `ends_with("-{team}")` check, but an index-based digits
+    /// slice would be `&name_str[3..2]` — invalid, and #1614 makes that worse
+    /// because `"room-".len()` is 5, not 3. `strip_entity_prefix` plus
+    /// `strip_suffix` removes the index arithmetic entirely and cannot panic.
+    /// This test locks in the no-panic behavior for both prefixes.
     #[test]
     fn determine_next_wg_number_does_not_panic_on_no_number_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-dev-team");
+        touch_dir(tmp.path(), "room-dev-team");
         // Must return slot 1 (the bogus dir is ignored, not counted as taken).
         assert_eq!(determine_next_wg_number(tmp.path()), 1);
     }
 
-    /// In-flight `.deleting-wg-N-team-<uuid>` directories must NOT be
+    /// In-flight `.deleting-room-N-team-<uuid>` directories must NOT be
     /// counted as occupying slot N. Locks the contract that #177 relies
     /// on: the leading `.` of the temp name (set in `try_atomic_delete_wg`
-    /// at line 1535 — `.deleting-{wg_name}-{uuid}`) dodges the
-    /// `starts_with("wg-")` filter, so a freed slot is reusable on the
+    /// at line 1535 — `.deleting-{wg_name}-{uuid}`) dodges the widened
+    /// `entity_prefix::has_entity_prefix` filter, so a freed slot is reusable on the
     /// very next allocation tick. A future temp-name refactor that drops
     /// the leading `.` would silently re-introduce the gap-leak this issue
     /// closes; this test catches that regression.
     #[test]
     fn determine_next_wg_number_ignores_deleting_temp_dirs() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-1-dev-team");
+        touch_dir(tmp.path(), "room-1-dev-team");
         touch_dir(
             tmp.path(),
-            ".deleting-wg-2-dev-team-00000000-0000-0000-0000-000000000000",
+            ".deleting-room-2-dev-team-00000000-0000-0000-0000-000000000000",
         );
         // wg-2 is mid-delete: the `.deleting-…` entry must not block slot 2.
         assert_eq!(determine_next_wg_number(tmp.path()), 2);
@@ -7274,9 +7300,98 @@ mod tests {
     #[test]
     fn determine_next_wg_number_handles_subset_team_suffixes_globally() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        touch_dir(tmp.path(), "wg-1-dev-team");
-        touch_dir(tmp.path(), "wg-1-team");
+        touch_dir(tmp.path(), "room-1-dev-team");
+        touch_dir(tmp.path(), "room-1-team");
         assert_eq!(determine_next_wg_number(tmp.path()), 2);
+    }
+
+    // ── #1614 — the Room slot namespace is independent of the legacy one ──
+
+    /// AC3 and requirement (B), the load-bearing case: in a `.ac` root that
+    /// already holds `wg-1-<team>`, the next Room is `room-1-<team>`, NOT
+    /// `room-3-<team>`. D5 is the single `strip_prefix` site in the change that
+    /// deliberately does NOT become dual; a sweep that made it dual would break
+    /// requirement (B) silently while every dual-prefix test stayed green.
+    #[test]
+    fn room_allocator_ignores_legacy_workgroup_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        touch_dir(tmp.path(), "wg-1-dev-team");
+        touch_dir(tmp.path(), "wg-2-dev-team");
+        assert_eq!(
+            determine_next_wg_number(tmp.path()),
+            1,
+            "legacy Room directories must not occupy a Room slot"
+        );
+    }
+
+    /// The existing lowest-free-positive-slot reuse semantics are preserved for
+    /// Rooms; only the prefix the scan reads changed.
+    #[test]
+    fn room_allocator_reuses_lowest_free_room_slot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        touch_dir(tmp.path(), "room-1-t");
+        touch_dir(tmp.path(), "room-3-t");
+        assert_eq!(determine_next_wg_number(tmp.path()), 2);
+    }
+
+    /// The `read_dir`-failure path is unchanged: it still degrades to slot 1,
+    /// and the post-allocate `wg_dir.exists()` guard is what surfaces the
+    /// degraded case as an "already exists" error (section 7 item 2).
+    #[test]
+    fn room_allocator_still_degrades_to_one_on_read_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("no-such-ac-root");
+        assert_eq!(determine_next_wg_number(&missing), 1);
+    }
+
+    /// The central name parser accepts both prefixes, and still rejects every
+    /// malformed shape it rejected before.
+    #[test]
+    fn parse_team_from_entity_name_accepts_room() {
+        assert_eq!(
+            parse_team_from_workgroup_name("room-1-ac-devs").expect("room parses"),
+            "ac-devs"
+        );
+        assert_eq!(
+            parse_team_from_workgroup_name("wg-1-ac-devs").expect("legacy still parses"),
+            "ac-devs"
+        );
+        for bad in [
+            "room--devs",
+            "room-0-devs",
+            "room-1-",
+            "roomx-1-devs",
+            "room-1",
+        ] {
+            assert!(
+                parse_team_from_workgroup_name(bad).is_err(),
+                "must reject {bad:?}"
+            );
+        }
+    }
+
+    /// Team deletion collects BOTH kinds (section 7 item 17), and a team name
+    /// longer than the directory remainder returns neither and does not panic
+    /// (section 7 item 18). The old `&name_str[3..name_str.len() - suffix]`
+    /// form could produce a reversed range here; `strip_suffix` cannot.
+    #[test]
+    fn collect_team_dirs_finds_room_and_legacy_and_survives_long_team_names() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        touch_dir(tmp.path(), "room-1-dev-team");
+        touch_dir(tmp.path(), "wg-2-dev-team");
+        touch_dir(tmp.path(), "room-3-qa-team");
+        touch_dir(tmp.path(), "_team_dev-team");
+
+        let mut found: Vec<String> = collect_team_workgroup_dirs(tmp.path(), "dev-team")
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["room-1-dev-team", "wg-2-dev-team"]);
+
+        // A team name longer than any directory remainder: no match, no panic.
+        let long = "a-team-name-far-longer-than-any-directory-remainder";
+        assert!(collect_team_workgroup_dirs(tmp.path(), long).is_empty());
     }
 
     // ── #271 — build_role_content (Role.md template merge) ──

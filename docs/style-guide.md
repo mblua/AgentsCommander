@@ -57,7 +57,7 @@ We use these terms consistently across all docs:
 |---|---|
 | Coding agent (Claude Code, Codex, Pi, Antigravity) | "the AI" |
 | Team | "Dark Factory", "crew" |
-| Workgroup | "the session" (it is a directory) |
+| Room | "the session" (it is a directory) |
 | Orchestrator | "leader", "boss" |
 | Brief | "the prompt" (briefs are persistent files; prompts are turn-by-turn) |
 | Session | "tab" (sessions are PTYs; AC has no tabs) |

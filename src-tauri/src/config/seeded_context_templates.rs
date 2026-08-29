@@ -363,6 +363,81 @@ You are running inside an AgentsCommander session - a terminal session manager t
 {{INTER_AGENT_MESSAGING}}
 "#;
 
+/// #1614 D8a: the `global` seeded context template exactly as it shipped
+/// through base commit df494bfa, frozen so an installation whose file is
+/// still pristine keeps auto-updating after the Room rename. A recognizer
+/// only accepts a file byte-for-byte, so a shipped byte that moves without
+/// the previous bytes being frozen reclassifies every pristine file as
+/// user-authored and it never auto-updates again. Never edit.
+///
+/// RE-BASED in plan section 15.3 item 1. It previously held the v4 body,
+/// which is the generation main already froze under its own name as
+/// `GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES` (#1605). Holding it
+/// here too would have shipped two constants with identical bytes under two
+/// names and left the v5 generation unrecognized forever, so every
+/// installation that reached v5 before upgrading would have had its global
+/// template permanently reclassified as user-authored. AC7.1b's `!=` limb is
+/// what makes that state unshippable.
+/// Provenance: the df494bfa blob, session_context.rs lines 2513-2537;
+/// declaration 574 bytes sha256 D9E93582...A844 (plan 3.12 Table A), value
+/// 564 bytes sha256 D094106B...4F77 (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME: &str = r#"# AgentsCommander Context
+
+You are in AgentsCommander, a terminal session manager coordinating multiple AI agents.
+
+## Core Concepts
+
+- **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
+- **Workgroup**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos.
+
+{{WRITE_RESTRICTIONS}}
+
+{{DELEGATED_TASK_REPORTING}}
+
+{{SKILLS_SECTION}}
+
+{{AGENT_REPOS}}
+
+{{CLI_CONTEXT}}
+
+{{HOST_PLATFORM_RULES}}
+
+{{SESSION_CREDENTIALS}}
+
+{{INTER_AGENT_MESSAGING}}
+"#;
+
+/// #1614 D8a: the `coordinator` seeded context template exactly as it
+/// shipped through base commit d7008b34, frozen for the same reason as the
+/// global one above. Never edit.
+/// Provenance: the d7008b34 blob, session_context.rs lines 2509-2529;
+/// declaration 2703 bytes sha256 CC127468...3ABF (plan 3.12 Table A), value
+/// 2516 bytes sha256 0B89EB38...198E (Table B); pinned by
+/// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME: &str =
+    "You are the orchestrator for your team. You must:\n\
+     - Keep your base role; coordination is an additional assignment, not a replacement.\n\
+     - Receive team work requests and clarify scope, outcome, constraints, and acceptance criteria.\n\
+     - Route each part of a request to the team member best prepared for it by role, skills, and current assignment; delegate instead of absorbing technical work when a more specialized agent is available.\n\
+     - To reach another workgroup, message its orchestrator, never its members, and only when your role, the user, or the Root Agent authorizes it; replying to an orchestrator who messaged you first is always authorized.\n\
+     - Sequence work, track progress, surface blockers, and keep ownership clear.\n\
+     - Follow up after assignment to verify the assigned agent is active and working; contact silent or inactive assigned agents up to three total attempts.\n\
+     - Require assigned agents to explicitly report completion, outcome, blockers, and verification before treating delegated work as complete; never infer completion solely from files/logs/artifacts/status flags when the agent has not reported the outcome.\n\
+     - Give recommendations that help an agent work better without removing or overriding that agent's role/scope.\n\n\
+     ## Sending Screenshots\n\
+     Use the CLI subcommand:\n\
+         telegram-send-image --path <PATH> [--caption <CAPTION>] [--bot-id <ID> | --bot-label <LABEL>]\n\
+     --path is required; --caption is optional, max 1024 UTF-16 units. If multiple Telegram bots are configured, pick one with --bot-id or --bot-label. jpg/jpeg/png/webp up to 10 MB use sendPhoto; other formats including GIF use sendDocument up to 50 MB. Symlinks/junctions are rejected.\n\n\
+     **Screenshot Capture Paths:**\n\
+     - Interactive desktop orchestrator: PowerShell System.Drawing / CopyFromScreen can work; cast Measure-Object results to [int] before passing dimensions to Bitmap.\n\
+     - Sandboxed harness orchestrator: CopyFromScreen may return all-zero/black pixels; then ask the user to capture with Greenshot, use the latest file from C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
+     - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n\n\
+     ## Raising Your Hand\n\
+     When you are blocked, need a user decision, or are waiting for user attention, run:\n\
+         \"<AGENTSCOMMANDER_BINARY_PATH>\" raise-hand --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n\
+     This shows the Sidebar raised-hand indicator for your orchestrator row; it clears when the user interacts with your session.\n";
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextTemplateUpdate {
@@ -514,7 +589,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
             id: "global",
             filename: crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME,
             label: "AgentsCommander shared context",
-            current_version: 5,
+            current_version: 6,
             current_content: crate::config::session_context::get_default_agent_template,
             is_known_generated: is_known_generated_global_template,
             project_actionable: true,
@@ -524,7 +599,7 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
             id: "coordinator",
             filename: crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
             label: "Orchestrator context",
-            current_version: 5,
+            current_version: 6,
             current_content: crate::config::session_context::get_default_coordinator_template,
             is_known_generated: is_known_generated_coordinator_template,
             project_actionable: true,
@@ -582,7 +657,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 7,
+        current_version: 8,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: crate::config::root_agent::is_known_generated_root_context_template,
         project_actionable: false,
@@ -616,6 +691,7 @@ fn is_known_generated_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_AGENT_REPOS
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 /// #979: exact recognition of a STANDALONE (app-config) generated global context.
@@ -636,6 +712,7 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_SUMMARIZATION
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
         || content == STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS
+        || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 /// #1605: per-platform generated recognizers — equality with the current
@@ -661,6 +738,7 @@ fn is_known_generated_coordinator_template(content: &str) -> bool {
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION
         || content == OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND
         || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME
+        || content == COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -2131,6 +2209,153 @@ mod tests {
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
     };
 
+    /// #1614 AC7.9 and AC7.11 for the two project specs. Each new snapshot is
+    /// accepted by EVERY recognizer it is wired into, and is != the current
+    /// default -- the assert_ne is what proves the rename actually moved the
+    /// default rather than freezing a copy of something unchanged.
+    #[test]
+    fn frozen_pre_room_rename_global_template_is_recognized() {
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            crate::config::session_context::get_default_agent_template(),
+            "the Room rename must actually change the global default or the freeze is pointless"
+        );
+        assert!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("**Workgroup**"));
+        assert!(
+            !crate::config::session_context::get_default_agent_template()
+                .to_lowercase()
+                .contains("workgroup")
+        );
+    }
+
+    /// #1614 AC7.1b: the merge-resolution guard for the #1605 collision. Two
+    /// limbs, catching two different failures.
+    ///
+    /// The `||`-chain limb catches a three-way merge over two adjacent
+    /// single-line additions to one recognizer chain silently dropping one of
+    /// them: main added `_BEFORE_HOST_PLATFORM_RULES` and this branch added
+    /// `_BEFORE_ROOM_RENAME` in the same place, and keeping only the newer one
+    /// would stop recognizing every pristine v4 file.
+    ///
+    /// The `!=` limb is the one that catches the genuinely silent failure:
+    /// both recognizer lines kept but the frozen body NOT re-based, which
+    /// leaves two constants holding byte-identical bytes under two names with
+    /// v5 permanently unrecognized. No conflict, no compile error and no other
+    /// criterion in this plan surfaces that; before plan section 15.3's
+    /// re-base both constants really were 539 bytes and F4406596...316A.
+    #[test]
+    fn both_frozen_global_generations_are_recognized_and_distinct() {
+        // The ||-chain limb: neither generation may be dropped from either
+        // recognizer.
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+        ));
+        assert!(is_known_generated_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert!(is_known_generated_standalone_global_template(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+
+        // The != limb: the v4 body (main's, #1605) and the v5 body (this
+        // plan's, re-based in 15.3) are two different generations.
+        assert_ne!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            "the pre-Room-rename snapshot was not re-based onto main's v5 body; \
+             two constants hold identical bytes and v5 is unrecognized forever"
+        );
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.len(),
+            539
+        );
+        assert_eq!(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(), 564);
+        assert!(
+            !GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES.contains("{{HOST_PLATFORM_RULES}}"),
+            "the v4 body predates the placeholder"
+        );
+        assert!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("{{HOST_PLATFORM_RULES}}"),
+            "the v5 body carries the placeholder #1605 introduced"
+        );
+    }
+
+    #[test]
+    fn frozen_pre_room_rename_coordinator_template_is_recognized() {
+        assert!(is_known_generated_coordinator_template(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
+        ));
+        assert_ne!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME,
+            get_default_coordinator_template(),
+            "the Room rename must actually change the coordinator default"
+        );
+        assert!(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.contains("another workgroup"));
+        assert!(!get_default_coordinator_template()
+            .to_lowercase()
+            .contains("workgroup"));
+    }
+
+    /// #1614 AC7.11 at the SPEC layer. The persisted-state layer is asserted by
+    /// the read_sync tests, so the bump is pinned on both sides.
+    #[test]
+    fn seeded_template_versions_were_bumped() {
+        let [global, coordinator, ..] = project_specs();
+        assert_eq!(global.current_version, 6, "global 5 -> 6");
+        assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
+        assert_eq!(root_spec().current_version, 8, "rootAgent 7 -> 8");
+    }
+
+    /// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and
+    /// are written into the plan (section 3.12 Table B), NOT read back from the
+    /// constants they check. That is what makes this criterion non-self-
+    /// referential: a later coordinated rename that moved both the constant and
+    /// its test would change the bytes and these hard-coded values would fail.
+    /// Round 1's recognizer criteria all built their expected value by calling
+    /// the function they then classified, so they went green under any
+    /// internally consistent rename.
+    #[test]
+    fn frozen_snapshots_are_byte_exact_at_d7008b34() {
+        use sha2::{Digest, Sha256};
+
+        assert_eq!(
+            GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(),
+            564,
+            "frozen pre-Room-rename global template must be the df494bfa v5 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "d094106b386172e714512dbe1d18cc30a82ff2b25df467f3a1be1c328d464f77",
+            "frozen global snapshot changed; every pristine installation would stop auto-updating"
+        );
+
+        assert_eq!(
+            COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.len(),
+            2516,
+            "frozen pre-Room-rename coordinator template must be the d7008b34 bytes"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME.as_bytes())
+            ),
+            "0b89eb38608f6272f0d8087fc7df13ecc729fda716aba972673b15b734a2198e",
+            "frozen coordinator snapshot changed; every pristine installation would stop auto-updating"
+        );
+    }
+
     // Stage E (#1064) recognized-predecessor exhaustiveness sentinel (plan
     // section 10.2 item 17, 10.6, acceptance item 31): the coordinator recognizer
     // must accept the current default AND every frozen generated predecessor
@@ -2194,10 +2419,10 @@ mod tests {
     }
 
     #[test]
-    fn project_specs_bump_global_to_v5_and_add_platform_specs() {
+    fn project_specs_bump_global_to_v6_and_add_platform_specs() {
         let [global, coordinator, windows, linux, macos] = project_specs();
         assert_eq!(global.id, "global");
-        assert_eq!(global.current_version, 5);
+        assert_eq!(global.current_version, 6);
         assert_eq!(
             (global.current_content)(),
             crate::config::session_context::get_default_agent_template()
@@ -2210,7 +2435,7 @@ mod tests {
         ));
 
         assert_eq!(coordinator.id, "coordinator");
-        assert_eq!(coordinator.current_version, 5);
+        assert_eq!(coordinator.current_version, 6);
         assert_eq!(
             (coordinator.current_content)(),
             get_default_coordinator_template()
@@ -2642,8 +2867,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 5,
-            "recognized v1 global content must land on the current v4 default"
+            parsed["templates"]["global"]["currentVersion"], 6,
+            "recognized v1 global content must land on the current v6 default"
         );
     }
 
@@ -2780,7 +3005,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -2839,7 +3064,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(state["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(state["templates"]["global"]["currentVersion"], 6);
         assert_eq!(
             state["templates"]["global"]["lastSeededSha256"],
             current_hash
@@ -2919,7 +3144,7 @@ mod tests {
                 assert!(scan_publications.is_empty(), "{label}/{trusted_state}");
                 if trusted_state {
                     assert_eq!(updates.len(), 1, "{label}: trusted state must be pending");
-                    assert_eq!(updates[0].current_default_version, 5);
+                    assert_eq!(updates[0].current_default_version, 6);
                     assert_eq!(
                         updates[0].current_default_sha256,
                         hash_text(crate::config::session_context::get_default_agent_template())
@@ -2999,7 +3224,7 @@ mod tests {
                 .expect("scan fine custom global");
             assert_eq!(updates.len(), usize::from(trusted_state));
             if trusted_state {
-                assert_eq!(updates[0].current_default_version, 5);
+                assert_eq!(updates[0].current_default_version, 6);
             }
             assert_eq!(
                 std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
@@ -3054,14 +3279,14 @@ mod tests {
         assert_eq!(
             content,
             crate::config::session_context::get_default_agent_template(),
-            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v5"
+            "pristine v4 Context.AgentsCommander.md must auto-upgrade to v6"
         );
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 5,
-            "recognized v4 global content must land on the current v5 default"
+            parsed["templates"]["global"]["currentVersion"], 6,
+            "recognized v4 global content must land on the current v6 default"
         );
     }
 
@@ -3114,7 +3339,7 @@ mod tests {
         let state = std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3172,7 +3397,7 @@ mod tests {
                 .expect("read seeded state"),
         )
         .expect("parse seeded state");
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
         assert!(
             scan_project_context_template_updates(temp.path(), &ac_root)
                 .expect("scan updates")
@@ -3215,7 +3440,7 @@ mod tests {
         let v4_sha = hash_text(crate::config::session_context::get_default_agent_template());
         assert_eq!(update.filename, GLOBAL_CONTEXT_TEMPLATE_FILENAME);
         assert_eq!(update.current_default_sha256, v4_sha);
-        assert_eq!(update.current_default_version, 5);
+        assert_eq!(update.current_default_version, 6);
 
         let result = overwrite_context_template_with_default(
             &ac_root,
@@ -3240,7 +3465,7 @@ mod tests {
         )
         .expect("parse seeded state");
         assert_eq!(parsed["templates"]["global"]["lastSeededSha256"], v4_sha);
-        assert_eq!(parsed["templates"]["global"]["currentVersion"], 5);
+        assert_eq!(parsed["templates"]["global"]["currentVersion"], 6);
     }
 
     #[test]
@@ -3900,8 +4125,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["coordinator"]["currentVersion"], 5,
-            "coordinator current_version must be bumped to 5 by the #1571 orchestrator rename"
+            parsed["templates"]["coordinator"]["currentVersion"], 6,
+            "coordinator current_version must be bumped to 6 by the #1614 room rename"
         );
         assert_eq!(
             parsed["templates"]["coordinator"]["lastSeededSha256"]
@@ -4069,7 +4294,7 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].current_file_sha256, custom_hash);
         assert_eq!(updates[0].current_default_sha256, v4_hash);
-        assert_eq!(updates[0].current_default_version, 5);
+        assert_eq!(updates[0].current_default_version, 6);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME))
                 .expect("read preserved custom global"),
@@ -4125,7 +4350,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_current_v5_pair_remains_suppressed() {
+    fn ignored_current_v6_pair_remains_suppressed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create workspace");
@@ -4139,7 +4364,7 @@ mod tests {
             "global".to_string(),
             SeededContextTemplateEntry {
                 template_id: "global".to_string(),
-                current_version: 5,
+                current_version: 6,
                 last_seeded_sha256: Some(v4_hash.clone()),
                 last_observed_sha256: Some(custom_hash.clone()),
                 ignored_default_sha256: Some(v4_hash),

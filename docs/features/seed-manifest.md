@@ -19,7 +19,7 @@ publication by AgentsCommander. Three publisher families write rows:
   it during discovery, materializes a session's context, or you explicitly
   overwrite a template.
 - **Replica config folders** - the `.claude`/`.codex`/... folder that
-  [config seed](config-seed.md) copies into a workgroup replica at spawn. Each
+  [config seed](config-seed.md) copies into a room replica at spawn. Each
   installed regular file is one row under a single `config:<dest>` scope.
 - **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.json` (scope
   `catalog:coding-agents`, source `builtin`), published once per project when the
@@ -48,10 +48,10 @@ source = "builtin"
 last_seeded_at = "2026-07-16T19:40:07.123Z"
 
 [[files]]
-path = ".ac/wg-14-dev-team/__agent_architect/.claude/settings.json"
+path = ".ac/room-14-dev-team/__agent_architect/.claude/settings.json"
 path_encoding = "utf8"
 kind = "replica_config_file"
-scope = "config:.ac/wg-14-dev-team/__agent_architect/.claude"
+scope = "config:.ac/room-14-dev-team/__agent_architect/.claude"
 source = "workspace_base"
 last_seeded_at = "2026-07-16T19:41:12.456Z"
 
@@ -124,7 +124,7 @@ churn in version control, ignore the manifest locally (see
 
 ## Lifecycle removal
 
-When AC removes a workgroup, deletes a team, removes a team member's replica, or
+When AC removes a room, deletes a team, removes a team member's replica, or
 deletes an Agent Matrix, it prunes the now-absent config scopes from the manifest
 under the same project lock, after the directory removal commits. Only AC's own
 explicit lifecycle events prune rows:
@@ -136,7 +136,7 @@ explicit lifecycle events prune rows:
 - **Project archive, unarchive, unregister, or re-register** leave the project and
   its `.ac` (and manifest) untouched.
 - **Cloning or copying a project** preserves the committed manifest byte-for-byte.
-  AC does not invent a new owner, reset times, backfill, or prune workgroup paths
+  AC does not invent a new owner, reset times, backfill, or prune room paths
   the clone happens to lack. A row heals to a real new time only on the clone's
   next real publication.
 

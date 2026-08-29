@@ -107,12 +107,12 @@ graph LR
         C_RESMON["resource_monitor.rs<br/>snapshot + thresholds"]
         C_SCR["screenshot.rs<br/>window capture"]
         C_SPEC["spec_board.rs<br/>Spec Board ops"]
-        C_ENT["entity_creation.rs<br/>agents, teams, workgroups"]
+        C_ENT["entity_creation.rs<br/>agents, teams, rooms"]
         C_AGENT["agent_creator.rs<br/>New Agent flows"]
         C_TEMPL["role_templates.rs<br/>role-template picker"]
         C_PROJSET["project_settings.rs<br/>per-project settings"]
         C_NONSTOP["non_stop.rs<br/>non-stop mode"]
-        C_WGDEL["wg_delete_diagnostic.rs<br/>workgroup delete diagnostics"]
+        C_WGDEL["wg_delete_diagnostic.rs<br/>room delete diagnostics"]
         C_TEST["testability.rs<br/>test-only bridges"]
     end
 
@@ -212,7 +212,7 @@ graph LR
 graph TD
     MA["App.tsx<br/>Root: events, shortcuts,<br/>settings, bridge subs"]
 
-    MA --> PP["ProjectPanel.tsx<br/>Projects, workgroups, replicas → SessionItem"]
+    MA --> PP["ProjectPanel.tsx<br/>Projects, rooms, replicas → SessionItem"]
     MA --> WR["WorkgroupGroupRail.tsx<br/>Favorites, group rail, raise-hand"]
     MA --> AB["ActionBar.tsx<br/>Project creation + Settings gear"]
 
@@ -224,7 +224,7 @@ graph TD
     subgraph "Sidebar Stores"
         SS["stores/sessions.ts<br/>session rows + selection state"]
         BS["stores/bridges.ts<br/>bridges[]"]
-        PS["stores/project.ts<br/>project/workgroup trees"]
+        PS["stores/project.ts<br/>project/room trees"]
     end
 
     MA --> SS
@@ -318,7 +318,7 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | ResourceMonitorAPI | `commands/resource_monitor.rs` | process snapshot, thresholds |
 | ScreenshotAPI | `commands/screenshot.rs` | window capture |
 | SpecBoardAPI | `commands/spec_board.rs` | spec board CRUD |
-| EntityAPI | `commands/entity_creation.rs`, `commands/agent_creator.rs` | agents, teams, workgroups |
+| EntityAPI | `commands/entity_creation.rs`, `commands/agent_creator.rs` | agents, teams, rooms |
 | RoleTemplatesAPI | `commands/role_templates.rs` | role-template picker |
 | ProjectSettingsAPI | `commands/project_settings.rs` | per-project settings |
 | NonStopAPI | `commands/non_stop.rs` | non-stop mode |
@@ -613,7 +613,7 @@ graph TD
     subgraph "Sidebar Stores"
         SS["sessions.ts<br/>session rows + selection state"]
         BS["bridges.ts<br/>bridges[]"]
-        PS["project.ts / project-refresh.ts<br/>project, workgroup, replica trees"]
+        PS["project.ts / project-refresh.ts<br/>project, room, replica trees"]
         CS["coding-agents.ts, clock.ts,<br/>team-idle-watcher.ts, ..."]
     end
 
@@ -654,7 +654,7 @@ graph TD
     subgraph "Per-project .ac/ root"
         AGENTS["_agent_&lt;id&gt;/<br/>Role.md + memory/plans/skills"]
         TEAMS["_team_&lt;name&gt;/<br/>config.json"]
-        WGS["wg-&lt;N&gt;-&lt;team&gt;/<br/>__agent_* replicas, repo-*,<br/>messaging/, TASK.md"]
+        WGS["room-&lt;N&gt;-&lt;team&gt;/<br/>__agent_* replicas, repo-*,<br/>messaging/, TASK.md"]
         LOOPS["_loop_&lt;id&gt;/config.toml"]
         SEED["seed-manifest.json,<br/>.gitignore sweep"]
     end
@@ -667,7 +667,7 @@ graph TD
     style WGS fill:#533483,stroke:#fff,color:#fff
 ```
 
-Inter-agent messaging is file-based: senders write Markdown into `<workgroup>/messaging/` and the daemon mailbox delivers it to the recipient's session PTY.
+Inter-agent messaging is file-based: senders write Markdown into `<room>/messaging/` and the daemon mailbox delivers it to the recipient's session PTY.
 
 ---
 
@@ -732,7 +732,7 @@ graph TD
 | `session/profile.rs` | Coding-agent profile resolution per session |
 | `session/auto_close.rs` | Idle auto-close clock |
 | `session/context_alerts.rs`, `session/warnings.rs` | Context alerts, session warnings |
-| `session/purge_guard.rs` | `purge-wg` busy gate |
+| `session/purge_guard.rs` | `purge-room` busy gate |
 | `pty/manager.rs` | `PtyManager`: spawn, read loop, write, resize, kill |
 | `pty/backend.rs` | Local vs container transport selection |
 | `pty/local_backend.rs` | ConPTY/pipes backend |
@@ -792,11 +792,11 @@ graph TD
 | `commands/resource_monitor.rs` | resource snapshots + thresholds |
 | `commands/screenshot.rs` | window screenshot capture |
 | `commands/spec_board.rs` | Spec Board operations |
-| `commands/entity_creation.rs`, `agent_creator.rs` | agents/teams/workgroups creation |
+| `commands/entity_creation.rs`, `agent_creator.rs` | agents/teams/rooms creation |
 | `commands/role_templates.rs` | role-template picker |
 | `commands/project_settings.rs` | per-project settings |
 | `commands/non_stop.rs` | non-stop mode |
-| `commands/wg_delete_diagnostic.rs` | workgroup delete diagnostics |
+| `commands/wg_delete_diagnostic.rs` | room delete diagnostics |
 | `commands/testability.rs` | test-only bridges |
 | `cli/` | CLI verbs: send, list-peers, terminal-snapshot, coding-agent, api-client, window-list, window-screenshot, ... |
 | `api/` | Control-plane API server: auth, audit, dispatcher, handlers, message store |
@@ -838,12 +838,12 @@ graph TD
 | `sidebar/App.tsx` | Sidebar root: events, shortcuts, bridge subs |
 | `sidebar/stores/sessions.ts` | Session rows plus authoritative selection state |
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
-| `sidebar/stores/project.ts` | Project/workgroup/replica tree |
-| `sidebar/components/ProjectPanel.tsx` | Projects, workgroups and replicas → `SessionItem` |
+| `sidebar/stores/project.ts` | Project/room/replica tree |
+| `sidebar/components/ProjectPanel.tsx` | Projects, rooms and replicas → `SessionItem` |
 | `sidebar/components/WorkgroupGroupRail.tsx` | Rail with favorites, groups, raise-hand |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
 | `sidebar/components/AcDiscoveryPanel.tsx` | Branch and repo discovery panel |
-| `sidebar/components/AgentPickerModal.tsx` | Coding-agent profile assignment modal: assigns a profile to one target, with replica/kind/workgroup scope |
+| `sidebar/components/AgentPickerModal.tsx` | Coding-agent profile assignment modal: assigns a profile to one target, with replica/kind/room scope |
 | `sidebar/components/AgentUpdateOverlay.tsx` | Startup coding-agent update overlay and prompt |
 | `sidebar/components/CodingAgentQuickConfiguration.tsx` | Inline coding-agent configuration |
 | `sidebar/components/ContextBadge.tsx` | Per-session context-usage badge |
@@ -851,7 +851,7 @@ graph TD
 | `sidebar/components/ProfileOutdatedBadge.tsx` | Profile-drift badge |
 | `sidebar/components/RaiseHandIcon.tsx` | Raise-hand indicator |
 | `sidebar/components/TeamContextAlertsEditor.tsx` | Per-team context-alert thresholds |
-| `sidebar/components/WorkgroupGroupsModal.tsx` | Workgroup group administration |
+| `sidebar/components/WorkgroupGroupsModal.tsx` | Room group administration |
 | `sidebar/components/ZoomStepper.tsx` | Sidebar zoom control |
 | `sidebar/components/Titlebar.tsx` | Sidebar titlebar: zoom, web-server menu, screenshot chip |
 | `sidebar/components/ActionBar.tsx` | Project creation + Settings gear |

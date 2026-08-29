@@ -2,13 +2,13 @@
 
 These cases validate CLI-driven and GUI-observable inter-agent messaging, including peer discovery, fire-and-forget delivery, wake routing, file-based message delivery, invalid peer handling, and visible evidence in recipient sessions.
 
-Use clearly disposable test projects, workgroups, peers, message files, sessions, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
+Use clearly disposable test projects, rooms, peers, message files, sessions, and settings state. Prefer creating test data in the tester's allowed scratch/evidence area. If no safe in-app cleanup exists, record residual state rather than deleting user data manually.
 
 Visual preconditions from `README.md#visual-test-environment` apply to every case in this file. MSG-001 captures target-window identity explicitly; later cases inherit it.
 
 Current deterministic mode: use `agentscommander_testeable.exe` with explicit placement and `window-info` verification. Run `agentscommander_testeable.exe test-reset --confirm-testeable` before cases that require clean disposable state, and only when the testable GUI is not active.
 
-Use only disposable peers created for the current test run in the expected disposable workgroup. Before any send, capture `list-peers-lean` JSON showing the recipient `name`, expected workgroup/team, `reachable:true`, sender root, and recipient root. Do not send to existing live team members.
+Use only disposable peers created for the current test run in the expected disposable room. Before any send, capture `list-peers-lean` JSON showing the recipient `name`, expected room/team, `reachable:true`, sender root, and recipient root. Do not send to existing live team members.
 
 Required evidence categories for this suite: peer discovery JSON, sender command stdout/stderr, message filename and file content, recipient terminal/session screenshot, sender and recipient roots, and any mailbox/outbox/log artifact needed to correlate one message end to end.
 
@@ -52,23 +52,23 @@ Verify that peer discovery returns canonical peer names and enough routing state
 Preconditions:
 
 - `agentscommander_testeable.exe` is launched and verified with `window-info`.
-- A disposable workgroup exists with a sender session and at least one disposable recipient peer.
+- A disposable room exists with a sender session and at least one disposable recipient peer.
 - The sender and recipient roots are known or visible from session/context evidence.
-- No live workgroup peers are used.
+- No live room peers are used.
 
 Steps:
 
-1. Capture the target app and selected disposable workgroup.
+1. Capture the target app and selected disposable room.
 2. From the sender session/root, run `list-peers-lean` with the current session token and root.
 3. Save stdout/stderr as peer discovery evidence.
 4. Identify the recipient peer using the JSON `name` field only.
-5. Confirm the selected recipient belongs to the expected disposable workgroup/team and has `reachable:true`.
+5. Confirm the selected recipient belongs to the expected disposable room/team and has `reachable:true`.
 6. Record the sender root and recipient root in the evidence notes.
 7. Capture the GUI peer/session list if visible and compare it to the peer JSON.
 
 Expected Result:
 
-Peer discovery returns canonical names such as `<project>:<workgroup>/<agent>`, and the safe recipient is explicitly identified by `name`, workgroup/team, `reachable:true`, sender root, and recipient root.
+Peer discovery returns canonical names such as `<project>:<room>/<agent>`, and the safe recipient is explicitly identified by `name`, room/team, `reachable:true`, sender root, and recipient root.
 
 Evidence Required:
 
@@ -79,7 +79,7 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-PASS if a disposable `reachable:true` peer is identified by canonical `name`. PARTIAL if peer JSON is valid but GUI comparison is unavailable. FAIL if testers must infer names from filesystem directory names or the peer belongs to a live workgroup. BLOCKED if no safe disposable peer is available.
+PASS if a disposable `reachable:true` peer is identified by canonical `name`. PARTIAL if peer JSON is valid but GUI comparison is unavailable. FAIL if testers must infer names from filesystem directory names or the peer belongs to a live room. BLOCKED if no safe disposable peer is available.
 
 ### MSG-002: Message sent to a running peer appears in the recipient session
 
@@ -91,13 +91,13 @@ Preconditions:
 
 - Depends on MSG-001.
 - The recipient peer is already running or waiting for input, and peer JSON shows `reachable:true`.
-- A valid markdown message filename can be created in the disposable workgroup `messaging/` directory.
+- A valid markdown message filename can be created in the disposable room `messaging/` directory.
 - The sender root and recipient root are recorded before sending.
 
 Steps:
 
-1. Capture pre-send `list-peers-lean` JSON showing recipient `name`, expected workgroup, and `reachable:true`.
-2. Create a short markdown message file in the disposable workgroup `messaging/` directory using the required timestamped filename pattern.
+1. Capture pre-send `list-peers-lean` JSON showing recipient `name`, expected room, and `reachable:true`.
+2. Create a short markdown message file in the disposable room `messaging/` directory using the required timestamped filename pattern.
 3. Save the message content as evidence and record the exact filename.
 4. Run `send --to "<canonical-peer-name>" --send <filename> --mode wake` from the sender root. Use filename-only `--send <filename>`, never a path.
 5. Save sender command stdout/stderr.
@@ -136,7 +136,7 @@ Preconditions:
 Steps:
 
 1. Capture pre-send peer JSON showing recipient `name`, `reachable:true`, sender root, recipient root, and `sessionStatus: "none"` when applicable.
-2. Create a harmless markdown message file in the workgroup `messaging/` directory.
+2. Create a harmless markdown message file in the room `messaging/` directory.
 3. Run `send --to "<canonical-peer-name>" --send <filename> --mode wake` using filename-only `--send <filename>`.
 4. Save stdout/stderr and capture the GUI/session state after the first send.
 5. If the first send only starts the peer, wait until peer JSON shows the recipient is up or `working:true`.
@@ -169,7 +169,7 @@ Preconditions:
 
 - Depends on MSG-001.
 - A disposable running recipient peer with `reachable:true` is available.
-- A harmless multiline markdown message can be written under the workgroup `messaging/` directory.
+- A harmless multiline markdown message can be written under the room `messaging/` directory.
 
 Steps:
 
@@ -258,7 +258,7 @@ Steps:
 
 Expected Result:
 
-The evidence set ties one message to one sender, one recipient, one message filename, and the expected disposable workgroup without relying on filesystem directory names as `--to` values.
+The evidence set ties one message to one sender, one recipient, one message filename, and the expected disposable room without relying on filesystem directory names as `--to` values.
 
 Evidence Required:
 

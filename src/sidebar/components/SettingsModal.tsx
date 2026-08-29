@@ -886,7 +886,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const root = apiClientMintRoot();
     const scopes = apiClientMintScopes();
     if (!root) {
-      setApiClientMintError("Load a project with at least one workgroup replica before minting.");
+      setApiClientMintError("Load a project with at least one room replica before minting.");
       return;
     }
     if (scopes.length === 0) {
@@ -2086,7 +2086,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           class="settings-hint settings-hint-warning"
           data-ac-testid="settings.general.terminalSnapshotsEnabled.warning"
         >
-          Allow authorized Root Agents and same-workgroup Orchestrators to capture live terminal
+          Allow authorized Root Agents and same-room Orchestrators to capture live terminal
           contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
           prompts, and personal data. Disabled by default.
         </div>
@@ -2260,7 +2260,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               data-ac-testid="settings.apiClientMint.noRoots"
               data-ac-role="status"
             >
-              Load a project with workgroup replicas before minting an API client.
+              Load a project with room replicas before minting an API client.
             </div>
           </Show>
           <div class="settings-field">

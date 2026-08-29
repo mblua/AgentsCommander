@@ -26,9 +26,9 @@ enum TeamCommand {
     Create(TeamCreateArgs),
     /// List team configuration
     List(TeamListArgs),
-    /// Add an agent to one workgroup and team config
+    /// Add an agent to one room and team config
     AddMember(TeamAddMemberArgs),
-    /// Remove an agent from one workgroup and team config
+    /// Remove an agent from one room and team config
     RemoveMember(TeamRemoveMemberArgs),
 }
 
@@ -36,7 +36,7 @@ enum TeamCommand {
 struct TeamListArgs {
     #[arg(long)]
     project: String,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: Option<String>,
 }
 
@@ -58,17 +58,17 @@ struct TeamCreateArgs {
     agents: Vec<String>,
     #[arg(
         long = "repo",
-        help = "Define a repo available to the team when workgroups are created. Repeat for multiple repos"
+        help = "Define a repo available to the team when rooms are created. Repeat for multiple repos"
     )]
     repos: Vec<String>,
     #[arg(
         long = "repo-agents",
-        help = "Define team repo access for workgroup creation as URL=agent-a,agent-b"
+        help = "Define team repo access for room creation as URL=agent-a,agent-b"
     )]
     repo_agents: Vec<String>,
     #[arg(
         long = "repo-exclude-agents",
-        help = "Define team repo access for workgroup creation as URL=excluded-agent-a,excluded-agent-b"
+        help = "Define team repo access for room creation as URL=excluded-agent-a,excluded-agent-b"
     )]
     repo_exclude_agents: Vec<String>,
 }
@@ -77,7 +77,7 @@ struct TeamCreateArgs {
 struct TeamAddMemberArgs {
     #[arg(long)]
     project: String,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: String,
     #[arg(long)]
     agent: String,
@@ -89,7 +89,7 @@ struct TeamAddMemberArgs {
 struct TeamRemoveMemberArgs {
     #[arg(long)]
     project: String,
-    #[arg(long)]
+    #[arg(long = "room", alias = "workgroup", value_name = "ROOM")]
     workgroup: String,
     #[arg(long)]
     agent: String,
@@ -184,7 +184,7 @@ fn list(args: TeamListArgs) -> Result<(), String> {
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let mut items = Vec::new();
     if let Some(workgroup) = args.workgroup {
-        validate_existing_name(&workgroup, "Workgroup")?;
+        validate_existing_name(&workgroup, "Room")?;
         let team = parse_team_from_workgroup_name(&workgroup)?;
         let config = read_team_config(&ac_root, &team)?;
         items.push(TeamListItem {
@@ -256,13 +256,13 @@ fn remove_member_from_team_config(
 }
 
 fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
-    validate_existing_name(&args.workgroup, "Workgroup")?;
+    validate_existing_name(&args.workgroup, "Room")?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let guard = TeamConfigMutationGuard::acquire(&ac_root)?;
     let wg_dir = ac_root.join(&args.workgroup);
     if !wg_dir.is_dir() {
-        return Err(format!("Workgroup '{}' not found", args.workgroup));
+        return Err(format!("Room '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
     let config = normalize_team_config_for_project(&ac_root, &read_team_config(&ac_root, &team)?)?;
@@ -323,12 +323,12 @@ fn remove_member_hooked(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     after_project_before_team: impl FnOnce(&std::path::Path),
 ) -> Result<(), String> {
-    validate_existing_name(&args.workgroup, "Workgroup")?;
+    validate_existing_name(&args.workgroup, "Room")?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
     let wg_dir = ac_root.join(&args.workgroup);
     if !wg_dir.is_dir() {
-        return Err(format!("Workgroup '{}' not found", args.workgroup));
+        return Err(format!("Room '{}' not found", args.workgroup));
     }
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
     let agent_ref = resolve_agent_ref(&ac_root, &args.agent)?;
