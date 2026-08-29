@@ -1,19 +1,23 @@
 # scripts/room-rename-allowlist.tsv -- #1614 plan section 9.4 AC1.
-# Part A: derived at frozen base d7008b34 from the three binding sweeps,
+# Part A: derived at frozen base d7008b34 and REFRESHED at df494bfa (plan
+# section 12 step 0b) from the three binding sweeps,
 # minus the lines this plan moves. Committed before the first
 # visible-text edit, so an unrenamed Rule R line comes back unlisted.
 # Columns: <Rule P class>\t<path>\t<trimmed line content>.
 #
 # Per-surface subtotals at the base (AC1 point 8):
-#   frontend  swept 906, moved 63, Part A 843
-#   rust      swept 3090, moved 292, Part A 2798
-#   docs      swept 563, moved 533, Part A 30
-#   closing check: Part A 3671 + subtracted 888 = 4559
+#   frontend  swept 906, moved 65, Part A 841 lines / 775 rows
+#   rust      swept 3104, moved 285, Part A 2819 lines / 2172 keys
+#   docs      swept 563, moved 533, Part A 30 lines / 30 rows
+#   closing check: lines(Part A) 3690 + lines moved 883 = 4573
 #
 # Rows are keyed on (path, trimmed content), so the identical trimmed
 # content on several lines of one file collapses to ONE row. The
-# closing arithmetic above counts LINES; the file below holds rows.
-# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev d7008b34 --write
+# closing arithmetic above counts LINES; the file below holds ROWS: 2,989
+# Part A rows over 2,977 unique (path, content) keys. The 12-row gap is 12
+# pairs carrying two different classes; the gate keys on (path, content)
+# and ignores the class, so the duplicates are inert.
+# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev df494bfa --write
 # Check:      node scripts/room-rename-allowlist.mjs gate
 P0-identifier	src/resource-monitor/App.tsx	`${group.workgroup ?? "-"} / ${group.agent ?? group.name}`;
 P0-identifier	src/resource-monitor/App.tsx	const [workgroupFilter, setWorkgroupFilter] = createSignal<Set<string>>(
@@ -380,7 +384,6 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	{(wg) => renderWorkgroupSu
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	{/* Workgroups */}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const handleWorkgroupsHeaderContextMenu = (e: MouseEvent) => {
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	setWorkgroupsHeaderCtxMenu({ x: e.clientX, y: e.clientY });
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	<Show when={sessionsStore.showCategories && (!filterActive() || matchesFilterText("Workgroups") || filteredWorkgroups().length > 0)}>
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onClick={() => togglePanelCollapsed(workgroupsCollapsedKey)}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onContextMenu={handleWorkgroupsHeaderContextMenu}
 P0-css	src/sidebar/components/ProjectPanel.tsx	<span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(workgroupsCollapsedKey) }}>
@@ -723,7 +726,6 @@ P0-identifier	src/terminal/App.tsx	<WorkgroupTask />
 P0-identifier	src/terminal/components/Titlebar.tsx	import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 P0-identifier	src/terminal/components/Titlebar.tsx	const wgName = createMemo(() => extractWorkgroupName(terminalStore.activeWorkingDirectory));
 P0-css	src/terminal/components/Titlebar.tsx	<span class="titlebar-wg-badge" data-tauri-drag-region>{wgName()}</span>
-P1-comment	src/terminal/components/WorkgroupTask.tsx	// Backend uses byte-exact `name.starts_with("wg-")` (session/session.rs).
 P1-comment	src/terminal/components/WorkgroupTask.tsx	// Keep this regex case-sensitive so the UX gate matches; matching `WG-19`
 P0-identifier	src/terminal/components/WorkgroupTask.tsx	function hasWorkgroupContext(cwd: string): boolean {
 P0-identifier	src/terminal/components/WorkgroupTask.tsx	const WorkgroupTask: Component = () => {
@@ -2283,6 +2285,9 @@ P2-fixture	src-tauri/src/config/session_context.rs	const FAKE_REPLICA_ROOT: &str
 P2-fixture	src-tauri/src/config/session_context.rs	"WG profile is {} bytes; v3 baseline {V3_FULL_WG_PROFILE_BYTES}, ceiling {MAX_FULL_WG_PROFILE_BYTES}",
 P2-fixture	src-tauri/src/config/session_context.rs	"WG reduction is only {} bytes",
 P2-fixture	src-tauri/src/config/session_context.rs	print_row("profile: WG replica", replica.len());
+P2-fixture	src-tauri/src/config/session_context.rs	let replica = ac.join("wg-1-team").join("__agent_dev");
+P2-fixture	src-tauri/src/config/session_context.rs	"the platform block must render in the WG profile"
+P1-comment	src-tauri/src/config/session_context.rs	// #1605: the platform block renders in the WG profile on every OS (linux/
 P1-comment	src-tauri/src/config/sessions_persistence.rs	///   4. Registered but the directory does not exist (deleted workgroup or
 P2-fixture	src-tauri/src/config/sessions_persistence.rs	working_directory: r"C:\proj\.ac\wg-1-devs\__agent_alice".into(),
 P2-fixture	src-tauri/src/config/sessions_persistence.rs	"workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead",
@@ -3209,3 +3214,15 @@ P0-identifier	docs/testing/04-team-and-workgroup-lifecycle.md	- `WGP-006-pre-res
 P0-identifier	docs/testing/04-team-and-workgroup-lifecycle.md	- `WGP-006-post-restart-workgroups.png`.	residual R3: source and doc FILE NAMES are out of scope (#1615)
 P0-identifier	docs/testing/08-inter-agent-messaging.md	- `MSG-001-workgroup-peers.png` showing visible disposable peers if available.	introduced by this change and names the legacy prefix deliberately
 P0-key	docs/testing/semantic-ui-automation-affordance-matrix.md	| Toggle selected room pin | `actionBar.pinSelectedWorkgroup` | `click` |	section 3.10 persisted key or testid; renaming it resets user state
+P1-comment	src-tauri/src/api/actuation.rs	/// The `wg-` fixture above is deliberately NOT converted (Rule P2); the	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P1-comment	src-tauri/src/api/identity.rs	/// assumed into asserted. The `wg-` fixture above is deliberately NOT	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P1-comment	src-tauri/src/api/identity.rs	/// #1614 (D): a Room replica and a legacy Workgroup replica at the same	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P2-fixture	src-tauri/src/api/identity.rs	for entity in ["wg-1-team", "room-1-team"] {	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P2-fixture	src-tauri/src/api/identity.rs	"a Workgroup and a Room at slot 1 must be two different peers"	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P2-fixture	src-tauri/src/api/identity.rs	assert!(resolved[0].contains("wg-1-team"), "got: {}", resolved[0]);	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P1-comment	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	/// `WORKGROUP`, never replacing it: a legacy fixture is the only way	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P1-comment	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	/// exercising `wg-1-dev-team` and gains the Room case.	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P2-fixture	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	assert!(has_entity_prefix(WORKGROUP), "{WORKGROUP}");	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P2-fixture	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	assert_eq!(strip_entity_prefix(WORKGROUP), Some("1-dev-team"));	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P1-comment	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	// directory name, so a Room and a legacy Workgroup at the same slot are	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
+P2-fixture	src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs	let legacy_fqn = format!("{PROJECT}:{WORKGROUP}/coordinator");	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
