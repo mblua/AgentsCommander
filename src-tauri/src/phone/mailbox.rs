@@ -11990,7 +11990,7 @@ mod tests {
                     thresholds,
                 )
                 .is_err(),
-                "invalid notice case must be rejected: member={member} room={workgroup} observed={observed}"
+                "invalid notice case must be rejected: member={member} workgroup={workgroup} observed={observed}"
             );
         }
     }
@@ -17609,7 +17609,7 @@ mod tests {
     fn write_raise_hand_task_title(cwd: &Path, title: &str) {
         let task_path =
             crate::session::session::find_workgroup_task_path_for_cwd(&cwd.to_string_lossy())
-                .expect("raise-hand test cwd should be inside a room");
+                .expect("raise-hand test cwd should be inside a workgroup");
         std::fs::write(task_path, format!("---\ntitle: {}\n---\n\nbody", title)).unwrap();
     }
 
@@ -20694,7 +20694,7 @@ mod tests {
 
         let got = derive_project_from_outbox_path(&file)
             .unwrap()
-            .expect("should derive project from Room layout");
+            .expect("should derive project from WG layout");
         let expected = std::fs::canonicalize(&project_dir)
             .unwrap()
             .to_str()
@@ -23821,7 +23821,7 @@ mod tests {
         let reason = std::fs::read_to_string(&rejected).unwrap();
         assert!(
             reason.contains("requires a session token"),
-            "must be rejected by the F-7 token guard, not by Room resolution: {reason}"
+            "must be rejected by the F-7 token guard, not by WG resolution: {reason}"
         );
 
         // (#885 E-2) Zero destroy events (now meaningful with the hook).
@@ -23901,7 +23901,7 @@ mod tests {
         let reason = std::fs::read_to_string(&rejected).unwrap();
         assert!(
             reason.contains("requires a session token"),
-            "must be rejected by the F-7 token guard, not by Room resolution: {reason}"
+            "must be rejected by the F-7 token guard, not by WG resolution: {reason}"
         );
 
         // (#885 E-2) Zero destroy events.

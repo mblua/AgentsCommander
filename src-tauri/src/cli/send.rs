@@ -1471,7 +1471,7 @@ mod tests {
             .to_string();
         let got = derive_root_project_dir(agent_root.to_str().unwrap())
             .unwrap()
-            .expect("should derive project from Room replica path");
+            .expect("should derive project from WG replica path");
         assert_eq!(got, expected);
     }
 

@@ -4880,7 +4880,7 @@ mod tests {
         let wg_dir = ac_root.join("wg-1-dev-team");
         let matrix_dir = ac_root.join("_agent_architect");
         std::fs::create_dir_all(&matrix_dir).expect("architect matrix");
-        std::fs::create_dir_all(&wg_dir).expect("room");
+        std::fs::create_dir_all(&wg_dir).expect("workgroup");
 
         let err = create_or_update_replica_on_disk(ReplicaDiskCreateArgs {
             ac_root: ac_root.clone(),
@@ -5109,7 +5109,7 @@ mod tests {
         });
         match outcome {
             WgDeleteOutcome::Partial { orphan_path, error } => {
-                assert!(!wg_dir.exists(), "original room path should be gone");
+                assert!(!wg_dir.exists(), "original workgroup path should be gone");
                 assert!(orphan_path.is_dir(), "orphan should remain on disk");
                 assert!(orphan_path
                     .file_name()
@@ -7956,7 +7956,7 @@ mod stage_e_cross_process {
     fn cli_workgroup_deletion_takes_project_gate_only_cross_process() {
         run_cross_process_parent(
             WORKGROUP_ACTION,
-            "cli::room::tests::cli_room_lock_order_inversion_child",
+            "cli::workgroup::tests::cli_workgroup_lock_order_inversion_child",
             false,
         );
     }

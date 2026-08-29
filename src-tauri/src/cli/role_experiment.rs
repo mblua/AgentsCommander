@@ -1399,7 +1399,7 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             }),
             workgroup: Some(plan.workgroup.clone()),
             warnings: vec![
-                "run_room_retained".to_string(),
+                "run_workgroup_retained".to_string(),
                 "transcript_capture_best_effort".to_string(),
                 "no_scoring".to_string(),
                 "real_execution_deferred".to_string(),
@@ -1436,7 +1436,7 @@ fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
 
     warnings.extend([
         warn(
-            "run_room_retained",
+            "run_workgroup_retained",
             "Run room was retained for inspection; cleanup is not implemented in Phase 3A.",
             None,
         ),
@@ -4244,7 +4244,7 @@ mod tests {
         let run_dir = runs_dir(&loaded).join(&run_id);
         std::fs::create_dir_all(run_dir.join("attempt-state")).expect("run dirs");
         let workgroup_dir = loaded.ac_root.join("wg-1-role-exp-exp");
-        std::fs::create_dir_all(&workgroup_dir).expect("room dir");
+        std::fs::create_dir_all(&workgroup_dir).expect("workgroup dir");
 
         let suite = ParsedPromptSuite {
             path: loaded.experiment_dir.join("suite.md"),
@@ -4278,7 +4278,7 @@ mod tests {
         let workgroup = RunWorkgroupArtifact {
             name: "wg-1-role-exp-exp".to_string(),
             path: std::fs::canonicalize(&workgroup_dir)
-                .expect("canonical room")
+                .expect("canonical workgroup")
                 .to_string_lossy()
                 .to_string(),
             retained: true,

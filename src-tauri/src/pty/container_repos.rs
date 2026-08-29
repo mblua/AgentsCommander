@@ -419,7 +419,7 @@ mod tests {
         write_repos(&replica, &[elsewhere_repo.to_str().unwrap()]);
         assert!(
             resolve_repo_mounts(&replica).is_err(),
-            "Q4: a repo outside the room root is prohibited (post-collapse: hard-fail)"
+            "Q4: a repo outside the workgroup root is prohibited (post-collapse: hard-fail)"
         );
     }
 

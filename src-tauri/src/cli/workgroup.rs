@@ -634,10 +634,10 @@ mod tests {
         };
         let result = remove_hooked(args, None, |_ac_root: &Path| ctx.report_and_wait());
         if let Err(error) = &result {
-            println!("STAGE_D_LOCK_ORDER_ERROR {} room {}", ctx.nonce, error);
+            println!("STAGE_D_LOCK_ORDER_ERROR {} workgroup {}", ctx.nonce, error);
         }
         println!(
-            "STAGE_D_LOCK_ORDER_DONE {} room ok={}",
+            "STAGE_D_LOCK_ORDER_DONE {} workgroup ok={}",
             ctx.nonce,
             result.is_ok()
         );
@@ -661,7 +661,7 @@ mod tests {
             return;
         }
         let control = tempfile::tempdir().expect("tempdir");
-        let nonce = "driver-room";
+        let nonce = "driver-workgroup";
         let _guard = EnvGuard::capture(&[
             ACTION_VAR,
             NONCE_VAR,
@@ -701,7 +701,7 @@ mod tests {
             .join("wg-1-dev-team");
         assert!(
             !wg_dir.exists(),
-            "the room must be removed after the barrier releases"
+            "the workgroup must be removed after the barrier releases"
         );
     }
 }

@@ -4009,7 +4009,7 @@ mod tests {
 
         assert!(
             watcher.task_cache.lock().unwrap().is_empty(),
-            "archived session rooms must not be checked for TASK.md"
+            "archived session workgroups must not be checked for TASK.md"
         );
     }
 
@@ -4593,7 +4593,7 @@ mod tests {
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         assert!(
             content.lines().any(|line| line.trim() == ".deleting-*/"),
-            "workspace .gitignore must ignore room delete sentinel directories"
+            "workspace .gitignore must ignore workgroup delete sentinel directories"
         );
         assert!(
             content

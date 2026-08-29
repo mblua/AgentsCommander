@@ -572,7 +572,7 @@ fn read_wg_role(replica_dir: &Path) -> String {
         Ok((_config, identity)) => identity.matrix_dir,
         Err(e) => {
             log::warn!(
-                "[list-peers] Rejected invalid Room replica identity for '{}': {}",
+                "[list-peers] Rejected invalid WG replica identity for '{}': {}",
                 replica_dir.display(),
                 e
             );

@@ -68,7 +68,7 @@ function parseTaskTitle(content: string | null): string | null {
   return parseTask(content).title;
 }
 
-// Backend uses byte-exact `name.starts_with("wg-")` (session/session.rs).
+// Backend is byte-exact (`has_entity_prefix`); `pathHasEntityDirSegment` mirrors it.
 // Keep this regex case-sensitive so the UX gate matches; matching `WG-19`
 // here would render the buttons enabled but every click would fail.
 function hasWorkgroupContext(cwd: string): boolean {
