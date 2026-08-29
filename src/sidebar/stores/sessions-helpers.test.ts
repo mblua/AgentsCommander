@@ -331,3 +331,104 @@ describe("sidebar coordinator hover freeze", () => {
     sessionsStore.setSidebarPointerInside(false);
   });
 });
+
+describe("sidebar menu-open order lock", () => {
+  it("holds the frozen order while a menu is open with the pointer outside", () => {
+    const projectPath = "test-project-menu-open";
+
+    sessionsStore.setSidebarMenuOpen(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarMenuOpen(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+
+    sessionsStore.setSidebarMenuOpen(false);
+  });
+
+  it("releases when the menu closes", () => {
+    const projectPath = "test-project-menu-release";
+
+    sessionsStore.setSidebarMenuOpen(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarMenuOpen(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+
+    sessionsStore.setSidebarMenuOpen(false);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-c",
+      "coord-a",
+      "coord-b",
+    ]);
+  });
+
+  it("pointer-leave while a menu is open keeps the freeze", () => {
+    const projectPath = "test-project-menu-pointer-leave";
+
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarPointerInside(true);
+    sessionsStore.setSidebarMenuOpen(true);
+    sessionsStore.setSidebarPointerInside(false);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+
+    sessionsStore.setSidebarMenuOpen(false);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-c",
+      "coord-a",
+      "coord-b",
+    ]);
+  });
+
+  it("drops disappeared and appends new coordinators while menu-locked", () => {
+    const projectPath = "test-project-menu-structural-change";
+
+    sessionsStore.setSidebarMenuOpen(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+
+    sessionsStore.setSidebarMenuOpen(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-d", "coord-c", "coord-a"])).toEqual([
+      "coord-a",
+      "coord-c",
+      "coord-d",
+    ]);
+
+    sessionsStore.setSidebarMenuOpen(false);
+  });
+
+  it("re-snapshots the last recorded visible order when the lock re-engages", () => {
+    const projectPath = "test-project-menu-re-snapshot";
+
+    sessionsStore.setSidebarMenuOpen(false);
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+    sessionsStore.setSidebarMenuOpen(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+      "coord-a",
+      "coord-b",
+      "coord-c",
+    ]);
+    sessionsStore.setSidebarMenuOpen(false);
+    // Explicit mirror of ProjectPanel.coordinatorItems recording the recomputed
+    // order once the lock is off; without it, "last" still holds [a,b,c].
+    sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"]);
+    sessionsStore.setSidebarMenuOpen(true);
+    expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-b", "coord-c", "coord-a"])).toEqual([
+      "coord-c",
+      "coord-a",
+      "coord-b",
+    ]);
+    sessionsStore.setSidebarMenuOpen(false); // end released — module state stays clean
+  });
+});

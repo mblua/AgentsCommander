@@ -841,6 +841,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (loopToastTimer) clearTimeout(loopToastTimer);
     if (profileDriftRefreshTimer) clearTimeout(profileDriftRefreshTimer);
     sessionsStore.setSidebarPointerInside(false);
+    sessionsStore.setSidebarMenuOpen(false);
     document.removeEventListener("mousedown", handleRaiseTerminal);
     document.removeEventListener("contextmenu", blockContextMenu);
     window.removeEventListener("main-sidebar-side-change", handleMainSidebarSideChange);

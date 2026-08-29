@@ -1,0 +1,292 @@
+# #1624 — Sidebar tile order lock: extend the hover freeze to open context menus
+
+Status: READY_FOR_IMPLEMENTATION
+
+Issue: `#1624` — "Sidebar: no tile reorder while pointer is over the sidebar or while any sidebar context menu is open" (Spanish original: no order change when mouse-over is over the sidebar OR when a sidebar context menu is open; the reorder comes from the "Show recent orchestrators first" toggle).
+Repository: `repo-AgentsCommander`
+Branch: `fix/1624-sidebar-order-lock-context-menu` (already created, checked out; base `main` = `df494bfa04f7e14fa9a42f3b0d89ccbc2ce76e80`, working tree clean)
+Delivery: Full
+Owning implementer: `ac-dev-webpage-ui-v3`
+
+## Round 4 revision — acceptance-gate defect and recertification
+
+Round 3's candidate (`B58B8E11BEC72239FB7A6E7A4FBDAB93DE12111992F0789AB3FCDE7310300F31`) reached full three-party consensus, the user approved it, and the owning implementer applied it **verbatim** at commit `fdec2081` (6 files, exactly the planned scope). The acceptance gate then exposed one **fixture-isolation defect** in the test plan. The lock design, the store logic, the observer, and the test assertions are all correct and are NOT in question; this revision changes only the isolation fixture and records the two decisions below. Because the defect invalidated the round-3 certification, this document is re-certified with a new digest; a fresh human approval gate follows.
+
+**The defect (verified against the tree at `fdec2081`):** `lastActivityBySessionId` is module-level store state with no reset anywhere in the codebase. It exists only as the initial `{}` (`src/sidebar/stores/sessions.ts:76`), the getter (`:604-605`), the sole writer `markActivity` (`:677-678`, stamping `performance.now()`), and the sole read (`src/sidebar/components/ProjectPanel.tsx:1898` in `naturalCoordinatorItems`). `resetUiStoresForTests` (`src/shared/testing/ui-harness.tsx:267`) does not reset it, and neither do `setSessions([])` nor `clearDetached`. Consequence: in the two new DOM suites, every test after the first in a file inherits the previous test's activity stamps — the order snapshot captured at menu-open (which happens **before** the test's own `markActivity` calls) is already `[coord-b, coord-a]`, so the frozen-order assertions expecting `[coord-a, coord-b]` fail from test 2 onward.
+
+**Measured with the plan implemented verbatim (reproduced independently for this revision):**
+
+- `npx vitest run` on the three suites: `PASS (33) FAIL (5)` of 38. `sessions-helpers.test.ts` 30/30 (that file never calls `markActivity` — no pollution). `ProjectPanel.order-lock.test.tsx` 4/8 (failures at `:201`, `:228`, `:255`, `:300`). `App.order-lock.test.tsx` 1/2 (failure at `:211`). All five are the same shape: `expected [ …(2) ] to deeply equal [ …(2) ]`, received `["replica.row.quick.wg-2-dev-team.coord-b", "replica.row.quick.wg-1-dev-team.coord-a"]`.
+- `npm test`: only the two new suites fail (`Tests 5 failed | 1836 passed`); every untouched suite passes. `npm run typecheck`: clean.
+- The implementer's probe confirms the runtime is correct: with a leaked stamp on `coord-b`, `sidebarMenuOpen === true` and `coordinatorVisibleOrder(projectPath, [b, a])` correctly returns the frozen `[b, a]`.
+
+**The fix (the entire implementation delta on top of `fdec2081`):** one test-only reset method on the sessions store (`resetActivityForTests()` clearing `state.lastActivityBySessionId`) and one call in `resetUiStoresForTests` — plus the two fixture decisions below. Nothing else. No lock-design change, no assertion change, no test-intent change. **This delta was applied to a scratch tree and verified: `PASS (38) FAIL (0)` on the three suites and `npm run typecheck` clean.**
+
+**Round 4 decisions (raised by the implementer as non-blocking; decided here, not deferred):**
+
+1. **Fixture session ids switch to canonical UUIDs.** The two new suites' fixtures use non-UUID ids `coord-a-session`/`coord-b-session`; with `get_active_session` resolving `liveSelection("coord-a-session")`, the selection hydration path rejects the id (`src/shared/session-selection.ts:64-69`; `fail(path, "expected a canonical lowercase UUID")` at `:67`) and logs a caught `[selection] Sidebar selection hydration failed: ...` error on every App-suite run. Decision: **switch to the sibling suite's canonical UUID constants** — `SESSION_A`/`SESSION_B` from `src/shared/testing/session-selection.ts` (the same constants `App.messaging.workflow.test.tsx` uses for `session({ id: SESSION_A })` plus `liveSelection(SESSION_A)`). Reasons: (a) the fixtures already mirror the sibling suite, and conforming removes a fixture artifact that trips a production invariant; (b) the log is a caught error from a path these suites do not test — red-herring noise that could mask a real regression and would trip any future console-error assertion; (c) the change is purely mechanical id renaming (import, the `liveSessions()` `id:` fields, the `liveSelection` argument, the `markActivity` keys) with zero effect on assertions, testids, or order semantics — `markActivity` keys are opaque, and hydration success only applies selection-highlight state, which the sibling suite proves benign by running `liveSelection(SESSION_A)` against a live fixture session and passing. Order never depends on session ids: it comes from `lastActivityBySessionId` + `coordSortByActivity` + the frozen maps. Verified: with the ids switched, the App repro test and the outside-click test both pass (`PASS (38) FAIL (0)`).
+2. **The App fixture's caught-and-logged stderr noise is accepted.** `drain_session_warnings` (`App.tsx:491-497`, try/catch), `get_update_status` (`App.tsx:579-584`, `.catch`), `screenshot_get_hotkey_status` (`src/sidebar/listeners-screenshot.ts:52`, `.catch`), and `get_agent_update_status` (`src/sidebar/agent-update.ts:340`, `.catch`) are all unhandled-fake-invoke throws caught by production `.catch` blocks and logged — identical to the sibling App suites, which resolve none of these four either (`App.messaging.workflow.test.tsx` passes with the same noise). Non-fatal; no change.
+
+## Objective
+
+While the pointer is inside the sidebar **or** while any sidebar context menu (or its submenu flyout) is open, the visible order of the coordinator tiles must not change, even if activity events arrive. Today the pointer half works; the open-menu half does not: every context menu renders through a Solid `<Portal>` mounted under `document.body`, so moving the pointer from a tile onto the open menu fires `pointerleave` on `.sidebar-layout`, the freeze is dropped, and the coordinator rows re-sort under the still-open, still-pointer-anchored menu — the reported bug.
+
+The fix must be **leak-proof**: a menu closed by click-outside, by `Escape`, by selecting an action, by menu replacement, by the grace-timer close, or by component unmount must all release the lock; and the lock must never stay stuck with no menu on screen. No persistence, IPC, or Rust change.
+
+## Cause (verified evidence)
+
+- Toggle: `coordSortByActivity` — `src/sidebar/components/ActionBar.tsx:296-303` (button/tooltip/`aria-pressed`), `src/sidebar/stores/sessions.ts:37` (state), `:563-565` (getter), `:613-614` + `:620-633` (setter; toggle + persist), `src/shared/types.ts:646`, `:1215`, Rust `src-tauri/src/config/settings.rs` (no change needed), hydration `src/sidebar/App.tsx:647`.
+- Re-sort: `src/sidebar/components/ProjectPanel.tsx` `naturalCoordinatorItems` (`:1880-1906`, sorts by `sessionsStore.lastActivityBySessionId[session.id]` desc when the toggle is on) and `coordinatorItems` (`:1908-1921`, consults `sessionsStore.coordinatorVisibleOrder(proj.path, keys)` when on, records via `recordCoordinatorVisibleOrder`).
+- Existing partial freeze: `src/sidebar/stores/sessions.ts:13` `sidebarPointerInside` signal; `:14-15` `lastCoordinatorVisibleOrderByProject` / `frozenCoordinatorVisibleOrderByProject`; `:586-594` `setSidebarPointerInside` (snapshot on enter, clear on leave); `:596-606` `coordinatorVisibleOrder` (returns `nextKeys` unchanged when `!sidebarPointerInside()`, else reconciles against the frozen keys; note it never records — recording happens only in `ProjectPanel.coordinatorItems`); `:608-611` `recordCoordinatorVisibleOrder`; `src/sidebar/stores/sessions-helpers.ts:118-137` `reconcileVisibleOrderKeys` (frozen order kept for surviving keys, disappeared keys dropped, new keys appended).
+- Wiring: `src/sidebar/App.tsx:854-856` — `class="sidebar-layout"` div with `onPointerEnter`/`onPointerLeave` (`:855-856`) and `data-ac-testid="sidebar.root"` (`:857`); `:843` reset in `onCleanup`.
+- Root cause: every sidebar context menu is portalled to `document.body` (`Portal` imported at `ProjectPanel.tsx:2`). The `session-context-menu` nodes are the class two lines below each `<Portal>` at `ProjectPanel.tsx:2588`, `:2779`, `:2902`, `:3050`, `:3084`, `:3279`, `:3305`, `:3342`, `:3369`, `:3492`, and inside the portals at `SessionItem.tsx:523` (portals `:498-603`), `WorkgroupGroupRail.tsx:850` (portal `:847-879`), `RootAgentBanner.tsx:578` (portals `:564-615`), `AcDiscoveryPanel.tsx:322` (portal `:320-357`). Not part of that inventory: the portals at `ProjectPanel.tsx:3105` (Delete agent confirmation) and `:3443` (Delete Loop confirmation) render `modal-overlay`/`agent-modal` delete dialogs, not context menus. The menu node is NOT a descendant of `.sidebar-layout`, so hovering it fires `pointerleave` → `setSidebarPointerInside(false)` → frozen map cleared → re-sort while the menu (positioned at right-click client coords, e.g. `ProjectPanel.tsx:1854` for the project menu and `:2107` for the replica menu) sits over a different row than the one it operates on.
+- Timer-driven close paths (pinned by the new grace-timer tests): `scheduleReplicaCtxMenuClose` at `ProjectPanel.tsx:1117-1125` with `CONTEXT_MENU_CLOSE_GRACE_MS = 250` at `:183`; `scheduleGroupFlyoutClose` at `:889-897` (180 ms). These are the only timer-driven menu/flyout close paths; the new tests arm both.
+- Confirmed scope check: `coordSortByActivity` / `lastActivityBySessionId` / `sort(` appear only in `ProjectPanel.tsx` (plus `ActionBar.tsx`, `App.tsx`, stores, settings); `WorkgroupGroupRail.tsx`, `SessionItem.tsx`, `RootAgentBanner.tsx`, `AcDiscoveryPanel.tsx` have no activity-sort references. The reorder is confined to the coordinator quick-access tiles in `ProjectPanel`.
+
+## Decision — one implementation
+
+**Chosen: a DOM-derived open-menu lock.** Add a second lock source `sidebarMenuOpen` to the sessions store, fed by a module-level `MutationObserver` on `document.body` that recomputes `document.querySelector(".session-context-menu, .session-context-flyout") !== null` on every childList mutation. The combined interaction lock is `sidebarPointerInside() || sidebarMenuOpen()`; the frozen snapshot is captured when the combined lock turns on and dropped only when it turns fully off (pointer outside AND no menu/flyout node in the DOM).
+
+Why this dominates the alternatives the lead raised:
+
+- **(A) central open-menu counter (acquire/release):** rejected — every open/close path in 5 components and ~15 menus would need explicit acquire/release calls; a missed path leaks the lock permanently (order frozen forever) and a double-close desyncs the count. Exactly the fragility the task warns about.
+- **(B) central registry keyed by menu id:** rejected — idempotent close fixes desync but still requires touching every open/close path in all 5 files (dismiss listeners, option clicks, sibling nulling, grace timers, unmount cleanups), and a new menu added later without registration silently re-introduces the bug.
+- **(C) derived memo over the existing per-menu signals:** rejected — the menu signals are component-instance-scoped (11 in `ProjectPanel` per project instance, plus one each in `SessionItem`, `WorkgroupGroupRail`, `RootAgentBanner`, `AcDiscoveryPanel`); exposing them through the store means ~15 registration effects that must be kept in sync forever; a missed signal = silent recurrence.
+- **(D) portal-aware pointer model (pointer over `.session-context-menu` counts as inside):** rejected — it only covers "pointer over menu". The requirement is absolute: *any* open sidebar context menu ⇒ no reorder, including when the pointer is outside both the sidebar and the menu (e.g. user right-clicks a tile, then moves to the main window to read; the open menu must keep the freeze).
+- **(E, chosen) DOM-derived presence lock:** the lock derives from observable reality, so **every** close path releases it structurally (close = node removed = observer recomputes false) and no path can leave it stuck while a menu is visible. Zero per-menu wiring: automatically covers all five components, both flyout classes, menu replacement (in-place object rewrite keeps the node → lock continuity), the 180/250 ms grace timers, and any future menu component. There is no counter to desync and no registration to forget.
+
+Synchronous-safety note: Solid mounts/unmounts the portal node synchronously inside the menu open/close task; the observer callback runs in the next microtask, before any activity event (IPC task) can interleave, so a recompute can never observe a menu present with a stale lock, nor a missing menu with a stale hold. A stale-`true` observer reading is harmless (it is recomputed on the very next mutation).
+
+## Scope
+
+**In scope (the lock sources and their consumers):**
+- `src/sidebar/stores/sessions.ts` — lock core (see below).
+- `src/sidebar/App.tsx` — one added cleanup line.
+- `src/shared/testing/ui-harness.tsx` — three added test-isolation reset lines (two from round 3, one from round 4).
+- Tests: `src/sidebar/stores/sessions-helpers.test.ts` (extend), new `src/sidebar/components/ProjectPanel.order-lock.test.tsx`, new `src/sidebar/App.order-lock.test.tsx`.
+
+**In scope for the lock selector:** every element whose class is `session-context-menu` or `session-context-flyout` under `document.body` in the sidebar document. Flyouts (group flyout portal `ProjectPanel.tsx:1413`, node class at `:1416`; repo-browse flyout portal `:1586`, node class at `:1590`) are included because they are context-menu UI with the same pointer-anchored misalignment risk; today they only exist while their parent menu is open, so this is defensive but harmless (presence-based boolean).
+
+**Out of scope:**
+- Modals (`modal-overlay`/`agent-modal` overlays: the delete confirmations at `ProjectPanel.tsx:3105` and `:3443`, entity-creation modals, `AgentPickerModal` (root `class="modal-overlay"` at `AgentPickerModal.tsx:578`), `OpenAgentModal`, `ArchivedProjectsModal`, `WorkgroupGroupsModal`, `OnboardingModal`): they are centered full-window overlays, not pointer-anchored to a row; a reorder behind an opaque overlay cannot misalign the user's intent, and the requirement names context menus. A modal opened from a menu action releases the lock when the menu closes — that is the intended behavior. (Test 4 in the ProjectPanel suite pins this decision.)
+- The pointer model (`sidebarPointerInside`, `.sidebar-layout` handlers) — unchanged.
+- The `coordSortByActivity` toggle, settings persistence, Rust, IPC, CSS — unchanged.
+
+## Affected files and exact symbols
+
+### 1. `src/sidebar/stores/sessions.ts` (core change)
+
+Module scope, next to the existing freeze signals (`:13-15`):
+
+```ts
+const [sidebarMenuOpen, setSidebarMenuOpen] = createSignal(false);
+let sidebarOrderLockActive = false;
+let sidebarMenuLockObserverInstalled = false;
+
+function refreshSidebarOrderLock(): void {
+  const active = sidebarPointerInside() || sidebarMenuOpen();
+  if (active === sidebarOrderLockActive) return;
+  sidebarOrderLockActive = active;
+  if (active) {
+    setFrozenCoordinatorVisibleOrderByProject(lastCoordinatorVisibleOrderByProject());
+  } else {
+    setFrozenCoordinatorVisibleOrderByProject({});
+  }
+}
+
+function updateSidebarMenuOpen(value: boolean): void {
+  if (value === sidebarMenuOpen()) return;
+  setSidebarMenuOpen(value);
+  refreshSidebarOrderLock();
+}
+
+function installSidebarMenuLockObserver(): void {
+  if (sidebarMenuLockObserverInstalled) return;
+  if (typeof document === "undefined" || !document.body) return; // node-env unit tests
+  sidebarMenuLockObserverInstalled = true;
+  new MutationObserver(() => {
+    updateSidebarMenuOpen(
+      document.querySelector(".session-context-menu, .session-context-flyout") !== null
+    );
+  }).observe(document.body, { childList: true, subtree: true });
+}
+installSidebarMenuLockObserver();
+```
+
+Store object changes:
+
+- `setSidebarPointerInside` (`:586-594`): keep the early-return and the signal write, but replace the inline snapshot/clear with `refreshSidebarOrderLock();` — the clear now only happens when the **combined** lock releases, never while a menu is open.
+- New store method (same shadowing pattern as the existing `setSidebarPointerInside`):
+
+```ts
+setSidebarMenuOpen(value: boolean) {
+  updateSidebarMenuOpen(value);
+},
+```
+
+- New getter next to `get sidebarPointerInside()` (`:578-579`):
+
+```ts
+get sidebarMenuOpen() {
+  return sidebarMenuOpen();
+},
+```
+
+- `coordinatorVisibleOrder` (`:596-606`): change the guard to `if (!sidebarPointerInside() && !sidebarMenuOpen()) return nextKeys;` — everything else (frozen-map fallback, `reconcileVisibleOrderKeys`, frozen-map refresh inside) unchanged.
+- No change to `recordCoordinatorVisibleOrder`, `reconcileVisibleOrderKeys`, `setCoordSortByActivity`, `toggleCoordSortByActivity`.
+
+**Round 4 delta — test-only activity reset.** Add a new store method next to `resetContextReadingsForTests` (`:691-696`) — the established in-file precedent for exactly this leak class (`#1033`), same shadowing/`reconcile` pattern:
+
+```ts
+resetActivityForTests() {
+  setState("lastActivityBySessionId", reconcile({}));
+},
+```
+
+`reconcile` is already imported (`sessions.ts:3`). Test-only; no production caller. It clears the module-level `lastActivityBySessionId` (`:76`) so every test starts with an empty activity map. No other change to this file beyond the round-3 lock core (already implemented at `fdec2081`).
+
+### 2. `src/sidebar/App.tsx`
+
+In `onCleanup` next to `:843` add: `sessionsStore.setSidebarMenuOpen(false);` (deterministic teardown; the observer self-heals on DOM teardown anyway). No other change.
+
+### 3. `src/shared/testing/ui-harness.tsx`
+
+`resetUiStoresForTests` (function declared at `:267`) currently resets `coordSortByActivity` and the other module-level signals but never resets `sidebarPointerInside`. The plan's new `setSidebarMenuOpen(false)` alone is not enough: a leaked `sidebarPointerInside === true` keeps the combined lock active, `setFrozenCoordinatorVisibleOrderByProject({})` never runs, and the frozen map survives into the next test in the same file. Add ALL THREE lines in `resetUiStoresForTests` next to the existing `sessionsStore.setCoordSortByActivity(false);`:
+
+```ts
+sessionsStore.setSidebarPointerInside(false);
+sessionsStore.setSidebarMenuOpen(false);
+// #1624 - the activity stamps are module-level store state fed by markActivity
+// (performance.now) and are deliberately out of setSessions' reach, so without
+// this a test's markActivity stamps leak into the next test in the same file
+// and the menu-open order snapshot starts from the previous test's newest row.
+sessionsStore.resetActivityForTests();
+```
+
+(Order matters for intent, not for the final state: the pointer line alone cannot release while a menu flag leaked, and the menu line alone cannot release while a pointer flag leaked — both together guarantee the combined lock is off and the frozen map is cleared. The round-4 `resetActivityForTests` line is independent of the lock signals; it clears the leaked `markActivity` stamps and follows the same comment style as the existing `#943 B2` / `#1033` / `#965` resets in this function.)
+
+### 4. Tests — see "Tests" below.
+
+## Required behavior, edge cases, failure behavior
+
+1. **The reported bug:** pointer leaves `.sidebar-layout` onto an open menu → `setSidebarPointerInside(false)` runs, but the menu node is in the DOM → `sidebarMenuOpen` is true → combined lock stays on → frozen map retained → `coordinatorVisibleOrder` keeps the frozen order.
+2. **Release semantics:** the frozen snapshot is captured on the combined-lock off→on transition (either pointer enter or menu/flyout first appearing) and dropped only on the on→off transition (pointer outside **and** no menu/flyout node in the DOM). `setSidebarPointerInside(false)` with a menu open is a no-op on the freeze; `setSidebarMenuOpen(false)` with the pointer inside is a no-op on the freeze.
+3. **Menu opened while pointer inside:** lock already on via pointer; no re-snapshot (the snapshot from pointer-enter is the order at interaction start — correct).
+4. **Menu opened while pointer outside** (automation/keyboard): off→on transition snapshots `lastCoordinatorVisibleOrderByProject()` — the last rendered order; first-ever render falls back to `?? nextKeys` inside `coordinatorVisibleOrder` (unchanged).
+5. **Menu replacement:** in-place object rewrite (`#943` replica-menu reclamp) keeps the same DOM node → no mutation → lock continuity. Sibling-nulling replacement (e.g. project menu over replica menu) removes one node and inserts another in the same task → observer recomputes presence → still locked. No gap.
+6. **Coordinators added/removed while frozen:** unchanged `reconcileVisibleOrderKeys` semantics (surviving keys keep frozen positions, disappeared keys drop, new keys append) — the menu lock flows through the same `coordinatorVisibleOrder` path as the hover lock.
+7. **Toggle off while locked:** the `coordSortByActivity` branch is skipped; natural order is recorded; no freeze interaction (unchanged).
+8. **Two menus open at once** (different project instances): presence boolean, no counting — locked while ≥1 node exists.
+9. **Failure behavior:** if `document`/`document.body` is unavailable at import (node-env unit tests), the observer is skipped and the signal stays `false` — behavior degrades to today's pointer-only freeze; no crash. If a menu were ever kept in the DOM without being visible, the lock stays on — that is the conservative, correct direction (never reorder under a possibly-visible menu).
+10. **Performance:** the observer fires on childList mutations anywhere under `document.body` (session rows, portals). The callback is one `querySelector` + one boolean write; no counting, no per-node work. Accepted; no throttling needed for a sidebar of this size.
+11. **Observer selector rationale:** `childList: true, subtree: true` only — all menus are conditionally mounted (insert/remove = childList mutations) and their `session-context-menu`/`session-context-flyout` classes are static, set at element creation before insertion. Omitting `attributes` avoids callback churn from unrelated class toggles (collapse states, badges) elsewhere in the body.
+
+## Compatibility impact
+
+None. No settings/persistence/Rust/IPC/CSS changes; no new dependencies. Existing behavior for the toggle and the hover freeze is preserved (verified: the store-level hover tests keep passing under the new transition-based snapshot logic, because `setSidebarPointerInside` still early-returns on unchanged values). The `test-debt.allowlist.json` is untouched.
+
+## Ordered implementation
+
+Steps 1-6 below are **ALREADY IMPLEMENTED at `fdec2081`** (round 3, verbatim, exactly the planned scope) and must NOT be redone. The round-4 delta the implementer applies on top is steps 7-10, and nothing else.
+
+1-6. Already at `fdec2081`, unchanged: the `sessions.ts` lock core; the `App.tsx` `onCleanup` line; the two `ui-harness.tsx` lock reset lines; the `sessions-helpers.test.ts` store block; the two new DOM suites.
+7. `src/sidebar/stores/sessions.ts` — add `resetActivityForTests()` next to `resetContextReadingsForTests` (`:691`).
+8. `src/shared/testing/ui-harness.tsx` — add `sessionsStore.resetActivityForTests();` (with the `#1624` comment) in `resetUiStoresForTests` next to the two lock lines.
+9. `src/sidebar/App.order-lock.test.tsx` — fixture id switch: extend the `liveSelection` import (`:16`) to `import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";`; `liveSessions()` ids (`:71`, `:78`); `liveSelection(SESSION_A)` (`:100`); every `markActivity("coord-a-session")`/`markActivity("coord-b-session")` call site (`:154`, `:165`, `:175`, `:205`, `:207`, `:219`).
+10. `src/sidebar/components/ProjectPanel.order-lock.test.tsx` — fixture id switch: new `import { SESSION_A, SESSION_B } from "../../shared/testing/session-selection";`; `liveSessions()` ids (`:80`, `:87`); every `markActivity(...)` call site (`:177`, `:180`, `:196`, `:198`, `:208`, `:223`, `:225`, `:235`, `:250`, `:252`, `:267`, `:282`, `:297`, `:338`, `:349`, `:364`, `:388`).
+11. Verify: `npx vitest run src/sidebar/stores/sessions-helpers.test.ts src/sidebar/components/ProjectPanel.order-lock.test.tsx src/sidebar/App.order-lock.test.tsx` — all 38 green (the five round-3 failures now pass); then `npm test` (full), then `npm run typecheck`. Commit on the branch.
+
+## Tests
+
+### Store level — extend `src/sidebar/stores/sessions-helpers.test.ts` (new describe `"sidebar menu-open order lock"`, after the existing `"sidebar coordinator hover freeze"` block at `:289`)
+
+Same isolation contract as the hover block (this file has no `resetUiStoresForTests` in beforeEach — each test starts with the lock released and ends with the lock released). No round-4 change: this file never calls `markActivity`, so the activity leak cannot reach it (measured 30/30 at `fdec2081`); `resetActivityForTests` is defensive-only here. Direct `setSidebarMenuOpen` calls (the observer is not exercised here; jsdom is active but no menus are mounted). Assertions:
+
+1. "holds the frozen order while a menu is open with the pointer outside": `sessionsStore.setSidebarMenuOpen(false)`; `recordCoordinatorVisibleOrder(path, ["coord-a","coord-b","coord-c"])`; `setSidebarMenuOpen(true)`; `coordinatorVisibleOrder(path, ["coord-c","coord-a","coord-b"])` → `["coord-a","coord-b","coord-c"]`.
+2. "releases when the menu closes": continue; `setSidebarMenuOpen(false)`; `coordinatorVisibleOrder(path, ["coord-c","coord-a","coord-b"])` → `["coord-c","coord-a","coord-b"]`.
+3. "pointer-leave while a menu is open keeps the freeze": `recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"])` (record-first seed, the same explicit pattern tests 1/2/4/5 all perform — without a recorded last order for the path `coordinatorVisibleOrder` falls back to `nextKeys` and the freeze assertion cannot hold); `setSidebarPointerInside(true)`; `setSidebarMenuOpen(true)`; `setSidebarPointerInside(false)` → still frozen (`coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])` → `["coord-a", "coord-b", "coord-c"]`); `setSidebarMenuOpen(false)` → released (`coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])` → `["coord-c", "coord-a", "coord-b"]`) — module state ends clean.
+4. "drops disappeared and appends new coordinators while menu-locked": mirror of the existing hover structural-change test (`:321-331`), with `setSidebarMenuOpen(true)` instead of the pointer; ends with `setSidebarMenuOpen(false)`.
+5. "re-snapshots the last recorded visible order when the lock re-engages" — `coordinatorVisibleOrder` NEVER records (recording is `ProjectPanel.coordinatorItems`'s job), so the recompute between lock-off and lock-on must be recorded explicitly or the re-engaged snapshot would reuse the stale `[a,b,c]`:
+
+```ts
+sessionsStore.setSidebarMenuOpen(false);
+sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-a", "coord-b", "coord-c"]);
+sessionsStore.setSidebarMenuOpen(true);
+expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"])).toEqual([
+  "coord-a", "coord-b", "coord-c",
+]);
+sessionsStore.setSidebarMenuOpen(false);
+// Explicit mirror of ProjectPanel.coordinatorItems recording the recomputed
+// order once the lock is off; without it, "last" still holds [a,b,c].
+sessionsStore.recordCoordinatorVisibleOrder(projectPath, ["coord-c", "coord-a", "coord-b"]);
+sessionsStore.setSidebarMenuOpen(true);
+expect(sessionsStore.coordinatorVisibleOrder(projectPath, ["coord-b", "coord-c", "coord-a"])).toEqual([
+  "coord-c", "coord-a", "coord-b",
+]);
+sessionsStore.setSidebarMenuOpen(false); // end released — module state stays clean
+```
+
+### Integration — new `src/sidebar/components/ProjectPanel.order-lock.test.tsx`
+
+**Environment (explicit):** the file starts with `// @vitest-environment jsdom` (repo default is node — `vitest.config.ts:12`). beforeEach: `cleanupDom = installBrowserDomStubs(); resetUiStoresForTests();`. afterEach: `rendered?.cleanup(); rendered = null; cleanupDom?.(); cleanupDom = null; resetUiStoresForTests(); document.body.replaceChildren();` (pattern of `ProjectPanel.context-menu-hover.test.tsx:196-210`).
+
+**Fixture** (pattern of `ProjectPanel.context-menu-hover.test.tsx`): one project, two workgroups — `wg-1-dev-team` with coordinator `coord-a` and `wg-2-dev-team` with coordinator `coord-b`, each with a live session (`SESSION_A`, `SESSION_B` — canonical UUID constants from `../../shared/testing/session-selection`, the sibling suite's ids; `markActivity` uses the same constants); `fake.resolve("new_project", …)`, `fake.resolve("discover_project", …)`, `fake.onInvoke("update_project_groups", …)`, plus TWO resolves the hover suite does not need (its tests never open the picker modal or remove the project):
+
+- `fake.resolve("get_settings", baseSettings())` — test 4's "Coding Agent" action mounts `AgentPickerModal`, whose `onMount` begins with an unguarded `await SettingsAPI.get()` (`AgentPickerModal.tsx:288-290`) — a bare `transport.invoke("get_settings")` (`src/shared/ipc.ts:339`). Without a handler `FakeTransport.invoke` throws `Unhandled fake transport invoke: get_settings` (`src/shared/testing/fake-transport.ts:63-69`), the onMount promise rejects unhandled, and vitest 4.1.5 (default `dangerouslyIgnoreUnhandledErrors: false`) fails the run regardless of the lock assertions. Precedent: `ProjectPanel.archive.test.tsx:24`, `ProjectPanel.idle-badge.test.tsx:83`. One resolution suffices — the modal's later `resolveCodingAgentProfile` is `.catch()`-protected (`AgentPickerModal.tsx:324-333`). Add `baseSettings` to the `ui-harness` import list (the hover suite does not import it).
+- `fake.resolve("remove_project", undefined)` — test 6 awaits `projectStore.removeProject(projectPath)`, which ends in an unguarded `await ProjectAPI.remove(path)` → `transport.invoke("remove_project")` (`src/sidebar/stores/project.ts:612-625`, `src/shared/ipc.ts:948`). Without a handler the awaited promise rejects into the test. Precedent: `ArchivedProjectsModal.test.tsx:176`, `src/sidebar/stores/project.test.ts:536-555`. The lock-release mechanism itself is correct (the batch removal unmounts the menu before the invoke) — only the fixture was missing the resolve.
+
+`sessionsStore.setSessions([…])`, `await workgroupGroupsStore.save(projectPath, groups)`, `await projectStore.createAndLoad(projectPath)`, `await waitFor(...)` rendered content. After render: `sessionsStore.setCoordSortByActivity(true); sessionsStore.setSidebarPointerInside(false);`. Order is read from the document order of `rendered.root.querySelectorAll('[data-ac-testid^="replica.row.quick."]')` (quick-row testid pattern built at `ProjectPanel.tsx:2202`; see also `coordRowTestId` in the hover suite at `:47`).
+
+**Local helpers** (pattern of the hover suite): `menu()` = `document.querySelector(".session-context-menu")`; `mouse(el, "mouseenter" | "mouseleave")` dispatching a NON-bubbling `MouseEvent` (Solid binds mouseenter/mouseleave directly — they do not bubble); `flush()` = `await new Promise((r) => setTimeout(r, 0))`; `openCoordinatorMenu()` = `contextMenu(row)`, `await waitFor(() => expect(menu()).not.toBeNull())`, `await flush()` — the flush also runs the menu's `setTimeout` that registers the window dismiss listeners and positions the menu (`ProjectPanel.tsx:2117-2122`), which the Escape/click releases rely on.
+
+**Timer discipline (mandatory):**
+- Every `waitFor` runs under REAL timers — fake timers freeze `Date.now()`, so `waitFor`'s polling never advances. All `waitFor` (menu/flyout/panel presence or absence) therefore happens before `vi.useFakeTimers()` or after `vi.useRealTimers()`; under fake timers, close/mount state is asserted synchronously (`expect(menu()).toBeNull()` etc.) after the relevant dispatch/advance.
+- All `sessionsStore.markActivity(...)` calls run inside ONE `vi.useFakeTimers()` session per test (`try { ... } finally { vi.useRealTimers(); }`), with `vi.advanceTimersByTime(1000)` between them: `markActivity` stamps `performance.now()` (`sessions.ts:678`), the fake clock's epoch is not anchored to real time, and re-installing fake timers mid-test can make a later timestamp tie or precede an earlier one. Within one session, `advanceTimersByTime` makes timestamps strictly increasing (verified against vitest 4.1.5).
+- Menu/observer state changes are synchronous or microtask-queued: after every open/close/timer-advance, `await Promise.resolve()` flushes the `MutationObserver` callback (Solid mounts/unmounts the portal node synchronously; the observer callback is a microtask). NEVER use the macrotask `flush()` while fake timers are active — its `setTimeout(0)` would be queued on the fake clock and never fire. `flush()` is only for real-timer phases (draining the dismiss-listener registration).
+- Releases that need the window dismiss listeners (Escape, outside click) dispatch AFTER `openCoordinatorMenu()` already ran its real-timer flush; the dispatch itself works under fake timers — a registered listener runs on event dispatch, only its registration used a timer. A menu opened directly under fake timers never gets those listeners (the registration `setTimeout` is queued but never fires), so never rely on Escape/click for a menu that was opened under fake timers.
+
+Assertions:
+
+1. "keeps the coordinator order frozen while a context menu is open even with the pointer outside": `openCoordinatorMenu()` (real timers); `vi.useFakeTimers()`; `markActivity(SESSION_A)`; advance 1000; `sessionsStore.setSidebarPointerInside(false)`; `markActivity(SESSION_B)`; advance 1000; `await Promise.resolve()` → quick order still `[coord-a, coord-b]` and `sessionsStore.sidebarMenuOpen === true`. (finally `vi.useRealTimers()`.)
+
+2. "releases on Escape": `openCoordinatorMenu()` (real); fake timers; mark A; advance; mark B; advance; `await Promise.resolve()` → frozen `[coord-a, coord-b]`; `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`; `await Promise.resolve()` → `menu()` null, `sidebarMenuOpen === false`; mark B again; advance; `await Promise.resolve()` → order `[coord-b, coord-a]`.
+
+3. "releases on an outside click": `openCoordinatorMenu()` (real); fake timers; mark A; advance; mark B; advance; `await Promise.resolve()` → frozen; `document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))`; `await Promise.resolve()` → `menu()` null, released; mark B; advance; `await Promise.resolve()` → order `[coord-b, coord-a]`.
+
+4. "releases when a menu action closes the menu and opens a modal (modals are out of scope)": `openCoordinatorMenu()` (real); fake timers; mark A; advance; mark B; advance; `await Promise.resolve()` → frozen; `click()` the menu's "Coding Agent" button (the `.session-context-option` whose text is "Coding Agent") — the menu div's `onClick` stops propagation (`ProjectPanel.tsx:3497`), so the window dismiss listener does not fire; the option's own handler closes the menu and opens `AgentPickerModal` (root `class="modal-overlay"`, `AgentPickerModal.tsx:578`); `await Promise.resolve()` → `menu()` null, `document.querySelector(".modal-overlay")` non-null, `sessionsStore.sidebarMenuOpen === false`; mark B; advance; `await Promise.resolve()` → order `[coord-b, coord-a]` while the modal is open.
+
+5. "keeps the lock across menu replacement": `openCoordinatorMenu()` (real); fake timers; mark A; advance 1000; `contextMenu(rendered.root.querySelector(".project-header")!)` (`handleProjectContextMenu`, bound at `ProjectPanel.tsx:2518`; the header has no testid — select by class exactly as `ProjectPanel.context-menu.test.tsx:348` does) — the replica menu node is removed and the project menu node inserted in the same task; `await Promise.resolve()` → a `session-context-menu` node is still present with the project menu's labels and `sidebarMenuOpen === true`; mark B; advance 1000; `await Promise.resolve()` → order still `[coord-a, coord-b]` (B is newest, so a dropped lock would show `[coord-b, coord-a]` — the lock survived the replacement). Release tail (the replacement menu registers its window dismiss listeners in its own `setTimeout` — `ProjectPanel.tsx:1862` — which was queued under fake timers and is lost on `useRealTimers`, so re-open it under real timers to re-register): `vi.useRealTimers()`; `contextMenu(rendered.root.querySelector(".project-header")!)` again; `await flush()`; `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`; `await waitFor(() => expect(menu()).toBeNull())`; `await Promise.resolve()` → `sessionsStore.sidebarMenuOpen === false`. (No `markActivity` after `useRealTimers` — cross-epoch timestamps are not orderable; the re-sort after release is already covered by tests 2/3/7.)
+
+6. "releases when the project is removed while a menu is open": `openCoordinatorMenu()` (real); fake timers; `await projectStore.removeProject(projectPath)` (`project.ts:612`); `await Promise.resolve()` → panel gone, `menu()` null, `sessionsStore.sidebarMenuOpen === false`.
+
+7. "releases through the replica-menu grace timer (250 ms) with the pointer outside" — arms the only timer-driven menu close: `openCoordinatorMenu()` (real); fake timers; mark A; advance 1000; `sessionsStore.setSidebarPointerInside(false)` (lock held by the menu alone); `mouse(menu()!, "mouseleave")` → arms `scheduleReplicaCtxMenuClose` (250 ms; the co-armed 180 ms `scheduleRepoFlyoutClose` is a no-op with no repo flyout open — `ProjectPanel.tsx:1227-1233`); assert `menu()` still non-null (the close is only scheduled); `vi.advanceTimersByTime(300)`; `await Promise.resolve()` → `menu()` null and `sessionsStore.sidebarMenuOpen === false`; mark B; advance; `await Promise.resolve()` → order `[coord-b, coord-a]`.
+
+8. "releases the group flyout on its 180 ms timer while the parent menu lock holds, then releases the parent on its own timer": `openCoordinatorMenu()` (real); fake timers; mark A; advance 1000; dispatch `mouseenter` on the "Add to Group" trigger `[data-ac-testid="replica.wg-1-dev-team.groups.trigger"]` (testid at `ProjectPanel.tsx:1557`; `onMouseEnter={openGroupFlyout}`) → the flyout mounts; `mouse(flyout, "mouseenter")` (cancels — no timers armed yet); `mouse(flyout, "mouseleave")` → arms `scheduleGroupFlyoutClose` (180 ms) AND `scheduleReplicaCtxMenuClose` (250 ms) (`ProjectPanel.tsx:1423-1426`); `vi.advanceTimersByTime(200)` (past 180, before 250); `await Promise.resolve()` → `[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]` null AND `sessionsStore.sidebarMenuOpen === true` (the parent menu node is still in the DOM); `mouse(menu()!, "mouseleave")` (re-arms the 250 ms parent close — `cancelReplicaCtxMenuClose` drops the pending t0+250); `vi.advanceTimersByTime(300)`; `await Promise.resolve()` → `menu()` null, `sidebarMenuOpen === false`; mark B; advance; `await Promise.resolve()` → order `[coord-b, coord-a]`.
+
+### End-to-end — new `src/sidebar/App.order-lock.test.tsx`
+
+**Environment (explicit):** `// @vitest-environment jsdom`; beforeEach: `cleanupDom = installBrowserDomStubs(); resetUiStoresForTests();`; afterEach: `cleanupDom?.(); cleanupDom = null; resetUiStoresForTests();` (pattern of `App.messaging.workflow.test.tsx`).
+
+**Fixture** (pattern of `App.messaging.workflow.test.tsx`): render `<SidebarApp embedded />` with fake transport resolving `get_settings` (`baseSettings` with `projectPaths: [projectPath]`), `open_project`, `discover_project` (two workgroups × one coordinator each, live), `get_project_groups`, `search_repos`, `list_sessions` (both coordinators live), `get_active_session` (`fake.resolve("get_active_session", liveSelection(SESSION_A))` — mirror the sibling suite: `App.messaging.workflow.test.tsx:73` resolves it with `liveSelection(...)`; the import at `:16` becomes `import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";`, and the App fixture's two coordinator sessions are the same `SESSION_A`/`SESSION_B` objects as the ProjectPanel suite. Round 4 decision 1: UUID ids replace `coord-a-session`/`coord-b-session`, which tripped the canonical-UUID check at `src/shared/session-selection.ts:67` and logged a caught `[selection] Sidebar selection hydration failed: ...` on every run; hydration now succeeds), `list_detached_sessions`, and `telegram_list_bridges` (`[]` — `SidebarApp`'s onMount calls `TelegramAPI.listBridges()` unconditionally, `App.tsx:805`). After the content `waitFor`: `sessionsStore.setCoordSortByActivity(true);`.
+
+**Layout node (concrete substitute — `target` does NOT exist):** `target("sidebar.root")` is not exported by `src/shared/testing/ui-harness.tsx` (it exists only as a local helper inside the ProjectPanel suites, e.g. `ProjectPanel.context-menu-hover.test.tsx:129`). Use `const layout = rendered.root.querySelector(".sidebar-layout")!;` — `rendered.root` is the mount div returned by `renderWithFakeTransport` (`ui-harness.tsx:27-40`) and `rendered.root.querySelector(...)` is the established pattern of the sibling App suites (e.g. `App.messaging.workflow.test.tsx:101-105`). The div itself carries `data-ac-testid="sidebar.root"` (`App.tsx:857`) if a document-level query is ever preferred.
+
+**Pointer events:** jsdom 25 has no `PointerEvent` ctor — dispatch `layout.dispatchEvent(new Event("pointerenter"))` / `layout.dispatchEvent(new Event("pointerleave"))` (Solid's `onPointerEnter`/`onPointerLeave` are direct `pointerenter`/`pointerleave` listeners on the div, `App.tsx:855-856`).
+
+**Timer discipline:** identical to the ProjectPanel suite (waitFor under real timers; one fake-timer session per test; open the menu under real timers and `await flush()` so the dismiss listeners are registered before fake timers take over).
+
+Assertions:
+
+1. "does not reorder when the pointer moves from a tile onto its open context menu" (the exact #1624 repro): render; waitFor the coord rows; `contextMenu(coord-a row)`; waitFor menu; `await flush()` (real timers — dismiss listeners registered); `vi.useFakeTimers()`; `markActivity(SESSION_A)`; advance 1000; `layout.dispatchEvent(new Event("pointerenter"))`; `layout.dispatchEvent(new Event("pointerleave"))`; `await Promise.resolve()` → `sessionsStore.sidebarPointerInside === false` while `sessionsStore.sidebarMenuOpen === true` (the #1624 repro state: pointer left the sidebar, menu still open — the lock must hold); `markActivity(SESSION_B)`; advance 1000; `await Promise.resolve()` → quick order still `[coord-a, coord-b]`; `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`; `await Promise.resolve()` → menu gone, `sidebarMenuOpen === false`; `markActivity(SESSION_B)`; advance 1000; `await Promise.resolve()` → order `[coord-b, coord-a]`. (finally `vi.useRealTimers()`.)
+
+2. "does not reorder while a menu is open with the pointer outside, and releases on an outside click": render; waitFor rows; `contextMenu(coord-a row)`; waitFor menu; `await flush()`; `vi.useFakeTimers()`; mark A; advance; mark B; advance; `await Promise.resolve()` → frozen `[coord-a, coord-b]` (pointer never entered — the lock comes from the menu alone); `document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))`; `await Promise.resolve()` → menu gone, released; mark B; advance; `await Promise.resolve()` → `[coord-b, coord-a]`. (finally `vi.useRealTimers()`.)
+
+Untouched on purpose: `App.context-menu.test.ts` (global `blockContextMenu` blocker), `ActionBar.test.ts`, `ProjectPanel.context-menu-hover.test.tsx`, `ProjectPanel.context-menu.test.tsx`, `ProjectPanel.repo-browse.test.tsx` — they must keep passing unchanged (regression gate).
+
+## Objective acceptance criteria
+
+1. New suites and extended store suite pass: `npx vitest run src/sidebar/stores/sessions-helpers.test.ts src/sidebar/components/ProjectPanel.order-lock.test.tsx src/sidebar/App.order-lock.test.tsx`.
+2. Full `npm test` (vitest run) green, including the untouched sidebar suites named above.
+3. `npm run typecheck` clean.
+4. Manual verification: enable "Show recent orchestrators first"; (a) hover the sidebar — order frozen; (b) right-click any coordinator tile and move the pointer onto the open menu — rows do not reorder and the menu stays aligned with its row; (c) close via Escape, outside click, or a menu action — order is free again; (d) right-click a tile and move the pointer into the main window while the menu is open — order still frozen until the menu closes; (e) add/remove a coordinator while a menu is open — frozen rows keep their places, new one appends.
+5. The five measured round-3 failures (the frozen-order assertions at `App.order-lock.test.tsx:211` and `ProjectPanel.order-lock.test.tsx:201/228/255/300`) are green — the two new suites pass 13/13 (verified: `PASS (38) FAIL (0)` with the round-4 delta applied to a scratch tree).

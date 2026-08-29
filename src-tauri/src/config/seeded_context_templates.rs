@@ -1505,6 +1505,39 @@ fn ensure_project_context_templates_with_clock(
     Ok(())
 }
 
+/// #1625: absent-only seed of the three per-execution-platform rule files at
+/// render time for an already-known project. Mirrors
+/// `ensure_project_context_templates_with_clock` but ONLY for `platform_specs()`
+/// (global/coordinator are never touched here; their read-sync stays the
+/// managed-filename path in session_context).
+pub fn ensure_platform_context_templates(context_dir: &Path) -> Result<(), String> {
+    let mut on_publication = |_: &'static str, _: ContextPublication| {};
+    ensure_platform_context_templates_with_publications(context_dir, &mut on_publication)
+}
+
+pub(crate) fn ensure_platform_context_templates_with_publications(
+    context_dir: &Path,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
+    let mut clock = chrono::Utc::now;
+    ensure_platform_context_templates_with_clock(context_dir, &mut clock, on_publication)
+}
+
+fn ensure_platform_context_templates_with_clock(
+    context_dir: &Path,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    on_publication: &mut dyn FnMut(&'static str, ContextPublication),
+) -> Result<(), String> {
+    validate_existing_dir(context_dir, "Context template directory")?;
+    let mut loaded = load_state(context_dir, false)?;
+    for spec in platform_specs() {
+        let execution = sync_one_template(None, context_dir, spec, &mut loaded, true, false, clock);
+        let _ = consume_template_execution(spec, execution, on_publication)?;
+    }
+    persist_state_best_effort(context_dir, &loaded);
+    Ok(())
+}
+
 pub fn scan_project_context_template_updates(
     project_dir: &Path,
     ac_root: &Path,
@@ -3722,6 +3755,133 @@ mod tests {
             serde_json::Value::Null,
             "a stateless pre-existing custom platform file must stay unowned (same posture as the global template)"
         );
+    }
+
+    /// #1625 T-3: `ensure_platform_context_templates` seeds ONLY the missing
+    /// platform files, byte-equal to their embedded defaults, with `platform.*`
+    /// state entries v1 carrying the default sha; global/coordinator templates
+    /// are never touched (scope is platform-only). A pre-existing custom
+    /// platform file is preserved and stays unowned (silent preservation via
+    /// `suppress_unknown_without_state`).
+    #[test]
+    fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
+        let platform_files = [
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_LINUX,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ];
+        let assert_platform_only_scope = |ac_root: &Path| {
+            assert!(
+                !ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists(),
+                "global template is out of scope for the platform seeder"
+            );
+            assert!(
+                !ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).exists(),
+                "coordinator template is out of scope for the platform seeder"
+            );
+        };
+
+        // Fresh `.ac`: all three platform files are created byte-equal to their
+        // embedded defaults and the state records three `platform.*` entries v1
+        // with `lastSeededSha256` = hash of the default.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fresh = temp.path().join(".ac");
+        std::fs::create_dir(&fresh).expect("create workspace");
+        ensure_platform_context_templates(&fresh).expect("seed platform templates");
+        for (filename, default) in platform_files {
+            assert_eq!(
+                std::fs::read_to_string(fresh.join(filename)).expect("read seeded platform file"),
+                default,
+                "{filename} must be seeded byte-equal to its embedded default"
+            );
+        }
+        let state = std::fs::read_to_string(fresh.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+            .expect("read seeded state");
+        let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+        for (id, default) in [
+            (
+                "platform.windows",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            ),
+            (
+                "platform.linux",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            ),
+            (
+                "platform.macos",
+                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            ),
+        ] {
+            assert_eq!(
+                parsed["templates"][id]["currentVersion"], 1,
+                "{id} state entry must be v1"
+            );
+            assert_eq!(
+                parsed["templates"][id]["lastSeededSha256"],
+                hash_text(default),
+                "{id} state entry must carry the default sha"
+            );
+        }
+        assert_platform_only_scope(&fresh);
+
+        // Pre-existing custom file: preserved byte-for-byte and left unowned
+        // (no state entry); the other two are still seeded absent-only.
+        let temp2 = tempfile::tempdir().expect("tempdir");
+        let custom_root = temp2.path().join(".ac");
+        std::fs::create_dir(&custom_root).expect("create workspace");
+        let custom_windows = "## Host Platform Rules\n\nMY OWN WINDOWS RULES\n";
+        std::fs::write(
+            custom_root.join(crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS),
+            custom_windows,
+        )
+        .expect("write pre-existing custom windows platform file");
+        ensure_platform_context_templates(&custom_root).expect("seed platform templates");
+        assert_eq!(
+            std::fs::read_to_string(
+                custom_root
+                    .join(crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS)
+            )
+            .expect("read preserved windows platform file"),
+            custom_windows,
+            "a pre-existing custom platform file must be preserved, never overwritten"
+        );
+        for (filename, default) in platform_files.iter().filter(|(filename, _)| {
+            *filename != crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS
+        }) {
+            assert_eq!(
+                std::fs::read_to_string(custom_root.join(filename))
+                    .expect("read seeded platform file"),
+                *default,
+                "{filename} must be seeded byte-equal to its embedded default"
+            );
+        }
+        let state2 =
+            std::fs::read_to_string(custom_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                .expect("read seeded state");
+        let parsed2: serde_json::Value = serde_json::from_str(&state2).expect("parse seeded state");
+        assert_eq!(
+            parsed2["templates"]["platform.windows"],
+            serde_json::Value::Null,
+            "a stateless pre-existing custom platform file must stay unowned"
+        );
+        assert_eq!(
+            parsed2["templates"]["platform.linux"]["currentVersion"], 1,
+            "platform.linux must be seeded in the mixed scenario"
+        );
+        assert_eq!(
+            parsed2["templates"]["platform.macos"]["currentVersion"], 1,
+            "platform.macos must be seeded in the mixed scenario"
+        );
+        assert_platform_only_scope(&custom_root);
     }
 
     /// #1605: after seeding, an edit to a platform file is preserved by the
