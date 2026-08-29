@@ -1,21 +1,5 @@
 name: Release
 
-# One paved path from a tag to production:
-#
-#   git tag vX.Y.Z && git push origin vX.Y.Z
-#
-# ...produces a published GitHub Release with every platform asset and a
-# matching @mblua/agentscommander@X.Y.Z on the public npm registry.
-#
-# Job order is load-bearing. npm/install.js resolves its binaries from
-#   https://github.com/<repo>/releases/download/vX.Y.Z/<asset>
-# and that URL 404s while the release is still a draft, so npm must not be
-# published until publish-github has flipped the release out of draft.
-#
-# This workflow is deliberately version-agnostic. Never pin it to a single
-# tag; a release pipeline that only knows how to ship one version is not a
-# release pipeline.
-
 on:
   push:
     tags:
@@ -28,424 +12,1482 @@ concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  NODE_VERSION: '22.23.2'
+  NPM_VERSION: '11.6.2'
+  RUST_VERSION: '1.85.0'
+  CHECKOUT_ACTION_SHA: fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+  SETUP_NODE_ACTION_SHA: a0853c24544627f65ddf259abe73b1d18a591444
+  TAURI_ACTION_SHA: 84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+  RUST_ACTION_SHA: 4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+  RELEASE_API_VERSION: '2026-03-10'
+
 jobs:
-  # ---------------------------------------------------------------------
-  # Fail before spending 40 minutes of matrix build time on a bad tag.
-  # ---------------------------------------------------------------------
   guard:
     name: guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.check.outputs.version }}
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: 22
+          node-version: 22.23.2
 
-      - name: Tag must match every version location in the tree
-        id: check
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm
         shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
+        run: npm install -g npm@11.6.2
+
+      - name: Assert pinned runtime identity
+        shell: bash
         run: |
           set -euo pipefail
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
 
+      - name: Install repository dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Record release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Release identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag must match every version location
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
           version="${TAG#v}"
-
-          # Every version location (package.json, package-lock.json, Cargo.toml,
-          # Cargo.lock, tauri.conf.json, npm/package.json, npm/install.js) must
-          # already agree with each other.
           npm run version:check
-
-          manifest="$(node -p "require('./package.json').version")"
-          npm_manifest="$(node -p "require('./npm/package.json').version")"
-
-          if [ "$manifest" != "$version" ]; then
-            echo "::error::tag $TAG does not match package.json version $manifest."
-            echo "::error::Run 'npm run version:bump -- $version', merge, then retag."
-            exit 1
-          fi
-          if [ "$npm_manifest" != "$version" ]; then
-            echo "::error::npm/package.json is at $npm_manifest but the tag is $TAG."
-            exit 1
-          fi
-
+          test "$(node -p "require('./package.json').version")" = "$version"
+          test "$(node -p "require('./npm/package.json').version")" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing $version from $TAG"
 
-      - name: Version must not already exist on npm
+      - name: Prove the event tag is the immutable remote ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_log="$(mktemp)"
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}" >"$probe_log" 2>&1
+          probe_rc=$?
+          set -e
+          if [ "$probe_rc" -ne 0 ]; then
+            cat "$probe_log" >&2
+            echo '::error::RELEASE_AUTHORITY_UNPROVEN: event tag remote probe failed.'
+            exit 1
+          fi
+          test "$(awk 'NF { count += 1 } END { print count + 0 }' "$probe_log")" -ge 1
+          local_tag="$(git rev-parse "$TAG^{tag}")"
+          local_commit="$(git rev-parse "$TAG^{}")"
+          grep -Fx "$local_tag	refs/tags/$TAG" "$probe_log"
+          grep -Fx "$local_commit	refs/tags/$TAG^{}" "$probe_log"
+
+      - name: Prove that no Release or draft owns the candidate tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fail = (message) => {
+            console.error(`::error::RELEASE_AUTHORITY_UNPROVEN: ${message}`);
+            process.exit(1);
+          };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          if (!process.env.GITHUB_TOKEN) fail('missing explicit GitHub token');
+          const next = (link) => {
+            const part = (link || '').split(',').map((entry) => entry.trim()).find((entry) => /rel="next"/.test(entry));
+            return part && part.match(/^<([^>]+)>/)?.[1];
+          };
+          (async () => {
+            const releases = [];
+            let url = `https://api.github.com/repos/${process.env.REPO}/releases?per_page=100`;
+            while (url) {
+              let response;
+              try {
+                response = await fetch(url, { headers });
+              } catch (error) {
+                fail(`Release API transport failure: ${error.message}`);
+              }
+              if (!response.ok) fail(`Release API returned HTTP ${response.status}`);
+              let page;
+              try {
+                page = await response.json();
+              } catch (error) {
+                fail(`Release API JSON parse failure: ${error.message}`);
+              }
+              if (!Array.isArray(page)) fail('Release API page is not an array');
+              releases.push(...page);
+              url = next(response.headers.get('link'));
+            }
+            if (releases.some((release) => release.tag_name === process.env.TAG)) {
+              console.error('::error::IMMUTABLE_CANDIDATE_COLLISION: Release or draft already owns the candidate tag.');
+              process.exit(1);
+            }
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+      - name: Prove that the npm version is explicitly absent
         shell: bash
         env:
           VERSION: ${{ steps.check.outputs.version }}
         run: |
           set -euo pipefail
-          # npm versions are immutable. Catch the collision now rather than
-          # after the GitHub Release is already published.
-          if npm view "@mblua/agentscommander@$VERSION" version >/dev/null 2>&1; then
-            echo "::error::@mblua/agentscommander@$VERSION is already published. Bump and retag."
+          probe_log="$(mktemp)"
+          set +e
+          npm view "@mblua/agentscommander@$VERSION" version --json >"$probe_log" 2>&1
+          probe_rc=$?
+          set -e
+          if [ "$probe_rc" -eq 0 ]; then
+            cat "$probe_log" >&2
+            echo '::error::IMMUTABLE_CANDIDATE_COLLISION: npm already serves the candidate version.'
             exit 1
           fi
-          echo "@mblua/agentscommander@$VERSION is free."
+          if grep -Eq '(^|[[:space:]])E404([[:space:]]|$)' "$probe_log" && grep -Eq '(^|[^0-9])404([^0-9]|$)' "$probe_log"; then
+            exit 0
+          fi
+          cat "$probe_log" >&2
+          echo '::error::RELEASE_AUTHORITY_UNPROVEN: npm absence was not explicit E404/HTTP 404.'
+          exit 1
 
-  # ---------------------------------------------------------------------
-  # Build every platform and upload into a DRAFT release.
-  # ---------------------------------------------------------------------
-  build:
-    name: build (${{ matrix.platform }}${{ matrix.label && format(' {0}', matrix.label) || '' }})
+  prepare-release:
+    name: prepare-release
     needs: guard
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.contract.outputs.release_id }}
+      title_sha256: ${{ steps.contract.outputs.title_sha256 }}
+      body_sha256: ${{ steps.contract.outputs.body_sha256 }}
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      BASE_SHA: 809120fa9fe09bb22c314ed462735378f6438d75
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm
+        shell: bash
+        run: npm install -g npm@11.6.2
+
+      - name: Assert pinned runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+
+      - name: Install repository dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Record release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Release identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prove the annotated tag and peeled commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "TAG_OBJECT=$(git rev-parse "$TAG^{tag}")" >> "$GITHUB_ENV"
+          echo "MERGE_SHA=$(git rev-parse "$TAG^{}")" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$TAG^{}")"
+          test "$GITHUB_REF" = "refs/tags/$TAG"
+
+      - name: Parse byte-bound tag payload and create the sole draft
+        id: contract
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const fail = (message) => {
+            console.error(`::error::DRAFT_RELEASE_CONTRACT_MISMATCH: ${message}`);
+            process.exit(1);
+          };
+          const git = (args, encoding = 'utf8') => {
+            try {
+              return execFileSync('git', args, { encoding });
+            } catch (error) {
+              fail(`git ${args.join(' ')} failed: ${error.message}`);
+            }
+          };
+          const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          if (!process.env.GITHUB_TOKEN) fail('missing GitHub token');
+          function headerValue(line, prefix) {
+            if (!line.startsWith(prefix)) fail(`missing tag header ${prefix}`);
+            return line.slice(prefix.length);
+          }
+          function renderBody(previousTag, mergeSha) {
+            const collect = (patterns, invert = false) => {
+              const args = ['log', `${previousTag}..${mergeSha}`, '--oneline', '--no-merges'];
+              for (const pattern of patterns) args.push('--grep', pattern);
+              if (invert) args.push('--invert-grep');
+              const raw = git(args).trimEnd();
+              return raw ? raw.split('\n').map((line) => line.replace(/^[0-9a-f]+ /, '- ')) : [];
+            };
+            const groups = [
+              ['Features', collect(['^feat'])],
+              ['Fixes', collect(['^fix'])],
+              ['Docs', collect(['^docs'])],
+              ['Other', collect(['^feat', '^fix', '^docs'], true)],
+            ];
+            let body = '';
+            for (const [name, lines] of groups) if (lines.length) body += `### ${name}\n${lines.join('\n')}\n\n`;
+            if (!body) body = 'Initial release\n\n';
+            body += `### Install from npm\n\n\`\`\`\nnpx @mblua/agentscommander@${process.env.VERSION}\n\`\`\`\n\n`;
+            body += '### Trust and privacy\n';
+            body += '- [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.\n';
+            body += '- [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)\n';
+            return body.replace(/\r/g, '').replace(/\n+$/, '') + '\n';
+          }
+          const rawTag = git(['cat-file', 'tag', process.env.TAG_OBJECT], null);
+          const contentStart = rawTag.indexOf(Buffer.from('\n\n'));
+          if (contentStart < 0) fail('annotated tag content is missing');
+          const message = rawTag.subarray(contentStart + 2);
+          const marker = Buffer.from('Release-Body:\n');
+          const markerIndex = message.indexOf(marker);
+          if (markerIndex < 0) fail('Release-Body marker is missing');
+          const headerBytes = message.subarray(0, markerIndex + marker.length);
+          const headerText = headerBytes.toString('utf8');
+          if (!Buffer.from(headerText, 'utf8').equals(headerBytes)) fail('tag header is not valid UTF-8');
+          const lines = headerText.trimEnd().split('\n');
+          if (lines.length !== 14 || lines[0] !== `Release v${process.env.VERSION}` || lines[13] !== 'Release-Body:') {
+            fail('tag header order differs');
+          }
+          const schema = headerValue(lines[1], 'Schema: ');
+          const baseSha = headerValue(lines[2], 'Base-SHA: ');
+          const hardeningMerge = headerValue(lines[3], 'Hardening-Merge-SHA: ');
+          const hardeningBlob = headerValue(lines[4], 'Hardening-Workflow-Blob: ');
+          const mergeSha = headerValue(lines[5], 'Merge-SHA: ');
+          const previousTag = headerValue(lines[6], 'Previous-Tag: ');
+          const previousObject = headerValue(lines[7], 'Previous-Tag-Object: ');
+          const previousCommit = headerValue(lines[8], 'Previous-Tag-Commit: ');
+          const title = headerValue(lines[9], 'Release-Title: ');
+          const titleHash = headerValue(lines[10], 'Release-Title-SHA256: ');
+          const bodyLength = Number(headerValue(lines[11], 'Release-Body-Bytes: '));
+          const bodyHash = headerValue(lines[12], 'Release-Body-SHA256: ');
+          const body = message.subarray(markerIndex + marker.length);
+          if (schema !== 'agentscommander-release-v1' || baseSha !== process.env.BASE_SHA ||
+              mergeSha !== process.env.MERGE_SHA || title !== `Agents Commander v${process.env.VERSION}` ||
+              previousTag !== 'v0.30.3' || previousObject !== 'f8c3b2cba39dbb734b9959352ff592d7c0332539' ||
+              previousCommit !== '9ffc24911685906c0222d53eb79898ce9dbdff3e' ||
+              !/^[0-9a-f]{40}$/i.test(hardeningMerge) ||
+              git(['rev-parse', `${hardeningMerge}:.github/workflows/release.yml`]).trim() !== hardeningBlob ||
+              digest(Buffer.from(title, 'utf8')) !== titleHash ||
+              !Number.isSafeInteger(bodyLength) || bodyLength !== body.length || digest(body) !== bodyHash ||
+              !body.length || body.includes(13) || body.at(-1) !== 10 || body.at(-2) === 10 ||
+              !Buffer.from(body.toString('utf8'), 'utf8').equals(body)) {
+            fail('tag payload binding or UTF-8 LF body differs');
+          }
+          if (git(['rev-parse', `${previousTag}^{tag}`]).trim() !== previousObject ||
+              git(['rev-parse', `${previousTag}^{}`]).trim() !== previousCommit ||
+              git(['describe', '--tags', '--abbrev=0', `${mergeSha}^`]).trim() !== previousTag) {
+            fail('local predecessor identity differs');
+          }
+          const remote = git(['ls-remote', '--tags', 'origin', `refs/tags/${previousTag}`, `refs/tags/${previousTag}^{}`]).trimEnd().split('\n');
+          if (remote.length !== 2 || !remote.includes(`${previousObject}\trefs/tags/${previousTag}`) ||
+              !remote.includes(`${previousCommit}\trefs/tags/${previousTag}^{}`)) {
+            fail('remote predecessor identity differs');
+          }
+          if (!Buffer.from(renderBody(previousTag, mergeSha), 'utf8').equals(body)) fail('explicit-input body renderer differs');
+          async function request(method, path, json) {
+            let response;
+            try {
+              response = await fetch(`https://api.github.com${path}`, {
+                method,
+                headers,
+                body: json === undefined ? undefined : JSON.stringify(json),
+              });
+            } catch (error) {
+              fail(`Release API transport failure: ${error.message}`);
+            }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            let value;
+            try {
+              value = JSON.parse(bytes.toString('utf8'));
+            } catch (error) {
+              fail(`Release API JSON parse failure: ${error.message}`);
+            }
+            if (!response.ok) fail(`Release API ${method} ${path} returned HTTP ${response.status}`);
+            return { status: response.status, value };
+          }
+          (async () => {
+            const create = await request('POST', `/repos/${process.env.REPO}/releases`, {
+              tag_name: process.env.TAG,
+              target_commitish: mergeSha,
+              name: title,
+              body: body.toString('utf8'),
+              draft: true,
+              prerelease: false,
+              generate_release_notes: false,
+            });
+            if (create.status !== 201 || !Number.isSafeInteger(create.value.id)) fail('draft create did not return HTTP 201 and a Release ID');
+            const draft = (await request('GET', `/repos/${process.env.REPO}/releases/${create.value.id}`)).value;
+            if (draft.id !== create.value.id || draft.tag_name !== process.env.TAG || draft.target_commitish !== mergeSha ||
+                draft.draft !== true || draft.prerelease !== false ||
+                digest(Buffer.from(String(draft.name), 'utf8')) !== titleHash ||
+                digest(Buffer.from(String(draft.body), 'utf8')) !== bodyHash) {
+              fail('draft re-read differs from the Release contract');
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_id=${draft.id}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `title_sha256=${titleHash}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `body_sha256=${bodyHash}\n`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Draft contract\n\n- Release ID: ${draft.id}\n- title SHA-256: \`${titleHash}\`\n- body SHA-256: \`${bodyHash}\`\n`);
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+  build:
+    name: build (${{ matrix.label }})
+    needs: [guard, prepare-release]
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
+          - id: windows
+            label: windows
+            runner: windows-2022
+            kind: windows
+            targets: ''
             args: '--config src-tauri/tauri.prod.conf.json --bundles nsis'
-          - platform: ubuntu-22.04
+          - id: linux
+            label: linux
+            runner: ubuntu-22.04
+            kind: linux
+            targets: ''
             args: '--config src-tauri/tauri.prod.conf.json'
-          - platform: macos-latest
-            label: aarch64
+          - id: macos-arm64
+            label: macOS aarch64
+            runner: macos-15
+            kind: macos
+            uname: arm64
+            runner_arch: ARM64
+            targets: aarch64-apple-darwin
             args: '--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin'
-          - platform: macos-latest
-            label: x86_64
+          - id: macos-x64
+            label: macOS x86_64
+            runner: macos-15-intel
+            kind: macos
+            uname: x86_64
+            runner_arch: X64
+            targets: x86_64-apple-darwin
             args: '--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin'
-
-    runs-on: ${{ matrix.platform }}
-
+    runs-on: ${{ matrix.runner }}
+    env:
+      REQUESTED_RUNNER: ${{ matrix.runner }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
-      - name: Generate changelog
-        if: matrix.platform == 'windows-latest'
-        id: changelog
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+          targets: ${{ matrix.targets }}
+
+      - name: Pin npm
+        shell: bash
+        run: npm install -g npm@11.6.2
+
+      - name: Assert pinned runtime identity
         shell: bash
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            FEATS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" | sed 's/^[a-f0-9]* /- /')
-            FIXES=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^fix" | sed 's/^[a-f0-9]* /- /')
-            DOCS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^docs" | sed 's/^[a-f0-9]* /- /')
-            OTHER=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" --grep="^fix" --grep="^docs" --invert-grep | sed 's/^[a-f0-9]* /- /')
-            BODY=""
-            [ -n "$FEATS" ] && BODY="${BODY}### Features\n${FEATS}\n\n"
-            [ -n "$FIXES" ] && BODY="${BODY}### Fixes\n${FIXES}\n\n"
-            [ -n "$DOCS" ] && BODY="${BODY}### Docs\n${DOCS}\n\n"
-            [ -n "$OTHER" ] && BODY="${BODY}### Other\n${OTHER}\n\n"
-          else
-            BODY="Initial release"
-          fi
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
 
-      - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Install repository dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Install Linux bundle dependencies
+        if: matrix.kind == 'linux'
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install frontend dependencies
-        run: npm install
-
-      - name: Build and upload bundles
-        uses: tauri-apps/tauri-action@v0
+      - name: Verify macOS producer identity
+        if: matrix.kind == 'macos'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_UNAME: ${{ matrix.uname }}
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner_arch }}
+          EXPECTED_TARGET: ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_RUNNER" = "${{ matrix.runner }}"
+          test "$(uname -m)" = "$EXPECTED_UNAME"
+          test "${RUNNER_ARCH:-}" = "$EXPECTED_RUNNER_ARCH"
+          rustup target list --installed | grep -Fx "$EXPECTED_TARGET"
+
+      - name: Record producer identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Producer identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build macOS artifacts before upload
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run tauri build -- ${{ matrix.args }}
+
+      - name: Prepare macOS raw artifacts before Tauri upload
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.id }}" = macos-arm64 ]; then
+            target_dir='target/aarch64-apple-darwin/release'
+            raw='agentscommander-mac-aarch64'
+            archive='agentscommander-mac-aarch64.app.tar.gz'
+          else
+            target_dir='target/x86_64-apple-darwin/release'
+            raw='agentscommander-mac-x86_64'
+            archive='agentscommander-mac-x86_64.app.tar.gz'
+          fi
+          cp "$target_dir/agentscommander" "$raw"
+          source_archive="$(find "$target_dir/bundle/macos" -type f -name '*.app.tar.gz' -print -quit)"
+          test -s "$source_archive"
+          cp "$source_archive" "$archive"
+
+      - name: Verify exact macOS output names before Tauri upload
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.id }}" = macos-arm64 ]; then
+            bundle_dir='target/aarch64-apple-darwin/release/bundle/macos'
+            raw='agentscommander-mac-aarch64'
+            archive='agentscommander-mac-aarch64.app.tar.gz'
+            expected="$(printf '%s\n' "Agents.Commander_${VERSION}_aarch64.dmg" 'Agents.Commander_aarch64.app.tar.gz' "$raw" "$archive" | LC_ALL=C sort)"
+          else
+            bundle_dir='target/x86_64-apple-darwin/release/bundle/macos'
+            raw='agentscommander-mac-x86_64'
+            archive='agentscommander-mac-x86_64.app.tar.gz'
+            expected="$(printf '%s\n' "Agents.Commander_${VERSION}_x64.dmg" 'Agents.Commander_x64.app.tar.gz' "$raw" "$archive" | LC_ALL=C sort)"
+          fi
+          actual="$( { find "$bundle_dir" -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \) -exec basename {} \;; printf '%s\n' "$raw" "$archive"; } | LC_ALL=C sort)"
+          test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l | tr -d ' ')" = 4
+          test "$actual" = "$expected"
+          while IFS= read -r asset; do
+            if [ "$asset" = "$raw" ] || [ "$asset" = "$archive" ]; then
+              test -s "$asset"
+            else
+              test -s "$(find "$bundle_dir" -type f -name "$asset" -print -quit)"
+            fi
+          done <<< "$expected"
+
+      - name: Build and upload Tauri bundles to the retained draft
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Agents Commander ${{ github.ref_name }}'
-          releaseBody: |
-            ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
-
-            ### Install from npm
-
-            ```
-            npx @mblua/agentscommander@${{ needs.guard.outputs.version }}
-            ```
-
-            ### Trust and privacy
-            - [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.
-            - [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
           releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
 
-      - name: Upload raw binaries consumed by the npm package
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package raw producer assets and smoke the portable ZIP
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
-            node scripts/copy-testable-binary.mjs
-            cp target/release/agentscommander.exe agentscommander-windows-x86_64.exe
-            cp target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
-            gh release upload "$TAG" agentscommander-windows-x86_64.exe --clobber
-            gh release upload "$TAG" agentscommander-testeable-windows-x86_64.exe --clobber
-          elif [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
-            cp target/release/agentscommander agentscommander-linux-x86_64
-            gh release upload "$TAG" agentscommander-linux-x86_64 --clobber
-          elif [[ "${{ matrix.args }}" == *aarch64* ]]; then
-            cp target/aarch64-apple-darwin/release/agentscommander agentscommander-mac-aarch64
-            gh release upload "$TAG" agentscommander-mac-aarch64 --clobber
-            APP_TAR=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
-            cp "$APP_TAR" agentscommander-mac-aarch64.app.tar.gz
-            gh release upload "$TAG" agentscommander-mac-aarch64.app.tar.gz --clobber
-          elif [[ "${{ matrix.args }}" == *x86_64* ]]; then
-            cp target/x86_64-apple-darwin/release/agentscommander agentscommander-mac-x86_64
-            gh release upload "$TAG" agentscommander-mac-x86_64 --clobber
-            APP_TAR=$(find target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
-            cp "$APP_TAR" agentscommander-mac-x86_64.app.tar.gz
-            gh release upload "$TAG" agentscommander-mac-x86_64.app.tar.gz --clobber
-          fi
+          list="$RUNNER_TEMP/raw-${{ matrix.id }}.txt"
+          case "${{ matrix.kind }}" in
+            windows)
+              node scripts/copy-testable-binary.mjs
+              cp target/release/agentscommander.exe agentscommander-windows-x86_64.exe
+              cp target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
+              pwsh -NoProfile -Command "
+                \$ErrorActionPreference = 'Stop'
+                \$zip = 'agentscommander-$VERSION-windows-x86_64-portable.zip'
+                node scripts/pack-windows-portable.mjs --binary target/release/agentscommander.exe --version '$VERSION' --out \$zip
+                if (\$LASTEXITCODE -ne 0) { throw 'portable ZIP packing failed' }
+                pwsh -File scripts/smoke-windows-portable.ps1 -Zip \$zip -ExpectedVersion '$VERSION'
+                if (\$LASTEXITCODE -ne 0) { throw 'portable ZIP smoke failed' }
+              "
+              printf '%s\n' agentscommander-windows-x86_64.exe agentscommander-testeable-windows-x86_64.exe "agentscommander-${VERSION}-windows-x86_64-portable.zip" > "$list"
+              ;;
+            linux)
+              cp target/release/agentscommander agentscommander-linux-x86_64
+              printf '%s\n' agentscommander-linux-x86_64 > "$list"
+              ;;
+            macos)
+              if [ "${{ matrix.id }}" = macos-arm64 ]; then
+                target_dir='target/aarch64-apple-darwin/release'
+                raw='agentscommander-mac-aarch64'
+                archive='agentscommander-mac-aarch64.app.tar.gz'
+              else
+                target_dir='target/x86_64-apple-darwin/release'
+                raw='agentscommander-mac-x86_64'
+                archive='agentscommander-mac-x86_64.app.tar.gz'
+              fi
+              cp "$target_dir/agentscommander" "$raw"
+              source_archive="$(find "$target_dir/bundle/macos" -type f -name '*.app.tar.gz' -print -quit)"
+              test -s "$source_archive"
+              cp "$source_archive" "$archive"
+              printf '%s\n' "$raw" "$archive" > "$list"
+              ;;
+            *) exit 1 ;;
+          esac
+          while IFS= read -r asset; do test -s "$asset"; done < "$list"
+          echo "RAW_ASSET_LIST=$list" >> "$GITHUB_ENV"
 
-      # The raw asset above is named for npm/install.js to resolve by URL, and
-      # that name is not runnable as-is: binary_suffix() splits the file stem on
-      # the first underscore, so agentscommander-windows-x86_64.exe comes up as
-      # instance "64" with a non-default config dir, mutex, and ports. The
-      # portable download therefore ships the same binary under its canonical
-      # name, with the files a standalone copy needs. See issue #1589.
-      - name: Pack, smoke, and upload the Windows portable zip
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
+      - name: Upload raw assets through the retained draft Release ID
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.guard.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $zip = "dist-portable/agentscommander-$env:VERSION-windows-x86_64-portable.zip"
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const fail = (message) => { console.error(`::error::DRAFT_RELEASE_CONTRACT_MISMATCH: ${message}`); process.exit(1); };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          async function request(url, options = {}) {
+            let response;
+            try { response = await fetch(url, { ...options, headers: { ...headers, ...(options.headers || {}) } }); }
+            catch (error) { fail(`Release API transport failure: ${error.message}`); }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (!response.ok) fail(`Release API returned HTTP ${response.status}`);
+            return bytes;
+          }
+          (async () => {
+            const release = JSON.parse((await request(`https://api.github.com/repos/${process.env.REPO}/releases/${process.env.RELEASE_ID}`)).toString('utf8'));
+            if (release.id !== Number(process.env.RELEASE_ID) || release.draft !== true || release.tag_name !== process.env.TAG) fail('draft contract differs');
+            const upload = String(release.upload_url || '').replace(/\{\?name,label\}$/, '');
+            if (!upload) fail('draft upload URL is missing');
+            const files = fs.readFileSync(process.env.RAW_ASSET_LIST, 'utf8').trim().split(/\r?\n/);
+            if (!files.length || new Set(files).size !== files.length) fail('raw asset list is empty or duplicated');
+            for (const file of files) {
+              const bytes = fs.readFileSync(file);
+              const asset = JSON.parse((await request(`${upload}?name=${encodeURIComponent(file)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream' },
+                body: bytes,
+              })).toString('utf8'));
+              if (asset.name !== file || asset.state !== 'uploaded' || asset.size <= 0) fail(`upload differs for ${file}`);
+            }
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
 
-          node scripts/pack-windows-portable.mjs `
-            --binary target/release/agentscommander.exe `
-            --version $env:VERSION `
-            --out $zip
-          if ($LASTEXITCODE -ne 0) { throw "packing the portable zip failed" }
-
-          # Smoke BEFORE upload: a broken portable asset must never reach the
-          # release, not even as a draft attachment someone might publish.
-          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip -ExpectedVersion $env:VERSION
-          if ($LASTEXITCODE -ne 0) { throw "the portable zip failed its smoke test" }
-
-          gh release upload "${{ github.ref_name }}" $zip --clobber
-          if ($LASTEXITCODE -ne 0) { throw "uploading the portable zip failed" }
-
-  # ---------------------------------------------------------------------
-  # SHASUMS256.txt over every asset. npm/install.js verifies against this.
-  # The portable zip needs no change here: this job downloads whatever is
-  # attached to the release and hashes all of it.
-  # ---------------------------------------------------------------------
   checksums:
     name: checksums
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [build, guard, prepare-release]
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-      - name: Generate and upload checksums
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm and assert runtime identity
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          mkdir -p release-assets
-          cd release-assets
-          gh release download "$TAG"
-          sha256sum * > ../SHASUMS256.txt
-          cd ..
-          cat SHASUMS256.txt
-          gh release upload "$TAG" SHASUMS256.txt --clobber
+          npm install -g npm@11.6.2
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+          npm ci
 
-  # ---------------------------------------------------------------------
-  # Flip the draft to published, but only once the assets npm depends on
-  # are provably present and downloadable.
-  # ---------------------------------------------------------------------
-  publish-github:
-    name: publish-github
-    needs: [guard, checksums]
-    runs-on: ubuntu-latest
+      - name: Record release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Checksum identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate the exact 16-record manifest and upload only it
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+          const fail = (message) => { console.error(`::error::DRAFT_RELEASE_CONTRACT_MISMATCH: ${message}`); process.exit(1); };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          const sortBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+          async function request(url, options = {}) {
+            let response;
+            try { response = await fetch(url, { ...options, headers: { ...headers, ...(options.headers || {}) } }); }
+            catch (error) { fail(`Release API transport failure: ${error.message}`); }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (!response.ok) fail(`Release API returned HTTP ${response.status}`);
+            return bytes;
+          }
+          async function assets(base) {
+            const all = [];
+            for (let page = 1; ; page += 1) {
+              const value = JSON.parse((await request(`${base}/assets?per_page=100&page=${page}`)).toString('utf8'));
+              if (!Array.isArray(value)) fail('asset page is not an array');
+              all.push(...value);
+              if (value.length < 100) return all;
+            }
+          }
+          (async () => {
+            const expected = [
+              `Agents.Commander-${process.env.VERSION}-1.x86_64.rpm`,
+              `Agents.Commander_${process.env.VERSION}_aarch64.dmg`,
+              `Agents.Commander_${process.env.VERSION}_amd64.AppImage`,
+              `Agents.Commander_${process.env.VERSION}_amd64.deb`,
+              `Agents.Commander_${process.env.VERSION}_x64-setup.exe`,
+              `Agents.Commander_${process.env.VERSION}_x64.dmg`,
+              'Agents.Commander_aarch64.app.tar.gz',
+              'Agents.Commander_x64.app.tar.gz',
+              'agentscommander-linux-x86_64',
+              'agentscommander-mac-aarch64',
+              'agentscommander-mac-aarch64.app.tar.gz',
+              'agentscommander-mac-x86_64',
+              'agentscommander-mac-x86_64.app.tar.gz',
+              'agentscommander-testeable-windows-x86_64.exe',
+              'agentscommander-windows-x86_64.exe',
+              `agentscommander-${process.env.VERSION}-windows-x86_64-portable.zip`,
+            ];
+            const base = `https://api.github.com/repos/${process.env.REPO}/releases/${process.env.RELEASE_ID}`;
+            const release = JSON.parse((await request(base)).toString('utf8'));
+            if (release.id !== Number(process.env.RELEASE_ID) || release.draft !== true || release.tag_name !== process.env.TAG) fail('draft contract differs');
+            const listed = await assets(base);
+            const names = listed.map((asset) => asset.name);
+            if (listed.length !== 16 || new Set(names).size !== 16 ||
+                names.slice().sort(sortBytes).join('\n') !== expected.slice().sort(sortBytes).join('\n')) fail('candidate 16-name ledger differs');
+            const byName = new Map(listed.map((asset) => [asset.name, asset]));
+            const dir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'candidate-assets-'));
+            const rows = [];
+            for (const name of expected) {
+              const asset = byName.get(name);
+              if (!asset || asset.state !== 'uploaded' || asset.size <= 0 || !/^sha256:[0-9a-f]{64}$/.test(asset.digest || '')) fail(`candidate asset differs: ${name}`);
+              const bytes = await request(asset.url, { headers: { Accept: 'application/octet-stream' } });
+              if (!bytes.length) fail(`candidate asset is empty: ${name}`);
+              fs.writeFileSync(path.join(dir, name), bytes);
+              rows.push(`${crypto.createHash('sha256').update(bytes).digest('hex')}  ${name}`);
+            }
+            const manifest = `${rows.join('\n')}\n`;
+            if (rows.length !== 16 || manifest.includes('SHASUMS256.txt')) fail('manifest record set differs');
+            fs.writeFileSync('SHASUMS256.txt', manifest, 'utf8');
+            const upload = String(release.upload_url || '').replace(/\{\?name,label\}$/, '');
+            const result = JSON.parse((await request(`${upload}?name=SHASUMS256.txt`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: Buffer.from(manifest, 'utf8'),
+            })).toString('utf8'));
+            if (result.name !== 'SHASUMS256.txt' || result.state !== 'uploaded' || result.size <= 0) fail('manifest upload differs');
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+  verify-attestation-authority:
+    name: verify-attestation-authority
+    needs: [checksums, guard, prepare-release]
+    runs-on: ubuntu-22.04
     permissions:
-      contents: write
+      contents: read
+      attestations: read
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
     steps:
-      - name: Publish the release and prove the npm assets resolve
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm and assert runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.6.2
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+          npm ci
+
+      - name: Record verification identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Pre-publication attestation identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download and validate the immutable predecessor ledger
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: mblua/AgentsCommander
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+          const fail = (message) => { console.error(`::error::PRE_PUBLICATION_ATTESTATION_AUTHORIZATION_FAILED: ${message}`); process.exit(1); };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          const expected = [
+            'Agents.Commander-0.30.3-1.x86_64.rpm',
+            'Agents.Commander_0.30.3_aarch64.dmg',
+            'Agents.Commander_0.30.3_amd64.AppImage',
+            'Agents.Commander_0.30.3_amd64.deb',
+            'Agents.Commander_0.30.3_x64-setup.exe',
+            'Agents.Commander_0.30.3_x64.dmg',
+            'Agents.Commander_aarch64.app.tar.gz',
+            'Agents.Commander_x64.app.tar.gz',
+            'agentscommander-linux-x86_64',
+            'agentscommander-mac-aarch64',
+            'agentscommander-mac-aarch64.app.tar.gz',
+            'agentscommander-mac-x86_64',
+            'agentscommander-mac-x86_64.app.tar.gz',
+            'agentscommander-testeable-windows-x86_64.exe',
+            'agentscommander-windows-x86_64.exe',
+            'SHASUMS256.txt',
+          ];
+          const sortBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+          async function request(url, options = {}) {
+            let response;
+            try { response = await fetch(url, { ...options, headers: { ...headers, ...(options.headers || {}) } }); }
+            catch (error) { fail(`Release API transport failure: ${error.message}`); }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (!response.ok) fail(`Release API returned HTTP ${response.status}`);
+            return bytes;
+          }
+          async function list(base) {
+            const all = [];
+            for (let page = 1; ; page += 1) {
+              const value = JSON.parse((await request(`${base}/assets?per_page=100&page=${page}`)).toString('utf8'));
+              if (!Array.isArray(value)) fail('asset page is not an array');
+              all.push(...value);
+              if (value.length < 100) return all;
+            }
+          }
+          (async () => {
+            const release = JSON.parse((await request(`https://api.github.com/repos/${process.env.REPO}/releases/tags/v0.30.3`)).toString('utf8'));
+            if (release.tag_name !== 'v0.30.3' || release.draft !== false || release.prerelease !== false || release.immutable !== true) fail('predecessor Release state differs');
+            const listed = await list(`https://api.github.com/repos/${process.env.REPO}/releases/${release.id}`);
+            const names = listed.map((asset) => asset.name);
+            if (listed.length !== 16 || new Set(names).size !== 16 ||
+                names.slice().sort(sortBytes).join('\n') !== expected.slice().sort(sortBytes).join('\n')) fail('predecessor 16-name ledger differs');
+            const dir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'predecessor-assets-'));
+            const byName = new Map(listed.map((asset) => [asset.name, asset]));
+            for (const name of expected) {
+              const asset = byName.get(name);
+              if (!asset || asset.state !== 'uploaded' || asset.size <= 0 || !/^sha256:[0-9a-f]{64}$/.test(asset.digest || '')) fail(`predecessor asset differs: ${name}`);
+              const bytes = await request(asset.url, { headers: { Accept: 'application/octet-stream' } });
+              if (!bytes.length) fail(`predecessor asset is empty: ${name}`);
+              fs.writeFileSync(path.join(dir, name), bytes);
+            }
+            const manifest = fs.readFileSync(path.join(dir, 'SHASUMS256.txt'));
+            const manifestAsset = byName.get('SHASUMS256.txt');
+            if (crypto.createHash('sha256').update(manifest).digest('hex') !== manifestAsset.digest.slice(7)) fail('predecessor manifest API digest differs');
+            fs.writeFileSync(path.join(dir, 'predecessor-assets.json'), JSON.stringify({ release, assets: listed }));
+            fs.writeFileSync(path.join(dir, 'predecessor-ledger.txt'), `${expected.join('\n')}\n`);
+            fs.appendFileSync(process.env.GITHUB_ENV, `PREDECESSOR_DIR=${dir}\n`);
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+      - name: Verify the predecessor checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$PREDECESSOR_DIR" && sha256sum -c SHASUMS256.txt)
+
+      - name: Verify the predecessor checksum map against API digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const fail = (message) => { console.error(`::error::PRE_PUBLICATION_ATTESTATION_AUTHORIZATION_FAILED: ${message}`); process.exit(1); };
+          const { assets } = JSON.parse(fs.readFileSync(path.join(process.env.PREDECESSOR_DIR, 'predecessor-assets.json'), 'utf8'));
+          const data = assets.filter((asset) => asset.name !== 'SHASUMS256.txt');
+          const raw = fs.readFileSync(path.join(process.env.PREDECESSOR_DIR, 'SHASUMS256.txt'), 'utf8');
+          if (raw.includes('\r')) fail('predecessor manifest contains CR bytes');
+          const lines = raw.trimEnd().split('\n');
+          if (lines.length !== 15) fail('predecessor manifest does not have 15 data records');
+          const map = new Map();
+          for (const line of lines) {
+            const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+            if (!match || map.has(match[2]) || match[2] === 'SHASUMS256.txt') fail('predecessor manifest record is malformed or duplicated');
+            map.set(match[2], match[1]);
+          }
+          if (map.size !== data.length || data.some((asset) => map.get(asset.name) !== asset.digest.slice(7))) fail('predecessor manifest/API map differs');
+          NODE
+
+      - name: Install the SHA-verified GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_dir="$RUNNER_TEMP/gh-2.98.0"
+          mkdir -p "$cli_dir"
+          archive="$cli_dir/gh_2.98.0_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" https://github.com/cli/cli/releases/download/v2.98.0/gh_2.98.0_linux_amd64.tar.gz
+          printf '%s  %s\n' 3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$cli_dir"
+          gh_bin="$cli_dir/gh_2.98.0_linux_amd64/bin/gh"
+          "$gh_bin" --version | tee "$PREDECESSOR_DIR/gh-version.txt"
+          "$gh_bin" --version | grep -E '^gh version 2\.98\.0 '
+          echo "GH_BIN=$gh_bin" >> "$GITHUB_ENV"
+
+      - name: Verify immutable predecessor Release attestation
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
+          "$GH_BIN" release verify v0.30.3 --repo mblua/AgentsCommander --format json | tee "$PREDECESSOR_DIR/release-verify.json"
 
-          # A draft release is invisible to GET /releases/tags/{tag}; that
-          # endpoint only serves published releases. Resolving the draft by
-          # tag through it is what silently skipped the v0.30.1 release run.
-          # List and filter instead.
-          release_id="$(gh api --paginate "repos/$REPO/releases" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)"
+      - name: Verify all immutable predecessor asset attestations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          index=0
+          while IFS= read -r asset; do
+            index=$((index + 1))
+            "$GH_BIN" release verify-asset v0.30.3 "$PREDECESSOR_DIR/$asset" --repo mblua/AgentsCommander --format json | tee "$PREDECESSOR_DIR/asset-verify-$index.json"
+          done < "$PREDECESSOR_DIR/predecessor-ledger.txt"
+          test "$index" = 16
 
-          if [ -z "$release_id" ]; then
-            echo "::error::No release found for tag $TAG."
-            exit 1
-          fi
-          echo "Release id for $TAG is $release_id"
-
-          gh api "repos/$REPO/releases/$release_id/assets" --paginate \
-            --jq '.[].name' | sort > present.txt
-          echo "Assets attached:"
-          sed 's/^/  /' present.txt
-
-          # These are exactly the files npm/install.js downloads at postinstall
-          # time. If any is missing, npm installs would break for that platform,
-          # so refuse to publish.
-          cat > required.txt <<'EOF'
-          SHASUMS256.txt
-          agentscommander-linux-x86_64
-          agentscommander-mac-aarch64.app.tar.gz
-          agentscommander-mac-x86_64.app.tar.gz
-          agentscommander-windows-x86_64.exe
-          EOF
-
-          # The portable download the docs promise (#1589). Its name carries the
-          # version, so it is appended rather than inlined in the fixed list
-          # above, which keeps this workflow version-agnostic.
-          echo "agentscommander-${VERSION}-windows-x86_64-portable.zip" >> required.txt
-
-          missing=0
-          while read -r asset; do
-            [ -z "$asset" ] && continue
-            if ! grep -qxF "$asset" present.txt; then
-              echo "::error::Required asset missing from the release: $asset"
-              missing=1
-            fi
-          done < required.txt
-          [ "$missing" -eq 0 ] || exit 1
-
-          gh api -X PATCH "repos/$REPO/releases/$release_id" \
-            -F draft=false -f make_latest=true >/dev/null
-
-          state="$(gh api "repos/$REPO/releases/$release_id" --jq '.draft')"
-          [ "$state" = "false" ] || { echo "::error::Release is still a draft."; exit 1; }
-
-          # Final proof: the exact URL npm/install.js will hit must resolve.
-          # This is the check that distinguishes "published" from "works".
-          url="https://github.com/$REPO/releases/download/$TAG/SHASUMS256.txt"
-          curl -sSfL --retry 5 --retry-delay 5 -o /dev/null "$url"
-          echo "Release $TAG is published and its assets are publicly downloadable."
-
-  # ---------------------------------------------------------------------
-  # Publish to npm, then prove a clean install actually works.
-  # ---------------------------------------------------------------------
-  publish-npm:
-    name: publish-npm
-    needs: [guard, publish-github]
-    runs-on: ubuntu-latest
+  publish-github:
+    name: publish-github
+    needs: [checksums, verify-attestation-authority, guard, prepare-release]
+    runs-on: ubuntu-22.04
     permissions:
-      contents: read
-      id-token: write        # provenance attestation
+      contents: write
     env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.guard.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+      TITLE_SHA256: ${{ needs.prepare-release.outputs.title_sha256 }}
+      BODY_SHA256: ${{ needs.prepare-release.outputs.body_sha256 }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 22.23.2
 
-      # OIDC Trusted Publishing needs npm >= 11.5.1, and node 22 ships 10.9.8.
-      # This pin is what makes OIDC engage at all: without it npm silently
-      # falls back to token auth and nothing looks wrong.
-      # Same pin as version-sync-check.yml.
-      - name: Pin npm version
-        run: npm install -g npm@11.6.2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
 
-      - name: Show OIDC preconditions
+      - name: Pin npm and assert runtime identity
         shell: bash
         run: |
           set -euo pipefail
-          echo "npm  $(npm --version)   (OIDC trusted publishing needs >= 11.5.1)"
-          echo "node $(node --version)  (OIDC trusted publishing needs >= 22.14.0)"
+          npm install -g npm@11.6.2
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+          npm ci
+          echo "MERGE_SHA=$(git rev-parse "$TAG^{}")" >> "$GITHUB_ENV"
 
-      # Authenticates via OIDC Trusted Publishing. There is no npm token: the
-      # trusted publisher on npmjs.com is pinned to owner mblua, repo
-      # AgentsCommander, workflow release.yml, no environment, npm publish only.
-      #
-      # No --provenance flag: trusted publishing generates the attestation on
-      # its own. The flag is only needed on the token path.
-      #
-      # To confirm a release really used OIDC, check the registry metadata
-      # rather than the publish log, which does not say. `_npmUser` carries a
-      # `trustedPublisher` object on the OIDC path and is a plain account on the
-      # token path. See docs/npm-authentication.md in the release skill.
-      - name: Publish @mblua/agentscommander
+      - name: Record publication identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Publication identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate the retained draft ledger and make the sole public PATCH
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const fail = (message) => { console.error(`::error::DRAFT_RELEASE_CONTRACT_MISMATCH: ${message}`); process.exit(1); };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          const expected = [
+            `Agents.Commander-${process.env.VERSION}-1.x86_64.rpm`, `Agents.Commander_${process.env.VERSION}_aarch64.dmg`,
+            `Agents.Commander_${process.env.VERSION}_amd64.AppImage`, `Agents.Commander_${process.env.VERSION}_amd64.deb`,
+            `Agents.Commander_${process.env.VERSION}_x64-setup.exe`, `Agents.Commander_${process.env.VERSION}_x64.dmg`,
+            'Agents.Commander_aarch64.app.tar.gz', 'Agents.Commander_x64.app.tar.gz', 'agentscommander-linux-x86_64',
+            'agentscommander-mac-aarch64', 'agentscommander-mac-aarch64.app.tar.gz', 'agentscommander-mac-x86_64',
+            'agentscommander-mac-x86_64.app.tar.gz', 'agentscommander-testeable-windows-x86_64.exe',
+            'agentscommander-windows-x86_64.exe', `agentscommander-${process.env.VERSION}-windows-x86_64-portable.zip`, 'SHASUMS256.txt',
+          ];
+          const sortBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+          const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          async function request(method, path, json, binary = false) {
+            let response;
+            try {
+              response = await fetch(`https://api.github.com${path}`, {
+                method,
+                headers: binary ? { ...headers, Accept: 'application/octet-stream' } : headers,
+                body: json === undefined ? undefined : JSON.stringify(json),
+              });
+            } catch (error) { fail(`Release API transport failure: ${error.message}`); }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (!response.ok) fail(`Release API ${method} ${path} returned HTTP ${response.status}`);
+            return bytes;
+          }
+          async function list() {
+            const all = [];
+            for (let page = 1; ; page += 1) {
+              const value = JSON.parse((await request('GET', `/repos/${process.env.REPO}/releases/${process.env.RELEASE_ID}/assets?per_page=100&page=${page}`)).toString('utf8'));
+              if (!Array.isArray(value)) fail('asset page is not an array');
+              all.push(...value);
+              if (value.length < 100) return all;
+            }
+          }
+          function manifestMap(bytes, assets) {
+            const manifest = bytes.toString('utf8');
+            if (manifest.includes('\r')) fail('manifest contains CR bytes');
+            const lines = manifest.trimEnd().split('\n');
+            if (lines.length !== 16) fail('manifest record count differs');
+            const map = new Map();
+            for (const line of lines) {
+              const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+              if (!match || map.has(match[2]) || match[2] === 'SHASUMS256.txt') fail('manifest record differs');
+              map.set(match[2], match[1]);
+            }
+            if (map.size !== 16 || assets.filter((asset) => asset.name !== 'SHASUMS256.txt').some((asset) => map.get(asset.name) !== asset.digest.slice(7))) fail('manifest/API digest map differs');
+          }
+          (async () => {
+            const draftPath = `/repos/${process.env.REPO}/releases/${process.env.RELEASE_ID}`;
+            const draft = JSON.parse((await request('GET', draftPath)).toString('utf8'));
+            const sameMetadata = (release, draftExpected) => release.id === Number(process.env.RELEASE_ID) &&
+              release.tag_name === process.env.TAG && release.target_commitish === process.env.MERGE_SHA &&
+              release.prerelease === false && sha(Buffer.from(String(release.name), 'utf8')) === process.env.TITLE_SHA256 &&
+              sha(Buffer.from(String(release.body), 'utf8')) === process.env.BODY_SHA256 && release.draft === draftExpected;
+            if (!sameMetadata(draft, true)) fail('draft metadata differs before publication');
+            const assets = await list();
+            const names = assets.map((asset) => asset.name);
+            if (assets.length !== 17 || new Set(names).size !== 17 ||
+                names.slice().sort(sortBytes).join('\n') !== expected.slice().sort(sortBytes).join('\n') ||
+                assets.some((asset) => asset.state !== 'uploaded' || asset.size <= 0 || !/^sha256:[0-9a-f]{64}$/.test(asset.digest || ''))) fail('draft 17-asset ledger differs');
+            const manifestAsset = assets.find((asset) => asset.name === 'SHASUMS256.txt');
+            const manifest = await request('GET', manifestAsset.url.replace('https://api.github.com', ''), undefined, true);
+            if (`sha256:${sha(manifest)}` !== manifestAsset.digest) fail('manifest raw digest differs from API digest');
+            manifestMap(manifest, assets);
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/publish-github-draft.json`, JSON.stringify({ draft, assets }));
+            const patched = JSON.parse((await request('PATCH', draftPath, { draft: false, make_latest: true })).toString('utf8'));
+            if (!sameMetadata(patched, false)) fail('PATCH response differs from immutable Release contract');
+            const publicRelease = JSON.parse((await request('GET', draftPath)).toString('utf8'));
+            if (!sameMetadata(publicRelease, false)) fail('public re-read differs from immutable Release contract');
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/publish-github-public.json`, JSON.stringify(publicRelease));
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+  verify-public-release:
+    name: verify-public-release
+    needs: [publish-github, guard, prepare-release]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+      TITLE_SHA256: ${{ needs.prepare-release.outputs.title_sha256 }}
+      BODY_SHA256: ${{ needs.prepare-release.outputs.body_sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm and assert runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.6.2
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+          npm ci
+          echo "MERGE_SHA=$(git rev-parse "$TAG^{}")" >> "$GITHUB_ENV"
+
+      - name: Record public verification identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Public immutable Release verification identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch and verify the immutable public Release and ledger
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+          const fail = (message) => { console.error(`::error::IMMUTABLE_RELEASE_MISMATCH: ${message}`); process.exit(1); };
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': process.env.RELEASE_API_VERSION,
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+          };
+          const expected = [
+            `Agents.Commander-${process.env.VERSION}-1.x86_64.rpm`, `Agents.Commander_${process.env.VERSION}_aarch64.dmg`,
+            `Agents.Commander_${process.env.VERSION}_amd64.AppImage`, `Agents.Commander_${process.env.VERSION}_amd64.deb`,
+            `Agents.Commander_${process.env.VERSION}_x64-setup.exe`, `Agents.Commander_${process.env.VERSION}_x64.dmg`,
+            'Agents.Commander_aarch64.app.tar.gz', 'Agents.Commander_x64.app.tar.gz', 'agentscommander-linux-x86_64',
+            'agentscommander-mac-aarch64', 'agentscommander-mac-aarch64.app.tar.gz', 'agentscommander-mac-x86_64',
+            'agentscommander-mac-x86_64.app.tar.gz', 'agentscommander-testeable-windows-x86_64.exe',
+            'agentscommander-windows-x86_64.exe', `agentscommander-${process.env.VERSION}-windows-x86_64-portable.zip`, 'SHASUMS256.txt',
+          ];
+          const sortBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+          const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          async function request(url, binary = false) {
+            let response;
+            try { response = await fetch(url, { headers: binary ? { ...headers, Accept: 'application/octet-stream' } : headers }); }
+            catch (error) { fail(`Release API transport failure: ${error.message}`); }
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (!response.ok) fail(`Release API returned HTTP ${response.status}`);
+            return bytes;
+          }
+          async function list(base) {
+            const all = [];
+            for (let page = 1; ; page += 1) {
+              const value = JSON.parse((await request(`${base}/assets?per_page=100&page=${page}`)).toString('utf8'));
+              if (!Array.isArray(value)) fail('asset page is not an array');
+              all.push(...value);
+              if (value.length < 100) return all;
+            }
+          }
+          (async () => {
+            const base = `https://api.github.com/repos/${process.env.REPO}/releases/${process.env.RELEASE_ID}`;
+            const release = JSON.parse((await request(base)).toString('utf8'));
+            if (release.id !== Number(process.env.RELEASE_ID) || release.tag_name !== process.env.TAG ||
+                release.target_commitish !== process.env.MERGE_SHA || release.draft !== false || release.prerelease !== false ||
+                release.immutable !== true || digest(Buffer.from(String(release.name), 'utf8')) !== process.env.TITLE_SHA256 ||
+                digest(Buffer.from(String(release.body), 'utf8')) !== process.env.BODY_SHA256) fail('public Release metadata or immutable state differs');
+            const listed = await list(base);
+            const names = listed.map((asset) => asset.name);
+            if (listed.length !== 17 || new Set(names).size !== 17 ||
+                names.slice().sort(sortBytes).join('\n') !== expected.slice().sort(sortBytes).join('\n') ||
+                listed.some((asset) => asset.state !== 'uploaded' || asset.size <= 0 || !/^sha256:[0-9a-f]{64}$/.test(asset.digest || ''))) fail('public 17-asset ledger differs');
+            const dir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'public-release-assets-'));
+            const byName = new Map(listed.map((asset) => [asset.name, asset]));
+            for (const name of expected) {
+              const bytes = await request(byName.get(name).url, true);
+              if (!bytes.length) fail(`public asset is empty: ${name}`);
+              fs.writeFileSync(path.join(dir, name), bytes);
+            }
+            const manifest = fs.readFileSync(path.join(dir, 'SHASUMS256.txt'));
+            if (`sha256:${digest(manifest)}` !== byName.get('SHASUMS256.txt').digest) fail('public manifest raw digest differs');
+            const raw = manifest.toString('utf8');
+            if (raw.includes('\r')) fail('public manifest contains CR bytes');
+            const lines = raw.trimEnd().split('\n');
+            const map = new Map();
+            for (const line of lines) {
+              const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+              if (!match || match[2] === 'SHASUMS256.txt' || map.has(match[2])) fail('public manifest record differs');
+              map.set(match[2], match[1]);
+            }
+            if (lines.length !== 16 || map.size !== 16 || listed.filter((asset) => asset.name !== 'SHASUMS256.txt').some((asset) => map.get(asset.name) !== asset.digest.slice(7))) fail('public manifest/API digest map differs');
+            fs.writeFileSync(path.join(dir, 'public-release.json'), JSON.stringify({ release, assets: listed, manifestMap: Object.fromEntries(map) }));
+            fs.writeFileSync(path.join(dir, 'public-ledger.txt'), `${expected.join('\n')}\n`);
+            fs.appendFileSync(process.env.GITHUB_ENV, `PUBLIC_RELEASE_DIR=${dir}\n`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Public immutable Release evidence\n\n- Release ID: ${release.id}\n- immutable: ${release.immutable}\n- ledger assets: ${listed.length}\n- manifest API digest: \`${byName.get('SHASUMS256.txt').digest}\`\n`);
+          })().catch((error) => fail(error.stack || error.message));
+          NODE
+
+      - name: Verify the public checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$PUBLIC_RELEASE_DIR" && sha256sum -c SHASUMS256.txt)
+
+      - name: Install the SHA-verified GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_dir="$RUNNER_TEMP/gh-2.98.0"
+          mkdir -p "$cli_dir"
+          archive="$cli_dir/gh_2.98.0_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" https://github.com/cli/cli/releases/download/v2.98.0/gh_2.98.0_linux_amd64.tar.gz
+          printf '%s  %s\n' 3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$cli_dir"
+          gh_bin="$cli_dir/gh_2.98.0_linux_amd64/bin/gh"
+          "$gh_bin" --version | tee "$PUBLIC_RELEASE_DIR/gh-version.txt"
+          "$gh_bin" --version | grep -E '^gh version 2\.98\.0 '
+          echo "GH_BIN=$gh_bin" >> "$GITHUB_ENV"
+
+      - name: Verify immutable public Release attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          "$GH_BIN" release verify "$TAG" --repo mblua/AgentsCommander --format json | tee "$PUBLIC_RELEASE_DIR/release-verify.json"
+
+      - name: Verify all public Release asset attestations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          index=0
+          while IFS= read -r asset; do
+            index=$((index + 1))
+            "$GH_BIN" release verify-asset "$TAG" "$PUBLIC_RELEASE_DIR/$asset" --repo mblua/AgentsCommander --format json | tee "$PUBLIC_RELEASE_DIR/asset-verify-$index.json"
+          done < "$PUBLIC_RELEASE_DIR/public-ledger.txt"
+          test "$index" = 17
+
+  publish-npm:
+    name: publish-npm
+    needs: [verify-public-release, guard]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REQUESTED_RUNNER: ubuntu-22.04
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22.23.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.0
+
+      - name: Pin npm and assert runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.6.2
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          rustc --version | grep -F "rustc $RUST_VERSION"
+          cargo --version | grep -F "cargo $RUST_VERSION"
+          npm ci
+
+      - name: Record npm publication identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### npm publication identity'
+            echo
+            echo "- requested runner: $REQUESTED_RUNNER"
+            echo "- ImageOS: ${ImageOS:-unavailable}"
+            echo "- ImageVersion: ${ImageVersion:-unavailable}"
+            echo "- checked-out SHA: $(git rev-parse HEAD)"
+            echo "- tag: $TAG"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo "- rustc: $(rustc --version)"
+            echo "- cargo: $(cargo --version)"
+            echo "- local Tauri CLI: $(npx --no-install tauri --version)"
+            echo "- actions/checkout: $CHECKOUT_ACTION_SHA"
+            echo "- actions/setup-node: $SETUP_NODE_ACTION_SHA"
+            echo "- tauri-apps/tauri-action: $TAURI_ACTION_SHA"
+            echo "- dtolnay/rust-toolchain: $RUST_ACTION_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish with npm trusted publishing only
         working-directory: npm
-        run: npm publish --access public
+        shell: bash
+        run: npm publish --access public --tag latest
 
-      - name: Wait for the registry to serve the new version
+      - name: Require the exact public version and latest dist-tag
         shell: bash
         run: |
           set -euo pipefail
           for attempt in $(seq 1 12); do
-            got="$(npm view "@mblua/agentscommander@$VERSION" version 2>/dev/null || true)"
-            if [ "$got" = "$VERSION" ]; then
-              echo "Registry is serving $VERSION."
+            version="$(npm view "@mblua/agentscommander@$VERSION" version 2>/dev/null || true)"
+            latest="$(npm view "@mblua/agentscommander" dist-tags.latest 2>/dev/null || true)"
+            if [ "$version" = "$VERSION" ] && [ "$latest" = "$VERSION" ]; then
               exit 0
             fi
-            echo "Attempt $attempt: not visible yet, waiting."
             sleep 10
           done
-          echo "::error::@mblua/agentscommander@$VERSION never became visible."
+          echo '::error::NPM_PUBLICATION_MISMATCH: exact version or latest dist-tag did not become public.'
           exit 1
 
-      - name: Smoke test a clean install from the registry
+      - name: Prove a clean public consumer install with lifecycle scripts
         shell: bash
         run: |
           set -euo pipefail
-          # Installs the real published tarball and lets postinstall download
-          # and checksum-verify the Linux binary from the GitHub Release.
-          # This exercises the whole chain the way a user does.
-          work="$(mktemp -d)"
-          cd "$work"
+          install_dir="$(mktemp -d)"
+          pushd "$install_dir"
           npm init -y >/dev/null
-          npm install "@mblua/agentscommander@$VERSION"
-          test -x node_modules/@mblua/agentscommander/bin/agentscommander
-          echo "Clean install of $VERSION succeeded."
-
-      - name: Report
-        shell: bash
-        run: |
-          {
-            echo "### Released $VERSION"
-            echo
-            echo "- GitHub Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-            echo "- npm: https://www.npmjs.com/package/@mblua/agentscommander/v/$VERSION"
-            echo
-            echo '```'
-            echo "npx @mblua/agentscommander@$VERSION"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          npm install --foreground-scripts --ignore-scripts=false --no-audit --no-fund "@mblua/agentscommander@$VERSION" 2>&1 | tee npm-install.log
+          test -e node_modules/.bin/agentscommander
+          grep -F 'Downloading SHASUMS256.txt from' npm-install.log
+          grep -Fx 'Checksum verified.' npm-install.log
+          npx --no-install agentscommander --version | tee agentscommander-version.log
+          grep -E "(^|[^0-9])${VERSION//./\\.}([^0-9]|$)" agentscommander-version.log
+          popd
