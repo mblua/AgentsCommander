@@ -762,11 +762,14 @@ mod tests {
             "`<root> role-experiment` is not in the walked set"
         );
         // ...and the corrected placeholder renders on `role-experiment run`,
-        // which is the command that actually owns `RunArgs`. Plan section 9.4
-        // AC5 asserts this on `role-experiment` itself; that is a plan defect,
-        // found here and reported: `role-experiment` is a PARENT command whose
-        // help renders only `<COMMAND>`, because the probe crate section 9.4
-        // used was a synthetic flat tree.
+        // which is the command that actually owns `RunArgs`. `role-experiment`
+        // is a PARENT command whose help renders only `<COMMAND>`, so asserting
+        // the placeholder on the parent panics on a CORRECT implementation.
+        // Plan section 9.4 AC5 targets `role-experiment run` for exactly this
+        // reason (round 5 corrected it; section 14 item 5 carries the same
+        // correction), and the round-3 probe crate could not have caught it
+        // because it was a synthetic flat tree with no parent/child argument
+        // split.
         let role_exp_run = walked
             .get(&format!("{root_name} role-experiment run"))
             .expect("`<root> role-experiment run` is not in the walked set");

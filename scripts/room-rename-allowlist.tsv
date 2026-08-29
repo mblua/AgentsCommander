@@ -17,7 +17,18 @@
 # Part A rows over 2,977 unique (path, content) keys. The 12-row gap is 12
 # pairs carrying two different classes; the gate keys on (path, content)
 # and ignores the class, so the duplicates are inert.
-# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev df494bfa --write
+# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev d7008b34 --write
+#             ...then re-apply plan section 12 step 0b's FIVE operations, which
+#             are hand edits the deriver cannot express: append the 3 new keys,
+#             DELETE the ProjectPanel.tsx:2749 and WorkgroupTask.tsx:70 rows, and
+#             correct the subtotals above. `derive` reproduces this file at NO
+#             --rev: those two rows are absent from the script's FRONTEND_MOVES
+#             table, so every derivation writes them back, and re-adding row 709
+#             is what restores the blindness AC1 point 10 class (e) removes. The
+#             d7008b34 recipe is the one that reproduces exactly, to the
+#             pre-step-0b state (843 / 2798 / 30 = 3671, moved 888 = 4559).
+#             The committed Part A is measured-correct against df494bfa; see the
+#             subtotals above and run `gate`, which reads this file, not the rev.
 # Check:      node scripts/room-rename-allowlist.mjs gate
 P0-identifier	src/resource-monitor/App.tsx	`${group.workgroup ?? "-"} / ${group.agent ?? group.name}`;
 P0-identifier	src/resource-monitor/App.tsx	const [workgroupFilter, setWorkgroupFilter] = createSignal<Set<string>>(
