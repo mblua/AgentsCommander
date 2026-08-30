@@ -382,9 +382,9 @@ jobs:
             local release_id="$2"
             local output="$3"
             local checked_id
-            release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$output"
-            checked_id="$(release_validate_object "$output" "$state" "$release_id")"
-            test "$checked_id" = "$release_id"
+            release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$output" || return 1
+            checked_id="$(release_validate_object "$output" "$state" "$release_id")" || return 1
+            test "$checked_id" = "$release_id" || return 1
           }
 
           release_resolve_id() {
@@ -395,12 +395,12 @@ jobs:
             local release_id
             local checked_id
             pages_path="$(mktemp "$RUNNER_TEMP/release-pages.XXXXXX")"
-            release_pages > "$pages_path"
-            release_id="$(release_select_id_from_pages "$pages_path" "$state" "$expected_id")"
+            release_pages > "$pages_path" || return 1
+            release_id="$(release_select_id_from_pages "$pages_path" "$state" "$expected_id")" || return 1
             release_path="$(mktemp "$RUNNER_TEMP/release-object.XXXXXX")"
-            release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$release_path"
-            checked_id="$(release_validate_object "$release_path" "$state" "$release_id")"
-            test "$checked_id" = "$release_id"
+            release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$release_path" || return 1
+            checked_id="$(release_validate_object "$release_path" "$state" "$release_id")" || return 1
+            test "$checked_id" = "$release_id" || return 1
             printf '%s' "$release_id"
           }
 
@@ -485,6 +485,7 @@ jobs:
           release_upload_exact_asset() {
             local file="$1"
             local asset_name
+            local expected_id="${EXPECTED_RELEASE_ID:-}"
             local release_id
             local snapshot
             local existing_id
@@ -495,7 +496,8 @@ jobs:
             test -s "$file"
             asset_name="$(basename "$file")"
             printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
-            release_id="$(release_resolve_id draft)"
+            release_id="$(release_resolve_id draft "$expected_id")"
+            test -z "$expected_id" || test "$release_id" = "$expected_id"
             snapshot="$(mktemp "$RUNNER_TEMP/release-before-asset.XXXXXX")"
             release_get_checked draft "$release_id" "$snapshot"
             existing_id="$(release_find_asset_id "$snapshot" "$asset_name")"
@@ -514,7 +516,7 @@ jobs:
           NODE
             else
               verify_dir="$(mktemp -d "$RUNNER_TEMP/release-asset.XXXXXX")"
-              release_cli api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$existing_id" --output "$verify_dir/$asset_name"
+              release_cli api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$existing_id" > "$verify_dir/$asset_name"
               cmp -- "$file" "$verify_dir/$asset_name"
             fi
             after_id="$(release_resolve_id draft "$release_id")"
@@ -533,7 +535,7 @@ jobs:
             while IFS=$'\t' read -r asset_id asset_name; do
               test -n "$asset_id"
               test -n "$asset_name"
-              release_cli api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" --output "$destination/$asset_name"
+              release_cli api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$destination/$asset_name"
             done < <(release_asset_records "$release_path")
           }
 
@@ -626,14 +628,148 @@ jobs:
             exit 1
           fi
           package_name="$(node -p "require('./npm/package.json').name")"
-          if npm view "$package_name@$VERSION" version --registry "$REGISTRY_URL" >/dev/null 2>&1; then
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
+          metadata_url="$REGISTRY_URL/$encoded_name/$VERSION"
+          classify_npm_collision() {
+            local curl_exit="$1"
+            local status="$2"
+            if [ "$curl_exit" -ne 0 ]; then
+              echo "::error::registry transport failure while checking $package_name@$VERSION (curl exit $curl_exit)" >&2
+              return 1
+            fi
+            case "$status" in
+              200) printf '%s' present ;;
+              404) printf '%s' absent ;;
+              *)
+                echo "::error::registry returned HTTP $status while checking $package_name@$VERSION" >&2
+                return 1
+                ;;
+            esac
+          }
+          test "$(classify_npm_collision 0 404)" = absent
+          for fixture in '6 000 dns' '35 000 tls' '0 401 unauthorized' '0 403 forbidden' '0 500 server-error' '0 418 generic-error'; do
+            read -r fixture_exit fixture_status fixture_name <<< "$fixture"
+            if classify_npm_collision "$fixture_exit" "$fixture_status" >/dev/null 2>&1; then
+              echo "::error::npm collision negative fixture unexpectedly passed: $fixture_name"
+              exit 1
+            fi
+          done
+          metadata_file="$(mktemp)"
+          curl_exit=0
+          status="$(curl --silent --show-error --output "$metadata_file" --write-out '%{http_code}' --proto '=https' --tlsv1.2 "$metadata_url")" || curl_exit=$?
+          if ! registry_state="$(classify_npm_collision "$curl_exit" "$status")"; then
+            exit 1
+          fi
+          if [ "$registry_state" = present ]; then
             echo "::error::$package_name@$VERSION is already present in the registry."
             exit 1
           fi
+          test "$registry_state" = absent
+
+  release-coordinator:
+    name: coordinate the unique draft release
+    needs: guard
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebind the guarded annotated tag
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          test "$RELEASE_DIR" = "docs/releases/$TAG"
+          test -f "$RELEASE_DIR/release-authority-v1.txt"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          tag_bytes="$(mktemp)"
+          tag_payload="$(mktemp)"
+          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
+          perl -0777 -e '
+            binmode STDIN;
+            binmode STDOUT;
+            local $/;
+            my $bytes = <STDIN>;
+            my $separator = index($bytes, "\n\n");
+            die "annotated tag header/message separator missing\n" if $separator < 0;
+            print substr($bytes, $separator + 2);
+          ' < "$tag_bytes" > "$tag_payload"
+          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          mapfile -t immutable_fields < <(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled, .enforced_by_owner')
+          test "${#immutable_fields[@]}" = 2
+          test "${immutable_fields[0]}" = true
+          case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+
+      - name: Restore numeric release API controls
+        shell: bash
+        env:
+          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_CONTROLS_B64"
+          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [output, encoded] = process.argv.slice(2);
+          const bytes = Buffer.from(encoded, 'base64');
+          assert.ok(bytes.length > 0, 'release controls are empty');
+          fs.writeFileSync(output, bytes, { mode: 0o700 });
+          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
+          NODE
+
+      - name: Create or recover the unique guarded draft release
+        id: release
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          release_id="$(release_ensure_draft)"
+          release_id="$(release_resolve_id draft "$release_id")"
+          printf '%s' "$release_id" | grep -Eq '^[1-9][0-9]*$'
+          printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
 
   build:
     name: build (${{ matrix.name }})
-    needs: guard
+    needs: [guard, release-coordinator]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -749,12 +885,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
-          release_id="$(release_ensure_draft)"
-          test -n "$release_id"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
       - name: Install Ubuntu release dependencies
@@ -800,19 +937,35 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
-      - name: Upload exact platform artifacts by numeric release ID
+      - name: Pack and smoke the Windows portable archive
+        if: matrix.producer == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ledger = Get-Content -Raw "$env:RELEASE_DIR/candidate-assets.v1.json" | ConvertFrom-Json
+          $zip = @($ledger.assets | Where-Object { $_.producer -eq 'windows' -and $_.name.EndsWith('.zip') })
+          if ($zip.Count -ne 1) { throw 'candidate ledger does not define one Windows portable archive' }
+          node scripts/pack-windows-portable.mjs `
+            --binary target/release/agentscommander.exe `
+            --version $env:VERSION `
+            --out $zip[0].name
+          if ($LASTEXITCODE -ne 0) { throw 'packing the portable archive failed' }
+          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip[0].name -ExpectedVersion $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'the portable archive failed its smoke test' }
+
+      - name: Prepare closed producer assets and manifest
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.guard.outputs.version }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           PRODUCER: ${{ matrix.producer }}
           RAW_SOURCE: ${{ matrix.raw_source }}
           TARGET_DIR: ${{ matrix.target_dir }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          source "$RUNNER_TEMP/release-controls.sh"
           ledger_asset() {
             node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$1" <<'NODE'
             const assert = require('node:assert/strict');
@@ -822,7 +975,6 @@ jobs:
             const direct = assets.filter((asset) => asset.producer === producer && asset.name.startsWith('agentscommander-'));
             let matches;
             if (kind === 'raw') matches = direct.filter((asset) => !asset.name.includes('.'));
-            else if (kind === 'archive') matches = direct.filter((asset) => asset.name.endsWith('.app.tar.gz'));
             else if (kind === 'portable') matches = assets.filter((asset) => asset.producer === producer && asset.name.endsWith('.zip'));
             else if (kind === 'testable') matches = direct.filter((asset) => asset.name.includes('testeable') && asset.name.endsWith('.exe'));
             else if (kind === 'normal-windows') matches = direct.filter((asset) => !asset.name.includes('testeable') && asset.name.endsWith('.exe'));
@@ -845,7 +997,7 @@ jobs:
           }
           NODE
           }
-          upload_remaining_bundle_assets() {
+          copy_remaining_bundle_assets() {
             local asset_name
             local -a remaining
             local -a matches
@@ -853,83 +1005,109 @@ jobs:
             for asset_name in "${remaining[@]}"; do
               mapfile -t matches < <(find "$TARGET_DIR/bundle" -type f -name "$asset_name" -print)
               test "${#matches[@]}" = 1
-              release_upload_exact_asset "${matches[0]}"
+              cp -- "${matches[0]}" "$asset_dir/$asset_name"
             done
           }
+          asset_dir="$(mktemp -d "$RUNNER_TEMP/producer-assets.XXXXXX")"
+          manifest_path="$RUNNER_TEMP/producer-manifest-$PRODUCER.json"
           case "$PRODUCER" in
             windows)
               node scripts/copy-testable-binary.mjs
               normal_name="$(ledger_asset normal-windows)"
               testable_name="$(ledger_asset testable)"
               portable_name="$(ledger_asset portable)"
-              cp "$RAW_SOURCE" "$normal_name"
-              cp target/release/agentscommander_testeable.exe "$testable_name"
-              release_upload_exact_asset "$normal_name"
-              release_upload_exact_asset "$testable_name"
-              upload_remaining_bundle_assets "$normal_name" "$testable_name" "$portable_name"
+              cp -- "$RAW_SOURCE" "$asset_dir/$normal_name"
+              cp -- target/release/agentscommander_testeable.exe "$asset_dir/$testable_name"
+              cp -- "$portable_name" "$asset_dir/$portable_name"
+              copy_remaining_bundle_assets "$normal_name" "$testable_name" "$portable_name"
               ;;
-            linux-x86_64)
+            linux-x86_64|macos-aarch64|macos-x86_64)
               raw_name="$(ledger_asset raw)"
-              cp "$RAW_SOURCE" "$raw_name"
-              release_upload_exact_asset "$raw_name"
-              upload_remaining_bundle_assets "$raw_name"
-              ;;
-            macos-aarch64|macos-x86_64)
-              raw_name="$(ledger_asset raw)"
-              cp "$RAW_SOURCE" "$raw_name"
-              release_upload_exact_asset "$raw_name"
-              upload_remaining_bundle_assets "$raw_name"
+              cp -- "$RAW_SOURCE" "$asset_dir/$raw_name"
+              copy_remaining_bundle_assets "$raw_name"
               ;;
             *)
               echo "::error::unknown producer $PRODUCER"
               exit 1
               ;;
           esac
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$asset_dir" "$manifest_path" "$TAG" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const [ledgerPath, producer, assetDir, manifestPath, tag] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const expected = ledger.assets.filter((asset) => asset.producer === producer);
+          assert.ok(expected.length > 0, 'producer must own candidate assets');
+          assert.equal(new Set(expected.map((asset) => asset.name)).size, expected.length, 'duplicate producer ledger asset');
+          for (const asset of expected) {
+            assert.equal(asset.state, 'required', 'producer asset state');
+            assert.ok(safeName(asset.name), 'unsafe producer asset name');
+          }
+          const files = fs.readdirSync(assetDir);
+          assert.deepEqual([...files].sort(), expected.map((asset) => asset.name).sort(), 'closed local producer asset set');
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const assets = expected.map((asset) => {
+            const file = path.join(assetDir, asset.name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid producer asset ' + asset.name);
+            return { name: asset.name, size: stat.size, sha256: digest(file) };
+          });
+          fs.writeFileSync(manifestPath, JSON.stringify({
+            schema: 'agentscommander/release-producer-manifest/v1',
+            tag,
+            producer,
+            assetCount: assets.length,
+            assets,
+          }, null, 2) + '\n', { encoding: 'utf8', mode: 0o644 });
+          NODE
+          printf 'PRODUCER_ASSET_DIR=%s\n' "$asset_dir" >> "$GITHUB_ENV"
+          printf 'PRODUCER_MANIFEST=%s\n' "$manifest_path" >> "$GITHUB_ENV"
 
-      - name: Pack and smoke the Windows portable archive
-        if: matrix.producer == 'windows'
-        shell: pwsh
-        env:
-          VERSION: ${{ needs.guard.outputs.version }}
-          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $ledger = Get-Content -Raw "$env:RELEASE_DIR/candidate-assets.v1.json" | ConvertFrom-Json
-          $zip = @($ledger.assets | Where-Object { $_.producer -eq 'windows' -and $_.name.EndsWith('.zip') })
-          if ($zip.Count -ne 1) { throw 'candidate ledger does not define one Windows portable archive' }
-          node scripts/pack-windows-portable.mjs `
-            --binary target/release/agentscommander.exe `
-            --version $env:VERSION `
-            --out $zip[0].name
-          if ($LASTEXITCODE -ne 0) { throw 'packing the portable archive failed' }
-          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip[0].name -ExpectedVersion $env:VERSION
-          if ($LASTEXITCODE -ne 0) { throw 'the portable archive failed its smoke test' }
+      - name: Upload the closed producer manifest for internal verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: producer-manifest-${{ matrix.producer }}
+          path: ${{ runner.temp }}/producer-manifest-${{ matrix.producer }}.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
 
-      - name: Upload the Windows portable archive without replacement
-        if: matrix.producer == 'windows'
+      - name: Upload exact platform artifacts by the coordinator numeric release ID
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          PRODUCER: ${{ matrix.producer }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
-          portable_name="$(node - "$RELEASE_DIR/candidate-assets.v1.json" <<'NODE'
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
+          mapfile -t asset_names < <(node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" <<'NODE'
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
-          const assets = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).assets;
-          const matches = assets.filter((asset) => asset.producer === 'windows' && asset.name.endsWith('.zip'));
-          assert.equal(matches.length, 1);
-          process.stdout.write(matches[0].name);
+          const [ledgerPath, producer] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const assets = ledger.assets.filter((asset) => asset.producer === producer);
+          assert.ok(assets.length > 0, 'producer has no ledger assets');
+          for (const asset of assets) process.stdout.write(asset.name + '\n');
           NODE
-          )"
-          test -s "$portable_name"
-          release_upload_exact_asset "$portable_name"
+          )
+          test "${#asset_names[@]}" -gt 0
+          for asset_name in "${asset_names[@]}"; do
+            test -s "$PRODUCER_ASSET_DIR/$asset_name"
+            release_upload_exact_asset "$PRODUCER_ASSET_DIR/$asset_name"
+          done
 
   checksums:
     name: checksums
-    needs: [guard, build]
+    needs: [guard, release-coordinator, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -1011,11 +1189,20 @@ jobs:
           assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
           NODE
 
-      - name: Build and upload the runtime checksum ledger without replacement
+      - name: Download the closed producer manifests from internal workflow storage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: producer-manifest-*
+          path: ${{ runner.temp }}/producer-manifests
+          merge-multiple: true
+
+      - name: Verify closed producer manifests against the guarded draft assets
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
+          PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -1023,7 +1210,108 @@ jobs:
           work_dir="$(mktemp -d)"
           downloads="$work_dir/downloads"
           mkdir "$downloads"
-          release_id="$(release_resolve_id draft)"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
+          release_get_checked draft "$release_id" "$work_dir/release.json"
+          release_download_all_assets draft "$release_id" "$downloads"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release.json" "$downloads" "$PRODUCER_MANIFEST_DIR" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const [ledgerPath, releasePath, downloads, manifestsDir] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const sorted = (items) => [...items].sort();
+          assert.equal(ledger.schema, 'prepare-agentscommander-release/asset-ledger/v1');
+          assert.equal(ledger.kind, 'candidate');
+          assert.equal(ledger.assetCount, ledger.assets.length);
+          assert.equal(ledger.assetCount, 17, 'closed public release asset count');
+          const checksumAssets = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(checksumAssets.length, 1, 'candidate ledger must define one checksum asset');
+          const checksumName = checksumAssets[0].name;
+          const producerAssets = ledger.assets.filter((asset) => asset.producer !== 'checksums');
+          assert.equal(producerAssets.length, 16, 'closed producer asset count');
+          const producers = [...new Set(producerAssets.map((asset) => asset.producer))];
+          assert.deepEqual(sorted(producers), ['linux-x86_64', 'macos-aarch64', 'macos-x86_64', 'windows'], 'closed producer matrix');
+          const expectedManifestFiles = producers.map((producer) => `producer-manifest-${producer}.json`);
+          assert.ok(fs.statSync(manifestsDir).isDirectory(), 'producer manifest directory');
+          assert.deepEqual(sorted(fs.readdirSync(manifestsDir)), sorted(expectedManifestFiles), 'complete closed producer manifest set');
+          const expectedByProducer = new Map(producers.map((producer) => [
+            producer,
+            producerAssets.filter((asset) => asset.producer === producer),
+          ]));
+          const manifestAssets = new Map();
+          for (const producer of producers) {
+            const manifest = JSON.parse(fs.readFileSync(path.join(manifestsDir, `producer-manifest-${producer}.json`), 'utf8'));
+            assert.equal(manifest.schema, 'agentscommander/release-producer-manifest/v1');
+            assert.equal(manifest.tag, ledger.tag, 'producer manifest tag');
+            assert.equal(manifest.producer, producer, 'producer manifest identity');
+            assert.equal(manifest.assetCount, manifest.assets.length, 'producer manifest count');
+            const expected = expectedByProducer.get(producer);
+            assert.deepEqual(sorted(manifest.assets.map((asset) => asset.name)), sorted(expected.map((asset) => asset.name)), 'closed producer manifest names');
+            const names = new Set();
+            for (const asset of manifest.assets) {
+              assert.ok(safeName(asset.name), 'unsafe producer manifest asset');
+              assert.equal(names.has(asset.name), false, 'duplicate producer manifest asset');
+              names.add(asset.name);
+              assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0, 'producer manifest size');
+              assert.match(asset.sha256, /^[0-9a-f]{64}$/, 'producer manifest digest');
+              assert.equal(manifestAssets.has(asset.name), false, 'duplicate asset across producer manifests');
+              manifestAssets.set(asset.name, asset);
+            }
+          }
+          assert.deepEqual(sorted(manifestAssets.keys()), sorted(producerAssets.map((asset) => asset.name)), 'closed producer manifest asset names');
+          assert.equal(release.tag_name, ledger.tag);
+          assert.equal(release.draft, true);
+          const apiAssets = new Map();
+          for (const asset of release.assets) {
+            assert.ok(safeName(asset.name), 'unsafe draft asset name');
+            assert.equal(apiAssets.has(asset.name), false, 'duplicate draft asset name');
+            assert.ok(Number.isSafeInteger(asset.id) && asset.id > 0, 'invalid draft asset id');
+            assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0, 'invalid draft asset size');
+            apiAssets.set(asset.name, asset);
+          }
+          const allowedNames = sorted([...manifestAssets.keys(), checksumName]);
+          const apiNames = sorted(apiAssets.keys());
+          assert.ok(
+            JSON.stringify(apiNames) === JSON.stringify(sorted(manifestAssets.keys()))
+              || JSON.stringify(apiNames) === JSON.stringify(allowedNames),
+            'draft assets must be producer assets with an optional prior checksum ledger',
+          );
+          assert.deepEqual(sorted(fs.readdirSync(downloads)), apiNames, 'downloaded draft asset names');
+          for (const [name, expected] of manifestAssets) {
+            const apiAsset = apiAssets.get(name);
+            assert.ok(apiAsset, 'producer asset absent from draft release ' + name);
+            assert.equal(apiAsset.size, expected.size, 'draft API size ' + name);
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink(), 'invalid downloaded producer asset ' + name);
+            assert.equal(stat.size, expected.size, 'downloaded producer size ' + name);
+            assert.equal(digest(file), expected.sha256, 'downloaded producer digest ' + name);
+          }
+          NODE
+
+      - name: Build and upload the runtime checksum ledger without replacement
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
+          PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          work_dir="$(mktemp -d)"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           release_get_checked draft "$release_id" "$work_dir/release-before.json"
           release_download_all_assets draft "$release_id" "$downloads"
           sum_name="$(node - "$RELEASE_DIR/candidate-assets.v1.json" <<'NODE'
@@ -1035,13 +1323,13 @@ jobs:
           process.stdout.write(matches[0].name);
           NODE
           )"
-          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release-before.json" "$downloads" "$sum_name" <<'NODE'
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release-before.json" "$downloads" "$sum_name" "$PRODUCER_MANIFEST_DIR" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
           const fs = require('node:fs');
           const path = require('node:path');
 
-          const [ledgerPath, releasePath, downloads, sumName] = process.argv.slice(2);
+          const [ledgerPath, releasePath, downloads, sumName, manifestsDir] = process.argv.slice(2);
           const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
           const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
           const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
@@ -1050,6 +1338,7 @@ jobs:
           assert.equal(ledger.schema, 'prepare-agentscommander-release/asset-ledger/v1');
           assert.equal(ledger.kind, 'candidate');
           assert.equal(ledger.assetCount, ledger.assets.length);
+          assert.equal(ledger.assetCount, 17, 'closed public release asset count');
           assert.equal(ledger.assets.filter((asset) => asset.name === sumName).length, 1);
           const expected = ledger.assets.map((asset) => {
             assert.equal(asset.state, 'required');
@@ -1060,6 +1349,8 @@ jobs:
           });
           assert.equal(new Set(expected).size, expected.length, 'duplicate ledger asset name');
           const expectedWithoutSum = expected.filter((name) => name !== sumName);
+          const producerAssets = ledger.assets.filter((asset) => asset.producer !== 'checksums');
+          assert.equal(producerAssets.length, 16, 'closed producer asset count');
           assert.equal(release.tag_name, ledger.tag);
           assert.equal(release.draft, true);
           assert.ok(Number.isInteger(release.id) && release.id > 0);
@@ -1071,6 +1362,32 @@ jobs:
           });
           assert.equal(new Set(apiNames).size, apiNames.length, 'duplicate draft release asset name');
           const sorted = (items) => [...items].sort();
+          const producers = [...new Set(producerAssets.map((asset) => asset.producer))];
+          assert.deepEqual(sorted(producers), ['linux-x86_64', 'macos-aarch64', 'macos-x86_64', 'windows'], 'closed producer matrix');
+          assert.ok(fs.statSync(manifestsDir).isDirectory(), 'producer manifest directory');
+          assert.deepEqual(
+            sorted(fs.readdirSync(manifestsDir)),
+            sorted(producers.map((producer) => `producer-manifest-${producer}.json`)),
+            'complete closed producer manifest set',
+          );
+          const manifestAssets = new Map();
+          for (const producer of producers) {
+            const manifest = JSON.parse(fs.readFileSync(path.join(manifestsDir, `producer-manifest-${producer}.json`), 'utf8'));
+            assert.equal(manifest.schema, 'agentscommander/release-producer-manifest/v1');
+            assert.equal(manifest.tag, ledger.tag, 'producer manifest tag');
+            assert.equal(manifest.producer, producer, 'producer manifest identity');
+            assert.equal(manifest.assetCount, manifest.assets.length, 'producer manifest count');
+            const expectedNames = producerAssets.filter((asset) => asset.producer === producer).map((asset) => asset.name);
+            assert.deepEqual(sorted(manifest.assets.map((asset) => asset.name)), sorted(expectedNames), 'closed producer manifest names');
+            for (const asset of manifest.assets) {
+              assert.ok(safeName(asset.name), 'unsafe producer manifest asset');
+              assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0, 'producer manifest size');
+              assert.match(asset.sha256, /^[0-9a-f]{64}$/, 'producer manifest digest');
+              assert.equal(manifestAssets.has(asset.name), false, 'duplicate producer manifest asset');
+              manifestAssets.set(asset.name, asset);
+            }
+          }
+          assert.deepEqual(sorted(manifestAssets.keys()), sorted(expectedWithoutSum), 'closed producer manifest asset names');
           const acceptable = [
             sorted(expectedWithoutSum),
             sorted(expected),
@@ -1082,6 +1399,15 @@ jobs:
             const file = path.join(downloads, name);
             const stat = fs.lstatSync(file);
             assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid downloaded asset ' + name);
+          }
+          const apiAssets = new Map(release.assets.map((asset) => [asset.name, asset]));
+          for (const [name, record] of manifestAssets) {
+            const apiAsset = apiAssets.get(name);
+            assert.ok(apiAsset, 'producer asset absent from draft release ' + name);
+            assert.equal(apiAsset.size, record.size, 'draft API size ' + name);
+            const file = path.join(downloads, name);
+            assert.equal(fs.statSync(file).size, record.size, 'downloaded producer size ' + name);
+            assert.equal(digest(file), record.sha256, 'downloaded producer digest ' + name);
           }
           const records = expectedWithoutSum.map((name) => digest(path.join(downloads, name)) + '  ' + name);
           const runtimeLedger = records.join('\n') + '\n';
@@ -1096,6 +1422,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -1103,7 +1430,8 @@ jobs:
           work_dir="$(mktemp -d)"
           downloads="$work_dir/downloads"
           mkdir "$downloads"
-          release_id="$(release_resolve_id draft)"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           release_get_checked draft "$release_id" "$work_dir/release-after.json"
           release_download_all_assets draft "$release_id" "$downloads"
           node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release-after.json" "$downloads" <<'NODE'
@@ -1150,7 +1478,7 @@ jobs:
 
   publish-github:
     name: publish-github
-    needs: [guard, checksums]
+    needs: [guard, release-coordinator, checksums]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -1237,9 +1565,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          candidate_release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$candidate_release_id" = "$EXPECTED_RELEASE_ID"
           tags_file="$(mktemp)"
           git ls-remote --tags --refs origin 'refs/tags/v*' > "$tags_file"
           predecessor_tag="$(node - "$TAG" "$tags_file" <<'NODE'
@@ -1297,7 +1629,7 @@ jobs:
           while IFS=$'\t' read -r asset_id asset_name; do
             test -n "$asset_id"
             test -n "$asset_name"
-            gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" --output "$downloads/$asset_name"
+            gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$downloads/$asset_name"
           done < <(node - "$RELEASE_DIR/predecessor-assets.v1.json" <<'NODE'
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
@@ -1363,6 +1695,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -1370,7 +1703,8 @@ jobs:
           work_dir="$(mktemp -d)"
           downloads="$work_dir/downloads"
           mkdir "$downloads"
-          release_id="$(release_resolve_id draft)"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           release_get_checked draft "$release_id" "$work_dir/release.json"
           release_download_all_assets draft "$release_id" "$downloads"
           node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release.json" "$downloads" <<'NODE'
@@ -1470,11 +1804,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
-          release_id="$(release_resolve_id draft)"
+          release_id="$(release_resolve_id draft "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           response="$(mktemp "$RUNNER_TEMP/release-publish-response.XXXXXX")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false --raw-field make_latest=true > "$response"
           response_id="$(release_validate_object "$response" public "$release_id")"
@@ -1485,7 +1821,7 @@ jobs:
 
   verify-release:
     name: verify-release
-    needs: [guard, publish-github]
+    needs: [guard, release-coordinator, publish-github]
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -1614,6 +1950,7 @@ jobs:
           EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
           EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
           EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -1659,7 +1996,8 @@ jobs:
           work_dir="$(mktemp -d)"
           downloads="$work_dir/downloads"
           mkdir "$downloads"
-          release_id="$(release_resolve_id public)"
+          release_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           release_get_checked public "$release_id" "$work_dir/release.json"
           release_download_all_assets public "$release_id" "$downloads"
           node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release.json" "$downloads" "$work_dir/asset-names.txt" <<'NODE'
@@ -1716,12 +2054,12 @@ jobs:
             release_assert_tag_helper_id "$release_id"
             assert_tag_pair
           done < "$work_dir/asset-names.txt"
-          public_id="$(release_resolve_id public "$release_id")"
+          public_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
           test "$public_id" = "$release_id"
 
   publish-npm:
     name: publish-npm
-    needs: [guard, verify-release]
+    needs: [guard, release-coordinator, verify-release]
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -1811,6 +2149,7 @@ jobs:
           VERSION: ${{ needs.guard.outputs.version }}
           TAG: ${{ github.ref_name }}
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
           REGISTRY_URL: https://registry.npmjs.org
         run: |
@@ -1826,7 +2165,8 @@ jobs:
             echo "::error::nonofficial NPM_CONFIG_REGISTRY bypassed the registry gate"
             exit 1
           fi
-          release_id="$(release_resolve_id public)"
+          release_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
+          test "$release_id" = "$EXPECTED_RELEASE_ID"
           node_major="$(node --version | cut -d. -f1 | tr -d v)"
           test "$node_major" = 22
           npm install --global npm@11.6.2 --registry "$REGISTRY_URL"
@@ -2026,8 +2366,8 @@ jobs:
           selected_asset_id="$(release_find_asset_id "$release_json" "$selected_asset")"
           test -n "$sum_asset_id"
           test -n "$selected_asset_id"
-          gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$sum_asset_id" --output "$public_assets/$sum_name"
-          gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$selected_asset_id" --output "$public_assets/$selected_asset"
+          gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$sum_asset_id" > "$public_assets/$sum_name"
+          gh api --method GET -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$selected_asset_id" > "$public_assets/$selected_asset"
           observed_sha256="$(node - "$public_assets/$sum_name" "$public_assets/$selected_asset" "$selected_asset" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
