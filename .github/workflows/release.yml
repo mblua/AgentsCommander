@@ -587,7 +587,7 @@ jobs:
 
           npm_reject_tokenless_auth_environment() {
             local name
-            for name in NODE_AUTH_TOKEN NPM_TOKEN NPM_AGENTSCOMMANDER; do
+            for name in NODE_AUTH_TOKEN NPM_TOKEN NPM_AGENTSCOMMANDER NPM_ID_TOKEN SIGSTORE_ID_TOKEN; do
               if printenv "$name" >/dev/null; then
                 echo "::error::$name must be absent for npm Trusted Publishing"
                 return 1
@@ -642,7 +642,7 @@ jobs:
           assert.equal(fs.readFileSync(npmrc, 'utf8'), `registry=${registry}\n`, 'controlled npmrc contents');
           NODE
             effective_config="$(mktemp "$RUNNER_TEMP/npm-effective-config.XXXXXX")"
-            npm --userconfig "$npmrc" config list --json > "$effective_config"
+            env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$npmrc" config list --json > "$effective_config"
             node - "$effective_config" "$registry" <<'NODE'
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
@@ -2423,10 +2423,6 @@ jobs:
           test "${immutable_fields[0]}" = true
           case "${immutable_fields[1]}" in true|false) ;; *) exit 1 ;; esac
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: 22
-
       - name: Restore numeric release API controls
         shell: bash
         env:
@@ -2444,6 +2440,19 @@ jobs:
           assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
           NODE
 
+      - name: Reject caller npm environment before setup-node
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          npm_reject_tokenless_auth_environment
+          test ! -e "$RUNNER_TEMP/.npmrc"
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
       - name: Verify pinned setup-node tokenless npm environment
         shell: bash
         env:
@@ -2452,18 +2461,40 @@ jobs:
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
           npm_verify_registry_contract "$RUNNER_TEMP/release-controls.sh"
-          npm_reject_tokenless_auth_environment
-          test ! -e "$RUNNER_TEMP/.npmrc"
+          test "${NODE_AUTH_TOKEN:-}" = 'XXXXX-XXXXX-XXXXX-XXXXX'
+          test "${NPM_CONFIG_USERCONFIG:-}" = "$RUNNER_TEMP/.npmrc"
+          node - "$RUNNER_TEMP/.npmrc" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const npmrc = process.argv[2];
+          assert.equal(
+            fs.readFileSync(npmrc, 'utf8'),
+            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\nregistry=https://registry.npmjs.org/\nalways-auth=false\n',
+            'pinned setup-node npmrc contents',
+          );
+          NODE
           npm_require_official_registry "$REGISTRY_URL"
-          npm_require_official_registry "$(npm config get registry)"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
           for assignment in \
             'NODE_AUTH_TOKEN=dummy-token' \
             'NODE_AUTH_TOKEN=real-token' \
             'NPM_TOKEN=dummy-token' \
-            'NPM_TOKEN=real-token'; do
-            if env "$assignment" bash -c '
+            'NPM_TOKEN=real-token' \
+            'NPM_ID_TOKEN=' \
+            'NPM_ID_TOKEN=dummy-token' \
+            'NPM_ID_TOKEN=real-token' \
+            'SIGSTORE_ID_TOKEN=' \
+            'SIGSTORE_ID_TOKEN=dummy-token' \
+            'SIGSTORE_ID_TOKEN=real-token'; do
+            if env \
+              -u NODE_AUTH_TOKEN \
+              -u NPM_TOKEN \
+              -u NPM_AGENTSCOMMANDER \
+              -u NPM_ID_TOKEN \
+              -u SIGSTORE_ID_TOKEN \
+              -u NPM_CONFIG_USERCONFIG \
+              "$assignment" bash -c '
               set -euo pipefail
               source "$1"
               npm_reject_tokenless_auth_environment
@@ -2475,6 +2506,10 @@ jobs:
           tokenless_npmrc="$RUNNER_TEMP/tokenless-publish.npmrc"
           printf 'registry=%s\n' "$REGISTRY_URL" > "$tokenless_npmrc"
           chmod 600 "$tokenless_npmrc"
+          unset NODE_AUTH_TOKEN
+          unset NPM_CONFIG_USERCONFIG
+          npm_reject_tokenless_auth_environment
+          npm_require_official_registry "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$tokenless_npmrc" config get registry)"
           npm_assert_tokenless_npmrc "$tokenless_npmrc" "$REGISTRY_URL"
           printf 'TOKENLESS_NPMRC=%s\n' "$tokenless_npmrc" >> "$GITHUB_ENV"
 
@@ -2490,20 +2525,22 @@ jobs:
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
+          unset NODE_AUTH_TOKEN
+          unset NPM_CONFIG_USERCONFIG
           npm_reject_tokenless_auth_environment
           test -n "${TOKENLESS_NPMRC:-}"
           test -f "$TOKENLESS_NPMRC"
           test ! -e npm/.npmrc
           npm_require_official_registry "$REGISTRY_URL"
-          npm_require_official_registry "$(npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
+          npm_require_official_registry "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
           npm_assert_tokenless_npmrc "$TOKENLESS_NPMRC" "$REGISTRY_URL"
           release_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
           test "$release_id" = "$EXPECTED_RELEASE_ID"
           node_major="$(node --version | cut -d. -f1 | tr -d v)"
           test "$node_major" = 22
-          npm --userconfig "$TOKENLESS_NPMRC" install --global npm@11.6.2 --registry "$REGISTRY_URL"
-          test "$(npm --version)" = 11.6.2
-          npm_require_official_registry "$(npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
+          env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" install --global npm@11.6.2 --registry "$REGISTRY_URL"
+          test "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" --version)" = 11.6.2
+          npm_require_official_registry "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
           mapfile -t package_info < <(node - "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
           const pkg = require('./npm/package.json');
@@ -2528,7 +2565,7 @@ jobs:
           mkdir "$pack_dir"
           (
             cd npm
-            npm --userconfig "$TOKENLESS_NPMRC" pack --json --pack-destination "$pack_dir" > "$work_dir/pack.json"
+            env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" pack --json --pack-destination "$pack_dir" > "$work_dir/pack.json"
           )
           local_tarball="$(node - "$work_dir/pack.json" "$pack_dir" <<'NODE'
           const assert = require('node:assert/strict');
@@ -2562,7 +2599,7 @@ jobs:
           if [ "$registry_state" = absent ]; then
             (
               cd npm
-              env -u NODE_AUTH_TOKEN -u NPM_TOKEN -u NPM_AGENTSCOMMANDER npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
+              env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG -u NPM_TOKEN -u NPM_AGENTSCOMMANDER -u NPM_ID_TOKEN -u SIGSTORE_ID_TOKEN npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
             )
           fi
           for attempt in $(seq 1 30); do
@@ -2578,7 +2615,7 @@ jobs:
             sleep 2
           done
           test "$status" = 200
-          latest="$(npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
+          latest="$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
           test "$latest" = "$VERSION"
           registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
@@ -2728,8 +2765,8 @@ jobs:
           normal_public_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$selected_asset"
           curl --fail --location --proto '=https' --tlsv1.2 "$normal_public_url" --output "$public_assets/normal-public-$selected_asset"
           cmp -- "$public_assets/$selected_asset" "$public_assets/normal-public-$selected_asset"
-          npm --userconfig "$TOKENLESS_NPMRC" install --foreground-scripts --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
-          npm --userconfig "$TOKENLESS_NPMRC" --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
+          env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" install --foreground-scripts --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
+          env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
           version_output="$("$install_dir/node_modules/.bin/$binary_name" --version)"
           printf '%s\n' "$version_output" | grep -F "$VERSION"
           printf 'selected_public_release_asset=%s\n' "$selected_asset"
