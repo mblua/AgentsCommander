@@ -794,6 +794,7 @@ pub(crate) fn resolve_agent_spawn_command(
     agent_id: &str,
     launch_path: Option<&Path>,
     requested_profile: Option<&str>,
+    requested_profile_authoritative: bool,
 ) -> Result<AgentSpawnCommand, String> {
     let normalized_launch_path = normalize_launch_path_for_spawn(launch_path);
     let launch_path = normalized_launch_path.as_deref();
@@ -809,6 +810,7 @@ pub(crate) fn resolve_agent_spawn_command(
             launch_path,
             agent_matrix_name: None,
             requested_profile,
+            requested_profile_authoritative,
         },
     );
     for warning in &profile_resolution.warnings {
@@ -1016,7 +1018,8 @@ pub fn build_agent_spawn_command(
     launch_path: Option<&Path>,
     requested_profile: Option<&str>,
 ) -> Result<AgentSpawnCommand, String> {
-    let command = resolve_agent_spawn_command(settings, agent_id, launch_path, requested_profile)?;
+    let command =
+        resolve_agent_spawn_command(settings, agent_id, launch_path, requested_profile, false)?;
     prepare_agent_spawn_command(&command)?;
     Ok(command)
 }
@@ -2043,7 +2046,8 @@ mod tests {
                 },
             );
 
-        let spawn = resolve_agent_spawn_command(&settings, "opencode", None, Some("A")).unwrap();
+        let spawn =
+            resolve_agent_spawn_command(&settings, "opencode", None, Some("A"), false).unwrap();
         assert!(
             !target.exists(),
             "read-only resolution must not create the directory"
@@ -2070,7 +2074,7 @@ mod tests {
             .join(super::sanitize_codex_home_id(&id));
         let _ = std::fs::remove_dir_all(&expected);
 
-        let resolved = resolve_agent_spawn_command(&settings, &id, None, Some("A")).unwrap();
+        let resolved = resolve_agent_spawn_command(&settings, &id, None, Some("A"), false).unwrap();
         assert_eq!(
             resolved.effective_codex_home.as_deref(),
             Some(expected.as_path())

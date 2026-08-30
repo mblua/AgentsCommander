@@ -90,6 +90,7 @@ fn direct_profile_letters(
                     launch_path: None,
                     agent_matrix_name: None,
                     requested_profile: Some(letter),
+                    requested_profile_authoritative: false,
                 },
             );
             resolution.effective_profile == *letter

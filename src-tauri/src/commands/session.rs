@@ -2619,6 +2619,7 @@ pub(crate) fn resolve_configured_agent_spawn_for_cwd(
     agent_id: &str,
     cwd: &str,
     requested_profile: Option<&str>,
+    requested_profile_authoritative: bool,
 ) -> Result<Option<AgentSpawnCommand>, String> {
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
@@ -2629,6 +2630,7 @@ pub(crate) fn resolve_configured_agent_spawn_for_cwd(
         agent_id,
         Some(std::path::Path::new(&cwd)),
         requested_profile,
+        requested_profile_authoritative,
     )
     .map(Some)
 }
@@ -2676,6 +2678,7 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
             launch_path: Some(std::path::Path::new(cwd)),
             agent_matrix_name: None,
             requested_profile: requested.as_deref(),
+            requested_profile_authoritative: false,
         },
     );
     // #597 - mirror the spawn-time composition exactly: hash the effective command
@@ -5095,8 +5098,10 @@ mod tests {
             }],
             ..AppSettings::default()
         };
-        crate::config::agent_command::resolve_agent_spawn_command(&settings, "pi", None, None)
-            .expect("Pi test spawn should resolve without filesystem preparation")
+        crate::config::agent_command::resolve_agent_spawn_command(
+            &settings, "pi", None, None, false,
+        )
+        .expect("Pi test spawn should resolve without filesystem preparation")
     }
 
     fn probe_map() -> ContainerPathMap {

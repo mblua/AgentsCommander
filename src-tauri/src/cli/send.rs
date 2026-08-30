@@ -162,6 +162,39 @@ fn confirm_timeout_from_args(args: &SendArgs) -> std::time::Duration {
     std::time::Duration::from_secs(args.confirm_timeout)
 }
 
+/// #1635-2 D4: `Delivered:` receipt line. The message id remains the first
+/// token in every shape (scripts that parse `Delivered: <id>` keep working).
+/// The daemon writes the annotated message to `delivered/<id>.json`;
+/// `delivered: None` (unreadable / foreign / older daemon file) keeps the
+/// legacy byte-identical line — a missing annotation never fails the
+/// confirmation.
+fn delivered_receipt_line(
+    msg_id: &str,
+    mode_for_ack: &str,
+    to_for_ack: &str,
+    delivered: Option<&OutboxMessage>,
+) -> String {
+    let mut line = format!(
+        "Delivered: {} (mode={}, to={})",
+        msg_id, mode_for_ack, to_for_ack
+    );
+    if let Some(msg) = delivered {
+        if let Some(agent) = msg.effective_agent_id.as_deref() {
+            line.push_str(&format!(" agent={}", agent));
+        }
+        if let Some(profile) = msg.effective_profile.as_deref() {
+            line.push_str(&format!(" profile={}", profile));
+        }
+        if msg.profile_fallback_applied {
+            line.push_str(" fallbackApplied");
+        }
+        if let Some(reason) = msg.dispatch_not_applied.as_deref() {
+            line.push_str(&format!(" flagsNotApplied={}", reason));
+        }
+    }
+    line
+}
+
 fn wait_for_delivery_confirmation(
     outbox_dir: &Path,
     msg_id: &str,
@@ -180,11 +213,15 @@ fn wait_for_delivery_confirmation(
 
     loop {
         if delivered_path.exists() {
+            // #1635-2 D4: read the annotated delivered JSON when the daemon
+            // wrote one; a foreign/older daemon (or an unparseable file) falls
+            // back to the legacy line without failing the confirmation.
+            let delivered = std::fs::read_to_string(&delivered_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<OutboxMessage>(&raw).ok());
             crate::cli_println!(
-                "Delivered: {} (mode={}, to={})",
-                msg_id,
-                mode_for_ack,
-                to_for_ack
+                "{}",
+                delivered_receipt_line(msg_id, mode_for_ack, to_for_ack, delivered.as_ref())
             );
             return Ok(());
         }
@@ -1421,6 +1458,96 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    /// #1635-2 D4: a minimal delivered message carrying the daemon's receipt
+    /// annotations (the shape `move_to_delivered` writes for a dispatch wake).
+    fn annotated_delivered_message() -> OutboxMessage {
+        OutboxMessage {
+            id: "msg-ann-1".to_string(),
+            token: None,
+            from: "proj:wg-1/tech-lead".to_string(),
+            to: "proj:wg-1/dev-rust".to_string(),
+            body: "wake body".to_string(),
+            mode: "wake".to_string(),
+            get_output: false,
+            request_id: None,
+            sender_agent: None,
+            preferred_agent: "codex".to_string(),
+            requested_profile: Some("C".to_string()),
+            effective_agent_id: Some("codex".to_string()),
+            effective_profile: Some("B".to_string()),
+            profile_fallback_applied: true,
+            dispatch_not_applied: None,
+            priority: "normal".to_string(),
+            timestamp: "2026-08-30T00:00:00Z".to_string(),
+            command: None,
+            action: None,
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+            dry_run: None,
+            quiet_period_ms: None,
+            pty_input: None,
+        }
+    }
+
+    #[test]
+    fn delivered_receipt_prints_effective_values_and_fallback() {
+        let line = delivered_receipt_line(
+            "msg-ann-1",
+            "wake",
+            "proj:wg-1/dev-rust",
+            Some(&annotated_delivered_message()),
+        );
+        assert!(line.starts_with("Delivered: msg-ann-1 (mode=wake, to=proj:wg-1/dev-rust)"));
+        assert!(line.contains("agent=codex"), "line was: {line}");
+        assert!(line.contains("profile=B"), "line was: {line}");
+        assert!(line.contains("fallbackApplied"), "line was: {line}");
+    }
+
+    #[test]
+    fn delivered_receipt_prints_flags_not_applied_for_live() {
+        let mut message = annotated_delivered_message();
+        message.effective_agent_id = None;
+        message.effective_profile = None;
+        message.profile_fallback_applied = false;
+        message.dispatch_not_applied = Some("live-target".to_string());
+        let line =
+            delivered_receipt_line("msg-live-1", "wake", "proj:wg-1/dev-rust", Some(&message));
+        assert!(line.starts_with("Delivered: msg-live-1 (mode=wake, to=proj:wg-1/dev-rust)"));
+        assert!(
+            line.contains("flagsNotApplied=live-target"),
+            "line was: {line}"
+        );
+        assert!(!line.contains("fallbackApplied"), "line was: {line}");
+    }
+
+    #[test]
+    fn delivered_receipt_unparseable_file_falls_back_to_legacy_line() {
+        // A foreign/older daemon writes no annotation and the delivered JSON may
+        // predate required fields; the confirmation must still succeed with the
+        // legacy byte-identical line.
+        let temp = tempfile::TempDir::new().unwrap();
+        let delivered_dir = temp.path().join("delivered");
+        std::fs::create_dir_all(&delivered_dir).unwrap();
+        std::fs::write(delivered_dir.join("msg-legacy.json"), "{}").unwrap();
+
+        let result = wait_for_delivery_confirmation(
+            temp.path(),
+            "msg-legacy",
+            "wake",
+            "proj:wg-1/dev-rust",
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(1),
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            delivered_receipt_line("msg-legacy", "wake", "proj:wg-1/dev-rust", None),
+            "Delivered: msg-legacy (mode=wake, to=proj:wg-1/dev-rust)"
+        );
     }
 
     #[test]
