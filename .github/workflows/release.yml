@@ -545,6 +545,116 @@ jobs:
             helper_id="$(release_cli api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)"
             test "$helper_id" = "$release_id"
           }
+
+          npm_canonical_registry() {
+            local candidate="$1"
+            node - "$candidate" <<'NODE'
+          const assert = require('node:assert/strict');
+          const candidate = process.argv[2];
+          const canonical = 'https://registry.npmjs.org/';
+          try {
+            assert.ok(candidate === canonical || candidate === canonical.slice(0, -1), 'only the official npm registry root is allowed');
+            const registry = new URL(candidate);
+            assert.equal(registry.protocol, 'https:', 'registry scheme');
+            assert.equal(registry.hostname, 'registry.npmjs.org', 'registry host');
+            assert.equal(registry.port, '', 'registry port');
+            assert.equal(registry.username, '', 'registry username');
+            assert.equal(registry.password, '', 'registry password');
+            assert.equal(registry.pathname, '/', 'registry path');
+            assert.equal(registry.search, '', 'registry query');
+            assert.equal(registry.hash, '', 'registry fragment');
+            assert.equal(registry.toString(), canonical, 'registry canonical form');
+            process.stdout.write(canonical);
+          } catch (error) {
+            console.error(error.message);
+            process.exit(1);
+          }
+          NODE
+          }
+
+          npm_require_official_registry() {
+            local canonical
+            canonical="$(npm_canonical_registry "$1")" || return 1
+            test "$canonical" = 'https://registry.npmjs.org/'
+          }
+
+          npm_reject_config_overrides() {
+            if env | cut -d= -f1 | grep -Eiq '^npm_config_'; then
+              echo '::error::caller-provided npm configuration override is forbidden'
+              return 1
+            fi
+          }
+
+          npm_reject_tokenless_auth_environment() {
+            local name
+            for name in NODE_AUTH_TOKEN NPM_TOKEN NPM_AGENTSCOMMANDER; do
+              if printenv "$name" >/dev/null; then
+                echo "::error::$name must be absent for npm Trusted Publishing"
+                return 1
+              fi
+            done
+            npm_reject_config_overrides
+          }
+
+          npm_verify_registry_contract() {
+            local controls_path="$1"
+            local canonical='https://registry.npmjs.org/'
+            if ! env -i PATH="$PATH" bash -c '
+              set -euo pipefail
+              source "$1"
+              test "$(npm_canonical_registry "$2")" = "$3"
+            ' -- "$controls_path" "$canonical" "$canonical"; then
+              echo '::error::clean-environment canonical npm registry fixture failed'
+              return 1
+            fi
+            local candidate
+            for candidate in \
+              'http://registry.npmjs.org/' \
+              'https://registry.example.invalid/' \
+              'https://registry.npmjs.org:443/' \
+              'https://user:password@registry.npmjs.org/' \
+              'https://registry.npmjs.org/path' \
+              'https://registry.npmjs.org/?query=1' \
+              'https://registry.npmjs.org/#fragment'; do
+              if npm_canonical_registry "$candidate" >/dev/null 2>&1; then
+                echo "::error::unsafe npm registry fixture unexpectedly passed: $candidate"
+                return 1
+              fi
+            done
+            if NPM_CONFIG_REGISTRY="$canonical" bash -c '
+              set -euo pipefail
+              source "$1"
+              npm_reject_config_overrides
+            ' -- "$controls_path" >/dev/null 2>&1; then
+              echo '::error::caller npm registry override fixture unexpectedly passed'
+              return 1
+            fi
+          }
+
+          npm_assert_tokenless_npmrc() {
+            local npmrc="$1"
+            local registry="$2"
+            local effective_config
+            node - "$npmrc" "$registry" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [npmrc, registry] = process.argv.slice(2);
+          assert.equal(fs.readFileSync(npmrc, 'utf8'), `registry=${registry}\n`, 'controlled npmrc contents');
+          NODE
+            effective_config="$(mktemp "$RUNNER_TEMP/npm-effective-config.XXXXXX")"
+            npm --userconfig "$npmrc" config list --json > "$effective_config"
+            node - "$effective_config" "$registry" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [configPath, registry] = process.argv.slice(2);
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          const authKeys = (value) => Object.keys(value).filter((key) => /(^|[:/])(?:_authToken|_auth|_password|username|email)$/i.test(key));
+          assert.equal(config.registry, registry, 'effective npm registry');
+          assert.deepEqual(authKeys(config), [], 'effective npm auth configuration');
+          assert.throws(() => assert.deepEqual(authKeys({ '//registry.npmjs.org/:_authToken': 'dummy' }), []), 'auth token fixture');
+          assert.throws(() => assert.deepEqual(authKeys({ '//registry.npmjs.org/:_auth': 'legacy' }), []), 'legacy auth fixture');
+          NODE
+          }
           BASH
           chmod 700 "$controls"
           printf 'release_controls_b64=%s\n' "$(base64 < "$controls" | tr -d '\n')" >> "$GITHUB_OUTPUT"
@@ -617,19 +727,17 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.tag.outputs.version }}
-          REGISTRY_URL: https://registry.npmjs.org
+          REGISTRY_URL: https://registry.npmjs.org/
         run: |
           set -euo pipefail
-          test "$REGISTRY_URL" = https://registry.npmjs.org
-          test -z "${NPM_CONFIG_REGISTRY:-}" || test "$NPM_CONFIG_REGISTRY" = "$REGISTRY_URL"
-          test "$(npm config get registry)" = "$REGISTRY_URL"
-          if NPM_CONFIG_REGISTRY=https://registry.example.invalid bash -c 'test "${NPM_CONFIG_REGISTRY:-}" = "https://registry.npmjs.org"'; then
-            echo "::error::nonofficial NPM_CONFIG_REGISTRY bypassed the registry gate"
-            exit 1
-          fi
+          source "$RUNNER_TEMP/release-controls.sh"
+          npm_verify_registry_contract "$RUNNER_TEMP/release-controls.sh"
+          npm_reject_config_overrides
+          npm_require_official_registry "$REGISTRY_URL"
+          npm_require_official_registry "$(npm config get registry)"
           package_name="$(node -p "require('./npm/package.json').name")"
           encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
-          metadata_url="$REGISTRY_URL/$encoded_name/$VERSION"
+          metadata_url="$REGISTRY_URL$encoded_name/$VERSION"
           classify_npm_collision() {
             local curl_exit="$1"
             local status="$2"
@@ -915,21 +1023,18 @@ jobs:
       - name: Require the official npm registry before dependency installation
         shell: bash
         env:
-          REGISTRY_URL: https://registry.npmjs.org
+          REGISTRY_URL: https://registry.npmjs.org/
         run: |
           set -euo pipefail
-          test "$REGISTRY_URL" = https://registry.npmjs.org
-          test -z "${NPM_CONFIG_REGISTRY:-}" || test "$NPM_CONFIG_REGISTRY" = "$REGISTRY_URL"
-          test "$(npm config get registry)" = "$REGISTRY_URL"
-          if NPM_CONFIG_REGISTRY=https://registry.example.invalid bash -c 'test "${NPM_CONFIG_REGISTRY:-}" = "https://registry.npmjs.org"'; then
-            echo "::error::nonofficial NPM_CONFIG_REGISTRY bypassed the registry gate"
-            exit 1
-          fi
+          source "$RUNNER_TEMP/release-controls.sh"
+          npm_reject_config_overrides
+          npm_require_official_registry "$REGISTRY_URL"
+          npm_require_official_registry "$(npm config get registry)"
 
       - name: Install frontend dependencies
         shell: bash
         env:
-          REGISTRY_URL: https://registry.npmjs.org
+          REGISTRY_URL: https://registry.npmjs.org/
         run: npm ci --registry "$REGISTRY_URL"
 
       - name: Build package artifacts without release-side effects
@@ -2321,7 +2426,6 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       - name: Restore numeric release API controls
         shell: bash
@@ -2340,6 +2444,40 @@ jobs:
           assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
           NODE
 
+      - name: Verify pinned setup-node tokenless npm environment
+        shell: bash
+        env:
+          REGISTRY_URL: https://registry.npmjs.org/
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/release-controls.sh"
+          npm_verify_registry_contract "$RUNNER_TEMP/release-controls.sh"
+          npm_reject_tokenless_auth_environment
+          test ! -e "$RUNNER_TEMP/.npmrc"
+          npm_require_official_registry "$REGISTRY_URL"
+          npm_require_official_registry "$(npm config get registry)"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          for assignment in \
+            'NODE_AUTH_TOKEN=dummy-token' \
+            'NODE_AUTH_TOKEN=real-token' \
+            'NPM_TOKEN=dummy-token' \
+            'NPM_TOKEN=real-token'; do
+            if env "$assignment" bash -c '
+              set -euo pipefail
+              source "$1"
+              npm_reject_tokenless_auth_environment
+            ' -- "$RUNNER_TEMP/release-controls.sh"; then
+              echo "::error::token environment fixture unexpectedly passed: $assignment"
+              exit 1
+            fi
+          done
+          tokenless_npmrc="$RUNNER_TEMP/tokenless-publish.npmrc"
+          printf 'registry=%s\n' "$REGISTRY_URL" > "$tokenless_npmrc"
+          chmod 600 "$tokenless_npmrc"
+          npm_assert_tokenless_npmrc "$tokenless_npmrc" "$REGISTRY_URL"
+          printf 'TOKENLESS_NPMRC=%s\n' "$tokenless_npmrc" >> "$GITHUB_ENV"
+
       - name: Publish or verify the provenance package
         shell: bash
         env:
@@ -2348,27 +2486,24 @@ jobs:
           RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
           EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
           GH_TOKEN: ${{ github.token }}
-          REGISTRY_URL: https://registry.npmjs.org
+          REGISTRY_URL: https://registry.npmjs.org/
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/release-controls.sh"
-          test -z "${NODE_AUTH_TOKEN:-}"
-          test -z "${NPM_TOKEN:-}"
-          test -z "${NPM_AGENTSCOMMANDER:-}"
-          test "$REGISTRY_URL" = https://registry.npmjs.org
-          test -z "${NPM_CONFIG_REGISTRY:-}" || test "$NPM_CONFIG_REGISTRY" = "$REGISTRY_URL"
-          test "$(npm config get registry)" = "$REGISTRY_URL"
-          if NPM_CONFIG_REGISTRY=https://registry.example.invalid bash -c 'test "${NPM_CONFIG_REGISTRY:-}" = "https://registry.npmjs.org"'; then
-            echo "::error::nonofficial NPM_CONFIG_REGISTRY bypassed the registry gate"
-            exit 1
-          fi
+          npm_reject_tokenless_auth_environment
+          test -n "${TOKENLESS_NPMRC:-}"
+          test -f "$TOKENLESS_NPMRC"
+          test ! -e npm/.npmrc
+          npm_require_official_registry "$REGISTRY_URL"
+          npm_require_official_registry "$(npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
+          npm_assert_tokenless_npmrc "$TOKENLESS_NPMRC" "$REGISTRY_URL"
           release_id="$(release_resolve_id public "$EXPECTED_RELEASE_ID")"
           test "$release_id" = "$EXPECTED_RELEASE_ID"
           node_major="$(node --version | cut -d. -f1 | tr -d v)"
           test "$node_major" = 22
-          npm install --global npm@11.6.2 --registry "$REGISTRY_URL"
+          npm --userconfig "$TOKENLESS_NPMRC" install --global npm@11.6.2 --registry "$REGISTRY_URL"
           test "$(npm --version)" = 11.6.2
-          test "$(npm config get registry)" = "$REGISTRY_URL"
+          npm_require_official_registry "$(npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
           mapfile -t package_info < <(node - "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
           const pkg = require('./npm/package.json');
@@ -2393,7 +2528,7 @@ jobs:
           mkdir "$pack_dir"
           (
             cd npm
-            npm pack --json --pack-destination "$pack_dir" > "$work_dir/pack.json"
+            npm --userconfig "$TOKENLESS_NPMRC" pack --json --pack-destination "$pack_dir" > "$work_dir/pack.json"
           )
           local_tarball="$(node - "$work_dir/pack.json" "$pack_dir" <<'NODE'
           const assert = require('node:assert/strict');
@@ -2409,7 +2544,7 @@ jobs:
           NODE
           )"
           encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
-          metadata_url="$REGISTRY_URL/$encoded_name/$VERSION"
+          metadata_url="$REGISTRY_URL$encoded_name/$VERSION"
           status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
           case "$status" in
             200)
@@ -2427,7 +2562,7 @@ jobs:
           if [ "$registry_state" = absent ]; then
             (
               cd npm
-              npm publish --access public --provenance --registry "$REGISTRY_URL"
+              env -u NODE_AUTH_TOKEN -u NPM_TOKEN -u NPM_AGENTSCOMMANDER npm --userconfig "$TOKENLESS_NPMRC" publish --access public --provenance --registry "$REGISTRY_URL"
             )
           fi
           for attempt in $(seq 1 30); do
@@ -2443,7 +2578,7 @@ jobs:
             sleep 2
           done
           test "$status" = 200
-          latest="$(npm view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
+          latest="$(npm --userconfig "$TOKENLESS_NPMRC" view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
           test "$latest" = "$VERSION"
           registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
@@ -2593,8 +2728,8 @@ jobs:
           normal_public_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$selected_asset"
           curl --fail --location --proto '=https' --tlsv1.2 "$normal_public_url" --output "$public_assets/normal-public-$selected_asset"
           cmp -- "$public_assets/$selected_asset" "$public_assets/normal-public-$selected_asset"
-          npm install --foreground-scripts --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
-          npm --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
+          npm --userconfig "$TOKENLESS_NPMRC" install --foreground-scripts --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
+          npm --userconfig "$TOKENLESS_NPMRC" --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
           version_output="$("$install_dir/node_modules/.bin/$binary_name" --version)"
           printf '%s\n' "$version_output" | grep -F "$VERSION"
           printf 'selected_public_release_asset=%s\n' "$selected_asset"
