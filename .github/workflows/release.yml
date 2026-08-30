@@ -964,6 +964,9 @@ jobs:
           PRODUCER: ${{ matrix.producer }}
           RAW_SOURCE: ${{ matrix.raw_source }}
           TARGET_DIR: ${{ matrix.target_dir }}
+          DRAFT_ID: ${{ steps.release.outputs.release_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           ledger_asset() {
@@ -1031,16 +1034,23 @@ jobs:
               exit 1
               ;;
           esac
-          node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$asset_dir" "$manifest_path" "$TAG" <<'NODE'
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$asset_dir" "$manifest_path" "$TAG" "$DRAFT_ID" "$RUN_ID" "$RUN_ATTEMPT" <<'NODE'
           const assert = require('node:assert/strict');
           const crypto = require('node:crypto');
           const fs = require('node:fs');
           const path = require('node:path');
-          const [ledgerPath, producer, assetDir, manifestPath, tag] = process.argv.slice(2);
+          const [ledgerPath, producer, assetDir, manifestPath, tag, draftIdText, runId, runAttemptText] = process.argv.slice(2);
           const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
           const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
             && name !== '.' && name !== '..';
           const expected = ledger.assets.filter((asset) => asset.producer === producer);
+          assert.match(draftIdText, /^[1-9][0-9]*$/, 'draft release ID');
+          assert.match(runId, /^[1-9][0-9]*$/, 'workflow run ID');
+          assert.match(runAttemptText, /^[1-9][0-9]*$/, 'workflow run attempt');
+          const draftId = Number(draftIdText);
+          const runAttempt = Number(runAttemptText);
+          assert.ok(Number.isSafeInteger(draftId), 'safe draft release ID');
+          assert.ok(Number.isSafeInteger(runAttempt), 'safe workflow run attempt');
           assert.ok(expected.length > 0, 'producer must own candidate assets');
           assert.equal(new Set(expected.map((asset) => asset.name)).size, expected.length, 'duplicate producer ledger asset');
           for (const asset of expected) {
@@ -1060,21 +1070,15 @@ jobs:
             schema: 'agentscommander/release-producer-manifest/v1',
             tag,
             producer,
+            draftId,
+            runId,
+            runAttempt,
             assetCount: assets.length,
             assets,
           }, null, 2) + '\n', { encoding: 'utf8', mode: 0o644 });
           NODE
           printf 'PRODUCER_ASSET_DIR=%s\n' "$asset_dir" >> "$GITHUB_ENV"
           printf 'PRODUCER_MANIFEST=%s\n' "$manifest_path" >> "$GITHUB_ENV"
-
-      - name: Upload the closed producer manifest for internal verification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: producer-manifest-${{ matrix.producer }}
-          path: ${{ runner.temp }}/producer-manifest-${{ matrix.producer }}.json
-          if-no-files-found: error
-          retention-days: 1
-          overwrite: false
 
       - name: Upload exact platform artifacts by the coordinator numeric release ID
         shell: bash
@@ -1105,12 +1109,22 @@ jobs:
             release_upload_exact_asset "$PRODUCER_ASSET_DIR/$asset_name"
           done
 
+      - name: Upload the closed successful producer manifest for internal verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: producer-manifest-${{ matrix.producer }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/producer-manifest-${{ matrix.producer }}.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
+
   checksums:
     name: checksums
     needs: [guard, release-coordinator, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -1189,12 +1203,195 @@ jobs:
           assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
           NODE
 
-      - name: Download the closed producer manifests from internal workflow storage
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: producer-manifest-*
-          path: ${{ runner.temp }}/producer-manifests
-          merge-multiple: true
+      - name: Resolve exact-run producer manifests across workflow attempts
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-coordinator.outputs.release_id }}
+          PRODUCER_MANIFEST_DIR: ${{ runner.temp }}/producer-manifests
+          RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          printf '%s' "$RUN_ID" | grep -Eq '^[1-9][0-9]*$'
+          printf '%s' "$EXPECTED_RELEASE_ID" | grep -Eq '^[1-9][0-9]*$'
+          work_dir="$(mktemp -d)"
+          mkdir "$PRODUCER_MANIFEST_DIR"
+          gh api --method GET -H 'Accept: application/vnd.github+json' --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" > "$work_dir/artifact-pages.json"
+          node - "$work_dir/artifact-pages.json" "$RUN_ID" "$work_dir/selection.json" <<'NODE'
+          // manifest-recovery-selection-v1
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+
+          const [pagesPath, runId, selectionPath] = process.argv.slice(2);
+          assert.match(runId, /^[1-9][0-9]*$/, 'workflow run ID');
+          const pages = JSON.parse(fs.readFileSync(pagesPath, 'utf8'));
+          assert.ok(Array.isArray(pages) && pages.length > 0, 'artifact API pages');
+          const producers = ['windows', 'linux-x86_64', 'macos-aarch64', 'macos-x86_64'];
+          const producerSet = new Set(producers);
+          const namePattern = /^producer-manifest-(windows|linux-x86_64|macos-aarch64|macos-x86_64)-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$/;
+          const byProducer = new Map(producers.map((producer) => [producer, []]));
+          const seenIds = new Set();
+          for (const page of pages) {
+            assert.ok(page && typeof page === 'object' && Array.isArray(page.artifacts), 'artifact API page');
+            for (const artifact of page.artifacts) {
+              if (!artifact || typeof artifact.name !== 'string' || !artifact.name.startsWith('producer-manifest-')) continue;
+              const match = namePattern.exec(artifact.name);
+              assert.ok(match, 'malformed producer manifest artifact name');
+              const [, producer, artifactRunId, attemptText] = match;
+              assert.ok(producerSet.has(producer), 'producer artifact owner');
+              assert.equal(artifactRunId, runId, 'artifact name run ID');
+              assert.equal(String(artifact.workflow_run && artifact.workflow_run.id), runId, 'artifact workflow run ID');
+              assert.equal(artifact.expired, false, 'producer manifest artifact expired');
+              assert.ok(Number.isSafeInteger(artifact.id) && artifact.id > 0, 'producer manifest artifact ID');
+              assert.equal(seenIds.has(artifact.id), false, 'duplicate artifact API ID');
+              seenIds.add(artifact.id);
+              assert.ok(Number.isSafeInteger(artifact.size_in_bytes) && artifact.size_in_bytes > 0, 'producer manifest artifact size');
+              assert.match(artifact.digest, /^sha256:[0-9a-f]{64}$/, 'producer manifest artifact digest');
+              const attempt = Number(attemptText);
+              assert.ok(Number.isSafeInteger(attempt) && attempt > 0, 'producer manifest attempt');
+              byProducer.get(producer).push({
+                artifactId: artifact.id,
+                digest: artifact.digest,
+                producer,
+                attempt,
+                name: artifact.name,
+                size: artifact.size_in_bytes,
+              });
+            }
+          }
+          const records = producers.map((producer) => {
+            const candidates = byProducer.get(producer);
+            assert.ok(candidates.length > 0, 'missing producer manifest artifact ' + producer);
+            const latestAttempt = Math.max(...candidates.map((candidate) => candidate.attempt));
+            const latest = candidates.filter((candidate) => candidate.attempt === latestAttempt);
+            assert.equal(latest.length, 1, 'duplicate latest producer manifest artifact ' + producer);
+            return latest[0];
+          });
+          assert.equal(new Set(records.map((record) => record.artifactId)).size, producers.length, 'closed selected artifact IDs');
+          fs.writeFileSync(selectionPath, JSON.stringify({
+            schema: 'agentscommander/release-producer-manifest-selection/v1',
+            runId,
+            records,
+          }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+          NODE
+          selection_tsv="$work_dir/selection.tsv"
+          node - "$work_dir/selection.json" "$selection_tsv" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const [selectionPath, outputPath] = process.argv.slice(2);
+          const selection = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+          assert.equal(selection.schema, 'agentscommander/release-producer-manifest-selection/v1');
+          assert.match(selection.runId, /^[1-9][0-9]*$/);
+          assert.ok(Array.isArray(selection.records) && selection.records.length === 4, 'selected producer manifest count');
+          const rows = [];
+          for (const record of selection.records) {
+            assert.ok(Number.isSafeInteger(record.artifactId) && record.artifactId > 0, 'selected artifact ID');
+            assert.match(record.digest, /^sha256:[0-9a-f]{64}$/, 'selected artifact digest');
+            assert.match(record.producer, /^(windows|linux-x86_64|macos-aarch64|macos-x86_64)$/, 'selected producer');
+            assert.ok(Number.isSafeInteger(record.attempt) && record.attempt > 0, 'selected artifact attempt');
+            rows.push([record.artifactId, record.digest, record.producer, record.attempt].join('\t'));
+          }
+          fs.writeFileSync(outputPath, rows.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+          NODE
+          while IFS=$'\t' read -r artifact_id artifact_digest producer attempt; do
+            test -n "$artifact_id"
+            metadata="$work_dir/artifact-$artifact_id.json"
+            gh api --method GET -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" > "$metadata"
+            node - "$metadata" "$artifact_id" "$artifact_digest" "$RUN_ID" "$producer" "$attempt" <<'NODE'
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const [metadataPath, artifactIdText, digest, runId, producer, attemptText] = process.argv.slice(2);
+            const artifact = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+            assert.equal(artifact.id, Number(artifactIdText), 'resolved producer manifest artifact ID');
+            assert.equal(artifact.name, `producer-manifest-${producer}-run-${runId}-attempt-${attemptText}`, 'resolved producer manifest artifact name');
+            assert.equal(String(artifact.workflow_run && artifact.workflow_run.id), runId, 'resolved producer manifest workflow run ID');
+            assert.equal(artifact.expired, false, 'resolved producer manifest artifact expired');
+            assert.equal(artifact.digest, digest, 'resolved producer manifest artifact digest');
+            assert.ok(Number.isSafeInteger(artifact.size_in_bytes) && artifact.size_in_bytes > 0, 'resolved producer manifest artifact size');
+          NODE
+            archive="$work_dir/artifact-$artifact_id.zip"
+            gh api --method GET -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
+            test "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" = "$artifact_digest"
+            unzip -tqq "$archive"
+            mapfile -t archive_names < <(unzip -Z1 "$archive")
+            manifest_name="producer-manifest-$producer.json"
+            test "${#archive_names[@]}" = 1
+            test "${archive_names[0]}" = "$manifest_name"
+            unzip -p "$archive" "$manifest_name" > "$PRODUCER_MANIFEST_DIR/$manifest_name"
+            test -s "$PRODUCER_MANIFEST_DIR/$manifest_name"
+          done < "$selection_tsv"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/selection.json" "$PRODUCER_MANIFEST_DIR" "$TAG" "$EXPECTED_RELEASE_ID" "$RUN_ID" <<'NODE'
+          // manifest-recovery-validation-v1
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const [ledgerPath, selectionPath, manifestsDir, tag, draftIdText, runId] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const selection = JSON.parse(fs.readFileSync(selectionPath, 'utf8'));
+          const sorted = (items) => [...items].sort();
+          assert.match(draftIdText, /^[1-9][0-9]*$/, 'draft release ID');
+          const draftId = Number(draftIdText);
+          assert.ok(Number.isSafeInteger(draftId), 'safe draft release ID');
+          assert.equal(selection.schema, 'agentscommander/release-producer-manifest-selection/v1');
+          assert.equal(selection.runId, runId, 'selected workflow run ID');
+          assert.ok(Array.isArray(selection.records) && selection.records.length === 4, 'selected producer manifest count');
+          const producerAssets = ledger.assets.filter((asset) => asset.producer !== 'checksums');
+          const producers = ['windows', 'linux-x86_64', 'macos-aarch64', 'macos-x86_64'];
+          assert.deepEqual(sorted([...new Set(producerAssets.map((asset) => asset.producer))]), sorted(producers), 'closed producer matrix');
+          const selectedByProducer = new Map();
+          for (const record of selection.records) {
+            assert.deepEqual(Object.keys(record).sort(), ['artifactId', 'attempt', 'digest', 'name', 'producer', 'size'], 'closed selected artifact record');
+            assert.ok(Number.isSafeInteger(record.artifactId) && record.artifactId > 0, 'selected artifact ID');
+            assert.match(record.digest, /^sha256:[0-9a-f]{64}$/, 'selected artifact digest');
+            assert.ok(Number.isSafeInteger(record.size) && record.size > 0, 'selected artifact size');
+            assert.match(record.producer, /^(windows|linux-x86_64|macos-aarch64|macos-x86_64)$/, 'selected producer');
+            assert.ok(Number.isSafeInteger(record.attempt) && record.attempt > 0, 'selected artifact attempt');
+            assert.equal(record.name, `producer-manifest-${record.producer}-run-${runId}-attempt-${record.attempt}`, 'selected artifact name');
+            assert.equal(selectedByProducer.has(record.producer), false, 'duplicate selected producer');
+            selectedByProducer.set(record.producer, record);
+          }
+          assert.deepEqual(sorted([...selectedByProducer.keys()]), sorted(producers), 'complete selected producer set');
+          assert.ok(fs.statSync(manifestsDir).isDirectory(), 'producer manifest directory');
+          assert.deepEqual(
+            sorted(fs.readdirSync(manifestsDir)),
+            sorted(producers.map((producer) => `producer-manifest-${producer}.json`)),
+            'complete closed producer manifest files',
+          );
+          const seenAssets = new Set();
+          for (const producer of producers) {
+            const manifest = JSON.parse(fs.readFileSync(path.join(manifestsDir, `producer-manifest-${producer}.json`), 'utf8'));
+            assert.deepEqual(Object.keys(manifest).sort(), ['assetCount', 'assets', 'draftId', 'producer', 'runAttempt', 'runId', 'schema', 'tag'], 'closed producer manifest record');
+            assert.equal(manifest.schema, 'agentscommander/release-producer-manifest/v1');
+            assert.equal(manifest.tag, tag, 'producer manifest tag');
+            assert.equal(manifest.tag, ledger.tag, 'ledger producer manifest tag');
+            assert.equal(manifest.producer, producer, 'producer manifest identity');
+            assert.equal(manifest.draftId, draftId, 'producer manifest draft release ID');
+            assert.equal(manifest.runId, runId, 'producer manifest workflow run ID');
+            assert.equal(manifest.runAttempt, selectedByProducer.get(producer).attempt, 'producer manifest selected workflow attempt');
+            assert.ok(Array.isArray(manifest.assets), 'producer manifest assets');
+            assert.equal(manifest.assetCount, manifest.assets.length, 'producer manifest count');
+            const expected = producerAssets.filter((asset) => asset.producer === producer);
+            assert.deepEqual(sorted(manifest.assets.map((asset) => asset.name)), sorted(expected.map((asset) => asset.name)), 'closed producer manifest names');
+            const names = new Set();
+            for (const asset of manifest.assets) {
+              assert.deepEqual(Object.keys(asset).sort(), ['name', 'sha256', 'size'], 'closed producer manifest asset record');
+              assert.equal(names.has(asset.name), false, 'duplicate producer manifest asset');
+              names.add(asset.name);
+              assert.equal(seenAssets.has(asset.name), false, 'duplicate asset across producer manifests');
+              seenAssets.add(asset.name);
+              assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0, 'producer manifest size');
+              assert.match(asset.sha256, /^[0-9a-f]{64}$/, 'producer manifest digest');
+            }
+          }
+          assert.deepEqual(sorted([...seenAssets]), sorted(producerAssets.map((asset) => asset.name)), 'closed producer manifest asset names');
+          NODE
 
       - name: Verify closed producer manifests against the guarded draft assets
         shell: bash
