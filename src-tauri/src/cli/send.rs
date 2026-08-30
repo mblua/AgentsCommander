@@ -88,6 +88,13 @@ pub struct SendArgs {
     #[arg(long, default_value = "auto")]
     pub agent: String,
 
+    /// Profile slot letter A-Z applied to the coding agent the wake spawns or
+    /// respawns. A disabled or missing letter walks down to the nearest enabled
+    /// cell and the receipt reports `fallbackApplied`. Never writes the replica's
+    /// tooling.profile/currentCodingAgent/lastCodingAgent. Not usable with PTY input.
+    #[arg(long, conflicts_with_all = ["pty_input", "pty_input_stdin"])]
+    pub profile: Option<String>,
+
     /// Timeout in seconds for the --get-output response wait (the
     /// delivery-confirmation wait is bounded separately by --confirm-timeout)
     #[arg(long, default_value = "300")]
@@ -620,6 +627,11 @@ fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
         request_id: None,
         sender_agent: None,
         preferred_agent: String::new(),
+        requested_profile: None,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
         priority: "normal".to_string(),
         timestamp: issued_at.clone(),
         command: None,
@@ -785,6 +797,27 @@ fn reason_code_for_cli(code: crate::phone::types::PtyInputReasonCode) -> &'stati
         C::RedundantEnterFailed => "redundant_enter_failed",
         C::BoundaryMetadataFailed => "boundary_metadata_failed",
         C::ArtifactUnclaimed => "artifact_unclaimed",
+    }
+}
+
+/// #1638: `Queued:` receipt line. The message id remains the first token in
+/// both shapes (scripts that parse `Queued: <id>` keep working). Requested
+/// (not effective) values are printed here — effective values are only
+/// knowable at delivery time and are printed by the `Delivered:` line in
+/// phase 1635-2.
+fn queued_receipt_line(
+    msg_id: &str,
+    agent_for_ack: &str,
+    requested_profile: &Option<String>,
+) -> String {
+    if agent_for_ack != "auto" || requested_profile.is_some() {
+        let mut extra = format!("agent={}", agent_for_ack);
+        if let Some(letter) = requested_profile.as_deref() {
+            extra.push_str(&format!(", profile={}", letter));
+        }
+        format!("Queued: {} ({})", msg_id, extra)
+    } else {
+        format!("Queued: {}", msg_id)
     }
 }
 
@@ -1046,9 +1079,26 @@ pub fn execute(args: SendArgs) -> i32 {
 
     let mode_for_ack = args.mode.clone();
     let to_for_ack = resolved_to.clone();
+    // #1638: clone the agent id for the enqueue receipt before the message
+    // literal moves `args.agent` (precedent: `mode_for_ack` above).
+    let agent_for_ack = args.agent.clone();
     // Resolve before `args` fields move into OutboxMessage below; the whole-struct
     // borrow would be rejected after the partial moves.
     let confirm_timeout = confirm_timeout_from_args(&args);
+
+    let requested_profile = match args.profile.as_deref() {
+        None => None,
+        Some(raw) => match crate::config::settings::normalize_profile_letter(raw) {
+            Some(letter) => Some(letter),
+            None => {
+                eprintln!("Error: --profile must be a single letter A through Z");
+                return 1;
+            }
+        },
+    };
+    // #1638: clone for the receipt line — the message literal below moves
+    // `requested_profile` into the outbox message.
+    let requested_profile_for_ack = requested_profile.clone();
 
     let message = OutboxMessage {
         id: msg_id.clone(),
@@ -1061,6 +1111,11 @@ pub fn execute(args: SendArgs) -> i32 {
         request_id: request_id.clone(),
         sender_agent: None,
         preferred_agent: args.agent,
+        requested_profile,
+        effective_agent_id: None,
+        effective_profile: None,
+        profile_fallback_applied: false,
+        dispatch_not_applied: None,
         priority: "normal".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         command: args.command,
@@ -1112,7 +1167,10 @@ pub fn execute(args: SendArgs) -> i32 {
     // #1596: enqueue receipt on stdout — the only observable signal when the
     // caller cannot see the GUI-subsystem binary's exit code (PowerShell
     // direct capture). A missing `Queued:` line means NOT enqueued.
-    crate::cli_println!("Queued: {msg_id}");
+    crate::cli_println!(
+        "{}",
+        queued_receipt_line(&msg_id, &agent_for_ack, &requested_profile_for_ack)
+    );
     log::info!(
         "[send] queued message {} to '{}' in {}",
         msg_id,
@@ -1767,5 +1825,224 @@ mod tests {
         );
         // The two timeout flags must be distinguished from each other.
         assert!(help.contains("--get-output response wait"), "{help}");
+    }
+
+    // ── #1638 --profile: parse, validation, outbox JSON, receipt ──
+
+    /// Watch the outbox dir for the queued message file and fabricate the
+    /// `delivered/` artifact so `execute`'s confirmation wait resolves fast.
+    fn confirm_delivery_watcher(outbox: std::path::PathBuf) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                if let Ok(entries) = std::fs::read_dir(&outbox) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                            let id = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let delivered = outbox.join("delivered");
+                            let _ = std::fs::create_dir_all(&delivered);
+                            let _ = std::fs::write(delivered.join(format!("{}.json", id)), "{}");
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })
+    }
+
+    /// Run `execute` end-to-end against the verified-coordinator fixture with
+    /// the message file in place and a dedicated outbox dir. Returns
+    /// `(exit code, fixture tempdir, outbox tempdir)`.
+    fn enqueue_send_fixture(extra: &[&str]) -> (i32, tempfile::TempDir, tempfile::TempDir) {
+        use clap::Parser;
+        let (temp, _paths) = make_verified_coordinator_fixture();
+        let wg_root = temp.path().join("proj-a").join(".ac").join("wg-1-dev-team");
+        let messaging = wg_root.join("messaging");
+        std::fs::create_dir_all(&messaging).unwrap();
+        std::fs::write(
+            messaging.join("20260704-000000-wg1-a-to-wg1-b-x.md"),
+            "# Hello from fixture\n\nBody.",
+        )
+        .unwrap();
+        let outbox = tempfile::TempDir::new().unwrap();
+        let agent_root = wg_root.join("__agent_dev-rust");
+        let mut argv = vec![
+            "agentscommander",
+            "send",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--to",
+            "proj-a:wg-1-dev-team/dev-rust",
+            "--send",
+            "20260704-000000-wg1-a-to-wg1-b-x.md",
+            "--root",
+            agent_root.to_str().unwrap(),
+            "--outbox",
+            outbox.path().to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        let parsed = crate::cli::Cli::try_parse_from(argv).expect("clap should accept send args");
+        let args = match parsed.command.expect("subcommand present") {
+            crate::cli::Commands::Send(args) => args,
+            _ => panic!("expected Send subcommand"),
+        };
+        let watcher = confirm_delivery_watcher(outbox.path().to_path_buf());
+        let code = execute(args);
+        let _ = watcher.join();
+        (code, temp, outbox)
+    }
+
+    fn outbox_json(outbox: &tempfile::TempDir) -> serde_json::Value {
+        let entries: Vec<_> = std::fs::read_dir(outbox.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        assert_eq!(entries.len(), 1, "expected exactly one outbox message file");
+        serde_json::from_str(&std::fs::read_to_string(entries[0].path()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn send_args_profile_flag_accepts_a_single_letter_and_normalizes_case() {
+        let args = parse_send_args(&["--profile", "c"]);
+        assert_eq!(args.profile.as_deref(), Some("c"));
+
+        // execute-time validation normalizes to uppercase: the outbox JSON
+        // carries `requestedProfile` = "C".
+        let (code, _temp, outbox) = enqueue_send_fixture(&["--profile", "c"]);
+        assert_eq!(code, 0, "enqueue path must succeed");
+        let json = outbox_json(&outbox);
+        assert_eq!(json["requestedProfile"], "C");
+    }
+
+    #[test]
+    fn send_rejects_invalid_profile_letter_before_enqueue() {
+        use clap::Parser;
+        for bad in ["3", "AB", ""] {
+            // Build the fixture argv for the bad value. clap may reject the
+            // empty string at parse time (still exit 1 pre-enqueue); otherwise
+            // execute must reject it before writing anything.
+            let (temp, _paths) = make_verified_coordinator_fixture();
+            let wg_root = temp.path().join("proj-a").join(".ac").join("wg-1-dev-team");
+            let messaging = wg_root.join("messaging");
+            std::fs::create_dir_all(&messaging).unwrap();
+            std::fs::write(
+                messaging.join("20260704-000000-wg1-a-to-wg1-b-x.md"),
+                "body",
+            )
+            .unwrap();
+            let outbox = tempfile::TempDir::new().unwrap();
+            let agent_root = wg_root.join("__agent_dev-rust");
+            let argv = vec![
+                "agentscommander",
+                "send",
+                "--token",
+                "11111111-1111-1111-1111-111111111111",
+                "--to",
+                "proj-a:wg-1-dev-team/dev-rust",
+                "--send",
+                "20260704-000000-wg1-a-to-wg1-b-x.md",
+                "--root",
+                agent_root.to_str().unwrap(),
+                "--outbox",
+                outbox.path().to_str().unwrap(),
+                "--profile",
+                bad,
+            ];
+            let code = match crate::cli::Cli::try_parse_from(argv) {
+                Ok(parsed) => match parsed.command.expect("subcommand present") {
+                    crate::cli::Commands::Send(args) => execute(args),
+                    _ => panic!("expected Send subcommand"),
+                },
+                Err(_) => 1, // clap-level rejection: exit non-zero, nothing written
+            };
+            assert_eq!(code, 1, "--profile {bad:?} must exit 1");
+            assert_eq!(
+                std::fs::read_dir(outbox.path()).unwrap().count(),
+                0,
+                "--profile {bad:?} must not write any outbox file"
+            );
+        }
+    }
+
+    #[test]
+    fn send_profile_conflicts_with_pty_input() {
+        assert!(try_parse_payload_args(&["--profile", "C", "--pty-input", "x"]).is_err());
+        assert!(try_parse_payload_args(&["--profile", "C", "--pty-input-stdin"]).is_err());
+        // clap rejects before execute: no outbox file can be written.
+    }
+
+    #[test]
+    fn send_without_flags_writes_no_requested_profile_key() {
+        let (code, _temp, outbox) = enqueue_send_fixture(&[]);
+        assert_eq!(code, 0, "enqueue path must succeed");
+        let json = outbox_json(&outbox);
+        let object = json.as_object().unwrap();
+        assert!(
+            !object.contains_key("requestedProfile"),
+            "no-flag send must not write requestedProfile"
+        );
+        assert_eq!(json["preferredAgent"], "auto");
+        // Round-2 Block C: none of the four annotation keys may appear either —
+        // the no-flag outbox JSON is byte-identical to today.
+        for key in [
+            "effectiveAgentId",
+            "effectiveProfile",
+            "profileFallbackApplied",
+            "dispatchNotApplied",
+        ] {
+            assert!(
+                !object.contains_key(key),
+                "{key} must be absent without flags"
+            );
+        }
+    }
+
+    #[test]
+    fn send_with_agent_and_profile_writes_requested_profile_field() {
+        let (code, _temp, outbox) = enqueue_send_fixture(&["--agent", "codex", "--profile", "C"]);
+        assert_eq!(code, 0, "enqueue path must succeed");
+        let json = outbox_json(&outbox);
+        assert_eq!(json["requestedProfile"], "C");
+        assert_eq!(json["preferredAgent"], "codex");
+        for key in [
+            "effectiveAgentId",
+            "effectiveProfile",
+            "profileFallbackApplied",
+            "dispatchNotApplied",
+        ] {
+            assert!(
+                !json.as_object().unwrap().contains_key(key),
+                "{key} must stay absent at enqueue time"
+            );
+        }
+    }
+
+    #[test]
+    fn queued_receipt_prints_requested_agent_and_profile_when_flags_present() {
+        // Flag case: agent + profile.
+        assert_eq!(
+            queued_receipt_line("m-1", "codex", &Some("C".to_string())),
+            "Queued: m-1 (agent=codex, profile=C)"
+        );
+        // Flag case: profile only — agent stays `auto` on the wire but is
+        // still echoed for symmetry with the Delivered: line.
+        assert_eq!(
+            queued_receipt_line("m-1", "auto", &Some("C".to_string())),
+            "Queued: m-1 (agent=auto, profile=C)"
+        );
+        // No-flag case: exact legacy shape, message id first token.
+        assert_eq!(queued_receipt_line("m-1", "auto", &None), "Queued: m-1");
+        // Agent-only case (pre-existing --agent semantics) keeps its shape.
+        assert_eq!(
+            queued_receipt_line("m-1", "codex", &None),
+            "Queued: m-1 (agent=codex)"
+        );
     }
 }
