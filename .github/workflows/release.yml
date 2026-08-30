@@ -1,21 +1,5 @@
 name: Release
 
-# One paved path from a tag to production:
-#
-#   git tag vX.Y.Z && git push origin vX.Y.Z
-#
-# ...produces a published GitHub Release with every platform asset and a
-# matching @mblua/agentscommander@X.Y.Z on the public npm registry.
-#
-# Job order is load-bearing. npm/install.js resolves its binaries from
-#   https://github.com/<repo>/releases/download/vX.Y.Z/<asset>
-# and that URL 404s while the release is still a draft, so npm must not be
-# published until publish-github has flipped the release out of draft.
-#
-# This workflow is deliberately version-agnostic. Never pin it to a single
-# tag; a release pipeline that only knows how to ship one version is not a
-# release pipeline.
-
 on:
   push:
     tags:
@@ -29,423 +13,1431 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ---------------------------------------------------------------------
-  # Fail before spending 40 minutes of matrix build time on a bad tag.
-  # ---------------------------------------------------------------------
   guard:
     name: guard
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      version: ${{ steps.check.outputs.version }}
+      version: ${{ steps.tag.outputs.version }}
+      tag_object: ${{ steps.tag.outputs.tag_object }}
+      peeled_commit: ${{ steps.tag.outputs.peeled_commit }}
+      release_dir: ${{ steps.authority.outputs.release_dir }}
+      authority_sha256: ${{ steps.authority.outputs.authority_sha256 }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
 
-      - name: Tag must match every version location in the tree
-        id: check
+      - name: Bind the event to one annotated remote tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
+          {
+            echo "version=${TAG#v}"
+            echo "tag_object=$TAG_OBJECT"
+            echo "peeled_commit=$PEELED_COMMIT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify strict authority and exact evidence bytes
+        id: authority
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          node - "$TAG" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-          version="${TAG#v}"
+          const tag = process.argv[2];
+          const version = tag.slice(1);
+          const releaseDir = path.join('docs', 'releases', tag);
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const read = (name) => fs.readFileSync(path.join(releaseDir, name));
+          const requireLfText = (name, bytes) => {
+            assert.ok(bytes.length > 1, name + ' is empty');
+            assert.equal(bytes.includes(0x0d), false, name + ' contains CR');
+            assert.equal(bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), false, name + ' has a BOM');
+            assert.equal(bytes.at(-1), 0x0a, name + ' lacks its final LF');
+            assert.notEqual(bytes.at(-2), 0x0a, name + ' has more than one final LF');
+          };
+          const evidenceNames = [
+            'CHANGELOG.release.md',
+            'candidate-assets.v1.json',
+            'input-manifest.v1.json',
+            'predecessor-assets.v1.json',
+            'release-authority-v1.txt',
+            'release-body.md',
+            'release-plan.md',
+            'SHA256SUMS',
+          ];
+          assert.deepEqual(fs.readdirSync(releaseDir).sort(), [...evidenceNames].sort(), 'release directory members');
+          for (const name of evidenceNames) requireLfText(name, read(name));
 
-          # Every version location (package.json, package-lock.json, Cargo.toml,
-          # Cargo.lock, tauri.conf.json, npm/package.json, npm/install.js) must
-          # already agree with each other.
-          npm run version:check
+          const sumNames = evidenceNames.filter((name) => name !== 'SHA256SUMS');
+          const checksumLines = read('SHA256SUMS').toString('utf8').trimEnd().split('\n');
+          assert.equal(checksumLines.length, sumNames.length, 'SHA256SUMS count');
+          const checksums = new Map();
+          for (const line of checksumLines) {
+            const match = /^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$/.exec(line);
+            assert.ok(match, 'invalid SHA256SUMS record');
+            assert.ok(sumNames.includes(match[2]), 'unexpected SHA256SUMS member');
+            assert.equal(checksums.has(match[2]), false, 'duplicate SHA256SUMS member');
+            checksums.set(match[2], match[1]);
+          }
+          assert.deepEqual([...checksums.keys()], sumNames, 'SHA256SUMS order');
+          for (const name of sumNames) assert.equal(sha256(read(name)), checksums.get(name), name + ' digest');
 
-          manifest="$(node -p "require('./package.json').version")"
-          npm_manifest="$(node -p "require('./npm/package.json').version")"
+          const manifestBytes = read('input-manifest.v1.json');
+          const manifest = JSON.parse(manifestBytes.toString('utf8'));
+          assert.equal(manifest.schema, 'prepare-agentscommander-release/input-manifest/v1');
+          assert.equal(manifest.inputs.candidateTag, tag);
+          assert.equal(manifest.inputs.candidateVersion, version);
+          assert.equal(manifest.inputs.repository, process.env.GITHUB_REPOSITORY);
+          const releaseDirectory = path.posix.join('docs', 'releases', tag);
+          const exactPaths = evidenceNames.map((name) => path.posix.join(releaseDirectory, name));
+          assert.deepEqual(manifest.contracts.evidenceAvailability.directory, releaseDirectory);
+          assert.deepEqual(manifest.contracts.evidenceAvailability.exactPaths, exactPaths);
+          const parts = version.split('.');
+          const canonicalPlanPath = 'plans/' + manifest.inputs.releaseIssueNumber + '-v' + parts.join('') + '-release-hardening.md';
+          assert.deepEqual(
+            manifest.contracts.evidenceAvailability.hardeningAllowlist,
+            ['.github/workflows/release.yml', ...exactPaths, canonicalPlanPath],
+          );
+          assert.ok(fs.statSync(canonicalPlanPath).isFile(), 'canonical plan missing');
 
-          if [ "$manifest" != "$version" ]; then
-            echo "::error::tag $TAG does not match package.json version $manifest."
-            echo "::error::Run 'npm run version:bump -- $version', merge, then retag."
-            exit 1
-          fi
-          if [ "$npm_manifest" != "$version" ]; then
-            echo "::error::npm/package.json is at $npm_manifest but the tag is $TAG."
-            exit 1
-          fi
+          const contract = manifest.contracts.reviewSet;
+          const reviewNames = [
+            'CHANGELOG.release.md',
+            'candidate-assets.v1.json',
+            'input-manifest.v1.json',
+            'predecessor-assets.v1.json',
+            'release-body.md',
+            'release-plan.md',
+          ];
+          assert.equal(contract.schema, 'prepare-agentscommander-release/review-set/v1');
+          assert.deepEqual(contract.fileOrder, reviewNames);
+          assert.deepEqual(contract.fileDigest, { algorithm: 'sha256', encoding: 'lowercase-hex-ascii-64' });
+          assert.deepEqual(contract.recordSerialization, {
+            construction: 'file-digest-ascii || separator || filename-utf8 || terminator',
+            filenameEncoding: 'utf-8',
+            interRecordBytes: 'none-beyond-each-record-terminator',
+            lengthPrefix: 'none',
+            postamble: 'none',
+            preamble: 'none',
+            separatorHex: '2020',
+            terminatorHex: '0a',
+          });
+          const records = Buffer.concat(reviewNames.map((name) => Buffer.from(sha256(read(name)) + '  ' + name + '\n', 'utf8')));
+          const reviewSet = sha256(records);
 
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing $version from $TAG"
+          const vector = contract.positiveVector;
+          const vectorRecords = Buffer.concat(vector.fileOrder.map((name, index) => {
+            const entry = vector.files[index];
+            assert.equal(entry.name, name);
+            const bytes = Buffer.from(entry.contentBase64, 'base64');
+            assert.equal(sha256(bytes), entry.sha256);
+            return Buffer.from(entry.sha256 + '  ' + name + '\n', 'utf8');
+          }));
+          assert.equal(vectorRecords.toString('base64'), vector.serializedRecordsBase64);
+          assert.equal(sha256(vectorRecords), vector.reviewSetSha256);
 
-      - name: Version must not already exist on npm
+          const authorityBytes = read('release-authority-v1.txt');
+          const authorityLines = authorityBytes.toString('utf8').split('\n');
+          assert.equal(authorityLines.pop(), '', 'authority final LF');
+          assert.equal(authorityLines[0], 'release-authority-v1');
+          const authorityKeys = [
+            'approval-mode',
+            'asset-upload-mode',
+            'candidate-tag',
+            'candidate-version',
+            'changelog-source-sha256',
+            'input-manifest-sha256',
+            'planning-base',
+            'planning-base-parents',
+            'predecessor-peeled-commit',
+            'predecessor-tag',
+            'predecessor-tag-object',
+            'release-issue',
+            'repository',
+            'review-set-sha256',
+            'scope-source-sha256',
+            'tag-binding-mode',
+            'workflow-base-blob',
+          ];
+          assert.equal(authorityLines.length, authorityKeys.length + 1, 'authority field count');
+          const authority = {};
+          for (const [index, key] of authorityKeys.entries()) {
+            const line = authorityLines[index + 1];
+            const match = /^([a-z][a-z0-9-]*)=([^\r\n]+)$/.exec(line);
+            assert.ok(match, 'malformed authority line');
+            assert.equal(match[1], key, 'authority field order');
+            assert.equal(Object.hasOwn(authority, key), false, 'duplicate authority field');
+            authority[key] = match[2];
+          }
+          const evidence = manifest.evidence;
+          assert.equal(authority['approval-mode'], manifest.inputs.policy.reviewAuthority.mode);
+          assert.equal(authority['asset-upload-mode'], manifest.inputs.policy.assetUpload);
+          assert.equal(authority['candidate-tag'], tag);
+          assert.equal(authority['candidate-version'], version);
+          assert.equal(authority['changelog-source-sha256'], manifest.inputs.changelogSource.sha256);
+          assert.equal(authority['input-manifest-sha256'], sha256(manifestBytes));
+          assert.equal(authority['planning-base'], evidence.remoteMain.sha);
+          assert.equal(authority['planning-base-parents'], evidence.remoteMain.parents.join(','));
+          assert.equal(authority['predecessor-peeled-commit'], evidence.predecessor.peeledCommit);
+          assert.equal(authority['predecessor-tag'], evidence.predecessor.tag);
+          assert.equal(authority['predecessor-tag-object'], evidence.predecessor.tagObject);
+          assert.equal(authority['release-issue'], manifest.inputs.releaseIssue);
+          assert.equal(authority.repository, process.env.GITHUB_REPOSITORY);
+          assert.equal(authority['review-set-sha256'], reviewSet);
+          assert.equal(authority['scope-source-sha256'], manifest.inputs.scope.sha256);
+          assert.equal(authority['tag-binding-mode'], manifest.inputs.policy.tagBinding);
+          assert.equal(authority['workflow-base-blob'], evidence.workflow.blobSha);
+          assert.equal(manifest.contracts.permissions.assetUpload, 'job-local-contents-write');
+          assert.deepEqual(manifest.contracts.permissions.oidcJobs, ['publish-npm']);
+          assert.equal(manifest.contracts.releaseFlow.trigger, 'generic-normal-semver');
+          assert.equal(manifest.contracts.candidateState.workflowAndRerun, 'exact-existing-object-and-peeled-required');
+          assert.equal(manifest.contracts.candidateState.preTag, 'absence-required-and-unambiguous');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'release_dir=' + releaseDir + '\n');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'authority_sha256=' + sha256(authorityBytes) + '\n');
+          NODE
+
+      - name: Verify synchronized version surfaces
         shell: bash
         env:
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          # npm versions are immutable. Catch the collision now rather than
-          # after the GitHub Release is already published.
-          if npm view "@mblua/agentscommander@$VERSION" version >/dev/null 2>&1; then
-            echo "::error::@mblua/agentscommander@$VERSION is already published. Bump and retag."
+          npm run version:check
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          test "$(node -p "require('./npm/package.json').version")" = "$VERSION"
+
+      - name: Reject an existing npm version
+        shell: bash
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./npm/package.json').name")"
+          if npm view "$package_name@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$package_name@$VERSION is already present in the registry."
             exit 1
           fi
-          echo "@mblua/agentscommander@$VERSION is free."
 
-  # ---------------------------------------------------------------------
-  # Build every platform and upload into a DRAFT release.
-  # ---------------------------------------------------------------------
   build:
-    name: build (${{ matrix.platform }}${{ matrix.label && format(' {0}', matrix.label) || '' }})
+    name: build (${{ matrix.name }})
     needs: guard
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
+          - name: windows
+            runner: windows-latest
+            producer: windows
             args: '--config src-tauri/tauri.prod.conf.json --bundles nsis'
-          - platform: ubuntu-22.04
+            raw_source: target/release/agentscommander.exe
+            target_dir: target/release
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+            producer: linux-x86_64
             args: '--config src-tauri/tauri.prod.conf.json'
-          - platform: macos-latest
-            label: aarch64
+            raw_source: target/release/agentscommander
+            target_dir: target/release
+          - name: macos-aarch64
+            runner: macos-latest
+            producer: macos-aarch64
             args: '--config src-tauri/tauri.prod.conf.json --target aarch64-apple-darwin'
-          - platform: macos-latest
-            label: x86_64
+            raw_source: target/aarch64-apple-darwin/release/agentscommander
+            target_dir: target/aarch64-apple-darwin/release
+          - name: macos-x86_64
+            runner: macos-latest
+            producer: macos-x86_64
             args: '--config src-tauri/tauri.prod.conf.json --target x86_64-apple-darwin'
-
-    runs-on: ${{ matrix.platform }}
-
+            raw_source: target/x86_64-apple-darwin/release/agentscommander
+            target_dir: target/x86_64-apple-darwin/release
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
-      - name: Generate changelog
-        if: matrix.platform == 'windows-latest'
-        id: changelog
-        shell: bash
-        run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            FEATS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" | sed 's/^[a-f0-9]* /- /')
-            FIXES=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^fix" | sed 's/^[a-f0-9]* /- /')
-            DOCS=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^docs" | sed 's/^[a-f0-9]* /- /')
-            OTHER=$(git log ${PREV_TAG}..HEAD --oneline --no-merges --grep="^feat" --grep="^fix" --grep="^docs" --invert-grep | sed 's/^[a-f0-9]* /- /')
-            BODY=""
-            [ -n "$FEATS" ] && BODY="${BODY}### Features\n${FEATS}\n\n"
-            [ -n "$FIXES" ] && BODY="${BODY}### Fixes\n${FIXES}\n\n"
-            [ -n "$DOCS" ] && BODY="${BODY}### Docs\n${DOCS}\n\n"
-            [ -n "$OTHER" ] && BODY="${BODY}### Other\n${OTHER}\n\n"
-          else
-            BODY="Initial release"
-          fi
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Install dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Rebind the guarded annotated tag
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Create or verify the guarded draft release
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh release view "$TAG" --json id,tagName,isDraft --jq '[.id, .tagName, .isDraft] | @tsv' 2>/dev/null || true)"
+          if [ -z "$existing" ]; then
+            if ! gh release create "$TAG" --draft --title "Agents Commander $TAG" --notes-file "$RELEASE_DIR/release-body.md"; then
+              existing="$(gh release view "$TAG" --json id,tagName,isDraft --jq '[.id, .tagName, .isDraft] | @tsv')"
+            else
+              existing="$(gh release view "$TAG" --json id,tagName,isDraft --jq '[.id, .tagName, .isDraft] | @tsv')"
+            fi
+          fi
+          IFS=$'\t' read -r release_id release_tag release_draft <<< "$existing"
+          test -n "$release_id"
+          test "$release_tag" = "$TAG"
+          test "$release_draft" = true
+
+      - name: Install Ubuntu release dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          targets: ${{ startsWith(matrix.name, 'macos-') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Restore Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm install
+        shell: bash
+        run: npm ci
 
-      - name: Build and upload bundles
-        uses: tauri-apps/tauri-action@v0
+      - name: Build package artifacts into the guarded draft
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Agents Commander ${{ github.ref_name }}'
-          releaseBody: |
-            ${{ steps.changelog.outputs.body || 'See the assets below to download and install Agents Commander.' }}
-
-            ### Install from npm
-
-            ```
-            npx @mblua/agentscommander@${{ needs.guard.outputs.version }}
-            ```
-
-            ### Trust and privacy
-            - [Code signing policy](https://github.com/mblua/AgentsCommander/blob/main/CODE_SIGNING_POLICY.md) - Windows code signing is pending SignPath setup and approval; current Windows artifacts may be unsigned.
-            - [Privacy](https://github.com/mblua/AgentsCommander/blob/main/PRIVACY.md)
+          releaseName: Agents Commander ${{ github.ref_name }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
-      - name: Upload raw binaries consumed by the npm package
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload raw artifacts from the one platform build
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          PRODUCER: ${{ matrix.producer }}
+          RAW_SOURCE: ${{ matrix.raw_source }}
+          TARGET_DIR: ${{ matrix.target_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
-            node scripts/copy-testable-binary.mjs
-            cp target/release/agentscommander.exe agentscommander-windows-x86_64.exe
-            cp target/release/agentscommander_testeable.exe agentscommander-testeable-windows-x86_64.exe
-            gh release upload "$TAG" agentscommander-windows-x86_64.exe --clobber
-            gh release upload "$TAG" agentscommander-testeable-windows-x86_64.exe --clobber
-          elif [[ "${{ matrix.platform }}" == "ubuntu-22.04" ]]; then
-            cp target/release/agentscommander agentscommander-linux-x86_64
-            gh release upload "$TAG" agentscommander-linux-x86_64 --clobber
-          elif [[ "${{ matrix.args }}" == *aarch64* ]]; then
-            cp target/aarch64-apple-darwin/release/agentscommander agentscommander-mac-aarch64
-            gh release upload "$TAG" agentscommander-mac-aarch64 --clobber
-            APP_TAR=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
-            cp "$APP_TAR" agentscommander-mac-aarch64.app.tar.gz
-            gh release upload "$TAG" agentscommander-mac-aarch64.app.tar.gz --clobber
-          elif [[ "${{ matrix.args }}" == *x86_64* ]]; then
-            cp target/x86_64-apple-darwin/release/agentscommander agentscommander-mac-x86_64
-            gh release upload "$TAG" agentscommander-mac-x86_64 --clobber
-            APP_TAR=$(find target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n 1)
-            cp "$APP_TAR" agentscommander-mac-x86_64.app.tar.gz
-            gh release upload "$TAG" agentscommander-mac-x86_64.app.tar.gz --clobber
-          fi
+          upload_exact() {
+            local file="$1"
+            local name
+            local existing_id
+            local verify_dir
+            name="$(basename "$file")"
+            test -s "$file"
+            existing_id="$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$name\") | .id")"
+            if [ -z "$existing_id" ]; then
+              gh release upload "$TAG" "$file"
+              return
+            fi
+            test "$(printf '%s\n' "$existing_id" | wc -l | tr -d ' ')" = 1
+            verify_dir="$(mktemp -d)"
+            gh release download "$TAG" --pattern "$name" --dir "$verify_dir"
+            cmp -- "$file" "$verify_dir/$name"
+          }
+          ledger_asset() {
+            node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$1" <<'NODE'
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const [ledgerPath, producer, kind] = process.argv.slice(2);
+            const assets = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).assets;
+            const direct = assets.filter((asset) => asset.producer === producer && asset.name.startsWith('agentscommander-'));
+            let matches;
+            if (kind === 'raw') matches = direct.filter((asset) => !asset.name.includes('.'));
+            else if (kind === 'archive') matches = direct.filter((asset) => asset.name.endsWith('.app.tar.gz'));
+            else if (kind === 'portable') matches = assets.filter((asset) => asset.producer === producer && asset.name.endsWith('.zip'));
+            else if (kind === 'testable') matches = direct.filter((asset) => asset.name.includes('testeable') && asset.name.endsWith('.exe'));
+            else if (kind === 'normal-windows') matches = direct.filter((asset) => !asset.name.includes('testeable') && asset.name.endsWith('.exe'));
+            else throw new Error('unknown asset selector');
+            assert.equal(matches.length, 1, 'ambiguous ledger asset selector ' + kind);
+            process.stdout.write(matches[0].name);
+          NODE
+          }
+          case "$PRODUCER" in
+            windows)
+              node scripts/copy-testable-binary.mjs
+              normal_name="$(ledger_asset normal-windows)"
+              testable_name="$(ledger_asset testable)"
+              cp "$RAW_SOURCE" "$normal_name"
+              cp target/release/agentscommander_testeable.exe "$testable_name"
+              upload_exact "$normal_name"
+              upload_exact "$testable_name"
+              ;;
+            linux-x86_64)
+              raw_name="$(ledger_asset raw)"
+              cp "$RAW_SOURCE" "$raw_name"
+              upload_exact "$raw_name"
+              ;;
+            macos-aarch64|macos-x86_64)
+              raw_name="$(ledger_asset raw)"
+              archive_name="$(ledger_asset archive)"
+              mapfile -t app_archives < <(find "$TARGET_DIR/bundle/macos" -type f -name '*.app.tar.gz' -print)
+              test "${#app_archives[@]}" -eq 1
+              cp "$RAW_SOURCE" "$raw_name"
+              cp "${app_archives[0]}" "$archive_name"
+              upload_exact "$raw_name"
+              upload_exact "$archive_name"
+              ;;
+            *)
+              echo "::error::unknown producer $PRODUCER"
+              exit 1
+              ;;
+          esac
 
-      # The raw asset above is named for npm/install.js to resolve by URL, and
-      # that name is not runnable as-is: binary_suffix() splits the file stem on
-      # the first underscore, so agentscommander-windows-x86_64.exe comes up as
-      # instance "64" with a non-default config dir, mutex, and ports. The
-      # portable download therefore ships the same binary under its canonical
-      # name, with the files a standalone copy needs. See issue #1589.
-      - name: Pack, smoke, and upload the Windows portable zip
-        if: matrix.platform == 'windows-latest'
+      - name: Pack and smoke the Windows portable archive
+        if: matrix.producer == 'windows'
         shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.guard.outputs.version }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $zip = "dist-portable/agentscommander-$env:VERSION-windows-x86_64-portable.zip"
-
+          $ledger = Get-Content -Raw "$env:RELEASE_DIR/candidate-assets.v1.json" | ConvertFrom-Json
+          $zip = @($ledger.assets | Where-Object { $_.producer -eq 'windows' -and $_.name.EndsWith('.zip') })
+          if ($zip.Count -ne 1) { throw 'candidate ledger does not define one Windows portable archive' }
           node scripts/pack-windows-portable.mjs `
             --binary target/release/agentscommander.exe `
             --version $env:VERSION `
-            --out $zip
-          if ($LASTEXITCODE -ne 0) { throw "packing the portable zip failed" }
+            --out $zip[0].name
+          if ($LASTEXITCODE -ne 0) { throw 'packing the portable archive failed' }
+          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip[0].name -ExpectedVersion $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'the portable archive failed its smoke test' }
 
-          # Smoke BEFORE upload: a broken portable asset must never reach the
-          # release, not even as a draft attachment someone might publish.
-          pwsh -File scripts/smoke-windows-portable.ps1 -Zip $zip -ExpectedVersion $env:VERSION
-          if ($LASTEXITCODE -ne 0) { throw "the portable zip failed its smoke test" }
+      - name: Upload the Windows portable archive without replacement
+        if: matrix.producer == 'windows'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          portable_name="$(node - "$RELEASE_DIR/candidate-assets.v1.json" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const assets = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).assets;
+          const matches = assets.filter((asset) => asset.producer === 'windows' && asset.name.endsWith('.zip'));
+          assert.equal(matches.length, 1);
+          process.stdout.write(matches[0].name);
+          NODE
+          )"
+          test -s "$portable_name"
+          existing_id="$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$portable_name\") | .id")"
+          if [ -z "$existing_id" ]; then
+            gh release upload "$TAG" "$portable_name"
+          else
+            test "$(printf '%s\n' "$existing_id" | wc -l | tr -d ' ')" = 1
+            verify_dir="$(mktemp -d)"
+            gh release download "$TAG" --pattern "$portable_name" --dir "$verify_dir"
+            cmp -- "$portable_name" "$verify_dir/$portable_name"
+          fi
 
-          gh release upload "${{ github.ref_name }}" $zip --clobber
-          if ($LASTEXITCODE -ne 0) { throw "uploading the portable zip failed" }
-
-  # ---------------------------------------------------------------------
-  # SHASUMS256.txt over every asset. npm/install.js verifies against this.
-  # The portable zip needs no change here: this job downloads whatever is
-  # attached to the release and hashes all of it.
-  # ---------------------------------------------------------------------
   checksums:
     name: checksums
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [guard, build]
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-      - name: Generate and upload checksums
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+
+      - name: Rebind the guarded annotated tag
         shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          mkdir -p release-assets
-          cd release-assets
-          gh release download "$TAG"
-          sha256sum * > ../SHASUMS256.txt
-          cd ..
-          cat SHASUMS256.txt
-          gh release upload "$TAG" SHASUMS256.txt --clobber
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
 
-  # ---------------------------------------------------------------------
-  # Flip the draft to published, but only once the assets npm depends on
-  # are provably present and downloadable.
-  # ---------------------------------------------------------------------
+      - name: Build and upload the runtime checksum ledger without replacement
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          gh release view "$TAG" --json id,tagName,isDraft,assets > "$work_dir/release-before.json"
+          gh release download "$TAG" --pattern '*' --dir "$downloads"
+          sum_name="$(node - "$RELEASE_DIR/candidate-assets.v1.json" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const ledger = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const matches = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(matches.length, 1, 'candidate ledger must define one checksum asset');
+          process.stdout.write(matches[0].name);
+          NODE
+          )"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release-before.json" "$downloads" "$sum_name" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const [ledgerPath, releasePath, downloads, sumName] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          assert.equal(ledger.schema, 'prepare-agentscommander-release/asset-ledger/v1');
+          assert.equal(ledger.kind, 'candidate');
+          assert.equal(ledger.assetCount, ledger.assets.length);
+          assert.equal(ledger.assets.filter((asset) => asset.name === sumName).length, 1);
+          const expected = ledger.assets.map((asset) => {
+            assert.equal(asset.state, 'required');
+            assert.equal(asset.sha256, null);
+            assert.equal(asset.size, null);
+            assert.ok(safeName(asset.name), 'unsafe ledger asset name');
+            return asset.name;
+          });
+          assert.equal(new Set(expected).size, expected.length, 'duplicate ledger asset name');
+          const expectedWithoutSum = expected.filter((name) => name !== sumName);
+          assert.equal(release.tagName, ledger.tag);
+          assert.equal(release.isDraft, true);
+          assert.ok(Number.isInteger(release.id) && release.id > 0);
+          const apiNames = release.assets.map((asset) => {
+            assert.ok(safeName(asset.name), 'unsafe release asset name');
+            assert.ok(Number.isInteger(asset.id) && asset.id > 0, 'invalid release asset id');
+            assert.ok(asset.size > 0, 'zero-size release asset');
+            return asset.name;
+          });
+          assert.equal(new Set(apiNames).size, apiNames.length, 'duplicate draft release asset name');
+          const sorted = (items) => [...items].sort();
+          const acceptable = [
+            sorted(expectedWithoutSum),
+            sorted(expected),
+          ].some((items) => JSON.stringify(items) === JSON.stringify(sorted(apiNames)));
+          assert.ok(acceptable, 'draft assets do not match the candidate ledger');
+          const files = fs.readdirSync(downloads);
+          assert.deepEqual(sorted(files), sorted(apiNames), 'downloaded draft assets');
+          for (const name of files) {
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid downloaded asset ' + name);
+          }
+          const records = expectedWithoutSum.map((name) => digest(path.join(downloads, name)) + '  ' + name);
+          const runtimeLedger = records.join('\n') + '\n';
+          const existing = path.join(downloads, sumName);
+          if (fs.existsSync(existing)) assert.equal(fs.readFileSync(existing, 'utf8'), runtimeLedger, 'existing runtime checksum ledger');
+          fs.writeFileSync(path.join(path.dirname(downloads), sumName), runtimeLedger, { encoding: 'utf8', mode: 0o644 });
+          NODE
+          existing_id="$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$sum_name\") | .id")"
+          if [ -z "$existing_id" ]; then
+            gh release upload "$TAG" "$work_dir/$sum_name"
+          else
+            test "$(printf '%s\n' "$existing_id" | wc -l | tr -d ' ')" = 1
+            existing_dir="$work_dir/existing"
+            mkdir "$existing_dir"
+            gh release download "$TAG" --pattern "$sum_name" --dir "$existing_dir"
+            cmp -- "$work_dir/$sum_name" "$existing_dir/$sum_name"
+          fi
+
+      - name: Verify the exact draft asset set and runtime checksum ledger
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          gh release view "$TAG" --json id,tagName,isDraft,assets > "$work_dir/release-after.json"
+          gh release download "$TAG" --pattern '*' --dir "$downloads"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release-after.json" "$downloads" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const [ledgerPath, releasePath, downloads] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const sumAsset = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(sumAsset.length, 1, 'candidate ledger checksum asset');
+          const sumName = sumAsset[0].name;
+          const expected = ledger.assets.map((asset) => {
+            assert.ok(safeName(asset.name), 'unsafe ledger asset name');
+            return asset.name;
+          });
+          assert.equal(ledger.assetCount, expected.length);
+          assert.equal(new Set(expected).size, expected.length, 'duplicate ledger asset name');
+          assert.equal(release.tagName, ledger.tag);
+          assert.equal(release.isDraft, true);
+          const apiNames = release.assets.map((asset) => {
+            assert.ok(Number.isInteger(asset.id) && asset.id > 0, 'invalid release asset id');
+            assert.ok(asset.size > 0, 'zero-size release asset');
+            return asset.name;
+          });
+          assert.equal(new Set(apiNames).size, apiNames.length, 'duplicate release asset name');
+          assert.deepEqual([...apiNames].sort(), [...expected].sort(), 'exact 17-name draft ledger');
+          const files = fs.readdirSync(downloads);
+          assert.deepEqual([...files].sort(), [...expected].sort(), 'downloaded exact draft ledger');
+          const records = [];
+          for (const name of expected.filter((name) => name !== sumName)) {
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid asset ' + name);
+            records.push(digest(file) + '  ' + name);
+          }
+          assert.equal(fs.readFileSync(path.join(downloads, sumName), 'utf8'), records.join('\n') + '\n');
+          NODE
+
   publish-github:
     name: publish-github
     needs: [guard, checksums]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Publish the release and prove the npm assets resolve
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.guard.outputs.version }}
-        run: |
-          set -euo pipefail
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-          # A draft release is invisible to GET /releases/tags/{tag}; that
-          # endpoint only serves published releases. Resolving the draft by
-          # tag through it is what silently skipped the v0.30.1 release run.
-          # List and filter instead.
-          release_id="$(gh api --paginate "repos/$REPO/releases" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)"
-
-          if [ -z "$release_id" ]; then
-            echo "::error::No release found for tag $TAG."
-            exit 1
-          fi
-          echo "Release id for $TAG is $release_id"
-
-          gh api "repos/$REPO/releases/$release_id/assets" --paginate \
-            --jq '.[].name' | sort > present.txt
-          echo "Assets attached:"
-          sed 's/^/  /' present.txt
-
-          # These are exactly the files npm/install.js downloads at postinstall
-          # time. If any is missing, npm installs would break for that platform,
-          # so refuse to publish.
-          cat > required.txt <<'EOF'
-          SHASUMS256.txt
-          agentscommander-linux-x86_64
-          agentscommander-mac-aarch64.app.tar.gz
-          agentscommander-mac-x86_64.app.tar.gz
-          agentscommander-windows-x86_64.exe
-          EOF
-
-          # The portable download the docs promise (#1589). Its name carries the
-          # version, so it is appended rather than inlined in the fixed list
-          # above, which keeps this workflow version-agnostic.
-          echo "agentscommander-${VERSION}-windows-x86_64-portable.zip" >> required.txt
-
-          missing=0
-          while read -r asset; do
-            [ -z "$asset" ] && continue
-            if ! grep -qxF "$asset" present.txt; then
-              echo "::error::Required asset missing from the release: $asset"
-              missing=1
-            fi
-          done < required.txt
-          [ "$missing" -eq 0 ] || exit 1
-
-          gh api -X PATCH "repos/$REPO/releases/$release_id" \
-            -F draft=false -f make_latest=true >/dev/null
-
-          state="$(gh api "repos/$REPO/releases/$release_id" --jq '.draft')"
-          [ "$state" = "false" ] || { echo "::error::Release is still a draft."; exit 1; }
-
-          # Final proof: the exact URL npm/install.js will hit must resolve.
-          # This is the check that distinguishes "published" from "works".
-          url="https://github.com/$REPO/releases/download/$TAG/SHASUMS256.txt"
-          curl -sSfL --retry 5 --retry-delay 5 -o /dev/null "$url"
-          echo "Release $TAG is published and its assets are publicly downloadable."
-
-  # ---------------------------------------------------------------------
-  # Publish to npm, then prove a clean install actually works.
-  # ---------------------------------------------------------------------
-  publish-npm:
-    name: publish-npm
-    needs: [guard, publish-github]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write        # provenance attestation
-    env:
-      VERSION: ${{ needs.guard.outputs.version }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
 
-      # OIDC Trusted Publishing needs npm >= 11.5.1, and node 22 ships 10.9.8.
-      # This pin is what makes OIDC engage at all: without it npm silently
-      # falls back to token auth and nothing looks wrong.
-      # Same pin as version-sync-check.yml.
-      - name: Pin npm version
-        run: npm install -g npm@11.6.2
-
-      - name: Show OIDC preconditions
+      - name: Rebind the guarded annotated tag
         shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "npm  $(npm --version)   (OIDC trusted publishing needs >= 11.5.1)"
-          echo "node $(node --version)  (OIDC trusted publishing needs >= 22.14.0)"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
 
-      # Authenticates via OIDC Trusted Publishing. There is no npm token: the
-      # trusted publisher on npmjs.com is pinned to owner mblua, repo
-      # AgentsCommander, workflow release.yml, no environment, npm publish only.
-      #
-      # No --provenance flag: trusted publishing generates the attestation on
-      # its own. The flag is only needed on the token path.
-      #
-      # To confirm a release really used OIDC, check the registry metadata
-      # rather than the publish log, which does not say. `_npmUser` carries a
-      # `trustedPublisher` object on the OIDC path and is a plain account on the
-      # token path. See docs/npm-authentication.md in the release skill.
-      - name: Publish @mblua/agentscommander
-        working-directory: npm
-        run: npm publish --access public
-
-      - name: Wait for the registry to serve the new version
+      - name: Verify the dynamic immediate immutable predecessor
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 12); do
-            got="$(npm view "@mblua/agentscommander@$VERSION" version 2>/dev/null || true)"
-            if [ "$got" = "$VERSION" ]; then
-              echo "Registry is serving $VERSION."
-              exit 0
-            fi
-            echo "Attempt $attempt: not visible yet, waiting."
-            sleep 10
-          done
-          echo "::error::@mblua/agentscommander@$VERSION never became visible."
-          exit 1
+          tags_file="$(mktemp)"
+          git ls-remote --tags --refs origin 'refs/tags/v*' > "$tags_file"
+          predecessor_tag="$(node - "$TAG" "$tags_file" <<'NODE'
+          const assert = require('node:assert/strict');
+          const target = process.argv[2];
+          const tagsPath = process.argv[3];
+          const parse = (tag) => {
+            const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(tag);
+            return match ? match.slice(1).map(Number) : null;
+          };
+          const compare = (left, right) => {
+            for (let index = 0; index < 3; index += 1) {
+              if (left[index] !== right[index]) return left[index] - right[index];
+            }
+            return 0;
+          };
+          const targetVersion = parse(target);
+          assert.ok(targetVersion, 'candidate tag is not normal SemVer');
+          const tags = [];
+          for (const line of require('node:fs').readFileSync(tagsPath, 'utf8').trim().split('\n')) {
+            if (!line) continue;
+            const match = /^[0-9a-f]{40}\trefs\/tags\/(v[^\t]+)$/.exec(line);
+            assert.ok(match, 'malformed remote tag record');
+            const version = parse(match[1]);
+            if (version) tags.push({ tag: match[1], version });
+          }
+          assert.equal(new Set(tags.map((entry) => entry.tag)).size, tags.length, 'duplicate normal SemVer tag');
+          const eligible = tags.filter((entry) => compare(entry.version, targetVersion) < 0);
+          assert.ok(eligible.length > 0, 'normal SemVer predecessor is absent');
+          eligible.sort((left, right) => compare(right.version, left.version));
+          process.stdout.write(eligible[0].tag);
+          NODE
+          )"
+          test -n "$predecessor_tag"
+          git fetch --force --no-tags origin "refs/tags/$predecessor_tag:refs/tags/$predecessor_tag"
+          predecessor_object="$(git rev-parse "$predecessor_tag^{tag}")"
+          predecessor_peeled="$(git rev-parse "$predecessor_tag^{}")"
+          test "$predecessor_object" != "$predecessor_peeled"
+          mapfile -t predecessor_remote < <(git ls-remote origin "refs/tags/$predecessor_tag" "refs/tags/$predecessor_tag^{}")
+          test "${#predecessor_remote[@]}" -eq 2
+          printf '%s\n' "${predecessor_remote[@]}" | grep -Fx "$predecessor_object"$'\t'"refs/tags/$predecessor_tag"
+          printf '%s\n' "${predecessor_remote[@]}" | grep -Fx "$predecessor_peeled"$'\t'"refs/tags/$predecessor_tag^{}"
+          work_dir="$(mktemp -d)"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$predecessor_tag" > "$work_dir/release.json"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          gh release download "$predecessor_tag" --pattern '*' --dir "$downloads"
+          node - "$RELEASE_DIR/input-manifest.v1.json" "$RELEASE_DIR/predecessor-assets.v1.json" "$work_dir/release.json" "$downloads" "$predecessor_tag" "$predecessor_object" "$predecessor_peeled" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-      - name: Smoke test a clean install from the registry
+          const [manifestPath, ledgerPath, releasePath, downloads, predecessorTag, predecessorObject, predecessorPeeled] = process.argv.slice(2);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          assert.equal(manifest.evidence.predecessor.tag, predecessorTag);
+          assert.equal(manifest.evidence.predecessor.tagObject, predecessorObject);
+          assert.equal(manifest.evidence.predecessor.peeledCommit, predecessorPeeled);
+          assert.equal(ledger.schema, 'prepare-agentscommander-release/asset-ledger/v1');
+          assert.equal(ledger.kind, 'predecessor');
+          assert.equal(ledger.tag, predecessorTag);
+          assert.equal(ledger.assetCount, ledger.assets.length);
+          assert.equal(release.id, ledger.releaseId);
+          assert.equal(release.tag_name, predecessorTag);
+          assert.equal(release.draft, false);
+          assert.equal(release.immutable, true);
+          const expected = new Map(ledger.assets.map((asset) => {
+            assert.ok(safeName(asset.name), 'unsafe predecessor asset name');
+            assert.ok(Number.isInteger(asset.id) && asset.id > 0, 'invalid predecessor asset id');
+            assert.ok(Number.isInteger(asset.size) && asset.size > 0, 'invalid predecessor asset size');
+            assert.match(asset.sha256, /^[0-9a-f]{64}$/);
+            return [asset.name, asset];
+          }));
+          assert.equal(expected.size, ledger.assets.length, 'duplicate predecessor ledger name');
+          assert.equal(release.assets.length, expected.size, 'predecessor release asset count');
+          for (const asset of release.assets) {
+            const expectedAsset = expected.get(asset.name);
+            assert.ok(expectedAsset, 'unexpected predecessor release asset ' + asset.name);
+            assert.equal(asset.id, expectedAsset.id, 'predecessor asset id ' + asset.name);
+            assert.equal(asset.size, expectedAsset.size, 'predecessor asset size ' + asset.name);
+          }
+          const files = fs.readdirSync(downloads);
+          assert.deepEqual([...files].sort(), [...expected.keys()].sort(), 'downloaded predecessor assets');
+          for (const [name, asset] of expected) {
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size === asset.size, 'invalid predecessor file ' + name);
+            assert.equal(digest(file), asset.sha256, 'predecessor digest ' + name);
+          }
+          NODE
+
+      - name: Verify the guarded draft and all candidate assets before publication
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Installs the real published tarball and lets postinstall download
-          # and checksum-verify the Linux binary from the GitHub Release.
-          # This exercises the whole chain the way a user does.
-          work="$(mktemp -d)"
-          cd "$work"
-          npm init -y >/dev/null
-          npm install "@mblua/agentscommander@$VERSION"
-          test -x node_modules/@mblua/agentscommander/bin/agentscommander
-          echo "Clean install of $VERSION succeeded."
+          work_dir="$(mktemp -d)"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$work_dir/release.json"
+          gh release download "$TAG" --pattern '*' --dir "$downloads"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release.json" "$downloads" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-      - name: Report
+          const [ledgerPath, releasePath, downloads] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const sums = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(sums.length, 1, 'candidate checksum asset');
+          const sumName = sums[0].name;
+          const expected = ledger.assets.map((asset) => {
+            assert.ok(safeName(asset.name), 'unsafe candidate asset name');
+            return asset.name;
+          });
+          assert.equal(ledger.assetCount, expected.length);
+          assert.equal(new Set(expected).size, expected.length, 'duplicate candidate ledger name');
+          assert.equal(release.tag_name, ledger.tag);
+          assert.equal(release.draft, true);
+          assert.equal(release.immutable, false);
+          const apiNames = release.assets.map((asset) => {
+            assert.ok(Number.isInteger(asset.id) && asset.id > 0, 'invalid candidate asset id');
+            assert.ok(asset.size > 0, 'zero-size candidate asset');
+            return asset.name;
+          });
+          assert.equal(new Set(apiNames).size, apiNames.length, 'duplicate candidate release name');
+          assert.deepEqual([...apiNames].sort(), [...expected].sort(), 'exact candidate release names');
+          const files = fs.readdirSync(downloads);
+          assert.deepEqual([...files].sort(), [...expected].sort(), 'downloaded candidate release names');
+          const records = [];
+          for (const name of expected.filter((name) => name !== sumName)) {
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid candidate file ' + name);
+            records.push(digest(file) + '  ' + name);
+          }
+          assert.equal(fs.readFileSync(path.join(downloads, sumName), 'utf8'), records.join('\n') + '\n');
+          NODE
+
+      - name: Revalidate tag, authority, and release policy immediately before publication
         shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          TAG="$GITHUB_REF_NAME"
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
+
+      - name: Publish only the verified guarded draft
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)"
+          test "$release_id" -gt 0
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f draft=false --raw-field make_latest=true >/dev/null
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"
+          node -e '
+            const release = JSON.parse(process.argv[1]);
+            if (release.tag_name !== process.argv[2] || release.draft !== false || release.immutable !== true) process.exit(1);
+          ' "$release" "$TAG"
+
+
+  verify-release:
+    name: verify-release
+    needs: [guard, publish-github]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+
+      - name: Rebind the guarded annotated tag
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          TAG="$GITHUB_REF_NAME"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
+
+      - name: Install the manifest-pinned GitHub CLI for attestation verification
+        shell: bash
+        env:
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d "$RUNNER_TEMP/verified-gh.XXXXXX")"
+          mapfile -t cli < <(node - "$RELEASE_DIR/input-manifest.v1.json" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const cli = manifest.evidence.ghCli;
+          assert.equal(manifest.contracts.toolchain.ghCli, 'exact-version-archive-sha256-install-self-check');
+          assert.match(cli.archive, /^[A-Za-z0-9._-]+\.tar\.gz$/);
+          assert.match(cli.archiveUrl, /^https:\/\/github\.com\/cli\/cli\/releases\/download\/v[0-9]+\.[0-9]+\.[0-9]+\/[A-Za-z0-9._-]+\.tar\.gz$/);
+          assert.match(cli.sha256, /^[0-9a-f]{64}$/);
+          assert.match(cli.version, /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/);
+          process.stdout.write([cli.archive, cli.archiveUrl, cli.sha256, cli.version].join('\n') + '\n');
+          NODE
+          )
+          test "${#cli[@]}" = 4
+          archive="${cli[0]}"
+          archive_url="${cli[1]}"
+          archive_sha256="${cli[2]}"
+          expected_version="${cli[3]}"
+          curl --fail --location --proto '=https' --tlsv1.2 "$archive_url" --output "$work_dir/$archive"
+          printf '%s  %s\n' "$archive_sha256" "$work_dir/$archive" | sha256sum --check --status
+          tar --extract --gzip --file "$work_dir/$archive" --directory "$work_dir"
+          mapfile -t gh_bins < <(find "$work_dir" -type f -path '*bin/gh' -print)
+          test "${#gh_bins[@]}" = 1
+          gh_bin="${gh_bins[0]}"
+          actual_version="$("$gh_bin" --version | sed -n '1p' | awk '{print $3}')"
+          test "$actual_version" = "$expected_version"
           {
-            echo "### Released $VERSION"
-            echo
-            echo "- GitHub Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-            echo "- npm: https://www.npmjs.com/package/@mblua/agentscommander/v/$VERSION"
-            echo
-            echo '```'
-            echo "npx @mblua/agentscommander@$VERSION"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "VERIFIED_GH_BIN=$gh_bin"
+            echo "VERIFIED_GH_VERSION=$expected_version"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify the public immutable release and every release attestation
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+        run: |
+          set -euo pipefail
+          test -n "${VERIFIED_GH_BIN:-}"
+          test -x "$VERIFIED_GH_BIN"
+          test "$("$VERIFIED_GH_BIN" --version | sed -n '1p' | awk '{print $3}')" = "$VERIFIED_GH_VERSION"
+          assert_tag_pair() {
+            local head_commit
+            local peeled_commit
+            local tag_object
+            local remote_tag
+            mapfile -t remote_tag < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+            test "${#remote_tag[@]}" -eq 2
+            head_commit="$(git rev-parse 'HEAD^{commit}')"
+            peeled_commit="$(git rev-parse "$TAG^{}")"
+            tag_object="$(git rev-parse "$TAG^{tag}")"
+            test "$head_commit" = "$peeled_commit"
+            test "$tag_object" = "$EXPECTED_TAG_OBJECT"
+            test "$peeled_commit" = "$EXPECTED_PEELED_COMMIT"
+            printf '%s\n' "${remote_tag[@]}" | grep -Fx "$tag_object"$'\t'"refs/tags/$TAG"
+            printf '%s\n' "${remote_tag[@]}" | grep -Fx "$peeled_commit"$'\t'"refs/tags/$TAG^{}"
+          }
+          assert_tag_pair
+          work_dir="$(mktemp -d)"
+          downloads="$work_dir/downloads"
+          mkdir "$downloads"
+          "$VERIFIED_GH_BIN" api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$work_dir/release.json"
+          "$VERIFIED_GH_BIN" release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*' --dir "$downloads"
+          node - "$RELEASE_DIR/candidate-assets.v1.json" "$work_dir/release.json" "$downloads" "$work_dir/asset-names.txt" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const [ledgerPath, releasePath, downloads, output] = process.argv.slice(2);
+          const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+          const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+          const safeName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+            && name !== '.' && name !== '..';
+          const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const sums = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(sums.length, 1, 'candidate checksum asset');
+          const sumName = sums[0].name;
+          const expected = ledger.assets.map((asset) => {
+            assert.ok(safeName(asset.name), 'unsafe candidate asset name');
+            return asset.name;
+          });
+          assert.equal(ledger.assetCount, expected.length);
+          assert.equal(new Set(expected).size, expected.length, 'duplicate candidate ledger name');
+          assert.equal(release.tag_name, ledger.tag);
+          assert.equal(release.draft, false);
+          assert.equal(release.immutable, true);
+          const apiNames = release.assets.map((asset) => {
+            assert.ok(Number.isInteger(asset.id) && asset.id > 0, 'invalid release asset id');
+            assert.ok(asset.size > 0, 'zero-size release asset');
+            return asset.name;
+          });
+          assert.equal(new Set(apiNames).size, apiNames.length, 'duplicate release asset name');
+          assert.deepEqual([...apiNames].sort(), [...expected].sort(), 'exact public release names');
+          const files = fs.readdirSync(downloads);
+          assert.deepEqual([...files].sort(), [...expected].sort(), 'downloaded public release names');
+          const records = [];
+          for (const name of expected.filter((name) => name !== sumName)) {
+            const file = path.join(downloads, name);
+            const stat = fs.lstatSync(file);
+            assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0, 'invalid public release file ' + name);
+            records.push(digest(file) + '  ' + name);
+          }
+          assert.equal(fs.readFileSync(path.join(downloads, sumName), 'utf8'), records.join('\n') + '\n');
+          fs.writeFileSync(output, expected.join('\n') + '\n', 'utf8');
+          NODE
+          "$VERIFIED_GH_BIN" release verify "$TAG" --repo "$GITHUB_REPOSITORY"
+          assert_tag_pair
+          while IFS= read -r asset_name; do
+            test -n "$asset_name"
+            "$VERIFIED_GH_BIN" release verify-asset "$TAG" "$downloads/$asset_name" --repo "$GITHUB_REPOSITORY"
+          done < "$work_dir/asset-names.txt"
+          assert_tag_pair
+          release="$("$VERIFIED_GH_BIN" api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"
+          node -e '
+            const release = JSON.parse(process.argv[1]);
+            if (release.tag_name !== process.argv[2] || release.draft !== false || release.immutable !== true) process.exit(1);
+          ' "$release" "$TAG"
+
+  publish-npm:
+    name: publish-npm
+    needs: [guard, verify-release]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Rebind the verified annotated tag and immutable public release
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
+          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
+          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+          test "$GITHUB_SHA" = "$EVENT_SHA"
+          test "$GITHUB_SHA" = "$HEAD_COMMIT"
+          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+          test "$TAG_OBJECT" != "$PEELED_COMMIT"
+          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          test "${#REMOTE_TAG[@]}" -eq 2
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+          immutable="$(gh api -H 'Accept: application/vnd.github+json' "repos/$GITHUB_REPOSITORY/immutable-releases")"
+          node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (value.enabled !== true || typeof value.enforced_by_owner !== "boolean") process.exit(1);
+          ' "$immutable"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"
+          node -e '
+            const release = JSON.parse(process.argv[1]);
+            if (release.tag_name !== process.argv[2] || release.draft !== false || release.immutable !== true) process.exit(1);
+          ' "$release" "$TAG"
+
+      - name: Publish or verify the provenance package
+        shell: bash
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_URL: https://registry.npmjs.org
+        run: |
+          set -euo pipefail
+          test -z "${NODE_AUTH_TOKEN:-}"
+          test -z "${NPM_TOKEN:-}"
+          test -z "${NPM_AGENTSCOMMANDER:-}"
+          node_major="$(node --version | cut -d. -f1 | tr -d v)"
+          test "$node_major" = 22
+          npm install --global npm@11.6.2
+          test "$(npm --version)" = 11.6.2
+          test "$(npm config get registry)" = "$REGISTRY_URL"
+          mapfile -t package_info < <(node - "$VERSION" <<'NODE'
+          const assert = require('node:assert/strict');
+          const pkg = require('./npm/package.json');
+          const version = process.argv[2];
+          assert.match(pkg.name, /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/);
+          assert.equal(pkg.version, version, 'npm package version');
+          const bins = typeof pkg.bin === 'string' ? { [pkg.name.slice(pkg.name.indexOf('/') + 1)]: pkg.bin } : pkg.bin;
+          assert.ok(bins && typeof bins === 'object');
+          const names = Object.keys(bins);
+          assert.equal(names.length, 1, 'one CLI binary is required');
+          assert.match(names[0], /^[A-Za-z0-9._-]+$/);
+          process.stdout.write([pkg.name, pkg.version, names[0]].join('\n') + '\n');
+          NODE
+          )
+          test "${#package_info[@]}" = 3
+          package_name="${package_info[0]}"
+          package_version="${package_info[1]}"
+          binary_name="${package_info[2]}"
+          test "$package_version" = "$VERSION"
+          work_dir="$(mktemp -d)"
+          pack_dir="$work_dir/pack"
+          mkdir "$pack_dir"
+          (
+            cd npm
+            npm pack --json --pack-destination "$pack_dir" > "$work_dir/pack.json"
+          )
+          local_tarball="$(node - "$work_dir/pack.json" "$pack_dir" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.ok(Array.isArray(result) && result.length === 1);
+          const filename = result[0].filename;
+          assert.match(filename, /^[A-Za-z0-9._-]+\.tgz$/);
+          const output = path.join(process.argv[3], filename);
+          assert.ok(fs.statSync(output).isFile() && fs.statSync(output).size > 0);
+          process.stdout.write(output);
+          NODE
+          )"
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$package_name")"
+          metadata_url="$REGISTRY_URL/$encoded_name/$VERSION"
+          status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
+          case "$status" in
+            200)
+              registry_state=present
+              ;;
+            404)
+              registry_state=absent
+              ;;
+            *)
+              cat "$work_dir/version-metadata.json"
+              echo "::error::registry returned HTTP $status while checking $package_name@$VERSION"
+              exit 1
+              ;;
+          esac
+          if [ "$registry_state" = absent ]; then
+            (
+              cd npm
+              npm publish --access public --provenance --registry "$REGISTRY_URL"
+            )
+          fi
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --show-error --output "$work_dir/version-metadata.json" --write-out '%{http_code}' "$metadata_url")"
+            if [ "$status" = 200 ]; then
+              break
+            fi
+            if [ "$status" != 404 ]; then
+              cat "$work_dir/version-metadata.json"
+              echo "::error::registry returned HTTP $status while waiting for $package_name@$VERSION"
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$status" = 200
+          latest="$(npm view "$package_name" dist-tags.latest --registry "$REGISTRY_URL")"
+          test "$latest" = "$VERSION"
+          registry_tarball_url="$(node - "$work_dir/version-metadata.json" "$local_tarball" "$package_name" "$VERSION" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const [metadataPath, localPath, packageName, version] = process.argv.slice(2);
+          const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+          const local = fs.readFileSync(localPath);
+          assert.equal(metadata.name, packageName);
+          assert.equal(metadata.version, version);
+          assert.ok(metadata.dist && typeof metadata.dist === 'object');
+          const integrity = 'sha512-' + crypto.createHash('sha512').update(local).digest('base64');
+          const shasum = crypto.createHash('sha1').update(local).digest('hex');
+          assert.equal(metadata.dist.integrity, integrity, 'registry integrity must bind the publication input');
+          assert.equal(metadata.dist.shasum, shasum, 'registry shasum must bind the publication input');
+          const tarball = new URL(metadata.dist.tarball);
+          assert.equal(tarball.protocol, 'https:');
+          assert.equal(tarball.hostname, 'registry.npmjs.org');
+          assert.ok(metadata.dist.attestations && typeof metadata.dist.attestations === 'object', 'trusted publisher attestations are absent');
+          assert.equal(metadata.dist.attestations.provenance?.predicateType, 'https://slsa.dev/provenance/v1');
+          assert.ok(Array.isArray(metadata.dist.signatures) && metadata.dist.signatures.length > 0, 'registry signatures are absent');
+          process.stdout.write(tarball.toString());
+          NODE
+          )"
+          registry_tarball="$work_dir/registry-package.tgz"
+          curl --fail --location --proto '=https' --tlsv1.2 "$registry_tarball_url" --output "$registry_tarball"
+          node - "$work_dir/version-metadata.json" "$registry_tarball" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const tarball = fs.readFileSync(process.argv[3]);
+          assert.equal(metadata.dist.integrity, 'sha512-' + crypto.createHash('sha512').update(tarball).digest('base64'));
+          assert.equal(metadata.dist.shasum, crypto.createHash('sha1').update(tarball).digest('hex'));
+          NODE
+          attestation_url="$(node - "$work_dir/version-metadata.json" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const url = new URL(metadata.dist.attestations.url);
+          assert.equal(url.protocol, 'https:');
+          assert.equal(url.hostname, 'registry.npmjs.org');
+          process.stdout.write(url.toString());
+          NODE
+          )"
+          attestation_file="$work_dir/attestations.json"
+          curl --fail --location --proto '=https' --tlsv1.2 "$attestation_url" --output "$attestation_file"
+          node - "$attestation_file" "$package_name" "$VERSION" "$GITHUB_REPOSITORY" "$TAG" "$local_tarball" "$REGISTRY_URL" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+
+          const [attestationPath, packageName, version, repository, tag, localTarball, registryUrl] = process.argv.slice(2);
+          const attestations = JSON.parse(fs.readFileSync(attestationPath, 'utf8')).attestations;
+          assert.ok(Array.isArray(attestations) && attestations.length > 0, 'registry attestation list');
+          const payloads = attestations.map((record) => {
+            assert.ok(record.bundle && record.bundle.dsseEnvelope && typeof record.bundle.dsseEnvelope.payload === 'string');
+            return JSON.parse(Buffer.from(record.bundle.dsseEnvelope.payload, 'base64').toString('utf8'));
+          });
+          const packageDigest = crypto.createHash('sha512').update(fs.readFileSync(localTarball)).digest('hex');
+          const matchesSubject = (payload) => payload.subject.some((subject) => {
+            const encoded = subject.name.slice('pkg:npm/'.length).split('@')[0];
+            return decodeURIComponent(encoded) === packageName && subject.digest.sha512 === packageDigest;
+          });
+          const publish = payloads.find((payload) => payload.predicateType === 'https://github.com/npm/attestation/tree/main/specs/publish/v0.1');
+          assert.ok(publish && matchesSubject(publish), 'npm publish attestation subject');
+          assert.equal(publish.predicate.name, packageName);
+          assert.equal(publish.predicate.version, version);
+          assert.equal(publish.predicate.registry, registryUrl);
+          const provenance = payloads.find((payload) => payload.predicateType === 'https://slsa.dev/provenance/v1');
+          assert.ok(provenance && matchesSubject(provenance), 'SLSA provenance subject');
+          const workflow = provenance.predicate.buildDefinition.externalParameters.workflow;
+          assert.equal(workflow.repository, 'https://github.com/' + repository);
+          assert.equal(workflow.ref, 'refs/tags/' + tag);
+          assert.equal(workflow.path, '.github/workflows/release.yml');
+          assert.ok(
+            provenance.predicate.buildDefinition.resolvedDependencies.some(
+              (dependency) => dependency.uri === 'git+https://github.com/' + repository + '@refs/tags/' + tag,
+            ),
+            'SLSA provenance repository and tag dependency',
+          );
+          NODE
+          release_json="$work_dir/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$release_json"
+          mapfile -t release_files < <(node - "$RELEASE_DIR/candidate-assets.v1.json" "$release_json" <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const ledger = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const release = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+          assert.equal(release.tag_name, ledger.tag);
+          assert.equal(release.draft, false);
+          assert.equal(release.immutable, true);
+          const checksum = ledger.assets.filter((asset) => asset.producer === 'checksums');
+          assert.equal(checksum.length, 1);
+          const platform = process.platform;
+          const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+          let selected;
+          if (platform === 'linux') selected = 'agentscommander-linux-' + architecture;
+          else if (platform === 'darwin') selected = 'agentscommander-mac-' + architecture + '.app.tar.gz';
+          else if (platform === 'win32') selected = 'agentscommander-windows-' + architecture + '.exe';
+          else throw new Error('unsupported clean-install platform');
+          const names = new Set(ledger.assets.map((asset) => asset.name));
+          assert.ok(names.has(checksum[0].name));
+          assert.ok(names.has(selected), 'candidate ledger lacks installer-selected asset');
+          assert.ok(release.assets.some((asset) => asset.name === checksum[0].name && asset.size > 0));
+          assert.ok(release.assets.some((asset) => asset.name === selected && asset.size > 0));
+          process.stdout.write(checksum[0].name + '\n' + selected + '\n');
+          NODE
+          )
+          test "${#release_files[@]}" = 2
+          sum_name="${release_files[0]}"
+          selected_asset="${release_files[1]}"
+          public_assets="$work_dir/public-assets"
+          mkdir "$public_assets"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$sum_name" --dir "$public_assets"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$selected_asset" --dir "$public_assets"
+          observed_sha256="$(node - "$public_assets/$sum_name" "$public_assets/$selected_asset" "$selected_asset" <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const [sumsPath, assetPath, assetName] = process.argv.slice(2);
+          const digest = crypto.createHash('sha256').update(fs.readFileSync(assetPath)).digest('hex');
+          const records = fs.readFileSync(sumsPath, 'utf8').trimEnd().split('\n').map((line) => {
+            const match = /^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$/.exec(line);
+            assert.ok(match, 'invalid public runtime checksum record');
+            return { digest: match[1], name: match[2], line };
+          });
+          const matches = records.filter((record) => record.name === assetName);
+          assert.equal(matches.length, 1, 'selected asset checksum record');
+          assert.equal(matches[0].digest, digest, 'selected asset checksum');
+          process.stdout.write(digest + '\n' + matches[0].line);
+          NODE
+          )"
+          install_dir="$work_dir/clean-install"
+          mkdir "$install_dir"
+          unset CANDIDATE_RELEASE_DIR
+          npm install --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
+          npm --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
+          version_output="$("$install_dir/node_modules/.bin/$binary_name" --version)"
+          printf '%s\n' "$version_output" | grep -F "$VERSION"
+          printf 'selected_public_release_asset=%s\n' "$selected_asset"
+          printf 'selected_public_release_asset_sha256=%s\n' "$(printf '%s\n' "$observed_sha256" | sed -n '1p')"
+          printf 'selected_public_release_checksum_record=%s\n' "$(printf '%s\n' "$observed_sha256" | sed -n '2p')"
+          printf 'clean_installed_cli_version_output=%s\n' "$version_output"
