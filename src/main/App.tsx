@@ -53,6 +53,8 @@ type SidebarPulseWait = {
   resolve: (outcome: SidebarPulseWaitOutcome) => void;
 };
 
+type SidebarPulseDirection = "inward" | "outward";
+
 type SidebarPulseOwner = {
   request: MainTerminalLayoutPulseRequest;
   trace: MainTerminalLayoutPulseTrace;
@@ -507,13 +509,26 @@ const MainApp: Component = () => {
         originalLive.sample.completedObserverAck,
       );
 
-      const nudgedWidth = clampMainSidebarWidth(
+      const inwardCandidate = clampMainSidebarWidth(
         originalWidth - SIDEBAR_PULSE_DELTA_PX,
         window.innerWidth,
       );
-      if (nudgedWidth !== originalWidth - SIDEBAR_PULSE_DELTA_PX) {
-        finishPulse(owner, "skipped", "clamped");
-        return;
+      let direction: SidebarPulseDirection;
+      let nudgedWidth: number;
+      if (inwardCandidate === originalWidth - SIDEBAR_PULSE_DELTA_PX) {
+        direction = "inward";
+        nudgedWidth = inwardCandidate;
+      } else {
+        const outwardCandidate = clampMainSidebarWidth(
+          originalWidth + SIDEBAR_PULSE_DELTA_PX,
+          window.innerWidth,
+        );
+        if (outwardCandidate !== originalWidth + SIDEBAR_PULSE_DELTA_PX) {
+          finishPulse(owner, "skipped", "clamped");
+          return;
+        }
+        direction = "outward";
+        nudgedWidth = outwardCandidate;
       }
       owner.nudgedWidth = nudgedWidth;
 
@@ -549,8 +564,11 @@ const MainApp: Component = () => {
               ack.epoch > expansionBaselineObservedEpoch &&
               sameLayoutGeometry(ack.first, sample) &&
               sameLayoutGeometry(ack.second, sample) &&
-              sample.hostWidth > originalGeometry.hostWidth &&
-              sample.cols > originalGeometry.cols &&
+              (direction === "inward"
+                ? sample.hostWidth > originalGeometry.hostWidth &&
+                  sample.cols > originalGeometry.cols
+                : sample.hostWidth < originalGeometry.hostWidth &&
+                  sample.cols < originalGeometry.cols) &&
               sample.rows === originalGeometry.rows,
           );
         },
