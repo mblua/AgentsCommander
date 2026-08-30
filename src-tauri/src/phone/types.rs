@@ -635,6 +635,25 @@ pub struct OutboxMessage {
     pub sender_agent: Option<String>,
     #[serde(default)]
     pub preferred_agent: String,
+    /// Profile slot letter requested by the sender for the wake spawn (A-Z).
+    /// Absent = no dispatch request. Never written back to the replica.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+    /// Delivered-receipt annotation: agent id the wake spawn actually used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_agent_id: Option<String>,
+    /// Delivered-receipt annotation: effective profile letter after fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<String>,
+    /// Delivered-receipt annotation: true when the effective letter differs from
+    /// the requested letter (cell fallback walk engaged). Skipped when false so
+    /// a no-flag/plain message serializes exactly as today.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub profile_fallback_applied: bool,
+    /// Delivered-receipt annotation: reason the dispatch flags could not apply
+    /// (e.g. "live-target"). Absent when the flags applied or were not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_not_applied: Option<String>,
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
@@ -660,6 +679,10 @@ pub struct OutboxMessage {
     pub quiet_period_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_input: Option<PtyInputWirePayload>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl fmt::Debug for OutboxMessage {
@@ -792,6 +815,11 @@ mod tests {
             request_id: None,
             sender_agent: None,
             preferred_agent: String::new(),
+            requested_profile: None,
+            effective_agent_id: None,
+            effective_profile: None,
+            profile_fallback_applied: false,
+            dispatch_not_applied: None,
             priority: "normal".into(),
             timestamp: "2026-06-28T00:00:00Z".into(),
             command: None,
@@ -815,6 +843,89 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["switchCodingAgent"], "codex-main");
         assert_eq!(json["switchProfile"], "B");
+    }
+
+    #[test]
+    fn outbox_message_requested_profile_round_trips() {
+        let mut msg = base_message();
+        msg.requested_profile = Some("C".into());
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["requestedProfile"], "C");
+
+        // Round-trip preserves the value.
+        let restored: OutboxMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.requested_profile.as_deref(), Some("C"));
+
+        // Absence deserializes to None.
+        let absent = base_message();
+        assert!(absent.requested_profile.is_none());
+        assert!(!serde_json::to_value(&absent)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("requestedProfile"));
+
+        // Old JSON without the key still deserializes (backward compatibility).
+        let old = serde_json::json!({
+            "id": "msg-1", "from": "from", "to": "to", "body": "",
+            "timestamp": "2026-06-28T00:00:00Z"
+        });
+        let legacy: OutboxMessage = serde_json::from_value(old).unwrap();
+        assert!(legacy.requested_profile.is_none());
+    }
+
+    #[test]
+    fn outbox_message_annotation_fields_default_and_omit() {
+        // Absent → None/false, and serialize with the keys omitted.
+        let msg = base_message();
+        assert!(msg.effective_agent_id.is_none());
+        assert!(msg.effective_profile.is_none());
+        assert!(!msg.profile_fallback_applied);
+        assert!(msg.dispatch_not_applied.is_none());
+        let value = serde_json::to_value(&msg).unwrap();
+        let object = value.as_object().unwrap();
+        for key in [
+            "effectiveAgentId",
+            "effectiveProfile",
+            "profileFallbackApplied",
+            "dispatchNotApplied",
+        ] {
+            assert!(
+                !object.contains_key(key),
+                "{key} must be omitted when absent"
+            );
+        }
+
+        // Round-trip: populated annotations survive serialization/deserialization.
+        let mut annotated = base_message();
+        annotated.effective_agent_id = Some("codex".into());
+        annotated.effective_profile = Some("B".into());
+        annotated.profile_fallback_applied = true;
+        annotated.dispatch_not_applied = Some("live-target".into());
+        let json = serde_json::to_value(&annotated).unwrap();
+        assert_eq!(json["effectiveAgentId"], "codex");
+        assert_eq!(json["effectiveProfile"], "B");
+        assert_eq!(json["profileFallbackApplied"], true);
+        assert_eq!(json["dispatchNotApplied"], "live-target");
+        let restored: OutboxMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.effective_agent_id.as_deref(), Some("codex"));
+        assert_eq!(restored.effective_profile.as_deref(), Some("B"));
+        assert!(restored.profile_fallback_applied);
+        assert_eq!(
+            restored.dispatch_not_applied.as_deref(),
+            Some("live-target")
+        );
+
+        // Old JSON without any of the five new keys still deserializes.
+        let old = serde_json::json!({
+            "id": "msg-1", "from": "from", "to": "to", "body": "",
+            "timestamp": "2026-06-28T00:00:00Z"
+        });
+        let legacy: OutboxMessage = serde_json::from_value(old).unwrap();
+        assert!(legacy.effective_agent_id.is_none());
+        assert!(legacy.effective_profile.is_none());
+        assert!(!legacy.profile_fallback_applied);
+        assert!(legacy.dispatch_not_applied.is_none());
     }
 
     #[test]
