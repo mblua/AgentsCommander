@@ -188,6 +188,7 @@ pub fn start_dispatcher(
                                                 crate::phone::mailbox::WakeDeliveryOrigin::DbQueue,
                                             )
                                             .await
+                                            .map(|_| ())
                                     }
                                 },
                             )
@@ -305,7 +306,7 @@ where
             };
 
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 store
                     .mark_delivered_offloaded(row.message_id.clone(), chrono::Utc::now())
                     .await?;
