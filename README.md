@@ -50,7 +50,7 @@ agentscommander new-project /path/to/project
 
 The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
 
-Prefer a desktop installer or a manual download? Get the Windows installer, Linux AppImage, macOS dmg, or portable assets from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+Prefer a desktop installer or a manual download? Get the Windows installer, the Windows portable zip (`agentscommander-X.Y.Z-windows-x86_64-portable.zip`), the Linux AppImage, or the macOS dmg from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
 
 ## The 30-second pitch
 
@@ -88,7 +88,7 @@ You bring the coding agents. AgentsCommander coordinates them.
    agentscommander
    ```
 
-   Prefer a desktop installer or portable binary? Use [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
+   Prefer a desktop installer, or a portable copy you unzip and run? Use [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest).
 2. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates a Project AC Root (`.ac/`) there.
 3. **Create a Team**: add an orchestrator and one worker agent, each with a role prompt. [Teams and rooms](docs/agents/teams-and-workgroups.md) walks through this.
 4. **Launch the orchestrator**: pick Claude Code, Codex, Antigravity, Pi, or OpenCode from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
