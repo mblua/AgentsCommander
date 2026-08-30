@@ -392,19 +392,137 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
     },
   );
 
-  it("skips an exact clamped width without mutation", async () => {
+  it("skips with clamped when neither direction can move, without mutation", async () => {
+    const rendered = renderMain();
+    try {
+      await flushPromises();
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: 700,
+      });
+      window.dispatchEvent(
+        new CustomEvent("main-sidebar-width-change", { detail: { width: 400 } }),
+      );
+      const clamped = dispatchPulse(() => sample(800, 80, 2, ack(2, 800, 80)));
+      expect(clamped.complete).toHaveBeenCalledTimes(1);
+      expect(clamped.complete.mock.calls[0][0]).toMatchObject({
+        status: "skipped",
+        reason: "clamped",
+      });
+      expect(sidebarWidth(rendered.root)).toBe("400px");
+      expect(dependencies.settingsUpdate).not.toHaveBeenCalled();
+      expect(frames.pending()).toBe(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it.each([400, 415])(
+    "nudges outward at narrow widths, rejects inward-direction evidence, and restores exactly",
+    async (w) => {
+      const rendered = renderMain();
+      try {
+        await flushPromises();
+        window.dispatchEvent(
+          new CustomEvent("main-sidebar-width-change", { detail: { width: w } }),
+        );
+        expect(sidebarWidth(rendered.root)).toBe(`${w}px`);
+
+        let current = sample(800, 80, 2, ack(2, 800, 80));
+        const pulse = dispatchPulse(() => current);
+        expect(pulse.request.accepted).toBe(true);
+        expect(sidebarWidth(rendered.root)).toBe(`${w + 16}px`);
+        expect(pulse.complete).not.toHaveBeenCalled();
+
+        // The geometry an inward nudge would produce cannot qualify the outward leg.
+        current = sample(816, 82, 3, ack(3, 816, 82));
+        await frames.flushFrame();
+        expect(pulse.complete).not.toHaveBeenCalled();
+        expect(sidebarWidth(rendered.root)).toBe(`${w + 16}px`);
+
+        // The outward nudge shrinks host and columns: leg matches, dwells, restores.
+        current = sample(784, 78, 3, ack(3, 784, 78));
+        await frames.flushFrame();
+        for (let frame = 0; frame < 14; frame += 1) {
+          await frames.flushFrame();
+        }
+        expect(sidebarWidth(rendered.root)).toBe(`${w}px`);
+
+        // The expansion acknowledgement cannot acknowledge restoration.
+        await frames.flushFrame();
+        expect(pulse.complete).not.toHaveBeenCalled();
+        current = sample(800, 80, 4, ack(4, 800, 80));
+        await frames.flushFrame();
+
+        expect(pulse.complete).toHaveBeenCalledTimes(1);
+        const result = pulse.complete.mock.calls[0][0];
+        expect(result).toMatchObject({
+          status: "completed",
+          reason: "completed",
+          trace: {
+            version: 1,
+            requestId: pulse.request.requestId,
+            sessionId: "session-a",
+            attachGeneration: 1,
+            status: "completed",
+            reason: "completed",
+            original: { sidebarWidth: w, hostWidth: 800, cols: 80, rows: 24 },
+            expanded: {
+              sidebarWidth: w + 16,
+              hostWidth: 784,
+              cols: 78,
+              rows: 24,
+              baselineObservedEpoch: 2,
+              completedObserverAck: ack(3, 784, 78),
+            },
+            restored: {
+              sidebarWidth: w,
+              hostWidth: 800,
+              cols: 80,
+              rows: 24,
+              baselineObservedEpoch: 3,
+              completedObserverAck: ack(4, 800, 80),
+            },
+            settingsWritesDelta: 0,
+          },
+        });
+        expect(result.trace.dwellMs).toBeGreaterThanOrEqual(200);
+        expect(result.trace.dwellMs).toBeLessThanOrEqual(8000);
+        expect(dependencies.settingsUpdate).not.toHaveBeenCalled();
+        expect(frames.pending()).toBe(0);
+      } finally {
+        rendered.cleanup();
+      }
+    },
+  );
+
+  it("uses the exact expanded leg timeout after an outward nudge and restores the original width", async () => {
+    frames.restore();
+    vi.useFakeTimers();
+    frames = installManualFrames();
     const rendered = renderMain();
     try {
       await flushPromises();
       window.dispatchEvent(
         new CustomEvent("main-sidebar-width-change", { detail: { width: 400 } }),
       );
-      const clamped = dispatchPulse(() => sample(800, 80, 2, ack(2, 800, 80)));
-      expect(clamped.complete.mock.calls[0][0]).toMatchObject({
-        status: "skipped",
-        reason: "clamped",
+      const pulse = dispatchPulse(() => sample(800, 80, 1, ack(1, 800, 80)));
+      expect(sidebarWidth(rendered.root)).toBe("416px");
+
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(pulse.complete).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      expect(pulse.complete).toHaveBeenCalledTimes(1);
+      expect(pulse.complete.mock.calls[0][0]).toMatchObject({
+        status: "failed",
+        reason: "expanded_timeout",
       });
       expect(sidebarWidth(rendered.root)).toBe("400px");
+      expect(frames.pending()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       rendered.cleanup();
     }
