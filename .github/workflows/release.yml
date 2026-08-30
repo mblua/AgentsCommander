@@ -2465,13 +2465,57 @@ jobs:
           test "${NPM_CONFIG_USERCONFIG:-}" = "$RUNNER_TEMP/.npmrc"
           node - "$RUNNER_TEMP/.npmrc" <<'NODE'
           const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
           const fs = require('node:fs');
           const npmrc = process.argv[2];
+          const expectedNpmrc =
+            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' +
+            'registry=https://registry.npmjs.org/\n' +
+            'always-auth=false';
           assert.equal(
             fs.readFileSync(npmrc, 'utf8'),
-            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\nregistry=https://registry.npmjs.org/\nalways-auth=false\n',
+            expectedNpmrc,
             'pinned setup-node npmrc contents',
           );
+          const setupNodeRevision = 'a0853c24544627f65ddf259abe73b1d18a591444';
+          const setupNodeSource =
+            `https://raw.githubusercontent.com/actions/setup-node/${setupNodeRevision}`;
+          const fetchPinnedSource = async path => {
+            const response = await fetch(`${setupNodeSource}/${path}`);
+            assert.equal(response.ok, true, `fetch pinned setup-node ${path}`);
+            return response.text();
+          };
+          void (async () => {
+            const [actionYml, authutil] = await Promise.all([
+              fetchPinnedSource('action.yml'),
+              fetchPinnedSource('src/authutil.ts'),
+            ]);
+            const alwaysAuthDefault = actionYml.match(
+              /^  always-auth:\r?\n(?:    .*\r?\n)*?    default: '([^']+)'\r?$/m,
+            );
+            assert.ok(alwaysAuthDefault, 'pinned setup-node always-auth default');
+            assert.equal(alwaysAuthDefault[1], 'false');
+            assert.match(
+              authutil,
+              /newContents \+= `\$\{authString\}\$\{os\.EOL\}\$\{registryString\}\$\{os\.EOL\}\$\{alwaysAuthString\}`;/,
+              'pinned setup-node authutil serialization',
+            );
+            const derivedNpmrc = [
+              '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}',
+              'registry=https://registry.npmjs.org/',
+              `always-auth=${alwaysAuthDefault[1]}`,
+            ].join('\n');
+            assert.equal(derivedNpmrc.endsWith('\n'), false, 'no terminal line feed');
+            assert.equal(
+              crypto.createHash('sha256').update(derivedNpmrc).digest('hex'),
+              '688a105105fb3ca8fbca4af3fadd29aa0ed4392b9e4800a350ff4af6b2a1d481',
+              'pinned setup-node Linux npmrc bytes',
+            );
+            assert.equal(derivedNpmrc, expectedNpmrc, 'pinned setup-node npmrc derivation');
+          })().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
           NODE
           npm_require_official_registry "$REGISTRY_URL"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
