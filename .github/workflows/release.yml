@@ -1035,7 +1035,7 @@ jobs:
         shell: bash
         env:
           REGISTRY_URL: https://registry.npmjs.org/
-        run: npm ci --registry "$REGISTRY_URL"
+        run: npm ci --ignore-scripts --registry "$REGISTRY_URL"
 
       - name: Build package artifacts without release-side effects
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
