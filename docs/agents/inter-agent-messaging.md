@@ -143,6 +143,8 @@ There is one delivery mode today: `--mode wake`.
 - If the recipient's session has exited, AC destroys it and respawns a fresh persistent one.
 - If no session exists, AC spawns one with the recipient's saved `lastCodingAgent` (or what you pass via `--agent`).
 
+**Dispatch a coding agent and a profile per wake.** `send --agent <id> --profile <C> --mode wake` spawns (or respawns) the target with that agent and the `C` cell of that agent's profile row; the effective command contains the cell's parameters. `--profile` alone applies to whichever agent `auto` resolves. A disabled or missing letter walks down to the nearest enabled cell and the `Delivered:` receipt reports `fallbackApplied`. Neither flag writes the replica's durable assignment (`tooling.profile`, `currentCodingAgent`, `lastCodingAgent`). Against an already-live peer the flags cannot apply: the message is delivered to the live session and the receipt states `flagsNotApplied=live-target`. Verify what actually spawned with `list-peers-lean`, which reports `agent` and `profile` for every live peer.
+
 A first `--mode wake --send` against a cold peer (`sessionStatus: "none"`) only spawns the session. The message is delivered on a second send once the session is up. Verify with `working: true` between sends.
 
 ## Waiting for replies

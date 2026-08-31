@@ -65,19 +65,20 @@ This runs the scenario from the top of the page end to end. It assumes a `claude
 
 Resolution runs in two distinct steps.
 
-### Step 1: pick the requested letter (4-tier ranking)
+### Step 1: pick the requested letter (5-tier ranking)
 
 AC picks the requested letter from the first source that has one, highest priority first:
 
 | Tier | Source | Set by |
 |---|---|---|
+| 0. Dispatch request | `send --profile <A-Z>` on the current wake | The sender, for this wake only; never written to the replica |
 | 1. Instance override | The replica's `tooling.profile` in its own `config.json` | Assigned to the replica; persists across future launches |
 | 2. Explicit request | The letter you pick for this one launch | The launch picker, for this launch only |
 | 3. Origin default | The agent matrix's `tooling.defaultProfile` | Hand-edited in the matrix `config.json`, or inherited (no UI control) |
 | 4. Agent default | `codingAgentProfiles.defaultProfileByAgent[<agent>]` in `settings.json` | Rarely set by hand; see note below |
 | Floor | `A` | Always available when nothing else resolves |
 
-Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch.
+Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch. The one exception is the dispatch-time request (tier 0): a `send --profile` letter is the orchestrator's explicit per-wake choice and outranks the replica pin for that spawn only — it is never written back, so the pin survives for every other launch.
 
 > **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `settings.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited or migrated config or by hand-editing `settings.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
 
@@ -148,9 +149,7 @@ Profiles live in two places: the global `settings.json` (the matrix and defaults
 
 The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; a version-1 config is upgraded and persisted on load, after a one-time v1 backup.
 
-## There is no CLI for profiles
-
-You configure profiles in **Settings** or by editing `settings.json` and the per-agent `config.json` files. The `agentscommander` CLI has no `profile` subcommand. Resolution happens internally when a session spawns.
+**Dispatch a profile per wake.** `send --mode wake --profile <A-Z>` applies the letter to the coding agent the wake spawns or respawns (see [cli.md](../reference/cli.md) `send`). The letter is a dispatch-time request: it wins over a pinned replica profile for that spawn, is never written to `tooling.profile`/`currentCodingAgent`/`lastCodingAgent`, and the receipt reports the effective letter and any cell fallback (`fallbackApplied`). There is still no `profile` subcommand; everything else about profiles is configured in Settings or by editing `settings.json` and the per-agent `config.json` files.
 
 ## Troubleshooting
 
