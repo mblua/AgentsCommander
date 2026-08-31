@@ -2172,6 +2172,9 @@ const ProjectPanel: Component = () => {
             communication()?.kind === "raiseHand" &&
             communication()?.visible === true
           );
+          const showBlockedMenu = createMemo(() =>
+            communication()?.kind === "blockedMenu" && communication()?.visible === true
+          );
           const repoBadges = createMemo(() => {
             const s = session();
             return s && s.gitRepos.length > 0
@@ -2335,7 +2338,25 @@ const ProjectPanel: Component = () => {
                     </Show>
                   </div>
                 </Show>
-                <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
+                <div class="replica-item-name-row coord-task-line">
+                  <span
+                    class="replica-item-name"
+                    style={{ "min-width": "0px", flex: "1 1 auto" }}
+                  >
+                    {replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
+                  </span>
+                  <Show when={showBlockedMenu()}>
+                    <span
+                      class="coord-communication-slot coord-communication-slot--blocked-menu"
+                      data-kind="blockedMenu"
+                      data-ac-testid={communicationSlotTestId()}
+                      title={communication()?.message ?? "Interactive menu requires user input"}
+                      aria-label="Interactive menu requires user input"
+                    >
+                      <RaiseHandIcon class="coord-communication-icon" />
+                    </span>
+                  </Show>
+                </div>
                 <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
                   {/* #552/#580: the coordinator idle (minutes) badge leads the
                       row; the neutral AUTO-CLOSED pill REPLACES it when the team

@@ -559,6 +559,10 @@ export function onSessionCommunicationChanged(
   );
 }
 
+export function resolveBlockingMenu(sessionId: string): Promise<void> {
+  return transport.invoke("resolve_blocking_menu", { id: sessionId });
+}
+
 export const VoiceAPI = {
   transcribe: (audio: number[], mimeType: string) =>
     transport.invoke<string>("voice_transcribe", { audio, mimeType }),
