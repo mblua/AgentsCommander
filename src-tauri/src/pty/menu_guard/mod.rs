@@ -123,10 +123,7 @@ impl MenuGuard {
         match matched_entry {
             Some(config) => {
                 let is_same_pattern = state.matched_pattern.as_deref() == Some(&config.pattern);
-                if !is_same_pattern && state.matched_pattern.is_none() {
-                    state.episode_id = self.next_episode_id.fetch_add(1, Ordering::SeqCst);
-                    state.suppressed_episode_id = None;
-                } else if !is_same_pattern {
+                if !is_same_pattern {
                     state.episode_id = self.next_episode_id.fetch_add(1, Ordering::SeqCst);
                     state.suppressed_episode_id = None;
                 }
@@ -274,7 +271,7 @@ impl MenuGuard {
                 };
                 sessions_guard
                     .get(&session_uuid)
-                    .and_then(|s| s.last_seen_stamp.clone())
+                    .and_then(|s| s.last_seen_stamp)
             };
 
             let screen_read = {
@@ -288,7 +285,7 @@ impl MenuGuard {
             match screen_read {
                 ScreenRowsSince::Unchanged => {}
                 ScreenRowsSince::Frame(frame) => {
-                    let stamp = frame.stamp.clone();
+                    let stamp = frame.stamp;
                     {
                         let mut sessions_guard = match self.sessions.lock() {
                             Ok(g) => g,
@@ -321,14 +318,14 @@ impl MenuGuard {
                                 );
                             }
                         }
-                    } else if eval.should_clear_notification {
-                        if session_mgr.clear_blocked_menu(session_uuid).await {
-                            crate::session::selection::publish_session_communication(
-                                app,
-                                session_uuid,
-                                None,
-                            );
-                        }
+                    } else if eval.should_clear_notification
+                        && session_mgr.clear_blocked_menu(session_uuid).await
+                    {
+                        crate::session::selection::publish_session_communication(
+                            app,
+                            session_uuid,
+                            None,
+                        );
                     }
                 }
                 ScreenRowsSince::Gone => {
