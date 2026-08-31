@@ -5,7 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Compound your coding agents.</b> Multi-agent systems are how tomorrow’s software teams will work. Keep agent configurations as source code, bring any CLI coding agent at full power, and put the work on a <b>Loop</b> so scheduled runs build on your Team’s versioned operational experience while you sleep. <b>AgentsCommander only adds, never subtracts.</b> <i>Road to the Dark Factory.</i>
+  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power and activate Teams as parallel Rooms. Each Room is a separate filesystem workspace with replicas of its Team's agents and clones of its assigned repositories. <b>AgentsCommander only adds, never subtracts.</b>
 </p>
 
 <p align="center">
@@ -96,13 +96,14 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 
 ## The 30-second pitch
 
-> **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: define agents and Teams in source-controlled files, activate each Team as a Room, and schedule recurring work with a **Loop**. Each run can build on the roles, skills, plans, and prompts your Team has reviewed and versioned. We only add, never subtract.
+> **Run multiple coding-agent Teams in parallel without sharing a working tree.** Define agents and Teams in source-controlled files, then activate a Team as one or more Rooms. Each Room is a separate filesystem workspace with its own agent replicas, repository clones, messaging area, and build or test state. We only add, never subtract.
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
 - **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
+- **Keep each Room isolated on disk.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, filesystem write boundaries, and a Room-specific executable. Run multiple Teams—or multiple Rooms for the same Team—without mixing source changes or build and test state.
 - **Treat multi-agent configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files and review changes with git.
 - **Coordinate Teams through auditable files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole organization fits in `ls`.
-- **Compound operational practice.** A Loop delivers a prompt to a Room's orchestrator on a schedule. When a run improves a role, skill, plan, or prompt, record and review that change in the canonical Project files so later work can build on it. Loops do not train models or learn on their own.
+- **Schedule recurring prompts when you need them.** A Loop delivers a prompt to a Room's orchestrator on a cron schedule, waking or respawning the session when necessary. A Loop schedules delivery; it does not train models or learn on its own.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** Machine-local state stays in the configuration directory selected by the exact binary version; shared team state stays in each project's `.ac/` tree. The published `v0.30.3` resolver and the newer, unpublished `main` resolver differ, so use the [versioned configuration rule](docs/features/portable-instances.md#config-directory-rule) before moving or deleting state.
 
@@ -133,9 +134,9 @@ Most agent tools focus on in-process orchestration or one interactive session. A
 
 | Use case | Setup |
 |---|---|
-| **Parallel feature development** | Two coding agents on the same repo, each owning a different module. Orchestrator routes work and merges results. |
+| **Parallel feature development** | Activate one Room per parallel task, even when reusing the same Team. Every Room gets its own repository clones and build or test state; direct the Room orchestrators from the Root Agent. |
 | **Code-review swarm** | One agent ships a PR; two others review independently. You read both reviews in their own terminals before merging. |
-| **Autonomous refactor crew** | A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
+| **Autonomous refactor Team** | A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
 | **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md), kick off a build from your phone, and receive text updates plus screenshots or image artifacts. |
 
 Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
