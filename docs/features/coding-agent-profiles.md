@@ -65,7 +65,7 @@ This runs the scenario from the top of the page end to end. It assumes a `claude
 
 Resolution runs in two distinct steps.
 
-### Step 1: pick the requested letter (4-tier ranking)
+### Step 1: pick the requested letter (5-tier ranking)
 
 AC picks the requested letter from the first source that has one, highest priority first:
 
