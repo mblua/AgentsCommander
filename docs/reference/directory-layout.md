@@ -9,19 +9,19 @@ AgentsCommander keeps its on-disk data in two distinct trees:
 | Tree | Location | Scope |
 |---|---|---|
 | Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration, tracked in the project's git |
-| Application config dir | Runtime-selected override, adjacent candidate, or home fallback | Machine-local application state, never shared |
+| Application config dir | Selected by the exact binary version; see below | Machine-local application state, never shared |
 
-In the deployment documented below, the writable adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`.
+In the deployment documented below, the adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`. This example describes that deployment, not every package layout.
 
 ## The config-dir selection rule
 
-Production resolves the application config directory once per process (`src-tauri/src/config/mod.rs`, `resolve_instance_location`):
+Production resolves the application config directory once per process (`src-tauri/src/config/mod.rs`, `resolve_instance_location`), but the resolver changed after the latest published release:
 
-1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its value verbatim and skips all remaining probes.
-2. Otherwise AC derives `<native-executable-folder>/.<native-executable-stem>` and inspects `portable.txt` beside that executable. With the marker, the adjacent candidate must pass the write probe or startup fails. Without it, a successful probe selects the candidate, a conclusively unwritable candidate selects the home fallback, and an indeterminate result fails startup.
-3. If no usable executable parent and stem can be derived, AC selects the home fallback when one is available. The normal production identity uses `$HOME/.agentscommander-new`; the `dev` identity uses `$HOME/.agentscommander-new-dev`.
+- **Published `v0.30.3`:** when `current_exe()` has a parent and stem, AC immediately selects `<native-executable-folder>/.<native-executable-stem>`. It uses `$HOME/.agentscommander-new` only when those path parts cannot be derived. The release build has no public `AGENTSCOMMANDER_CONFIG_DIR`, `portable.txt`, writability probe, or read-only-candidate fallback.
+- **Unpublished `main`:** a nonblank public override wins. Otherwise AC checks the adjacent `portable.txt` and probes writability. A marked failure stops startup; an unmarked, conclusively unwritable candidate uses the identity-specific home fallback; indeterminate results stop startup.
+- **Any other release:** inspect its exact tag and apply only the behavior found there. Do not infer a cutoff between the two snapshots above.
 
-Debug builds may use the internal `AGENTSCOMMANDER_TEST_CONFIG_DIR` after the public override and before executable-derived resolution; release builds never read it. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the operational rule.
+Debug `v0.30.3` builds may use the internal `AGENTSCOMMANDER_TEST_CONFIG_DIR`; that is not a public release override. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the full operational rule, including AppImage behavior.
 
 These examples apply only after the adjacent candidate is selected:
 
@@ -30,7 +30,7 @@ C:\tools\agentscommander.exe        ->  C:\tools\.agentscommander\
 C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 ```
 
-- The adjacent candidate's stem comes from the running executable only. Renaming changes that candidate but does not override the public environment variable or guarantee that adjacency is writable.
+- The adjacent candidate's stem comes from the running executable only. Renaming changes that candidate. Only a resolver verified to include the public environment variable can override it, and only a resolver verified to include write probes tests candidate writability before selection.
 - Replica agent directories inside rooms always follow the executable-stem naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`); that local name is independent of the application's selected config location.
 
 The rule has two consequences:
@@ -116,7 +116,7 @@ This deployment's selected machine-local application state. Never commit or shar
 
 The seed manifest at `.ac/seed-manifest.toml` records every file AC seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`) and the replica config folders (rows under `config:<dest>` scopes such as `__agent_<name>/.claude/`). `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
 
-The manifest never tracks the selected application config dir. A public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership.
+The manifest never tracks the selected application config dir. Under the unpublished `main` resolver, a public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership. Published `v0.30.3` has no public override.
 
 ## Shared vs per-instance in one rule
 

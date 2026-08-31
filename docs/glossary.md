@@ -82,7 +82,7 @@ The single agent in a team that can send messages to any team member, edit the t
 
 ## Portable instance
 
-A renamed raw executable (with an `_<suffix>` such as `agentscommander_team-a.exe`) that selects a distinct writable adjacent config directory, normally enforced with `portable.txt`, plus its own mutex and web port. Project `.ac/` state is still shared when two instances register the same project.
+A renamed raw executable (with an `_<suffix>` such as `agentscommander_team-a.exe`) verified to select a distinct adjacent config directory, plus its own mutex and web port. Published `v0.30.3` selects adjacency without consulting `portable.txt`; the newer unpublished `main` resolver can use the marker to fail closed. Project `.ac/` state is still shared when two instances register the same project.
 
 ## Profile
 

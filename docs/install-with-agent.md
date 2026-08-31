@@ -25,7 +25,7 @@ Use only these sources:
 - latest stable release: `https://github.com/mblua/AgentsCommander/releases/latest`;
 - release assets under `https://github.com/mblua/AgentsCommander/releases/download/v<version>/`.
 
-Before planning an install, resolve the current `main` commit from GitHub, report its full commit SHA, and read this guide again at that pinned commit. Resolve the latest stable release independently; do not infer it from npm, a branch, a prerelease, or a draft. If the guide, commit, release metadata, asset list, and checksum file do not agree, stop.
+Before planning an install, resolve the current `main` commit from GitHub, report its full commit SHA, and read this guide again at that pinned commit. Resolve the latest stable release independently; do not infer it from npm, a branch, a prerelease, or a draft. Inspect configuration behavior in the exact source tag for every existing or selected release; `main` is not evidence for a published binary. If the guide, commit, release metadata, tag source, asset list, and checksum file do not agree, stop.
 
 For a release tagged `v<version>`, these are the only assets mapped for this workflow:
 
@@ -37,19 +37,37 @@ For a release tagged `v<version>`, these are the only assets mapped for this wor
 
 `<version>` is the stable tag without its leading `v`. Match an asset name exactly; a wildcard match is not approval. Do not select `.dmg`, `.deb`, `.rpm`, `testeable`, packaged archives, source archives, raw macOS binaries, or another release asset for this workflow.
 
-## Identify the active configuration
+## Resolve versions before configuration
 
-AgentsCommander resolves one configuration directory when a process first needs it. The first decisive state wins:
+Do not resolve, preserve, migrate, or delete configuration until you have reported both of these identities:
 
-1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips marker and write probes. An empty or whitespace-only value is ignored.
-2. Without that override, AgentsCommander derives `.<native-executable-stem>` beside the real native executable and inspects `portable.txt` in that executable's directory.
-   - With the marker, a successful write probe selects the adjacent candidate. Any write-probe failure, or an indeterminate marker state, is a startup error; the runtime never relocates to the home fallback.
-   - Without the marker, a successful write probe selects the adjacent candidate. A conclusively unwritable candidate selects the home fallback; an indeterminate failure is a startup error, not permission to relocate.
-3. If the runtime cannot derive a usable native-executable parent and stem, it uses the home fallback when one is available. For the normal production identity, that fallback is `$HOME/.agentscommander-new`.
+- **Existing binary version:** query the exact existing executable with `--version` and corroborate it with package or installer metadata when available. If no existing installation is present, report that explicitly. If a binary exists but its exact version or source provenance cannot be established, stop an update or uninstall.
+- **Selected release version:** resolve and report the exact stable GitHub tag before downloading or changing anything. Use that tag's source, not `main`, to determine post-install behavior.
 
-Before an update or uninstall, identify this active selected directory from the existing binary's actual launch environment and runtime evidence, then copy the complete directory to a user-controlled backup and verify the copy. Directory presence alone is not proof of selection. If multiple plausible configuration directories exist or the result is ambiguous, stop before changing the executable, package, or installer state. A relative override also requires the actual launch working directory; stop if that context is unknown. See [Portable instances](features/portable-instances.md#config-directory-rule) for examples and project-path consequences.
+The existing binary's exact resolver determines which configuration must be preserved. The selected release's exact resolver determines where the replacement will read and write. If the versions use different rules, report both paths and obtain approval for an explicit preservation or migration plan; do not silently move state.
 
-An AppImage does not run its native payload from the external `.AppImage` file's directory. The AppImage runtime exposes that external path as `APPIMAGE`, but executes `AppRun` from a [temporary, read-only mounted AppDir](https://docs.appimage.org/reference/architecture.html); `APPDIR` identifies that [mountpoint](https://docs.appimage.org/packaging-guide/environment-variables.html). AgentsCommander's executable-adjacent candidate is therefore inside the mounted payload, not beside the external file. Preserve a selected nonblank override or, for the current unmarked release AppImage without an override, the selected production home fallback; never treat the external AppImage directory or a `portable.txt` placed there as the configuration location.
+### Published release `v0.30.3`
+
+The `v0.30.3` resolver behaves as follows:
+
+1. When `current_exe()` supplies a parent and file stem, it immediately selects `<native-executable-folder>/.<native-executable-stem>`.
+2. It uses the home fallback only when that parent and stem cannot be derived. The normal production fallback is `$HOME/.agentscommander-new`.
+
+The `v0.30.3` release build does not read `AGENTSCOMMANDER_CONFIG_DIR`, inspect `portable.txt`, probe writability, or fall back to home because the adjacent path is read-only. Do not use any of those unpublished behaviors to locate `v0.30.3` state.
+
+An AppImage does not run its native payload from the external `.AppImage` file's directory. It executes from a [temporary, read-only mounted AppDir](https://docs.appimage.org/reference/architecture.html), identified by [`APPDIR`](https://docs.appimage.org/packaging-guide/environment-variables.html). A `v0.30.3` AppImage therefore selects an adjacent candidate inside that mount. It does not select a persistent path beside the external file and does not relocate to `$HOME`; writes can fail and the mount disappears after unmounting.
+
+For a `v0.30.3` AppImage update or uninstall, stop before mutation if the selected candidate is mounted or read-only, any existing application state is present, multiple plausible candidates exist, or any evidence is ambiguous. Report the blocker. Never invent a persistent configuration path beside the external AppImage or under home.
+
+### Unpublished `main` resolver
+
+The pinned guide's `main` source adds a public `AGENTSCOMMANDER_CONFIG_DIR` override, `portable.txt`, write probes, fail-closed marker handling, and a home fallback for an unmarked candidate that is conclusively unwritable. That resolver is not present in `v0.30.3`. Apply it only to a development build from the matching source commit, or to a later stable tag after verifying that exact tag contains the implementation.
+
+### Any other release
+
+Inspect the exact tag's `src-tauri/src/config/mod.rs` and `src-tauri/src/config/profile.rs`, plus any package launcher involved, before choosing a rule. Do not extrapolate `v0.30.3`, extrapolate `main`, or invent a version cutoff. See [Portable instances](features/portable-instances.md#config-directory-rule) for the two verified resolver snapshots and project-path consequences.
+
+Before an update or uninstall, identify the selected directory from the existing binary's verified version, exact native-executable path, launch context, and runtime evidence. Copy the complete persistent directory to a user-controlled backup and verify the copy. Directory presence alone is not proof of selection. Multiple candidates, existing state that cannot be attributed safely, a mounted or read-only ephemeral candidate, or any ambiguity is a stop condition before changing the executable, package, or installer state.
 
 ## Coding Agent contract
 
@@ -58,12 +76,13 @@ An AppImage does not run its native payload from the external `.AppImage` file's
 Before downloading, creating a directory, installing, overwriting, changing `PATH`, or launching an artifact:
 
 1. Detect and report the OS name and version, native CPU architecture, and process architecture if it differs.
-2. Look for an existing AgentsCommander command, executable, package, installation directory, version, and active runtime-selected configuration using the precedence above. Do not perform a broad or destructive filesystem scan. Stop if multiple candidates or ambiguous evidence prevent a unique selection.
+2. Look for an existing AgentsCommander command, executable, package, and installation directory without performing a broad or destructive filesystem scan. Report the exact existing binary version before resolving its configuration. Stop an update or uninstall if that version is unavailable, conflicting, or ambiguous.
 3. Apply the support table above. Stop on an unsupported combination. On Linux, explain the partial tier and wait for explicit confirmation before continuing. On macOS, stop the normal install and offer only the tester/contributor path below.
-4. Resolve and report the pinned guide commit, stable release tag and URL, exact mapped asset name and URL, and the exact matching record from that release's `SHASUMS256.txt`.
-5. Report the exact destination, every command you plan to run, files or directories you plan to create or overwrite, privilege level, `PATH` or system-wide effects, configuration-preservation plan, validation commands, and rollback steps.
-6. Explain that current Windows artifacts may be unsigned and that checksum verification is not publisher-compromise protection.
-7. Wait for clear approval of that plan.
+4. Resolve and report the pinned guide commit, exact selected stable release tag and URL, exact mapped asset name and URL, and the exact matching record from that release's `SHASUMS256.txt`.
+5. Inspect the exact tag source for both the existing and selected versions, then report the existing selected configuration and the replacement's expected selection. Stop if multiple candidates, existing unattributed state, mounted/read-only ephemeral state, or ambiguous evidence prevents a safe plan.
+6. Report the exact destination, every command you plan to run, files or directories you plan to create or overwrite, privilege level, `PATH` or system-wide effects, configuration-preservation or migration plan, validation commands, and rollback steps.
+7. Explain that current Windows artifacts may be unsigned and that checksum verification is not publisher-compromise protection.
+8. Wait for clear approval of that plan.
 
 Missing, ambiguous, or conflicting evidence is a stop condition. Do not guess.
 
@@ -78,7 +97,7 @@ Approval of the basic plan does not authorize any of these actions. Ask separate
 - continuing on Linux after the partial-support warning; or
 - entering the macOS tester/contributor path.
 
-Prefer a user-writable destination and the least privilege that completes the approved plan. Back up the active selected configuration and verify the backup before an update or uninstall. When updating an existing executable, keep a restorable copy until validation succeeds.
+Prefer a user-writable destination and the least privilege that completes the approved plan. Back up the persistent configuration selected by the verified existing version and verify the backup before an update or uninstall. When updating an existing executable, keep a restorable copy until validation succeeds.
 
 ### 3. Download, verify, then run
 
@@ -141,8 +160,8 @@ The release checksum detects corruption or a file that differs from the checksum
 
 Manual installation is secondary to the reviewed Coding Agent plan:
 
-- On supported Windows x86_64, download one mapped Windows asset and `SHASUMS256.txt` from the same [stable release](https://github.com/mblua/AgentsCommander/releases/latest), verify it, then follow the handling rule above. The setup installer can be removed through **Windows Settings > Apps > Installed apps > Agents Commander > Uninstall**. Identify and back up the active selected configuration before an update or uninstall.
-- On Linux x86_64, acknowledge the partial support tier first. After verifying the AppImage, set `asset` to its exact filename and run `chmod +x "$asset"`; success produces no output. Launch it from its exact path. Removing the new AppImage rolls back a fresh file-only install. Its external directory is not the configuration directory: preserve the active override or home fallback selected as described above.
+- On supported Windows x86_64, download one mapped Windows asset and `SHASUMS256.txt` from the same [stable release](https://github.com/mblua/AgentsCommander/releases/latest), verify it, then follow the handling rule above. The setup installer can be removed through **Windows Settings > Apps > Installed apps > Agents Commander > Uninstall**. Identify the exact existing version, apply its verified resolver, and back up the selected persistent configuration before an update or uninstall.
+- On Linux x86_64, acknowledge the partial support tier first. After verifying the AppImage, set `asset` to its exact filename and run `chmod +x "$asset"`; success produces no output. Launch it from its exact path. Removing the new AppImage rolls back a fresh file-only install. Its external directory is not the native executable directory. For `v0.30.3`, the selected candidate is inside the temporary read-only mount and there is no override or unwritable-path home fallback; apply the stop conditions above before any update or uninstall. For any other version, inspect its exact tag rather than assuming either rule.
 - npm remains available only as a secondary route for Windows x86_64 and Linux x86_64. It is not the recommended first install and must not be an automatic fallback. Read the [npm package boundary](../npm/README.md) before using it.
 
 ## Help extend Linux and macOS support

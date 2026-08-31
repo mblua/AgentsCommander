@@ -56,7 +56,7 @@ What is not there:
 
 ## Authentication
 
-The credential is the per-instance `web-token.txt` file in the [active selected configuration directory](portable-instances.md#config-directory-rule). It is **separate** from the CLI `master-token.txt` and separate again from control-plane API client tokens; the three are not interchangeable.
+The credential is the per-instance `web-token.txt` file in the [version-selected configuration directory](portable-instances.md#config-directory-rule). It is **separate** from the CLI `master-token.txt` and separate again from control-plane API client tokens; the three are not interchangeable.
 
 **Development builds skip token validation entirely.** Both `/ws` and `/api/sessions` check the token only in release builds, so a debug build reachable on the network has no credential in front of it.
 

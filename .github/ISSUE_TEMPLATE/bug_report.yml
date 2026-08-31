@@ -92,7 +92,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Paste relevant output from `<config-dir>/app.log` in the active runtime-selected configuration directory, or from the dev console. Wrap long pastes in ` ``` ` fences.
+      description: Paste relevant output from `<config-dir>/app.log` in the configuration directory selected by your exact binary version, or from the dev console. Wrap long pastes in ` ``` ` fences.
       render: shell
 
   - type: textarea

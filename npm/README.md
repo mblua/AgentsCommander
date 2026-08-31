@@ -25,45 +25,55 @@ The current npm installer does not enforce this complete allowlist: its asset ma
 
 AgentsCommander does not install or authenticate Coding Agent CLIs for you.
 
-## Preserve existing configuration
+## Resolve versions and preserve configuration
 
-The npm launcher runs the native executable from the package's `bin/` directory, but that directory provides only a configuration candidate. AgentsCommander resolves one active configuration directory at process startup, in this order:
-
-1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips the remaining probes.
-2. Without that override, the candidate is `.<native-executable-stem>` beside the native executable. If `portable.txt` is beside that executable, a successful write probe selects the candidate; any probe failure is a startup error, with no home fallback. Without the marker, a successful probe selects the candidate, a conclusively unwritable candidate selects the home fallback, and an indeterminate result is a startup error.
-3. If no usable native-executable parent and stem can be resolved, AgentsCommander also uses the home fallback when one is available. For the normal production identity, that fallback is `$HOME/.agentscommander-new`.
-
-An empty or whitespace-only public override is ignored. See the complete [configuration-selection rule](https://github.com/mblua/AgentsCommander/blob/main/docs/features/portable-instances.md#config-directory-rule).
-
-Before an npm update or uninstall, resolve the global package directory:
+Before an install, update, or uninstall, resolve and report the exact existing package and binary versions, then the exact registry release selected for comparison. For an install or update, that selected release must also be the version you install; for an uninstall, report that no replacement will be installed.
 
 ```bash
+npm list -g @mblua/agentscommander --depth=0
 npm root -g
+npm view @mblua/agentscommander@latest version
 ```
 
-The command exits 0 and prints the global `node_modules` directory. Use it to locate `@mblua/agentscommander/bin/` and the native executable, then identify the active directory from the precedence above and the existing launch environment. The presence of an adjacent directory alone does not prove that it was selected.
+`npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to locate `@mblua/agentscommander/bin/`, then query the exact native executable there with `--version`; do not rely only on whichever `agentscommander` happens to be on `PATH`. `npm view` reports the selected registry version without installing it. If the package metadata, native binary, and selected version disagree or cannot be identified exactly, stop before mutation.
 
-Copy the complete active configuration directory to a user-controlled backup and verify the copy before running npm. Stop before any update or uninstall if more than one plausible configuration directory exists, the launch environment is unknown, a relative override cannot be resolved from the actual launch context, or any other evidence leaves the selection ambiguous. If the selection is unambiguous and the selected directory does not exist, record that there is no existing configuration to preserve.
+The existing binary's exact resolver determines what must be preserved. The selected package's exact release tag determines post-install behavior. Verify both against the corresponding `v<version>` source tag; do not use `main` as evidence for a published npm package.
+
+### npm `0.30.3`
+
+The published `0.30.3` install script downloads the `v0.30.3` native release asset, and its launcher only spawns that binary from the package's `bin/` directory. It injects no configuration override. The native resolver:
+
+1. immediately selects `<native-executable-folder>/.<native-executable-stem>` when the executable path has a parent and file stem; and
+2. uses `$HOME/.agentscommander-new` only when that parent and stem cannot be derived.
+
+Release `v0.30.3` does not read `AGENTSCOMMANDER_CONFIG_DIR`, inspect `portable.txt`, probe candidate writability, or fall back to home because the adjacent path is read-only. For a normal npm `0.30.3` install, the selected directory is therefore `.agentscommander` beside the native executable under `@mblua/agentscommander/bin/`.
+
+The public override, marker, write probes, and conclusively-unwritable home fallback documented for the newer resolver are present on `main` but unpublished in `0.30.3`. Apply them only to a development build from matching source, or to a later npm version after verifying that version's exact release tag and package launcher. For any other published version, inspect `src-tauri/src/config/mod.rs`, `src-tauri/src/config/profile.rs`, `npm/run.js`, and `npm/install.js` at its exact tag; do not extrapolate either `v0.30.3` or `main` and do not invent a cutoff version.
+
+Before an npm update or uninstall, identify the active directory with the existing binary's verified rule and exact path. The presence of a directory alone is not proof of selection.
+
+Copy the complete persistent configuration directory to a user-controlled backup and verify the copy before running npm. Stop before an update or uninstall if more than one plausible directory exists, existing state cannot be attributed safely, the exact existing version or launch context is unknown, a selected candidate is mounted/read-only and ephemeral, or any other evidence is ambiguous. If selection is unambiguous and the selected persistent directory does not exist, record that there is no existing configuration to preserve. See the versioned [configuration-selection rule](https://github.com/mblua/AgentsCommander/blob/main/docs/features/portable-instances.md#config-directory-rule).
 
 ## Install and validate
 
 ```bash
-npm install -g @mblua/agentscommander
+npm install -g @mblua/agentscommander@<version>
 ```
 
-The command exits 0 on success. The package's install script downloads the package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
+Replace `<version>` with the exact version already inspected and approved; do not leave the install unpinned after resolving `latest`. The command exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
 
 Validate the installed command:
 
 ```bash
+agentscommander --version
 agentscommander --help
 ```
 
-Success exits 0 and prints the AgentsCommander command help. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+Both commands must exit 0. Confirm that `--version` reports the approved package version; `--help` must print the AgentsCommander command help. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
 
 ## Uninstall
 
-Identify, back up, and verify the active selected configuration as described above, then run:
+Identify, back up, and verify the version-selected configuration as described above, then run:
 
 ```bash
 npm uninstall -g @mblua/agentscommander

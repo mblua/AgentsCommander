@@ -638,7 +638,7 @@ graph TD
 
 ## 8. Persistence: Files on Disk
 
-The application config directory is selected once at runtime: a nonblank public override wins; otherwise a successfully probed executable-adjacent candidate is used, while an unmarked conclusively unwritable candidate falls back to the home profile directory. `portable.txt` makes the adjacent choice fail closed, and indeterminate probes stop startup. A renamed binary is isolated only when it selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full contract.
+The current `main` source selects the application config directory once at runtime: a nonblank public override wins; otherwise a successfully probed executable-adjacent candidate is used, while an unmarked conclusively unwritable candidate falls back to the home profile directory. `portable.txt` makes the adjacent choice fail closed, and indeterminate probes stop startup. This resolver is unpublished as of `v0.30.3`: that release immediately selects a derivable adjacent path and has none of those public override, marker, or probe branches. A renamed binary is isolated only when its exact version selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full versioned contract.
 
 ```mermaid
 graph TD
@@ -759,7 +759,7 @@ graph TD
 | `phone/messaging.rs` | Message pump and delivery |
 | `phone/consumption.rs` | Message consumption tracking |
 | `phone/terminal_snapshot.rs` | Snapshot request/response plumbing |
-| `config/mod.rs` | `config_dir()`: override, adjacent-candidate, marker, write-probe, and home-fallback resolution |
+| `config/mod.rs` | `config_dir()`: current `main` override, adjacent-candidate, marker, write-probe, and home-fallback resolution; inspect release tags for shipped behavior |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |
 | `config/projects.rs` | Dual-path project registry |

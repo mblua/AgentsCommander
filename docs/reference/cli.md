@@ -374,7 +374,7 @@ agentscommander list-sessions --status active
 |---|---|
 | `--status` | Filter by status. One of `active`, `running`, `idle`, `exited`. |
 
-No token required — reads `sessions.json` from the active selected configuration directory. Requires the AC app to be running (the file is kept up-to-date while AC is alive).
+No token required — reads `sessions.json` from the version-selected configuration directory. Requires the AC app to be running (the file is kept up-to-date while AC is alive).
 
 Each entry contains: `id`, `name`, `workingDirectory`, `status` (`"active" | "running" | "idle" | { "exited": <code> }`), `waitingForInput`, `createdAt` (ISO 8601).
 
@@ -676,9 +676,9 @@ agentscommander injected-messages reseed --all
 | `--id <id>` | Exact message id to reset (e.g. `context-alert`). Conflicts with `--all`. |
 | `--all` | Reset every known message id. |
 
-Edits `<config-dir>/injected-messages.toml` in the [active selected configuration directory](settings.md#file-location); `injected-messages.default.toml` is the canonical reference set. A timestamped `.bak-` copy is written before anything is overwritten; comments, unknown keys, entry order, and untargeted entries are preserved. `--all` applies the same surgical writer to every known id; it is deliberately not a whole-file rewrite.
+Edits `<config-dir>/injected-messages.toml` in the [version-selected configuration directory](settings.md#file-location); `injected-messages.default.toml` is the canonical reference set. A timestamped `.bak-` copy is written before anything is overwritten; comments, unknown keys, entry order, and untargeted entries are preserved. `--all` applies the same surgical writer to every known id; it is deliberately not a whole-file rewrite.
 
-**No token required** — this touches the active user-local configuration directory, the same boundary as `open-project` and `coding-agent`. Exit 0 on success, 1 on error.
+**No token required** — this touches the version-selected user-local configuration directory, the same boundary as `open-project` and `coding-agent`. Exit 0 on success, 1 on error.
 
 ---
 
@@ -844,7 +844,7 @@ Idempotent — re-registering the same path is a no-op (`Project already registe
 
 If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
-**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records a canonical absolute path and, when an instance base exists, a portable companion relative to that base. Adjacent selection uses the native executable's directory; an absolute config override uses the override directory's parent; a home fallback or relative override has no base. See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the base records a `null` companion and remains absolute-only.
+**Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records a canonical absolute path and, when an instance base exists, a portable companion relative to that base. Adjacent selection uses the native executable's directory. Under the unpublished `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no public override. A home fallback or `main` relative override has no base. See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the base records a `null` companion and remains absolute-only.
 
 **Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
 

@@ -4,15 +4,16 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 
 ## File location
 
-`settings.json` lives in the configuration directory selected once at runtime:
+`settings.json` lives in the configuration directory selected once at runtime. Selection depends on the exact binary version:
 
-| Selected case | Config directory | Settings file |
+| Verified version and selected case | Config directory | Settings file |
 |---|---|---|
-| Nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
-| Adjacent candidate selected for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
-| Unmarked adjacent candidate is conclusively unwritable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
+| `v0.30.3`, executable parent and stem available for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
+| `v0.30.3`, executable parent or stem unavailable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
+| Unpublished `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
+| Unpublished `main`, unmarked adjacent candidate conclusively unwritable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
 
-When no public override is selected, `portable.txt` requires the adjacent candidate to be writable or startup fails; an indeterminate marker or write probe also fails instead of guessing. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete precedence and identity-specific fallback names.
+Published `v0.30.3` has no public override, marker, or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and `portable.txt` behavior belong to the newer unpublished `main` resolver until an exact later tag is verified to contain them. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
 
 ## Editing rules
 
@@ -180,7 +181,7 @@ See [Terminal snapshots](../features/terminal-snapshots.md) for authorization, c
 
 ### Projects
 
-Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory; for an absolute config override it is the override directory's parent. A home fallback or relative override has no base. The three absolute fields and their three companions are index-aligned.
+Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory. Under the unpublished `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no such override. A home fallback or `main` relative override has no base. The three absolute fields and their three companions are index-aligned.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

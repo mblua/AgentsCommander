@@ -86,7 +86,7 @@ set RUST_LOG=info,agentscommander_lib::pty=trace && agentscommander.exe
 | In-app console capture | The DevTools console plus a rolling 500-entry in-memory buffer |
 | Debug logs export | `<config-dir>/debug-logs.txt`, written by the `save_debug_logs` IPC command with caller-supplied content (a console snapshot export). Not written automatically. |
 
-`<config-dir>` is the active runtime-selected configuration directory, the same directory as `settings.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
+`<config-dir>` is the configuration directory selected by the exact binary version, the same directory as `settings.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
 
 ## See also
 

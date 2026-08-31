@@ -20,7 +20,7 @@ No. AgentsCommander is a Rust + SolidJS Tauri app. There is no Python runtime re
 
 ## Where is the data stored?
 
-Locally, in the runtime-selected application config directory. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` wins; otherwise AC selects a successfully probed executable-adjacent candidate, or the home fallback when an unmarked candidate is conclusively unwritable. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See the exact [config directory rule](features/portable-instances.md#config-directory-rule) and [`PRIVACY.md`](../PRIVACY.md).
+Locally, in the application config directory selected by the exact binary version. Published `v0.30.3` immediately selects an executable-adjacent directory when it can derive one; the public override, marker, and writability rules belong to the newer unpublished `main` resolver. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See the versioned [config directory rule](features/portable-instances.md#config-directory-rule) and [`PRIVACY.md`](../PRIVACY.md).
 
 ## Does AC send telemetry?
 
@@ -28,7 +28,7 @@ No telemetry, no analytics, no crash reports. The one automatic network check is
 
 ## Can I run multiple AC instances side by side?
 
-Yes — that is what [portable instances](features/portable-instances.md) are for. Put each renamed raw executable in a writable location and use `portable.txt` to require its distinct adjacent config directory. The suffix gives it a distinct mutex and web port. A public config override still wins, so confirm the copies select different directories.
+Yes — that is what [portable instances](features/portable-instances.md) are for. Put each renamed raw executable in a writable location and confirm that its exact version selects a distinct adjacent directory. `v0.30.3` ignores `portable.txt`; the marker and public override apply only to the newer unpublished resolver until a later tag is verified. The suffix gives each instance a distinct mutex and web port.
 
 ## How do agents coordinate?
 

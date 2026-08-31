@@ -32,7 +32,7 @@ Writing is best-effort by design. If an append fails, AC logs a warning and keep
 
 ## Where the file lives
 
-The file is `activity.jsonl`, in the active configuration directory selected by the same runtime rule as `settings.json` and `sessions.json`. Two copies keep separate logs only when they select different configuration directories.
+The file is `activity.jsonl`, in the configuration directory selected by the exact binary version, alongside `settings.json` and `sessions.json`. Two copies keep separate logs only when they select different directories.
 
 See [Directory layout](../reference/directory-layout.md) for the rule that picks that directory; this page does not restate it.
 
@@ -86,7 +86,7 @@ See [Settings reference](../reference/settings.md#logging) for the logging group
 
 **"The file exists but stopped growing."** Look for `[activity] append to <path> failed (continuing): <error>` in the application log. Appends are best-effort: a failure is warned about and skipped, never retried into a blocking error.
 
-**"I am looking at the wrong file."** A second copy writes a different `activity.jsonl` only if it selected a different configuration directory. Confirm the active selected path before concluding anything from an empty file.
+**"I am looking at the wrong file."** A second copy writes a different `activity.jsonl` only if it selected a different configuration directory. Confirm the binary version and selected path before concluding anything from an empty file.
 
 **"An old `app_start` disappeared."** The file rotated. The rotated file opens with a `metrics` line instead, which is why a consumer can still read it without the original `app_start`.
 
