@@ -34,7 +34,7 @@ All subcommands return:
 
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
-- `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-room` when the response is unparseable.
+- `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` / `self-handoff-and-restart` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-room` when the response is unparseable.
 - `3` — `purge-room` only: gate rejected (one or more peers are busy)
 - `4` — `purge-room` only: a destroy failed after the gate passed
 
@@ -203,6 +203,36 @@ agentscommander self-handoff-and-switch --list-coding-agents
 | `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
 
 Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume. Scope is Room replicas only (`__agent_*` under a `room-*` room); Root Agent and origin matrix agents are rejected. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
+
+### `self-handoff-and-restart`
+
+Two-phase handoff that respawns the caller's OWN session on the **same configured coding agent and the same profile letter it is already running**: phase 1 waits for 30 seconds of sustained idle, then restarts the session on that pinned recipe, phase 2 waits a fresh 30 seconds of idle in the new session, archives `SELF-HANDOFF.md` into `self-clear/`, and injects a resume prompt naming that exact archive. Unlike `self-handoff-and-clear`, this is a genuinely new coding-agent process, not an in-process clear; unlike `self-handoff-and-switch`, it chooses nothing and **does not change your Selection-UI coding-agent or profile assignment**.
+
+```bash
+agentscommander self-handoff-and-restart \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token. Shape-validated. |
+| `--root` | Yes | Caller's agent root directory. |
+| `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
+
+There is no `--coding-agent` and no `--profile`: there is nothing to choose.
+
+Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you need to resume; if it is missing the daemon rejects the request (exit 1). If `SELF-FORGET.md` exists, the daemon captures a sanitized compact forgotten summary (max 240 chars), archives it into `self-clear/`, and the later resume prompt may include it only as closed background, never as instructions or work to resume.
+
+Scope is every session that owns a token and runs a configured coding agent: Room replicas (`__agent_*`), origin Agent Matrix agents (`_agent_*`), and the Root Agent. A session with **no configured coding-agent identity** is rejected, because there is no recipe to respawn; run the command from a coding-agent session.
+
+The respawn is rebuilt from your current configuration for that coding agent and profile letter. It pins the **recipe**, not a frozen command line: if that coding agent's configured command is edited between launch and restart, the new process runs the edited command. If the pinned recipe no longer builds a launchable command (a profile letter that no longer resolves, or a base command that no longer tokenizes), the daemon rejects the request **synchronously**, naming the agent, the letter and the directory, so nothing is queued and nothing is archived. If the coding agent has simply been removed from `settings.json → agents[]`, the respawn falls back to the session's stored shell and args, exactly as the UI Restart button does.
+
+Like any restart, the respawn refreshes this agent root's `tooling.lastCodingAgent` and `tooling.codingAgents` bookkeeping; it does not touch your `currentCodingAgent` or `profile` selection.
+
+When the respawned shell is not a direct coding-agent CLI (an outer `cmd`/`pwsh` wrapper, for example), the resume prompt is written into the new session **without** an appended Enter: it is delivered but not submitted, and a human or the agent must press Enter to act on it.
+
+Both phases are best-effort. A busy transition resets the current sustained-idle window, and a daemon restart abandons the cycle; `SELF-HANDOFF.md` stays in your root so you can re-issue. Exit codes: `0` queued or already queued, `1` auth/IO/rejection, `2` delivered but no queue acknowledgement within the timeout.
 
 ---
 

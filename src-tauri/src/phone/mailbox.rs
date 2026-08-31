@@ -1181,6 +1181,10 @@ pub(crate) fn self_clear_handoff_base_prompt(handoff_path: &str) -> String {
 /// #668 - the OutboxMessage `action` value for self-handoff-and-switch.
 pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
 
+/// #1632 - the OutboxMessage `action` value for self-handoff-and-restart. Single-sourced like the
+/// other two so the CLI emit, the early-dispatch match, and the response body cannot drift.
+pub(crate) const SELF_RESTART_ACTION: &str = "self-handoff-and-restart";
+
 /// (#885) Bulk purge of the caller's own workgroup. Dispatched pre-routing,
 /// like the other self-scoped actions: there is no single recipient to route to.
 pub(crate) const PURGE_WG_ACTION: &str = "purge-wg";
@@ -1189,6 +1193,14 @@ pub(crate) const PURGE_WG_ACTION: &str = "purge-wg";
 pub(crate) fn self_switch_handoff_base_prompt(handoff_path: &str) -> String {
     handoff_base_prompt(
         "Your session was just switched by the self-handoff-and-switch command.",
+        handoff_path,
+    )
+}
+
+/// #1632 - Phase-2 prompt for the restart variant; see `handoff_base_prompt`.
+pub(crate) fn self_restart_handoff_base_prompt(handoff_path: &str) -> String {
+    handoff_base_prompt(
+        "Your session was just restarted by the self-handoff-and-restart command.",
         handoff_path,
     )
 }
@@ -1325,6 +1337,18 @@ pub(crate) fn build_self_switch_handoff_prompt(
     )
 }
 
+/// #1632 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `self_restart_handoff_base_prompt`).
+pub(crate) fn build_self_restart_handoff_prompt(
+    handoff_path: &str,
+    forgotten_summary: Option<&str>,
+) -> String {
+    build_self_handoff_resume_prompt(
+        &self_restart_handoff_base_prompt(handoff_path),
+        forgotten_summary,
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelfSwitchTargets {
     coding_agent: String,
@@ -1375,6 +1399,84 @@ fn unknown_coding_agent_message(settings: &AppSettings, id: &str) -> String {
         id,
         configured_coding_agent_choices(settings)
     )
+}
+
+/// #1632 - the per-flavor strings the shared respawn driver needs. Switch and restart differ only
+/// in their log label, their phase-1 verb, their phase-2 verb, and their resume-prompt builder;
+/// everything else, the two-phase gate, the pending-set alias bookkeeping, and the archive-first
+/// phase-2 tail, is identical and must not fork.
+#[derive(Debug, Clone, Copy)]
+struct SelfHandoffFlavor {
+    action: &'static str,
+    phase1_verb: &'static str,
+    phase2_verb: &'static str,
+    build_prompt: fn(&str, Option<&str>) -> String,
+}
+
+const SELF_HANDOFF_FLAVOR_SWITCH: SelfHandoffFlavor = SelfHandoffFlavor {
+    action: SELF_SWITCH_ACTION,
+    phase1_verb: "persisting the target selection and respawning",
+    phase2_verb: "post-switch",
+    build_prompt: build_self_switch_handoff_prompt,
+};
+
+const SELF_HANDOFF_FLAVOR_RESTART: SelfHandoffFlavor = SelfHandoffFlavor {
+    action: SELF_RESTART_ACTION,
+    phase1_verb: "respawning the live recipe",
+    phase2_verb: "post-restart",
+    build_prompt: build_self_restart_handoff_prompt,
+};
+
+/// #1632 - the live recipe a restart must reproduce. `agent` is required: with no coding-agent
+/// identity there is nothing to pin, and passing None would hand the choice back to
+/// `resolve_restart_selected_agent_id`, which ranks the replica `currentCodingAgent` cell ABOVE
+/// the agent the live session was launched with (commands/session.rs:3626-3641). `profile` is
+/// optional: when the session inherited its letter, None reproduces exactly the resolution its
+/// own spawn used, and no letter is invented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfRestartRecipe {
+    agent: String,
+    profile: Option<String>,
+}
+
+fn resolve_self_restart_recipe(
+    session_agent: Option<&str>,
+    session_effective_profile: Option<&str>,
+    session_requested_profile: Option<&str>,
+) -> Result<SelfRestartRecipe, String> {
+    let agent = trimmed_nonempty(session_agent).ok_or_else(|| {
+        "self-handoff-and-restart: this session has no configured coding-agent identity, so there \
+         is no recipe to respawn; run it from a coding-agent session."
+            .to_string()
+    })?;
+    let profile = normalize_switch_profile_fallback(session_effective_profile)
+        .or_else(|| normalize_switch_profile_fallback(session_requested_profile));
+    Ok(SelfRestartRecipe { agent, profile })
+}
+
+/// #1632 - the driver seam carries the profile as a `String` (the `Restart` closure's second
+/// profile argument), so an absent profile letter must cross it as a sentinel. The empty string is
+/// that sentinel: it is not a valid profile (`normalize_switch_profile_fallback` rejects it) so it
+/// cannot collide with a real letter. These two are inverses and are pinned as such by T20;
+/// keeping them adjacent and named is what stops a future edit from encoding here and decoding
+/// somewhere else.
+fn encode_restart_profile_for_seam(profile: Option<&str>) -> String {
+    profile.unwrap_or("").to_string()
+}
+
+fn decode_restart_profile_from_seam(profile: &str) -> Option<String> {
+    trimmed_nonempty(Some(profile))
+}
+
+/// #1632 - operator-facing rendering of the same seam value. The sentinel must never reach a log
+/// line as `profile ''`. Third member of the sentinel's family, so it lives with its inverses
+/// rather than as an inline conditional in the shared driver body.
+fn display_profile_for_log(profile: &str) -> &str {
+    if profile.trim().is_empty() {
+        "<inherited>"
+    } else {
+        profile
+    }
 }
 
 fn resolve_switch_targets(
@@ -6844,6 +6946,13 @@ impl MailboxPoller {
                 .handle_self_handoff_switch(app, path, &msg, is_app_outbox)
                 .await;
         }
+        // (#1632) Same pre-routing block, same reason: self-handoff-and-restart operates on the
+        // CALLER'S OWN session and is authorized by token ownership, not by team reachability.
+        if msg.action.as_deref() == Some(SELF_RESTART_ACTION) {
+            return self
+                .handle_self_restart(app, path, &msg, is_app_outbox)
+                .await;
+        }
         if msg.action.as_deref() == Some(RAISE_HAND_ACTION) {
             return self.handle_raise_hand(app, path, &msg, is_app_outbox).await;
         }
@@ -10425,6 +10534,240 @@ impl MailboxPoller {
             .await
     }
 
+    /// #1632 - self-handoff-and-restart: hand off through `SELF-HANDOFF.md`, then respawn the
+    /// caller's own session on the SAME configured coding agent and profile letter it is already
+    /// running, then resume in the NEW session. Scope is every agent: Room replicas, origin Agent
+    /// Matrix agents, and the Root Agent.
+    ///
+    /// Gate order is load-bearing: identity (4) before existence (5) before launchability (6)
+    /// before the pending insert (7) and the SELF-FORGET archive (8). The property the contract
+    /// rests on is that EVERY rejection happens with nothing queued and nothing archived. Step 6
+    /// is NOT read-only (the spawn builder can `create_dir_all` an isolated `CODEX_HOME` and an
+    /// absolute `OPENCODE_CONFIG_DIR`), which is parity with the landed switch handler's
+    /// `validate_self_switch_spawn` call; that is exactly why the pure `is_file()` existence read
+    /// runs first, so the commonest rejection creates nothing.
+    ///
+    /// NOTE the gate order differs deliberately from `handle_self_handoff_switch`, which is
+    /// launchability then existence. Neither handler is aligned to the other: aligning switch
+    /// would be an unrequested behavior edit to a landed handler, and aligning restart would
+    /// reinstate the defect this order removes. Consequence: for a request that is both missing
+    /// its handoff file and unlaunchable, switch reports the launchability failure and restart
+    /// reports the missing file.
+    async fn handle_self_restart<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        // 1. Token parse.
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-restart requires a valid session token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        // 2. Sole authorization: the session that owns the presented token.
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-restart: no live session owns this token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        // 3. Session id.
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-handoff-and-restart: internal error resolving session id",
+                    )
+                    .await;
+            }
+        };
+
+        // 4. D1 identity gate. No coding-agent identity means no recipe to respawn, and passing
+        //    None would hand the choice back to `resolve_restart_selected_agent_id`.
+        let recipe = match resolve_self_restart_recipe(
+            session.agent_id.as_deref(),
+            session.effective_profile.as_deref(),
+            session.requested_profile.as_deref(),
+        ) {
+            Ok(recipe) => recipe,
+            Err(reason) => return self.reject_message(path, msg, &reason).await,
+        };
+
+        // 5. Existence gate on the session's OWN cwd. Restart runs no replica validation, so the
+        //    session cwd is the only correct source for a Root Agent or an origin matrix agent.
+        let handoff_path =
+            std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
+        if !handoff_path.is_file() {
+            return self
+                .reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); write it before requesting self-handoff-and-restart.",
+                        session.working_directory
+                    ),
+                )
+                .await;
+        }
+
+        // 6. Launchability pre-flight on the pinned recipe, through the VERY function the restart
+        //    transaction calls (`commands/session.rs`), so the pre-flight cannot disagree with the
+        //    real spawn; a re-implementation could.
+        let settings_snapshot = {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            snapshot
+        };
+        // #1632: mirror the restart transaction's Root substitution so the pre-flight cannot
+        // resolve a different profile cell or placeholder root than the spawn it is predicting.
+        // Read-only: `root_agent_dir()` returns exactly the string `ensure_root_agent_dir()`
+        // returns, without provisioning anything. On Err, fall back to the raw cwd rather than
+        // deny: `is_root_agent_path` itself returns false on that same error, so the only route
+        // to the fallback is `session.is_root_agent` alone, and in that case the transaction's own
+        // `ensure_root_agent_dir()?` fails pre-teardown on the identical root cause. Denying
+        // instead would convert a recoverable pre-teardown failure into a synchronous exit 1 for
+        // the Root Agent.
+        let is_root_agent = session.is_root_agent
+            || crate::config::root_agent::is_root_agent_path(&session.working_directory);
+        let preflight_cwd = if is_root_agent {
+            crate::config::root_agent::root_agent_dir()
+                .unwrap_or_else(|_| session.working_directory.clone())
+        } else {
+            session.working_directory.clone()
+        };
+        match crate::commands::session::build_configured_agent_spawn_for_cwd(
+            &settings_snapshot,
+            &recipe.agent,
+            &preflight_cwd,
+            recipe.profile.as_deref(),
+        ) {
+            // `Ok(Some(_))` is launchable. `Ok(None)` means the pinned agent id is no longer in
+            // `settings.agents`, so the respawn falls back to the session's stored shell and args,
+            // byte-identically to what the UI Restart button does today for the same session:
+            // proceed, do NOT reject.
+            Ok(_) => {}
+            // The pinned recipe does not build a launchable command: a profile letter that no
+            // longer resolves, or a base command that no longer tokenizes. Reject synchronously so
+            // the agent is told, rather than warning 30s later after the CLI already returned 0.
+            Err(e) => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        &format!(
+                            "self-handoff-and-restart: coding agent '{}' profile '{}' is not launchable from '{}': {}",
+                            recipe.agent,
+                            recipe.profile.as_deref().unwrap_or("<inherited>"),
+                            preflight_cwd,
+                            e,
+                        ),
+                    )
+                    .await;
+            }
+        }
+
+        // 7. Idempotency - atomic check-and-set. The set is SHARED with clear and switch, so the
+        //    three operations cannot race on one session.
+        let newly_inserted = {
+            let pending = app.state::<Arc<crate::PendingSelfClear>>();
+            let mut set = pending.0.lock().unwrap_or_else(|e| e.into_inner());
+            set.insert(session_id)
+        };
+        let status = if newly_inserted {
+            "queued"
+        } else {
+            "already_queued"
+        };
+
+        if newly_inserted {
+            // 8. Archive SELF-FORGET.md so the next cycle starts fresh. Best-effort, log-only on
+            //    failure, in ALL cfgs (as `handle_self_clear` does) so the harness can assert it.
+            let root = std::path::Path::new(&session.working_directory);
+            let forgotten_summary = capture_self_forget_summary(root);
+            let ts = chrono::Local::now()
+                .format(ARCHIVE_TIMESTAMP_FORMAT)
+                .to_string();
+            match archive_root_md(root, "SELF-FORGET", &ts) {
+                Ok(Some(p)) => log::info!(
+                    "[mailbox] self-handoff-and-restart: archived SELF-FORGET.md -> {}",
+                    p.display()
+                ),
+                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
+                Err(e) => log::warn!(
+                    "[mailbox] self-handoff-and-restart: SELF-FORGET.md archive failed for session {} (non-fatal): {}",
+                    session_id,
+                    e
+                ),
+            }
+
+            // 9. Spawn the deferred two-phase sustained-idle gate (detached; never blocks the
+            //    poller). Gated under cfg(not(test)) exactly like the other two handlers.
+            #[cfg(not(test))]
+            {
+                let app_clone = app.clone();
+                let restart_agent = recipe.agent.clone();
+                let restart_profile = encode_restart_profile_for_seam(recipe.profile.as_deref());
+                let root = root.to_path_buf();
+                tauri::async_runtime::spawn(async move {
+                    Self::run_self_restart_after_sustained_idle(
+                        &app_clone,
+                        session_id,
+                        root,
+                        restart_agent,
+                        restart_profile,
+                        forgotten_summary,
+                        SELF_CLEAR_SETTLE,
+                        SELF_CLEAR_POLL,
+                        SELF_CLEAR_MAX_DEFER,
+                    )
+                    .await;
+                });
+            }
+            #[cfg(test)]
+            let _ = &forgotten_summary;
+            log::info!(
+                "[mailbox] self-handoff-and-restart queued for session {} coding agent '{}' profile '{}' (from '{}')",
+                session_id,
+                recipe.agent,
+                recipe.profile.as_deref().unwrap_or("<inherited>"),
+                msg.from
+            );
+        } else {
+            log::info!(
+                "[mailbox] self-handoff-and-restart already pending for session {} (from '{}')",
+                session_id,
+                msg.from
+            );
+        }
+
+        // 10.
+        self.write_self_restart_response(app, path, msg, session_id, status, &recipe, is_app_outbox)
+            .await
+    }
+
     /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both phases
     /// on the stable `session_id`, injecting provider-resolved logical-clear text, then (#749)
     /// archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived path,
@@ -10729,6 +11072,7 @@ impl MailboxPoller {
             target_agent,
             target_profile,
             forgotten_summary,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             pending,
             settle,
             poll,
@@ -10742,6 +11086,146 @@ impl MailboxPoller {
         .await;
     }
 
+    /// #1632 - the restart flavor's production wrapper, modelled on
+    /// `run_self_switch_after_sustained_idle` with exactly two differences.
+    ///
+    /// 1. `persist` is a no-op closure. **No `set_replica_coding_agent_selection` call exists
+    ///    anywhere on this path**, so `tooling.currentCodingAgent`, `tooling.profile`,
+    ///    `tooling.instanceProfileOverride` and `tooling.instanceProfileOverrideSource` are
+    ///    untouched. That is the invariant separating a restart from a switch. (The spawn still
+    ///    rewrites `tooling.lastCodingAgent`, `tooling.codingAgents[<id>]` and
+    ///    `tooling.profileContentHash`, exactly as on any other restart.)
+    /// 2. The restart seam decodes the profile sentinel, so a session that inherited its letter
+    ///    crosses as `requested_profile: None` rather than as an invented letter.
+    ///
+    /// `#[cfg_attr(test, allow(dead_code))]` is required because the runner is only spawned under
+    /// `#[cfg(not(test))]`, so under `cfg(test)` it has no caller.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(test, allow(dead_code))]
+    async fn run_self_restart_after_sustained_idle<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        original_session_id: Uuid,
+        cwd: PathBuf,
+        target_agent: String,
+        target_profile: String,
+        forgotten_summary: Option<ForgottenSummary>,
+        settle: std::time::Duration,
+        poll: std::time::Duration,
+        max_defer: std::time::Duration,
+    ) {
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) => (true, s.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        // #1632: deliberately inert. A restart reproduces the running recipe; it must not write
+        // the Selection UI's coding-agent or profile assignment, and it could not serve the Root
+        // Agent or an origin matrix agent even if it wanted to (`set_replica_coding_agent_selection`
+        // rejects any launch path whose final component does not start with `__agent_`).
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move {
+            Ok::<(), String>(())
+        };
+
+        let app_for_restart = app.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            async move {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+                let settings = app.state::<SettingsState>();
+                // (#747) An agent-initiated restart must not silently drop a raised hand; the
+                // injected handoff continues the same work. Capture before the destroy.
+                let carried_communication = {
+                    let mgr = session_mgr.read().await;
+                    mgr.get_session(session_id)
+                        .await
+                        .and_then(|s| s.communication.clone())
+                };
+                let result = crate::commands::session::restart_session_inner_with_intent(
+                    &app,
+                    session_mgr.inner(),
+                    pty_mgr.inner(),
+                    settings.inner(),
+                    session_id,
+                    Some(agent),
+                    // #1632: the ONLY difference from the switch closure. The seam's empty-string
+                    // sentinel decodes back to None, so an inherited letter reproduces exactly the
+                    // resolution the session's own spawn used and no letter is invented.
+                    decode_restart_profile_from_seam(&profile),
+                    Some(true),
+                    true,
+                    crate::session::selection::TrustedRestartIntent::Background,
+                    carried_communication,
+                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
+                )
+                .await;
+                result.map(|info| info.id)
+            }
+        };
+
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            async move { crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await }
+        };
+
+        let app_for_boundary = app.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let app = app_for_boundary.clone();
+            async move {
+                match boundary {
+                    SelfClearBoundary::Cleared => {
+                        crate::commands::pty::stamp_fresh_boundary_to_session(&app, session_id)
+                            .await
+                    }
+                    SelfClearBoundary::ContentInjected => {
+                        crate::commands::pty::note_post_boundary_content_to_session(
+                            &app, session_id,
+                        )
+                        .await
+                    }
+                };
+            }
+        };
+
+        Self::drive_self_switch_after_sustained_idle(
+            original_session_id,
+            cwd,
+            target_agent,
+            target_profile,
+            forgotten_summary,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            pending,
+            settle,
+            poll,
+            max_defer,
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+    }
+
+    /// #1632 - despite the name, this drives BOTH self-handoff flavors: pass
+    /// `SELF_HANDOFF_FLAVOR_SWITCH` for self-handoff-and-switch and
+    /// `SELF_HANDOFF_FLAVOR_RESTART` for self-handoff-and-restart. The two differ only in the four
+    /// `SelfHandoffFlavor` fields (three `&'static str` plus one prompt-builder `fn` pointer); the
+    /// two-phase gate, the pending-set alias bookkeeping, and the archive-first phase-2 tail are
+    /// shared and must not fork. The name is kept so a rename does not churn fifteen call sites
+    /// (two production wrappers plus thirteen tests) for zero behavioral value.
     #[allow(clippy::too_many_arguments)]
     async fn drive_self_switch_after_sustained_idle<
         SessionState,
@@ -10760,6 +11244,7 @@ impl MailboxPoller {
         target_agent: String,
         target_profile: String,
         forgotten_summary: Option<ForgottenSummary>,
+        flavor: SelfHandoffFlavor,
         pending: Arc<crate::PendingSelfClear>,
         settle: std::time::Duration,
         poll: std::time::Duration,
@@ -10802,17 +11287,20 @@ impl MailboxPoller {
                 SelfClearGateAction::Wait => continue,
                 SelfClearGateAction::InjectClear => {
                     log::info!(
-                        "[mailbox] self-handoff-and-switch: session {} idle >={}s; persisting target coding agent '{}' profile '{}' and respawning (phase 1)",
+                        "[mailbox] {}: session {} idle >={}s; {} with coding agent '{}' profile '{}' (phase 1)",
+                        flavor.action,
                         session_id,
                         settle.as_secs(),
+                        flavor.phase1_verb,
                         target_agent,
-                        target_profile
+                        display_profile_for_log(&target_profile)
                     );
                     if let Err(e) =
                         persist(cwd.clone(), target_agent.clone(), target_profile.clone()).await
                     {
                         log::warn!(
-                            "[mailbox] self-handoff-and-switch: persist failed for session {}: {}",
+                            "[mailbox] {}: persist failed for session {}: {}",
+                            flavor.action,
                             original_session_id,
                             e
                         );
@@ -10825,7 +11313,8 @@ impl MailboxPoller {
                             Ok(uuid) => uuid,
                             Err(e) => {
                                 log::warn!(
-                                    "[mailbox] self-handoff-and-switch: restarted session id '{}' could not be parsed: {}",
+                                    "[mailbox] {}: restarted session id '{}' could not be parsed: {}",
+                                    flavor.action,
                                     id,
                                     e
                                 );
@@ -10834,7 +11323,8 @@ impl MailboxPoller {
                         },
                         Err(e) => {
                             log::warn!(
-                                "[mailbox] self-handoff-and-switch: restart failed for session {}: {}",
+                                "[mailbox] {}: restart failed for session {}: {}",
+                                flavor.action,
                                 original_session_id,
                                 e
                             );
@@ -10847,7 +11337,8 @@ impl MailboxPoller {
                             new_alias_id = Some(new_id);
                         } else {
                             log::warn!(
-                                "[mailbox] self-handoff-and-switch: new session {} was already marked pending",
+                                "[mailbox] {}: new session {} was already marked pending",
+                                flavor.action,
                                 new_id
                             );
                         }
@@ -10857,9 +11348,11 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::InjectHandoff => {
                     log::info!(
-                        "[mailbox] self-handoff-and-switch: session {} idle >={}s post-switch; injecting handoff prompt (phase 2)",
+                        "[mailbox] {}: session {} idle >={}s {}; injecting handoff prompt (phase 2)",
+                        flavor.action,
                         session_id,
-                        settle.as_secs()
+                        settle.as_secs(),
+                        flavor.phase2_verb
                     );
                     // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
                     // (#756) NOTE: the switch phase 1 fires NO Cleared event; it is a
@@ -10869,8 +11362,8 @@ impl MailboxPoller {
                     let injected = inject_handoff_prompt_with_archive(
                         &cwd,
                         session_id,
-                        SELF_SWITCH_ACTION,
-                        build_self_switch_handoff_prompt,
+                        flavor.action,
+                        flavor.build_prompt,
                         forgotten_summary.as_ref(),
                         &mut inject,
                     )
@@ -10883,7 +11376,8 @@ impl MailboxPoller {
                 }
                 SelfClearGateAction::Abandon(reason) => {
                     log::warn!(
-                        "[mailbox] self-handoff-and-switch ABANDONED for original session {} current session {}: {} (agent may re-issue)",
+                        "[mailbox] {} ABANDONED for original session {} current session {}: {} (agent may re-issue)",
+                        flavor.action,
                         original_session_id,
                         session_id,
                         reason
@@ -10965,6 +11459,53 @@ impl MailboxPoller {
                 "requested_by": msg.from,
                 "target_coding_agent": targets.coding_agent,
                 "target_profile": targets.profile,
+            });
+            if let Ok(json) = serde_json::to_string_pretty(&response) {
+                if !is_app_outbox {
+                    if let Some(responses_dir) = path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|ac| ac.join("responses"))
+                    {
+                        let _ = std::fs::create_dir_all(&responses_dir);
+                        let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                    }
+                }
+                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                    let responses_dir = std::path::PathBuf::from(sender_path)
+                        .join(crate::config::agent_local_dir_name())
+                        .join("responses");
+                    let _ = std::fs::create_dir_all(&responses_dir);
+                    let _ = std::fs::write(responses_dir.join(format!("{}.json", rid)), &json);
+                }
+            }
+        }
+        self.move_to_delivered(path, msg).await
+    }
+
+    /// #1632 - write the self-handoff-and-restart queue-ack response, then move the message to
+    /// delivered/. `profile` serializes as JSON `null` when the session inherited its letter: the
+    /// recipe pins nothing there, and reporting an invented `"A"` would be a lie about the pin.
+    #[allow(clippy::too_many_arguments)]
+    async fn write_self_restart_response<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session_id: Uuid,
+        status: &str,
+        recipe: &SelfRestartRecipe,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
+        if let Some(ref rid) = msg.request_id {
+            let response = serde_json::json!({
+                "action": SELF_RESTART_ACTION,
+                "status": status,
+                "session_id": session_id.to_string(),
+                "settle_secs": SELF_CLEAR_SETTLE_SECS,
+                "requested_by": msg.from,
+                "coding_agent": recipe.agent,
+                "profile": recipe.profile,
             });
             if let Ok(json) = serde_json::to_string_pretty(&response) {
                 if !is_app_outbox {
@@ -18798,6 +19339,7 @@ mod tests {
             target_agent,
             target_profile,
             None,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             Arc::clone(&pending),
             Duration::ZERO,
             Duration::ZERO,
@@ -19040,6 +19582,7 @@ mod tests {
             target_agent,
             target_profile,
             None,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             Arc::clone(&pending),
             Duration::ZERO,
             Duration::ZERO,
@@ -19244,6 +19787,7 @@ mod tests {
             target_agent,
             target_profile,
             None,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             Arc::clone(&pending),
             Duration::ZERO,
             Duration::ZERO,
@@ -20197,6 +20741,7 @@ mod tests {
             "claude".into(),
             "B".into(),
             forgotten_summary,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             pending.clone(),
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
@@ -20268,6 +20813,7 @@ mod tests {
             "claude".into(),
             "B".into(),
             None,
+            SELF_HANDOFF_FLAVOR_SWITCH,
             pending.clone(),
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
@@ -20333,6 +20879,7 @@ mod tests {
             "claude".into(),
             "B".into(),
             ForgottenSummary::from_raw("should not inject"),
+            SELF_HANDOFF_FLAVOR_SWITCH,
             pending.clone(),
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
@@ -20386,6 +20933,7 @@ mod tests {
             "claude".into(),
             "B".into(),
             ForgottenSummary::from_raw("should not inject"),
+            SELF_HANDOFF_FLAVOR_SWITCH,
             pending.clone(),
             std::time::Duration::ZERO,
             std::time::Duration::ZERO,
@@ -20403,21 +20951,1339 @@ mod tests {
         assert!(pending.0.lock().unwrap().is_empty());
     }
 
+    // ────────────────────────── #1632 self-handoff-and-restart ──────────────────────────
+    //
+    // Every test below that reaches `handle_self_restart` NAMES its seeding call and its
+    // `agent_id` argument explicitly. That is not a style rule: D1 replaces the landed
+    // self-clear handler's SHELL gate with an IDENTITY gate on `session.agent_id`, and
+    // `seed_self_clear_session` hardcodes `agent_id: None` whatever the shell string is
+    // (session/manager.rs positions 4 and 5). A test that mirrors a self-clear fixture
+    // literally is therefore rejected at step 4 and asserts T6's branch instead of its own.
+    // `seed_self_switch_session` is the only helper in this module that produces an identity.
+
+    /// T1
+    #[test]
+    fn self_restart_action_const_pins_wire_value() {
+        assert_eq!(SELF_RESTART_ACTION, "self-handoff-and-restart");
+    }
+
+    /// T2
+    #[test]
+    fn self_restart_handoff_prompt_is_single_line_self_contained() {
+        // Both forms: the exact archived path (normal) and the root-name fallback.
+        for path in [
+            "SELF-HANDOFF.md",
+            "self-clear/20260702_181530_SELF-HANDOFF.md",
+        ] {
+            let prompt = self_restart_handoff_base_prompt(path);
+            assert!(!prompt.is_empty());
+            assert!(!prompt.contains('\n'));
+            assert!(!prompt.contains('\u{2014}'));
+            assert_eq!(
+                prompt.matches(path).count(),
+                2,
+                "the prompt must name the file in the read instruction AND the missing-or-empty clause: {prompt}"
+            );
+            assert!(prompt.contains("missing or empty"));
+            assert!(prompt.contains("self-handoff-and-restart"), "{prompt}");
+            assert_eq!(build_self_restart_handoff_prompt(path, None), prompt);
+        }
+    }
+
+    /// T3 - the pure recipe resolver. Effective outranks requested; nothing is invented.
+    #[test]
+    fn resolve_self_restart_recipe_pins_live_agent_and_effective_profile() {
+        let both = resolve_self_restart_recipe(Some("pi"), Some("b"), Some("c")).unwrap();
+        assert_eq!(both.agent, "pi");
+        assert_eq!(
+            both.profile.as_deref(),
+            Some("B"),
+            "the EFFECTIVE profile wins over the requested one, normalized"
+        );
+
+        assert_eq!(
+            resolve_self_restart_recipe(Some("pi"), None, Some("c"))
+                .unwrap()
+                .profile
+                .as_deref(),
+            Some("C")
+        );
+        // No "A" is invented and no replica cell is read.
+        assert_eq!(
+            resolve_self_restart_recipe(Some("pi"), None, None)
+                .unwrap()
+                .profile,
+            None
+        );
+        let trimmed = resolve_self_restart_recipe(Some("  pi  "), Some("  "), None).unwrap();
+        assert_eq!(trimmed.agent, "pi");
+        assert_eq!(trimmed.profile, None);
+        // A non-single-letter effective profile falls THROUGH the fallback rather than being
+        // truncated or passed through. Identical to today's switch behavior.
+        assert_eq!(
+            resolve_self_restart_recipe(Some("pi"), Some("beta"), None)
+                .unwrap()
+                .profile,
+            None
+        );
+        // D1: no coding-agent identity means no recipe to respawn.
+        let err = resolve_self_restart_recipe(None, Some("A"), Some("A")).unwrap_err();
+        assert!(err.contains("no configured coding-agent identity"), "{err}");
+    }
+
+    /// T20 - the driver seam's empty-string sentinel and its inverse, plus the operator
+    /// rendering that keeps the sentinel out of a log line as `profile ''`.
+    #[test]
+    fn restart_profile_seam_sentinel_round_trips() {
+        assert_eq!(encode_restart_profile_for_seam(None), "");
+        assert_eq!(encode_restart_profile_for_seam(Some("A")), "A");
+        assert_eq!(decode_restart_profile_from_seam(""), None);
+        assert_eq!(decode_restart_profile_from_seam("   "), None);
+        assert_eq!(decode_restart_profile_from_seam("A"), Some("A".to_string()));
+        for original in [None, Some("A"), Some("Z")] {
+            assert_eq!(
+                decode_restart_profile_from_seam(&encode_restart_profile_for_seam(original)),
+                original.map(str::to_string),
+                "encode and decode must be inverses for {original:?}"
+            );
+        }
+        assert_eq!(display_profile_for_log(""), "<inherited>");
+        assert_eq!(display_profile_for_log("   "), "<inherited>");
+        assert_eq!(display_profile_for_log("A"), "A");
+    }
+
+    /// #1632 - sibling of `build_self_clear_message_with_from`. The landed helper hardcodes
+    /// `action: Some(SELF_CLEAR_ACTION)`, so it cannot be reused and must not be edited.
+    fn build_self_restart_message_with_from(
+        cwd: &Path,
+        msg_id: &str,
+        request_id: &str,
+        token: Option<String>,
+        from: &str,
+    ) -> (PathBuf, OutboxMessage) {
+        let outbox_dir = cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let path = outbox_dir.join(format!("{}.json", msg_id));
+        let msg = OutboxMessage {
+            id: msg_id.into(),
+            token,
+            from: from.into(),
+            to: String::new(),
+            body: String::new(),
+            mode: String::new(),
+            get_output: false,
+            request_id: Some(request_id.into()),
+            sender_agent: None,
+            preferred_agent: String::new(),
+            requested_profile: None,
+            effective_agent_id: None,
+            effective_profile: None,
+            profile_fallback_applied: false,
+            dispatch_not_applied: None,
+            priority: "normal".into(),
+            timestamp: "2026-08-31T00:00:00Z".into(),
+            command: None,
+            action: Some(SELF_RESTART_ACTION.into()),
+            target: None,
+            force: None,
+            timeout_secs: None,
+            switch_coding_agent: None,
+            switch_profile: None,
+            dry_run: None,
+            quiet_period_ms: None,
+            pty_input: None,
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+        (path, msg)
+    }
+
+    const SELF_RESTART_TEST_FROM: &str = "proj-a:wg-1-dev-team/dev-rust";
+
+    /// T4 - the happy path AND the Selection-UI invariant, both discriminating.
+    #[tokio::test]
+    async fn handle_self_restart_valid_token_queues_without_selection_write() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        // requested "C" / effective "A" DIFFER on purpose. `seed_self_switch_session` takes
+        // (shell, agent_id, requested_profile, effective_profile) while
+        // `resolve_self_restart_recipe` takes (agent, effective, requested), i.e. the two
+        // letters in the opposite order. With both letters equal nothing would catch the
+        // handler's step-4 call site being written with them swapped; with "C"/"A" the
+        // `"profile":"A"` assertion below goes red on that one-token slip.
+        let (session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("C"),
+            Some("A"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        // Deliberately MISMATCHED Selection-UI cells, so both halves of this test are
+        // discriminating rather than vacuous: the response must carry the LIVE recipe (never
+        // the cell), and the cells must survive the call untouched.
+        std::fs::write(
+            fixture.replica.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","tooling":{"currentCodingAgent":"codex","profile":"C"}}"#,
+        )
+        .unwrap();
+
+        let (path, msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-1",
+            "rid-sr-1",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_restart(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let response = read_response_json(&fixture.replica, "rid-sr-1").unwrap();
+        assert_eq!(response["action"], SELF_RESTART_ACTION);
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["coding_agent"], "pi");
+        assert_eq!(response["profile"], "A");
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert!(read_reject_reason(&fixture.replica, "msg-sr-1").is_none());
+
+        // `set_replica_coding_agent_selection` is never called on this path, so the four
+        // Selection-UI cells it owns are unchanged. NOT a claim that the `tooling` block is
+        // byte-stable: a real spawn rewrites lastCodingAgent / codingAgents /
+        // profileContentHash, and the handler runs under cfg(test) so no spawn occurs here.
+        assert_eq!(
+            crate::config::coding_agent_profiles::read_replica_current_coding_agent(
+                &fixture.replica
+            ),
+            Some("codex".to_string()),
+            "the replica currentCodingAgent cell must be neither consulted nor overwritten"
+        );
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.replica.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["profile"], "C");
+    }
+
+    /// T5 - the existence gate. The present agent id is load-bearing: with `agent_id: None`
+    /// this request would reject at step 4 with the identity reason instead, and the
+    /// assertion on the reason string would fail for the right-looking wrong cause.
+    #[tokio::test]
+    async fn handle_self_restart_missing_self_handoff_is_rejected() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (_session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        // NO seed_self_handoff call: that absence is the subject of this test.
+
+        let (path, msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-missing",
+            "rid-sr-missing",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_restart(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&fixture.replica, "msg-sr-missing")
+            .expect("a missing SELF-HANDOFF.md must be rejected with a reason file");
+        assert!(reason.contains("SELF-HANDOFF.md"), "{reason}");
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        assert_eq!(count_forget_archives(&fixture.replica), 0);
+    }
+
+    /// T6 - the D1 identity gate. This is the ONE test that wants no identity, and it SAYS
+    /// so rather than inheriting it: `seed_self_clear_session` hardcodes `agent_id: None`.
+    /// The shell is deliberately "claude", a coding-agent stem, which makes the test
+    /// discriminating against a regression to a shell gate: a shell gate would ACCEPT this
+    /// session.
+    #[tokio::test]
+    async fn handle_self_restart_without_agent_identity_is_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (_session_id, token) =
+            seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
+        seed_self_handoff(&cwd);
+
+        let (path, msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-noid",
+            "rid-sr-noid",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_restart(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&cwd, "msg-sr-noid")
+            .expect("a session with no coding-agent identity must be rejected");
+        assert!(
+            reason.contains("no configured coding-agent identity"),
+            "{reason}"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        assert_eq!(count_forget_archives(&cwd), 0);
+    }
+
+    /// T7 - idempotency. The second request collapses and the FIRST keeps ownership of the
+    /// forgotten summary, so exactly one archive exists.
+    #[tokio::test]
+    async fn handle_self_restart_second_request_is_already_queued() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (session_id, token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        std::fs::write(
+            fixture.replica.join("SELF-FORGET.md"),
+            "topic to forget on restart",
+        )
+        .unwrap();
+
+        let poller = MailboxPoller::new();
+        let (first_path, first_msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-dup-1",
+            "rid-sr-dup-1",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &first_path, &first_msg, false)
+            .await
+            .unwrap();
+        let (second_path, second_msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-dup-2",
+            "rid-sr-dup-2",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &second_path, &second_msg, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_self_clear_response_status(&fixture.replica, "rid-sr-dup-1").as_deref(),
+            Some("queued")
+        );
+        assert_eq!(
+            read_self_clear_response_status(&fixture.replica, "rid-sr-dup-2").as_deref(),
+            Some("already_queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert_eq!(
+            count_forget_archives(&fixture.replica),
+            1,
+            "only the first queued request captures and archives the forgotten summary"
+        );
+    }
+
+    /// T8 - the Root Agent queues like any other coding-agent session.
+    ///
+    /// This is a BEHAVIORAL mirror of `handle_self_clear_root_agent_is_allowed`, not a literal
+    /// one: same `set_is_root_agent`, same existence seed, same assertion, but seeded through
+    /// the only helper that produces an identity. A literal copy would reject at D1's step 4.
+    ///
+    /// `set_is_root_agent` makes step 6's Root cwd substitution fire, so the pre-flight
+    /// resolves against `root_agent_dir()` rather than the seeded `TempDir`. That is exactly
+    /// the production behavior it mirrors and it does not affect this test's outcome, because
+    /// "pi" is NOT in `wake_agents()` (exactly ["codex", "claude"]), so
+    /// `build_configured_agent_spawn_for_cwd` returns `Ok(None)` at its membership check and
+    /// the request proceeds. Do not "fix" that by pinning a configured agent here; the
+    /// launchability branches belong to T19.
+    #[tokio::test]
+    async fn handle_self_restart_root_agent_is_allowed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("agent-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session_id, token) =
+            seed_self_switch_session(&app, &cwd, "pi", Some("pi"), Some("A"), Some("A")).await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+        seed_self_handoff(&cwd);
+
+        let (path, msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-root",
+            "rid-sr-root",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_restart(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sr-root").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        assert!(
+            read_reject_reason(&cwd, "msg-sr-root").is_none(),
+            "the Root Agent must NOT be rejected by self-handoff-and-restart"
+        );
+    }
+
+    /// T9 - the discriminating test for the scope widening: ONE cwd and ONE session, rejected
+    /// by switch and queued by restart, so the difference cannot silently regress.
+    ///
+    /// It cannot be one test over one message. `reject_message` writes
+    /// `rejected/<id>.reason.txt`, writes `rejected/<id>.json`, and then REMOVES the original
+    /// outbox file, so the switch half both poisons any directory-scoped "no rejection"
+    /// assertion and destroys the path. Two message ids, two paths, every existence assertion
+    /// scoped to its own id. Switch runs first: the reverse order would leave the pending set
+    /// non-empty when the switch half runs and make its rejection reason ambiguous.
+    #[tokio::test]
+    async fn handle_self_restart_origin_matrix_agent_is_allowed_where_switch_is_not() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        // An origin Agent Matrix agent: `_agent_*`, NOT the `__agent_*` a Room replica uses.
+        let cwd = temp
+            .path()
+            .join("proj-a")
+            .join(".ac")
+            .join("_agent_ac-architect-v3");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // The present agent id is required TWICE over: the restart half needs it to pass
+        // step 4, and the switch half needs it because `resolve_switch_targets` reads the
+        // same field.
+        let (session_id, token) =
+            seed_self_switch_session(&app, &cwd, "pi", Some("pi"), Some("A"), Some("A")).await;
+        seed_self_handoff(&cwd);
+        let poller = MailboxPoller::new();
+
+        let (switch_path, switch_msg) = build_self_switch_message(
+            &cwd,
+            "msg-sr-origin-switch",
+            "rid-sr-origin-switch",
+            Some(token.to_string()),
+            None,
+            None,
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_handoff_switch(&app, &switch_path, &switch_msg, false)
+            .await
+            .unwrap();
+        let switch_reason = read_reject_reason(&cwd, "msg-sr-origin-switch")
+            .expect("switch must reject an origin Agent Matrix cwd");
+        assert!(
+            switch_reason.contains("only supported from a Room replica"),
+            "{switch_reason}"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+
+        let (restart_path, restart_msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-origin-restart",
+            "rid-sr-origin-restart",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &restart_path, &restart_msg, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sr-origin-restart").as_deref(),
+            Some("queued"),
+            "restart must queue exactly where switch refuses"
+        );
+        assert!(pending_self_clear_contains(&app, session_id).await);
+        assert!(
+            read_reject_reason(&cwd, "msg-sr-origin-restart").is_none(),
+            "the restart half must have no rejection of ITS OWN message id"
+        );
+    }
+
+    /// T10 - token authorization. Seeding a fully valid session and withholding only the
+    /// token is what makes this discriminating: steps 1 and 2 are then the only reachable
+    /// rejections, so a pass cannot come from the identity gate or the existence gate firing
+    /// first.
+    #[tokio::test]
+    async fn handle_self_restart_invalid_token_is_rejected() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        let (_session_id, _token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        seed_self_handoff(&fixture.replica);
+        let poller = MailboxPoller::new();
+
+        let (no_token_path, no_token_msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-notoken",
+            "rid-sr-notoken",
+            None,
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &no_token_path, &no_token_msg, false)
+            .await
+            .unwrap();
+        let no_token_reason = read_reject_reason(&fixture.replica, "msg-sr-notoken")
+            .expect("a tokenless request must be rejected");
+        assert!(
+            no_token_reason.contains("requires a valid session token"),
+            "{no_token_reason}"
+        );
+
+        let (unknown_path, unknown_msg) = build_self_restart_message_with_from(
+            &fixture.replica,
+            "msg-sr-unknown",
+            "rid-sr-unknown",
+            Some(Uuid::new_v4().to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &unknown_path, &unknown_msg, false)
+            .await
+            .unwrap();
+        let unknown_reason = read_reject_reason(&fixture.replica, "msg-sr-unknown")
+            .expect("a well-formed but unowned token must be rejected");
+        assert!(
+            unknown_reason.contains("no live session owns this token"),
+            "{unknown_reason}"
+        );
+
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        assert_eq!(count_forget_archives(&fixture.replica), 0);
+    }
+
+    /// T19 - the step-6 launchability pre-flight rejects SYNCHRONOUSLY, with a positive
+    /// control in the same test so it cannot pass against a handler that rejects everything.
+    ///
+    /// The fixture is the only one in this change that needs machinery no landed test builds,
+    /// and it is built exactly this way and no other: agent `ghost` with an EMPTY base
+    /// command, cell "A" carrying `command: "pi"` and cell "B" `empty_profile_cell()`.
+    /// `compose_effective_command("", "")` returns the empty string, which
+    /// `normalize_legacy_agent_command` rejects and `resolve_agent_spawn_command` wraps as
+    /// `Invalid profile command for 'ghost:B'`; letter "A" composes "pi" and succeeds. The
+    /// PRESENCE of the empty "B" cell is load-bearing: `cell_for_letter` filters on `enabled`
+    /// (which `empty_profile_cell()` sets true) and `fallback_letters_from("B")` is
+    /// ["B", "A"], so an ABSENT "B" would silently fall back to "A" and make the test vacuous.
+    ///
+    /// Two traps, both avoided here: the cwd must carry NO instance profile override, because
+    /// `resolve_profile` ranks the replica profile read ABOVE the requested letter (a bare
+    /// `TempDir` satisfies this, so T4's fixture must not be reused); and the session must NOT
+    /// be flagged root, because the step-6 Root substitution would then resolve the pre-flight
+    /// against the process-global `root_agent_dir()` rather than this `TempDir`.
+    #[tokio::test]
+    async fn handle_self_restart_unlaunchable_pinned_profile_is_rejected_synchronously() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("ghost-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        {
+            // Append to the fixture's `wake_agents()` vector rather than replacing it, so the
+            // rest of the mailbox fixture stays intact.
+            let settings = app.state::<SettingsState>();
+            let mut guard = settings.write().await;
+            guard.agents.push(wake_agent("ghost", "Ghost", ""));
+            let mut cells = std::collections::BTreeMap::new();
+            cells.insert(
+                "A".to_string(),
+                crate::config::settings::ProfileCellConfig {
+                    command: "pi".into(),
+                    ..crate::config::settings::empty_profile_cell()
+                },
+            );
+            cells.insert(
+                "B".to_string(),
+                crate::config::settings::empty_profile_cell(),
+            );
+            guard
+                .coding_agent_profiles
+                .profiles_by_agent
+                .insert("ghost".to_string(), cells);
+        }
+        seed_self_handoff(&cwd);
+        let poller = MailboxPoller::new();
+
+        // The unlaunchable half: letter "B" composes an empty effective command.
+        let (_bad_id, bad_token) =
+            seed_self_switch_session(&app, &cwd, "ghost", Some("ghost"), Some("B"), Some("B"))
+                .await;
+        let (bad_path, bad_msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-unlaunchable",
+            "rid-sr-unlaunchable",
+            Some(bad_token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &bad_path, &bad_msg, false)
+            .await
+            .unwrap();
+
+        let reason = read_reject_reason(&cwd, "msg-sr-unlaunchable")
+            .expect("an unlaunchable pinned recipe must be rejected synchronously");
+        assert!(reason.contains("is not launchable from"), "{reason}");
+        assert_eq!(
+            pending_self_clear_len(&app).await,
+            0,
+            "a rejected request must queue nothing"
+        );
+        assert_eq!(
+            count_forget_archives(&cwd),
+            0,
+            "a rejected request must archive nothing"
+        );
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sr-unlaunchable"),
+            None,
+            "a rejected request must not write a queued response"
+        );
+
+        // The control: the same fixture and the same settings, differing ONLY in the pinned
+        // letter, must queue. Without it this test would pass against a handler that rejects
+        // everything.
+        let (good_id, good_token) =
+            seed_self_switch_session(&app, &cwd, "ghost", Some("ghost"), Some("A"), Some("A"))
+                .await;
+        let (good_path, good_msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-launchable",
+            "rid-sr-launchable",
+            Some(good_token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        poller
+            .handle_self_restart(&app, &good_path, &good_msg, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_self_clear_response_status(&cwd, "rid-sr-launchable").as_deref(),
+            Some("queued")
+        );
+        assert!(pending_self_clear_contains(&app, good_id).await);
+        assert!(read_reject_reason(&cwd, "msg-sr-launchable").is_none());
+    }
+
+    /// T21 - an inherited profile letter must serialize as JSON `null`, not `""` and not
+    /// absent. The stronger form matters: `serde_json` would render an accidental `Some("")`
+    /// as `""`, which a naive truthiness check would pass.
+    ///
+    /// The agent id is present while BOTH profile fields are absent, and that pairing is the
+    /// whole point of the fixture: with `agent_id: None` the request rejects at step 4 and
+    /// never writes a response body at all, so the assertion would fail on a missing file
+    /// rather than on a wrong `"profile"` value.
+    #[tokio::test]
+    async fn handle_self_restart_inherited_profile_response_carries_null_profile() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let cwd = temp.path().join("inherited-cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (_session_id, token) =
+            seed_self_switch_session(&app, &cwd, "pi", Some("pi"), None, None).await;
+        seed_self_handoff(&cwd);
+
+        let (path, msg) = build_self_restart_message_with_from(
+            &cwd,
+            "msg-sr-inherited",
+            "rid-sr-inherited",
+            Some(token.to_string()),
+            SELF_RESTART_TEST_FROM,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .handle_self_restart(&app, &path, &msg, false)
+            .await
+            .unwrap();
+
+        let response = read_response_json(&cwd, "rid-sr-inherited").unwrap();
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["coding_agent"], "pi");
+        assert_eq!(
+            response.get("profile"),
+            Some(&serde_json::Value::Null),
+            "an inherited letter must be reported as null, never as an invented letter or \"\""
+        );
+    }
+
+    /// T11 - the restart flavor at the driver seam: one persist call, pinning the un-forked
+    /// control flow, the pinned pair on the restart seam, the prompt on the NEW id.
+    ///
+    /// There is no PTY-writes clause here, because this seam has no PTY: `inject` is a
+    /// recorder closure and the staggered `\r` bytes come from the real
+    /// `inject_text_into_session`, which this test replaces outright. T25 carries that
+    /// assertion at the seam that actually has a PTY.
+    ///
+    /// For the same structural reason there is no "persist saw ZERO calls" clause. The shared
+    /// driver calls `persist` exactly once in the `InjectClear` arm for BOTH flavors, and the
+    /// flavor refactor deliberately changed no control flow. What separates a restart from a
+    /// switch is not the CALL but the CLOSURE: `run_self_restart_after_sustained_idle` supplies
+    /// an inert one, so `set_replica_coding_agent_selection` is never reached. That closure is
+    /// caller-supplied, so NO driver-seam test can pin it; asserting zero here would assert
+    /// against the driver's own contract, and asserting zero on a closure this test itself
+    /// supplies would be vacuous. The invariant is pinned where it is observable: A3's grep over
+    /// `handle_self_restart`, `run_self_restart_after_sustained_idle` and the restart persist
+    /// closure, and T4's positive assertion that the Selection-UI cells survive the handler with
+    /// a deliberately mismatched value in place. Asserting the call count is `1` here is not
+    /// vacuous: it pins that the flavor parameter did not fork the shared control flow.
+    #[tokio::test]
+    async fn self_restart_driver_restarts_uses_new_id_and_cleans_pending() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
+
+        let persist_calls = Arc::new(Mutex::new(0usize));
+        let restart_calls = Arc::new(Mutex::new(Vec::<(Uuid, String, String)>::new()));
+        let injected = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist_seen = persist_calls.clone();
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| {
+            let persist_seen = persist_seen.clone();
+            async move {
+                *persist_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+        let restart_seen = restart_calls.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let restart_seen = restart_seen.clone();
+            async move {
+                restart_seen
+                    .lock()
+                    .unwrap()
+                    .push((session_id, agent, profile));
+                Ok(new_id.to_string())
+            }
+        };
+        let inject_seen = injected.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let inject_seen = inject_seen.clone();
+            async move {
+                inject_seen.lock().unwrap().push((session_id, prompt));
+                Ok(())
+            }
+        };
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "pi".into(),
+            "A".into(),
+            None,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        assert_eq!(
+            *persist_calls.lock().unwrap(),
+            1,
+            "the shared driver calls persist once for BOTH flavors; the flavor parameter must not \
+             fork the control flow. What makes a restart inert is the CLOSURE the runner supplies, \
+             which A3 and T4 pin (see this test's doc comment)."
+        );
+        assert_eq!(
+            *restart_calls.lock().unwrap(),
+            vec![(original_id, "pi".to_string(), "A".to_string())],
+            "the restart seam must receive the pinned live recipe"
+        );
+        let prompts = injected.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(
+            prompts[0].0, new_id,
+            "the prompt lands on the NEW session id"
+        );
+        assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
+        assert!(
+            prompts[0].1.contains("self-handoff-and-restart"),
+            "{}",
+            prompts[0].1
+        );
+        assert_eq!(
+            *boundary_events.lock().unwrap(),
+            vec![(new_id, SelfClearBoundary::ContentInjected)]
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// T22 - the full absent-profile chain at the seam: recipe `None` encodes to `""`, the
+    /// driver carries `""`, and the runner's decode turns it back into `None` for
+    /// `requested_profile`.
+    #[tokio::test]
+    async fn self_restart_driver_passes_empty_sentinel_when_profile_absent() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
+
+        let restart_calls = Arc::new(Mutex::new(Vec::<(Uuid, String, String)>::new()));
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move { Ok(()) };
+        let restart_seen = restart_calls.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let restart_seen = restart_seen.clone();
+            async move {
+                restart_seen
+                    .lock()
+                    .unwrap()
+                    .push((session_id, agent, profile));
+                Ok(new_id.to_string())
+            }
+        };
+        let inject = move |_session_id: Uuid, _prompt: String| async move { Ok(()) };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "pi".into(),
+            encode_restart_profile_for_seam(None),
+            None,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
+        )
+        .await;
+
+        let calls = restart_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].2, "",
+            "an absent letter crosses the seam as the sentinel"
+        );
+        assert_eq!(
+            decode_restart_profile_from_seam(&calls[0].2),
+            None,
+            "and the runner's decode turns the sentinel back into requested_profile: None"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// T12 - a failed respawn skips the injection entirely: nothing is archived and
+    /// `SELF-HANDOFF.md` stays in the root, so the agent can re-issue.
+    #[tokio::test]
+    async fn self_restart_driver_restart_failure_skips_inject_and_cleans_pending() {
+        let original_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
+        let inject_calls = Arc::new(Mutex::new(0usize));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move { Ok(()) };
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| async move {
+            Err("destroyed but not recreated".to_string())
+        };
+        let inject_seen = inject_calls.clone();
+        let inject = move |_session_id: Uuid, _prompt: String| {
+            let inject_seen = inject_seen.clone();
+            async move {
+                *inject_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "pi".into(),
+            "A".into(),
+            None,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
+        )
+        .await;
+
+        assert_eq!(*inject_calls.lock().unwrap(), 0);
+        assert!(
+            temp.path().join("SELF-HANDOFF.md").is_file(),
+            "a failed respawn must leave the handoff file in the root so the agent can re-issue"
+        );
+        assert!(
+            !temp.path().join("self-clear").exists(),
+            "phase 2 never ran, so nothing was archived"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// T13 - restart variant of the rename-back contract: a failed phase-2 inject returns the
+    /// archived handoff to the root of the queue-time cwd and fires no boundary event.
+    #[tokio::test]
+    async fn self_restart_driver_inject_failure_renames_handoff_back() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "restart resume notes").unwrap();
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move { Ok(()) };
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| async move {
+            Ok(new_id.to_string())
+        };
+        let inject = move |_session_id: Uuid, _prompt: String| async move {
+            Err("pty write failed".to_string())
+        };
+        let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let events_seen = boundary_events.clone();
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let events_seen = events_seen.clone();
+            async move {
+                events_seen.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "pi".into(),
+            "A".into(),
+            None,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("SELF-HANDOFF.md")).unwrap(),
+            "restart resume notes",
+            "a failed prompt inject must rename the archived handoff back to the root"
+        );
+        let leftovers = std::fs::read_dir(temp.path().join("self-clear"))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .ends_with("_SELF-HANDOFF.md")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            leftovers, 0,
+            "no archived handoff may remain under self-clear/"
+        );
+        assert!(
+            boundary_events.lock().unwrap().is_empty(),
+            "a failed restart handoff must not drop the fresh intent"
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// T14 - the regression net for the section 6.3d flavor refactor. Driving with
+    /// `SELF_HANDOFF_FLAVOR_SWITCH` must still produce the SWITCH prompt, which is what stops
+    /// the flavor parameter from silently swapping the two.
+    #[tokio::test]
+    async fn self_switch_driver_flavor_preserves_switch_prompt() {
+        let original_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+        let pending = Arc::new(crate::PendingSelfClear::default());
+        pending.0.lock().unwrap().insert(original_id);
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
+        let injected = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let session_state = move |_session_id: Uuid| async move { (true, true) };
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| async move { Ok(()) };
+        let restart = move |_session_id: Uuid, _agent: String, _profile: String| async move {
+            Ok(new_id.to_string())
+        };
+        let inject_seen = injected.clone();
+        let inject = move |_session_id: Uuid, prompt: String| {
+            let inject_seen = inject_seen.clone();
+            async move {
+                inject_seen.lock().unwrap().push(prompt);
+                Ok(())
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            original_id,
+            temp.path().to_path_buf(),
+            "claude".into(),
+            "B".into(),
+            None,
+            SELF_HANDOFF_FLAVOR_SWITCH,
+            pending.clone(),
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(1),
+            session_state,
+            persist,
+            restart,
+            inject,
+            |_session_id: Uuid, _boundary: SelfClearBoundary| async {},
+        )
+        .await;
+
+        let prompts = injected.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert!(
+            prompts[0].contains("self-handoff-and-switch"),
+            "{}",
+            prompts[0]
+        );
+        // ...and it is byte-identical to the switch builder's output for the exact archived
+        // path, so a swapped `build_prompt` cannot pass on a substring alone.
+        let archived: Vec<PathBuf> = std::fs::read_dir(temp.path().join("self-clear"))
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().ends_with("_SELF-HANDOFF.md"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(archived.len(), 1);
+        let relative = format!(
+            "self-clear/{}",
+            archived[0].file_name().unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            prompts[0],
+            build_self_switch_handoff_prompt(&relative, None)
+        );
+        assert_ne!(
+            prompts[0],
+            build_self_restart_handoff_prompt(&relative, None)
+        );
+    }
+
+    /// T25 - the app-backed restart seam, which is the one that actually has a PTY: the
+    /// resume prompt reaches the restarted session's PTY followed by the two staggered `\r`
+    /// bytes, and the persist recorder sees the single call the shared driver makes for BOTH
+    /// flavors (see T11's doc comment for why the count is 1 and not 0).
+    ///
+    /// D1's no-Enter case is INHERITED, not re-tested here. This fixture's shell is `pi`, a
+    /// `needs_explicit_enter` stem, so it covers the Enter-appending half only. The other
+    /// half is decided entirely by `needs_explicit_enter` and is already covered by
+    /// `agent_clis_require_explicit_enter`, `plain_shells_do_not_require_explicit_enter` and
+    /// `direct_shell_capability_matrix` in `pty/inject.rs`, which this change does not edit.
+    #[tokio::test]
+    async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
+        let fixture = make_self_switch_fixture();
+        let app = app_handle(&fixture.app);
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .agents
+                .push(wake_agent("pi", "Pi", "pi"));
+        }
+        let (source_id, _token) = seed_self_switch_session(
+            &app,
+            &fixture.replica,
+            "pi",
+            Some("pi"),
+            Some("A"),
+            Some("A"),
+        )
+        .await;
+        {
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            mgr.mark_idle(source_id).await;
+        }
+        seed_self_handoff(&fixture.replica);
+        let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+        pending.0.lock().unwrap().insert(source_id);
+
+        let persist_calls = Arc::new(Mutex::new(0usize));
+        let persist_seen = persist_calls.clone();
+        let persist = move |_cwd: PathBuf, _agent: String, _profile: String| {
+            let persist_seen = persist_seen.clone();
+            async move {
+                *persist_seen.lock().unwrap() += 1;
+                Ok(())
+            }
+        };
+
+        let app_for_state = app.clone();
+        let session_state = move |session_id: Uuid| {
+            let app = app_for_state.clone();
+            async move {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                match mgr.get_session(session_id).await {
+                    Some(session) => (true, session.waiting_for_input),
+                    None => (false, false),
+                }
+            }
+        };
+
+        let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+        let restarted_id_seen = Arc::clone(&restarted_id);
+        let app_for_restart = app.clone();
+        let replica_for_restart = fixture.replica.clone();
+        let restart = move |session_id: Uuid, agent: String, profile: String| {
+            let app = app_for_restart.clone();
+            let replica = replica_for_restart.clone();
+            let restarted_id = Arc::clone(&restarted_id_seen);
+            async move {
+                assert_eq!(session_id, source_id);
+                assert_eq!(agent, "pi");
+                assert_eq!(profile, "A");
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.destroy_session(session_id).await.unwrap();
+                }
+                let (new_id, _token) = seed_self_switch_session(
+                    &app,
+                    &replica,
+                    "pi",
+                    Some("pi"),
+                    Some(&profile),
+                    Some(&profile),
+                )
+                .await;
+                {
+                    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                    let mgr = state.read().await;
+                    mgr.mark_idle(new_id).await;
+                }
+                register_mock_pty_route(&app, new_id);
+                *restarted_id.lock().unwrap() = Some(new_id);
+                Ok(new_id.to_string())
+            }
+        };
+
+        let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+        let injected_prompts_seen = Arc::clone(&injected_prompts);
+        let app_for_inject = app.clone();
+        let inject = move |session_id: Uuid, prompt: String| {
+            let app = app_for_inject.clone();
+            let injected_prompts = Arc::clone(&injected_prompts_seen);
+            async move {
+                injected_prompts
+                    .lock()
+                    .unwrap()
+                    .push((session_id, prompt.clone()));
+                crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+            }
+        };
+        let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+        let boundaries_seen = Arc::clone(&boundaries);
+        let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+            let boundaries = Arc::clone(&boundaries_seen);
+            async move {
+                boundaries.lock().unwrap().push((session_id, boundary));
+            }
+        };
+
+        MailboxPoller::drive_self_switch_after_sustained_idle(
+            source_id,
+            fixture.replica.clone(),
+            "pi".into(),
+            "A".into(),
+            None,
+            SELF_HANDOFF_FLAVOR_RESTART,
+            Arc::clone(&pending),
+            Duration::ZERO,
+            Duration::ZERO,
+            // The real app-backed restart can exceed one second under the full parallel
+            // suite. Only settle and poll need to be zero here.
+            Duration::from_secs(30),
+            session_state,
+            persist,
+            restart,
+            inject,
+            note_boundary,
+        )
+        .await;
+
+        // See T11's doc comment: the shared driver calls persist once for BOTH flavors, so the
+        // count pins the un-forked control flow, not the inertness. The `None` read below does
+        // NOT pin the inertness either, and is not claimed to: this test drives
+        // `drive_self_switch_after_sustained_idle` directly, never
+        // `run_self_restart_after_sustained_idle`, and every write-capable seam on its path is a
+        // closure this test itself supplies, so the same read stays `None` under
+        // SELF_HANDOFF_FLAVOR_SWITCH. It is kept only because it reads a real value cheaply. The
+        // invariant rests on A3 and T4 alone.
+        assert_eq!(
+            *persist_calls.lock().unwrap(),
+            1,
+            "the flavor parameter must not fork the shared driver's control flow"
+        );
+        assert_eq!(
+            crate::config::coding_agent_profiles::read_replica_current_coding_agent(
+                &fixture.replica
+            ),
+            None,
+            "no closure this test supplies writes the replica currentCodingAgent cell; per the \
+             note above this does NOT discriminate the flavor"
+        );
+        let target_id = restarted_id
+            .lock()
+            .unwrap()
+            .expect("restart seam must return the reseeded Pi session id");
+        assert_ne!(target_id, source_id);
+        let prompts = injected_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].0, target_id);
+        assert!(
+            prompts[0].1.contains("self-handoff-and-restart"),
+            "{}",
+            prompts[0].1
+        );
+        assert_eq!(
+            mock_pty_writes_for(&app, target_id),
+            vec![
+                prompts[0].1.as_bytes().to_vec(),
+                b"\r".to_vec(),
+                b"\r".to_vec()
+            ]
+        );
+        assert_eq!(
+            *boundaries.lock().unwrap(),
+            vec![(target_id, SelfClearBoundary::ContentInjected)]
+        );
+        assert!(pending.0.lock().unwrap().is_empty());
+    }
+
+    /// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global
+    /// Root Agent directory. `root_agent_dir()` is `OnceLock`-cached (config/root_agent.rs), so
+    /// every Root e2e in this test binary works against the SAME directory, and libtest runs them
+    /// on parallel threads. A `TempDir` cannot stand in, which is why a lock is needed at all.
+    ///
+    /// SCOPE, stated wider than one filename on purpose, because stating it narrowly is how the
+    /// next person reintroduces this bug: the lock protects **every non-msg-id-scoped name under
+    /// the process-global Root dir**, currently `SELF-HANDOFF.md` and `self-clear/*_SELF-FORGET.md`.
+    /// Any test that **seeds or glob-removes** either one MUST hold this guard for its whole
+    /// seed-to-remove window. The second name matters even though it is inert today: nothing
+    /// seeds a Root-cwd `SELF-FORGET.md`, so `clear_root_self_clear_artifacts`'s trailing glob is
+    /// a no-op, and that helper has two deliberately UNLOCKED callers (the landed negative e2e
+    /// and the #1632 negative e2e, both of which reject at anti-spoof and are correctly barred
+    /// from taking the lock). Add a Root e2e with a forgotten summary and that glob starts
+    /// deleting another test's archive mid-flight, which is this bug's class exactly.
+    ///
+    /// Tests that never touch either name must NOT take it: a lock nobody contends is only cost.
+    ///
+    /// `tokio::sync::Mutex` rather than `std::sync::Mutex` for two reasons, the second decisive
+    /// on its own: the guard is held across `.await` by construction (`process_message(...).await`
+    /// sits inside the window), which `clippy::await_holding_lock` rejects under the
+    /// `-D warnings` CI gate; and `std::sync::Mutex` POISONS on panic, so one genuine failure
+    /// would become two, with the second pointing at the lock rather than at the defect.
+    /// The `OnceLock` wrapper avoids depending on `tokio::sync::Mutex::const_new`.
+    fn root_self_handoff_lock() -> &'static tokio::sync::Mutex<()> {
+        static ROOT_SELF_HANDOFF_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        ROOT_SELF_HANDOFF_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
     /// Best-effort removal of one msg-id's outbox artifacts so the Root e2e tests are
     /// idempotent across runs. They must write under the process-global
     /// `root_agent_dir()` (a fixed path, NOT a throwaway TempDir - see the test docs
     /// for why), so stale delivered/rejected/response files from a prior run could
-    /// otherwise skew assertions. Each test uses a unique msg-id, so this is safe
-    /// even when the two tests run in parallel.
+    /// otherwise skew assertions. Each of the four Root e2es uses a unique msg-id, so this is
+    /// safe even when they run in parallel.
     ///
-    /// #626 NOTE: this helper deliberately does NOT touch `SELF-HANDOFF.md`. That file is a single
-    /// SHARED (non-msg-id-scoped) name; if this start-of-test cleanup removed it, the negative e2e
-    /// (which rejects at anti-spoof and never seeds it) could delete the positive e2e's freshly-seeded
-    /// handoff file mid-flight when the two run in parallel - a flaky failure. The positive e2e owns
-    /// `SELF-HANDOFF.md` end-to-end instead (seed before, remove after), so no other test races it.
-    /// `self-clear/*_SELF-FORGET.md` is glob-removed defensively (the e2e tests never seed SELF-FORGET.md,
-    /// so the archive is a no-op and nothing is normally created - this only guards against a stale file
-    /// from a crash).
+    /// #626/#1632 NOTE: this helper deliberately does NOT touch `SELF-HANDOFF.md`. That file is a
+    /// single SHARED (non-msg-id-scoped) name; if this start-of-test cleanup removed it, a negative
+    /// e2e (which rejects at anti-spoof and never seeds it) could delete a positive e2e's
+    /// freshly-seeded handoff file mid-flight when they run in parallel - a flaky failure.
+    /// `root_self_handoff_lock()` is what makes that safe: both seeders of the shared name hold it
+    /// across their whole seed-to-remove window. This helper is deliberately NOT lock-held, because
+    /// its two negative-e2e callers never seed the name; that is only sound while this helper keeps
+    /// its hands off it, which is why the rule above is stated rather than assumed.
+    /// `self-clear/*_SELF-FORGET.md` is glob-removed defensively (no Root e2e seeds SELF-FORGET.md,
+    /// so the archive is a no-op and nothing is normally created - this only guards against a stale
+    /// file from a crash). That glob is the lock's SECOND protected name: it is unscoped by message
+    /// id, so the moment any Root e2e does seed a forgotten summary, this sweep must move behind
+    /// `root_self_handoff_lock()` too.
     fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
         let outbox = cwd
             .join(crate::config::agent_local_dir_name())
@@ -20475,15 +22341,22 @@ mod tests {
     ///   yields the path FQN, the daemon rejects it, and the enqueue assertion fails.
     #[tokio::test]
     async fn process_message_root_self_clear_with_canonical_sender_queues() {
+        // (#1632) This test is NO LONGER the sole owner of SELF-HANDOFF.md in the shared
+        // root_agent_dir: `process_message_root_self_restart_with_canonical_sender_queues` seeds
+        // and removes the same single name. A single-owner convention cannot absorb a second
+        // owner, so the convention became an enforced invariant: both seeders hold
+        // `root_self_handoff_lock()` across their whole seed-to-remove window, and a lock only
+        // one side takes is not a lock. Nothing else in this test changed.
+        let _root_handoff_guard = root_self_handoff_lock().lock().await;
         let root_cwd = PathBuf::from(
             crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"),
         );
         std::fs::create_dir_all(&root_cwd).unwrap();
         clear_root_self_clear_artifacts(&root_cwd, "msg-sc-root-e2e-pos", "rid-sc-root-e2e-pos");
-        // #626 existence gate: seed SELF-HANDOFF.md so the positive path still queues. This test OWNS
-        // SELF-HANDOFF.md in the shared root_agent_dir (the negative e2e never touches it), so seeding
-        // here and removing at the end is race-free even with parallel test execution. NOTE: deliberately
-        // do NOT seed SELF-FORGET.md here (keep the archive a no-op so no timestamped litter in the shared dir).
+        // #626 existence gate: seed SELF-HANDOFF.md so the positive path still queues. The guard
+        // taken above, not an ownership convention, is what makes the seed-to-remove window
+        // exclusive against the other Root seeder. NOTE: deliberately do NOT seed SELF-FORGET.md
+        // here (keep the archive a no-op so no timestamped litter in the shared dir).
         seed_self_handoff(&root_cwd);
 
         let temp = tempfile::TempDir::new().unwrap();
@@ -20544,7 +22417,10 @@ mod tests {
             "message must be consumed (moved to delivered/)"
         );
 
-        // #626: this test owns SELF-HANDOFF.md in the shared root; remove it so it does not linger.
+        // (#1632) Remove the shared name inside the guard's scope. This test no longer OWNS
+        // SELF-HANDOFF.md: the #1632 Root restart e2e seeds and removes the same single name, and
+        // `root_self_handoff_lock()`, taken at the top of this body, is what makes the
+        // seed-to-remove window exclusive.
         let _ = std::fs::remove_file(root_cwd.join("SELF-HANDOFF.md"));
     }
 
@@ -20601,6 +22477,185 @@ mod tests {
             .join("outbox")
             .join("rejected")
             .join("msg-sc-root-e2e-neg.reason.txt");
+        let reason = std::fs::read_to_string(&reason_path)
+            .expect("buggy Root sender must be rejected with a reason file");
+        assert!(
+            reason.contains("mismatch"),
+            "expected an anti-spoof mismatch rejection, got: {reason}"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 0);
+        assert!(
+            !pending_self_clear_contains(&app, session_id).await,
+            "buggy Root sender must not enqueue anything"
+        );
+    }
+
+    /// T23 - #1632 Root e2e (production-faithful): a token-authorized Root
+    /// self-handoff-and-restart travels the FULL `process_message` agent-outbox path, NOT
+    /// `handle_self_restart` directly, and ENQUEUES.
+    ///
+    /// This is the test that proves the Root Agent scope. T8 calls the handler directly and
+    /// therefore skips BOTH anti-spoof gates; this repository already documents why that is not
+    /// production-faithful (see the landed self-clear pair above and the warning on
+    /// `resolve_self_clear_sender`, which states that a wrong sender means the capability is
+    /// dead in production). #617 shipped exactly that regression once.
+    ///
+    /// The seeding call is `seed_self_switch_session`, deliberately NOT the landed self-clear
+    /// e2e's own: `seed_self_clear_session` hardcodes `agent_id: None`, the landed test survives
+    /// that only because `handle_self_clear` gates on the SHELL stem, and D1's identity gate at
+    /// step 4 would reject a literal mirror deterministically on every machine, failing all four
+    /// assertions below and merely duplicating T6's branch.
+    ///
+    /// `Some("pi")` rather than `Some("claude")` is also deliberate: "pi" is not in
+    /// `wake_agents()`, so `build_configured_agent_spawn_for_cwd` returns `Ok(None)` at its
+    /// membership check and **the step-6 pre-flight never touches the process-global Root dir at
+    /// all**. For an e2e whose subject is the anti-spoof gate pair and whose cwd is a shared
+    /// directory on a real machine, that independence is the property worth buying. The
+    /// tripwire below pins the fixture fact that buys it.
+    #[tokio::test]
+    async fn process_message_root_self_restart_with_canonical_sender_queues() {
+        // (#1632 section 9.0) NON-NEGOTIABLE first line: this test is the second seeder of
+        // SELF-HANDOFF.md in the process-global Root dir, and the landed positive self-clear
+        // e2e is the first. Both hold this guard across their whole seed-to-remove window.
+        let _root_handoff_guard = root_self_handoff_lock().lock().await;
+        // Tripwire on this test's load-bearing fixture fact, which lives thousands of lines away
+        // in a shared helper. T8, T21 and T23 all rest on "pi" being unconfigured. If anyone
+        // later adds `wake_agent("pi", ...)` to `wake_agents()`, the step-6 pre-flight starts
+        // running the real spawn builder against the process-global Root dir, which is a hazard
+        // class this lock does NOT cover: the directories that builder creates are not under the
+        // Root dir at all.
+        assert!(
+            !wake_agents().iter().any(|a| a.id == "pi"),
+            "T23 requires 'pi' to be unconfigured so the step-6 pre-flight never touches the shared Root dir"
+        );
+
+        let root_cwd = PathBuf::from(
+            crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"),
+        );
+        std::fs::create_dir_all(&root_cwd).unwrap();
+        clear_root_self_clear_artifacts(&root_cwd, "msg-sr-root-e2e-pos", "rid-sr-root-e2e-pos");
+        // Existence gate. Deliberately do NOT seed SELF-FORGET.md: the archive stays a no-op so
+        // the shared root dir gains no timestamped litter.
+        seed_self_handoff(&root_cwd);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let (session_id, token) =
+            seed_self_switch_session(&app, &root_cwd, "pi", Some("pi"), Some("A"), Some("A")).await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        // The exact `from` the CLI builder stamps for the Root cwd.
+        let canonical_from =
+            crate::cli::self_clear::resolve_self_clear_sender(&root_cwd.to_string_lossy());
+        assert_eq!(
+            canonical_from,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            "fix precondition: the CLI must stamp ROOT_AGENT_SENDER for the Root cwd"
+        );
+
+        let (path, _msg) = build_self_restart_message_with_from(
+            &root_cwd,
+            "msg-sr-root-e2e-pos",
+            "rid-sr-root-e2e-pos",
+            Some(token.to_string()),
+            &canonical_from,
+        );
+        let poller = MailboxPoller::new();
+        // `false` is the real agent-outbox path, so BOTH anti-spoof gates run.
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("process_message should succeed");
+
+        assert_eq!(
+            read_self_clear_response_status(&root_cwd, "rid-sr-root-e2e-pos").as_deref(),
+            Some("queued")
+        );
+        assert!(
+            pending_self_clear_contains(&app, session_id).await,
+            "canonical Root sender must enqueue the self-handoff-and-restart"
+        );
+        assert_eq!(pending_self_clear_len(&app).await, 1);
+        let reason = root_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sr-root-e2e-pos.reason.txt");
+        assert!(
+            !reason.exists(),
+            "canonical Root sender must NOT be rejected by either anti-spoof gate"
+        );
+        assert!(
+            !path.exists(),
+            "message must be consumed (moved to delivered/)"
+        );
+
+        // Remove the shared name inside the guard's scope.
+        let _ = std::fs::remove_file(root_cwd.join("SELF-HANDOFF.md"));
+    }
+
+    /// T24 - the negative counterpart, and the control that makes `resolve_self_clear_sender`
+    /// load-bearing in a way a reviewer can check: without it, T23 could pass against a handler
+    /// that accepts any sender. The ONLY difference between the two tests is the `from` string.
+    ///
+    /// T24 does NOT seed `SELF-HANDOFF.md` and does NOT take `root_self_handoff_lock()`. A third
+    /// seeder of that one shared name would reintroduce the race the lock exists to remove.
+    /// "Same fixture" means the same root cwd, the same session seeding call, and the same
+    /// `clear_root_self_clear_artifacts` call with this test's own ids; it does NOT include the
+    /// handoff seed. This test is rejected at the outbox-sender gate before `handle_self_restart`
+    /// is ever entered, so its assertions do not depend on that file existing, in either state.
+    /// Its agent id is likewise not load-bearing on its outcome; naming it anyway is what keeps
+    /// the pair a genuine same-fixture pair.
+    #[tokio::test]
+    async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
+        let root_cwd = PathBuf::from(
+            crate::config::root_agent::root_agent_dir().expect("resolve root agent dir"),
+        );
+        std::fs::create_dir_all(&root_cwd).unwrap();
+        clear_root_self_clear_artifacts(&root_cwd, "msg-sr-root-e2e-neg", "rid-sr-root-e2e-neg");
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let (session_id, token) =
+            seed_self_switch_session(&app, &root_cwd, "pi", Some("pi"), Some("A"), Some("A")).await;
+        {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.set_is_root_agent(session_id, true).await;
+        }
+
+        // Reproduce the EXACT value a path-derived sender would stamp for the Root cwd.
+        let buggy_from = crate::cli::send::agent_name_from_root(&root_cwd.to_string_lossy());
+        assert_ne!(
+            buggy_from,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            "precondition: the path-derived sender must differ from the canonical Root sender"
+        );
+
+        let (path, _msg) = build_self_restart_message_with_from(
+            &root_cwd,
+            "msg-sr-root-e2e-neg",
+            "rid-sr-root-e2e-neg",
+            Some(token.to_string()),
+            &buggy_from,
+        );
+        let poller = MailboxPoller::new();
+        poller
+            .process_message(&app, &path, false)
+            .await
+            .expect("process_message returns Ok even when it rejects");
+
+        let reason_path = root_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("msg-sr-root-e2e-neg.reason.txt");
         let reason = std::fs::read_to_string(&reason_path)
             .expect("buggy Root sender must be rejected with a reason file");
         assert!(
