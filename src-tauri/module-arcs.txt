@@ -25,6 +25,7 @@ agentscommander_lib -> agentscommander_lib::pty::git_watcher
 agentscommander_lib -> agentscommander_lib::pty::idle_detector
 agentscommander_lib -> agentscommander_lib::pty::input_activity
 agentscommander_lib -> agentscommander_lib::pty::manager
+agentscommander_lib -> agentscommander_lib::pty::menu_guard
 agentscommander_lib -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib -> agentscommander_lib::pty::watchers
 agentscommander_lib -> agentscommander_lib::pty::watchers::history
@@ -82,6 +83,7 @@ agentscommander_lib::api::dispatcher -> agentscommander_lib::api::auth
 agentscommander_lib::api::dispatcher -> agentscommander_lib::api::message_store
 agentscommander_lib::api::dispatcher -> agentscommander_lib::phone::mailbox
 agentscommander_lib::api::dispatcher -> agentscommander_lib::phone::types
+agentscommander_lib::api::dispatcher -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::api::dispatcher -> agentscommander_lib::session::purge_guard
 agentscommander_lib::api::error -> agentscommander_lib::api::schema
 agentscommander_lib::api::error -> agentscommander_lib::phone::types
@@ -493,6 +495,7 @@ agentscommander_lib::commands::session -> agentscommander_lib::pty::credentials
 agentscommander_lib::commands::session -> agentscommander_lib::pty::inject
 agentscommander_lib::commands::session -> agentscommander_lib::pty::input_activity
 agentscommander_lib::commands::session -> agentscommander_lib::pty::manager
+agentscommander_lib::commands::session -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::commands::session -> agentscommander_lib::pty::output
 agentscommander_lib::commands::session -> agentscommander_lib::pty::watchers
 agentscommander_lib::commands::session -> agentscommander_lib::pty::watchers::history
@@ -662,6 +665,7 @@ agentscommander_lib::config::sessions_persistence -> agentscommander_lib::sessio
 agentscommander_lib::config::sessions_persistence -> agentscommander_lib::session::session
 agentscommander_lib::config::settings -> agentscommander_lib::config
 agentscommander_lib::config::settings -> agentscommander_lib::config::agent_command
+agentscommander_lib::config::settings -> agentscommander_lib::config::coding_agents_catalog
 agentscommander_lib::config::settings -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::settings -> agentscommander_lib::config::placeholders
 agentscommander_lib::config::settings -> agentscommander_lib::config::profile
@@ -743,6 +747,7 @@ agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::backend
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::idle_detector
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::inject
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::manager
+agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::phone::mailbox -> agentscommander_lib::pty::terminal_snapshot
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::manager
 agentscommander_lib::phone::mailbox -> agentscommander_lib::session::profile
@@ -827,6 +832,7 @@ agentscommander_lib::pty::idle_detector -> agentscommander_lib::shutdown
 agentscommander_lib::pty::inject -> agentscommander_lib::commands::pty
 agentscommander_lib::pty::inject -> agentscommander_lib::pty::backend
 agentscommander_lib::pty::inject -> agentscommander_lib::pty::manager
+agentscommander_lib::pty::inject -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::pty::inject -> agentscommander_lib::session::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::session::session
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config
@@ -868,6 +874,14 @@ agentscommander_lib::pty::manager -> agentscommander_lib::session::selection
 agentscommander_lib::pty::manager -> agentscommander_lib::shutdown
 agentscommander_lib::pty::manager -> agentscommander_lib::telegram::manager
 agentscommander_lib::pty::manager -> agentscommander_lib::web::broadcast
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::config::settings
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::pty::manager
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::pty::watchers
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::pty::watchers::frame
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::session::manager
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::session::selection
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::session::session
+agentscommander_lib::pty::menu_guard -> agentscommander_lib::shutdown
 agentscommander_lib::pty::output -> agentscommander_lib::logging
 agentscommander_lib::pty::output -> agentscommander_lib::pty::backend
 agentscommander_lib::pty::output -> agentscommander_lib::pty::idle_detector
