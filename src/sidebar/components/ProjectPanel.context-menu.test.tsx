@@ -1073,16 +1073,34 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).toContain("Clear task title");
   });
 
-  it("removes the ProjectPanel live replica hover folder button", async () => {
-    await setupPanel([coordSession(), memberSession()]);
+  it("removes duplicate ProjectPanel live replica controls while preserving active-recording cancellation", async () => {
+    const { voiceRecorder } = await vi.importActual<
+      typeof import("../../shared/voice-recorder")
+    >("../../shared/voice-recorder");
+    const recordingSessionIdSpy = vi
+      .spyOn(voiceRecorder, "recordingSessionId")
+      .mockReturnValue("member-session");
+    const cancelSpy = vi.spyOn(voiceRecorder, "cancel").mockImplementation(() => {});
 
-    const row = findRow(rendered!.root, memberRowTestId);
+    try {
+      await setupPanel([coordSession(), memberSession()]);
 
-    expect(row.querySelector(".session-item-explorer")).toBeNull();
-    expect(row.querySelector(".session-item-mic")).not.toBeNull();
-    expect(row.querySelector(".session-item-detach")).not.toBeNull();
-    expect(row.querySelector(".session-item-telegram")).not.toBeNull();
-    expect(row.querySelector(".session-item-close")).not.toBeNull();
+      const row = findRow(rendered!.root, memberRowTestId);
+      const cancelButton = row.querySelector<HTMLButtonElement>(".session-item-mic-cancel");
+
+      expect(row.querySelector(".session-item-explorer")).toBeNull();
+      expect(cancelButton).not.toBeNull();
+      expect(row.querySelector(".session-item-mic")).toBeNull();
+      expect(row.querySelector(".session-item-detach")).toBeNull();
+      expect(row.querySelector(".session-item-telegram")).not.toBeNull();
+      expect(row.querySelector(".session-item-close")).not.toBeNull();
+
+      click(cancelButton!);
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cancelSpy.mockRestore();
+      recordingSessionIdSpy.mockRestore();
+    }
   });
 
   it("broom on a gray replica clears the task via a sibling workgroup session", async () => {

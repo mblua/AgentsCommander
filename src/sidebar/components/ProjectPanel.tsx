@@ -1,7 +1,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, emitOpenSettings } from "../../shared/ipc";
+import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
   pendingCoordinatorClose,
@@ -2235,40 +2235,13 @@ const ProjectPanel: Component = () => {
             }
           });
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
-          const isDetached = () => { const s = session(); return s ? sessionsStore.isDetached(s.id) : false; };
           const isRecording = () => { const s = session(); return s ? voiceRecorder.recordingSessionId() === s.id : false; };
-          const isProcessing = () => { const s = session(); return s ? voiceRecorder.processingSessionId() === s.id : false; };
           const [showBotMenu, setShowBotMenu] = createSignal(false);
           const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
 
-          const handleMicClick = (e: MouseEvent) => {
-            e.stopPropagation();
-            if (!isLive()) return;
-            if (!settingsStore.voiceEnabled) {
-              emitOpenSettings("integrations").catch(console.error);
-              return;
-            }
-            const s = session();
-            if (s) voiceRecorder.toggle(s.id);
-          };
           const handleCancelRecording = (e: MouseEvent) => {
             e.stopPropagation();
             voiceRecorder.cancel();
-          };
-          const handleDetach = async (e: MouseEvent) => {
-            e.stopPropagation();
-            if (!isLive()) return;
-            const s = session();
-            if (!s) return;
-            try {
-              if (isDetached()) {
-                await WindowAPI.attach(s.id);
-              } else {
-                await WindowAPI.detach(s.id);
-              }
-            } catch (err) {
-              console.error("replica detach/attach toggle failed:", err);
-            }
           };
           const handleTelegramClick = async (e: MouseEvent) => {
             e.stopPropagation();
@@ -2434,18 +2407,6 @@ const ProjectPanel: Component = () => {
                 <Show when={isRecording()}>
                   <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
                 </Show>
-                <button
-                  class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
-                  onClick={handleMicClick}
-                  title={!settingsStore.voiceEnabled ? "Enable voice-to-text in Settings and set a Gemini API key to use this." : isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
-                >&#x1F399;</button>
-                <button
-                  class="session-item-detach"
-                  classList={{ attached: isDetached() }}
-                  onClick={handleDetach}
-                  title={isDetached() ? "Re-attach to main window" : "Open in new window"}
-                  innerHTML={isDetached() ? "&#x2934;" : "&#x29C9;"}
-                />
                 <Show when={bridge()}>
                   <div class="session-item-bridge-dot" style={{ background: bridge()!.color }} title={`Telegram: ${bridge()!.botLabel}`} />
                 </Show>
