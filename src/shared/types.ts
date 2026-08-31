@@ -9,12 +9,13 @@ export type RepoBranchByPath = Record<string, string | null>;
 
 export type RepoDirtyByPath = Record<string, boolean | null>;
 
-export type SessionCommunicationKind = "raiseHand";
+export type SessionCommunicationKind = "raiseHand" | "blockedMenu";
 
 export interface SessionCommunication {
   kind: SessionCommunicationKind;
   visible: boolean;
   updatedAt: string;
+  message?: string | null;
 }
 
 export type SessionBackendKind = "localProcess" | "containerTransport";
