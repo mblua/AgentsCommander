@@ -95,7 +95,7 @@ Project-level agents appear in the **AGENTS** section of the AgentsCommander sid
 
 ### Folder Structure
 
-```
+```text
 .ac/_agent_NAME/
 ├── Role.md          # REQUIRED — the agent's identity, responsibilities, and rules
 ├── inbox/           # Created by AC on first use — incoming messages
@@ -107,7 +107,7 @@ Project-level agents appear in the **AGENTS** section of the AgentsCommander sid
     └── config.json  # Runtime config (tooling, session tracking)
 ```
 
-**Minimum to create an agent:** A folder named `_agent_NAME/` containing a `Role.md` file. AgentsCommander creates the remaining directories (`inbox/`, `outbox/`, `memory/`, `plans/`, `skills/`, `.<stem>/`) automatically when the agent is first launched or used. `.<stem>` is the per-instance directory named after the running binary (for example `.agentscommander/`), the same rule as the instance config directory.
+**Minimum to create an agent:** A folder named `_agent_NAME/` containing a `Role.md` file. AgentsCommander creates the remaining directories (`inbox/`, `outbox/`, `memory/`, `plans/`, `skills/`, `.<stem>/`) automatically when the agent is first launched or used. This replica-local `.<stem>` directory is always named after the running binary (for example `.agentscommander/`); its naming is independent of the version-specific application config resolver.
 
 ### Role.md Format
 
@@ -194,7 +194,7 @@ Teams define which agents can communicate with each other via `list-peers` and `
 
 ### Folder Structure
 
-```
+```text
 .ac/_team_NAME/
 ├── config.json      # REQUIRED — defines members, coordinator, and repos
 ├── conventions.md   # Optional — shared conventions across the team
@@ -252,7 +252,7 @@ Rooms are isolated working environments created when a team needs to work on a t
 
 ### Folder Structure
 
-```
+```text
 .ac/room-N-TEAMNAME/
 ├── TASK.md                    # Objective, scope, and deliverables for this room
 ├── __agent_NAME/               # Replica of _agent_NAME (double underscore)
@@ -398,7 +398,7 @@ For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's
 
 **MANDATORY** at `.ac/.gitignore`:
 
-```
+```text
 # AgentsCommander: exclude room cloned repos from parent git tracking.
 # Without this, parent repo operations (checkout, reset) corrupt child clones.
 room-*/
@@ -414,7 +414,7 @@ When creating a full agent team for a new project:
 
 ### Step 1: Create `.ac/` structure
 
-```
+```text
 .ac/
 ├── .gitignore                    # Must exclude room-*/
 ├── project-settings.json         # Coding agent config

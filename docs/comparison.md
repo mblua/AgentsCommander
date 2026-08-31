@@ -47,7 +47,7 @@ AutoGen (and the community fork AG2) is Microsoft's multi-agent conversational f
 CrewAI defines role-based agent teams with hierarchical processes — in Python.
 
 **Where AC wins**:
-- Installs from npm, with desktop and portable installers still available from GitHub Releases. You can demo it in 60 seconds.
+- Starts with a reviewable [Coding Agent installation plan](install-with-agent.md); manual stable-release assets and npm remain secondary routes for documented host combinations.
 - No `pip install`, no config-by-code, no rewriting your tools as CrewAI primitives.
 
 **Where CrewAI wins**:
@@ -82,7 +82,7 @@ AC runs Claude Code as a session inside it. So the question is: should you launc
 
 ## Honest concessions
 
-- **Windows-first.** Every release is built and tested on Windows. Linux works. macOS needs help — see [issue #320](https://github.com/mblua/AgentsCommander/issues/320).
+- **Windows support is narrower than the build matrix.** Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported and remain the primary development and release-validation targets. Linux x86_64/AMD64 support is partial and in progress; global-hotkey screenshots, native window capture, and some CLI/GUI coordination are Windows-only. macOS is not supported yet because maintainer and test capacity is insufficient. An available release artifact does not change these tiers; see the [platform contract](install-with-agent.md#support-gates).
 - **You bring the coding agents.** AC does not ship Claude Code, Codex, Antigravity, or Pi. Install whichever you want; AC detects supported commands.
 - **Single-agent flows are not the sweet spot.** If you only run one agent, you are paying for a Tauri shell. The value is multi-agent coordination.
 
