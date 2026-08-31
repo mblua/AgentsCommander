@@ -795,6 +795,11 @@ const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 const ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND: &str = "Unsupported logical remote command";
 const ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND: &str = "Cannot execute logical remote command";
+/// #1635-2 D6: a present `requestedProfile` that fails A-Z normalization is a
+/// permanent delivery error. The CLI already rejects it before enqueue
+/// (1635-1); this defends hand-written outbox JSON.
+const ERR_INVALID_DISPATCH_PROFILE: &str =
+    "send: requestedProfile must be a single letter A through Z";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedRemotePtyCommand {
@@ -838,6 +843,7 @@ fn is_permanent_delivery_error(error: &str) -> bool {
     error.contains(ERR_UNRESOLVABLE_AGENT)
         || error.starts_with(ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND)
         || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
+        || error.starts_with(ERR_INVALID_DISPATCH_PROFILE)
 }
 
 /// (#1399) Claim marker for a message handed to a wake worker. Suffix, not a
@@ -1089,8 +1095,9 @@ async fn deliver_claimed_wake<R: tauri::Runtime>(
 ) -> Result<(), String> {
     match delivery.deliver_wake(app, msg).await {
         // `claim.parent()` is the outbox dir, so delivered/ is derived exactly
-        // as it is today and the destination still comes from `msg.id`.
-        Ok(()) => match delivery.move_to_delivered(claim, msg).await {
+        // as it is today and the destination still comes from `msg.id`. The
+        // delivered JSON carries the receipt annotation (#1635-2 D4).
+        Ok(annotated) => match delivery.move_to_delivered(claim, &annotated).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 release_wake_claim(claim, origin);
@@ -2856,6 +2863,11 @@ struct MailboxSpawnCall {
     shell: String,
     shell_args: Vec<String>,
     skip_auto_resume: bool,
+    /// #1635-2 D5: true when the wake carried dispatch flags and the spawn
+    /// suppressed the config.json tooling writes. The test-hook boundary is
+    /// the observable decision surface (the hook short-circuits to the
+    /// in-memory `mgr.create_session` and never writes config.json).
+    skip_tooling_save: bool,
 }
 
 #[cfg(test)]
@@ -7102,10 +7114,13 @@ impl MailboxPoller {
             *slot = Some(msg);
             return Ok(());
         }
-        self.deliver_wake(app, &msg).await?;
+        // #1635-2 D4: write the annotated message so the `Delivered:` CLI
+        // receipt can report the effective agent/profile. No-flag messages are
+        // still byte-identical to today.
+        let annotated = self.deliver_wake(app, &msg).await?;
 
         // Move to delivered/ with token stripped
-        self.move_to_delivered(path, &msg).await
+        self.move_to_delivered(path, &annotated).await
     }
 
     /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
@@ -7121,7 +7136,7 @@ impl MailboxPoller {
         &self,
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
-    ) -> Result<(), String> {
+    ) -> Result<OutboxMessage, String> {
         self.deliver_wake_with_origin(app, msg, WakeDeliveryOrigin::FilesystemPoller)
             .await
     }
@@ -7131,7 +7146,7 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
-    ) -> Result<(), String> {
+    ) -> Result<OutboxMessage, String> {
         self.deliver_wake_engine(
             app,
             WakeDelivery::Peer {
@@ -7145,11 +7160,13 @@ impl MailboxPoller {
     /// Single private entry for every wake delivery kind. The variant is selected only by
     /// code: serialized peer messages can enter only `Peer`, while the validated target,
     /// notice, cancellation, and guard capability are required for `InternalSystem`.
+    /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
+    /// internal-system arm builds its own envelope (it holds no serialized message).
     async fn deliver_wake_engine<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         delivery: WakeDelivery<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<OutboxMessage, String> {
         match delivery {
             WakeDelivery::Peer { message, origin } => {
                 self.deliver_peer_wake(app, message, origin).await
@@ -7160,8 +7177,15 @@ impl MailboxPoller {
                 cancellation,
                 guard,
             } => {
+                // The internal-system envelope never carries dispatch flags, so
+                // the fresh unannotated envelope is the correct delivered
+                // message. Built up front because the delivery below moves
+                // `target`; the delivery MUST still run (context alerts,
+                // notices, cancellations, guard).
+                let delivered = internal_system_envelope(&target);
                 self.deliver_internal_system_wake(app, target, notice, cancellation, guard)
-                    .await
+                    .await?;
+                Ok(delivered)
             }
         }
     }
@@ -7171,7 +7195,7 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
-    ) -> Result<(), String> {
+    ) -> Result<OutboxMessage, String> {
         // Parse a hand-authored logical action after process_message's
         // authorization/routing gates but before any recipient actuation.
         let parsed_remote_command = msg
@@ -7179,6 +7203,23 @@ impl MailboxPoller {
             .as_deref()
             .map(parse_remote_pty_command)
             .transpose()?;
+
+        // #1635-2 D5: a wake carries dispatch flags when it names a specific
+        // agent (empty string and `auto` are the no-flag shapes — the API/DB
+        // path writes `preferred_agent: String::new()`) or requests a profile
+        // letter. Flagged wakes suppress the spawn-time config.json writes
+        // (skip_tooling_save) and populate the delivered-receipt annotations.
+        let flags_present = (!msg.preferred_agent.is_empty() && msg.preferred_agent != "auto")
+            || msg.requested_profile.is_some();
+
+        // #1635-2 D6: a present requestedProfile that is not a single A-Z
+        // letter is a permanent delivery error. The CLI rejects it before
+        // enqueue (1635-1); this defends hand-written outbox JSON.
+        if let Some(letter) = msg.requested_profile.as_deref() {
+            if crate::config::settings::normalize_profile_letter(letter).is_none() {
+                return Err(ERR_INVALID_DISPATCH_PROFILE.to_string());
+            }
+        }
 
         // (#885 J2) A purge is destroying this agent's record right now. A wake
         // delivered into that window falls through to spawn-persistent below and
@@ -7301,7 +7342,16 @@ impl MailboxPoller {
                         .inject_wake_into_pty(app, session_id, msg, origin)
                         .await
                     {
-                        Ok(()) => return Ok(()),
+                        Ok(()) => {
+                            // #1635-2 D1: a live target cannot apply dispatch
+                            // flags — deliver as today and annotate the receipt.
+                            // A plain wake stays byte-identical (no annotation).
+                            let mut delivered = msg.clone();
+                            if flags_present {
+                                delivered.dispatch_not_applied = Some("live-target".to_string());
+                            }
+                            return Ok(delivered);
+                        }
                         Err(e) if err_is_pty_session_missing(&e) => {
                             // Race: PTY died between `find_live_candidates`
                             // probe and `PtyManager::write`. Load-bearing
@@ -7470,6 +7520,10 @@ impl MailboxPoller {
         if let Some(spawn) = configured_spawn.as_ref() {
             crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
         }
+        // #1635-2 D4: `configured_spawn` is moved into the spawn below; keep a
+        // clone so the delivered-receipt annotation can read the trusted agent
+        // id and the profile resolution that actually launched.
+        let configured_spawn_for_annotation = configured_spawn.clone();
         let info = self
             .spawn_wake_session(
                 app,
@@ -7478,6 +7532,7 @@ impl MailboxPoller {
                 cwd,
                 session_name,
                 spawn_with_resume,
+                flags_present, // D5: dispatch-flag wakes suppress tooling writes
                 spawn_shell.clone(),
                 spawn_args.clone(),
                 spawn_label,
@@ -7548,7 +7603,24 @@ impl MailboxPoller {
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
         self.inject_wake_into_pty(app, session_id, msg, origin)
-            .await
+            .await?;
+
+        // #1635-2 D4: the delivered JSON reports the effective agent and
+        // profile when dispatch flags were honored on this spawn. When the
+        // agent is not configured (no trusted spawn), only the resolved agent
+        // id is annotated; profile fields stay absent.
+        let mut delivered = msg.clone();
+        if flags_present {
+            if let Some(spawn) = configured_spawn_for_annotation.as_ref() {
+                delivered.effective_agent_id = Some(spawn.trusted_agent_id.clone());
+                delivered.effective_profile =
+                    Some(spawn.profile_resolution.effective_profile.clone());
+                delivered.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+            } else {
+                delivered.effective_agent_id = resolved_command.agent_id.clone();
+            }
+        }
+        Ok(delivered)
     }
 
     /// Deliver a validated AgentsCommander-generated notice through the existing wake,
@@ -7572,6 +7644,7 @@ impl MailboxPoller {
             },
         )
         .await
+        .map(|_| ())
     }
 
     async fn deliver_internal_system_wake<R: tauri::Runtime>(
@@ -7784,6 +7857,8 @@ impl MailboxPoller {
             cwd,
             local.to_string(),
             spawn_with_resume,
+            // Internal-system envelopes never carry dispatch flags (D5).
+            false,
             resolved_spawn.shell.clone(),
             resolved_spawn.shell_args.clone(),
             Some(resolved_spawn.trusted_agent_label.clone()),
@@ -8298,6 +8373,7 @@ impl MailboxPoller {
         cwd: String,
         session_name: String,
         spawn_with_resume: bool,
+        skip_tooling_save: bool,
         spawn_shell: String,
         spawn_args: Vec<String>,
         spawn_label: Option<String>,
@@ -8318,6 +8394,7 @@ impl MailboxPoller {
                 shell: spawn_shell.clone(),
                 shell_args: spawn_args.clone(),
                 skip_auto_resume,
+                skip_tooling_save,
             };
             {
                 let mut calls = hooks.spawn_calls.lock().unwrap();
@@ -8376,9 +8453,9 @@ impl MailboxPoller {
             Some(session_name),                // readable name, no [temp] prefix
             resolved_command.agent_id.clone(), // links to agent config
             spawn_label,                       // human-readable label
-            false,            // skip_tooling_save = false -> persist lastCodingAgent
-            Vec::new(),       // git_repos
-            skip_auto_resume, // see deliver_wake top
+            skip_tooling_save, // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence
+            Vec::new(),        // git_repos
+            skip_auto_resume,  // see deliver_wake top
             resolved_spawn,
             // #1271 - the configured host shell paired with the resolved agent,
             // built from the same settings snapshot that produced the spawn.
@@ -11863,7 +11940,13 @@ impl MailboxPoller {
                 let settings = app.state::<SettingsState>();
                 let cfg = settings.read().await;
                 let spawn = crate::commands::session::resolve_configured_agent_spawn_for_cwd(
-                    &cfg, agent_id, &cwd, None,
+                    &cfg,
+                    agent_id,
+                    &cwd,
+                    msg.requested_profile.as_deref(),
+                    // #1635-2 D2: the dispatch request outranks the replica
+                    // pin for this spawn only.
+                    msg.requested_profile.is_some(),
                 )?;
                 // #1271 - same-guard host shell: copied from the exact snapshot
                 // that built the spawn, before any await.
@@ -12854,6 +12937,11 @@ mod tests {
         ));
         assert!(is_permanent_delivery_error(
             "Could not resolve inbox for agent 'missing'"
+        ));
+        // #1635-2 D6: the invalid-dispatch-profile marker is terminal.
+        assert!(is_permanent_delivery_error(ERR_INVALID_DISPATCH_PROFILE));
+        assert!(is_permanent_delivery_error(
+            "send: requestedProfile must be a single letter A through Z (hand-written outbox)"
         ));
         for transient in [
             "Cannot execute remote command 'clear': agent is busy (not idle)",
@@ -23736,6 +23824,433 @@ mod tests {
         assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
         assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
         assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+    }
+
+    // ── #1635-2 wake dispatch honoring: agent+profile at spawn, receipt, no-write ──
+
+    /// Install profile cells for the fixture's agents (codex/claude). Cells map
+    /// agent id -> (letter, enabled); the cell command is `codex --<lower>` so
+    /// the composed spawn command (`<base> <cell>`) visibly carries the
+    /// effective cell letter.
+    async fn configure_profile_cells(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        cells: &[(&str, &[(&str, bool)])],
+    ) {
+        let settings = app.state::<SettingsState>();
+        let mut guard = settings.write().await;
+        guard.coding_agent_profiles.profile_slots = std::collections::BTreeMap::from([
+            (
+                "A".to_string(),
+                crate::config::settings::ProfileSlotConfig {
+                    label: String::new(),
+                },
+            ),
+            (
+                "B".to_string(),
+                crate::config::settings::ProfileSlotConfig {
+                    label: String::new(),
+                },
+            ),
+            (
+                "C".to_string(),
+                crate::config::settings::ProfileSlotConfig {
+                    label: String::new(),
+                },
+            ),
+        ]);
+        guard.coding_agent_profiles.profiles_by_agent = cells
+            .iter()
+            .map(|(agent_id, letters)| {
+                (
+                    (*agent_id).to_string(),
+                    letters
+                        .iter()
+                        .map(|(letter, enabled)| {
+                            (
+                                (*letter).to_string(),
+                                crate::config::settings::ProfileCellConfig {
+                                    enabled: *enabled,
+                                    command: format!("codex --{}", letter.to_ascii_lowercase()),
+                                    env: std::collections::BTreeMap::new(),
+                                    notes: String::new(),
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+    }
+
+    /// A dispatch-flagged wake targeting the fixture's dev-rust replica: a
+    /// named agent plus an optional requested profile letter.
+    fn dispatch_wake_message(agent: &str, profile: Option<&str>) -> OutboxMessage {
+        let mut message = wake_message_to_target();
+        message.id = format!("dispatch-{}", Uuid::new_v4());
+        message.preferred_agent = agent.to_string();
+        message.requested_profile = profile.map(str::to_string);
+        message
+    }
+
+    fn assert_effective_agent_and_profile(delivered: &OutboxMessage, agent: &str, profile: &str) {
+        assert_eq!(delivered.effective_agent_id.as_deref(), Some(agent));
+        assert_eq!(delivered.effective_profile.as_deref(), Some(profile));
+        assert!(!delivered.profile_fallback_applied);
+        assert!(delivered.dispatch_not_applied.is_none());
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_agent_and_profile_honored_on_cold_spawn() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        configure_profile_cells(&app, &[("codex", &[("A", true), ("B", true), ("C", true)])]).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0];
+        assert_eq!(call.to, CANONICAL_WAKE_TO);
+        assert_eq!(call.shell, "codex");
+        assert!(call.shell_args.contains(&"--c".to_string()));
+        assert!(call.skip_tooling_save);
+        assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+        assert_effective_agent_and_profile(&delivered, "codex", "C");
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_profile_falls_back_to_nearest_enabled_cell() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        // C is disabled: the walk must fall back to the nearest enabled cell (B).
+        configure_profile_cells(
+            &app,
+            &[("codex", &[("A", true), ("B", true), ("C", false)])],
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].shell_args.contains(&"--b".to_string()));
+        assert_eq!(delivered.effective_agent_id.as_deref(), Some("codex"));
+        assert_eq!(delivered.effective_profile.as_deref(), Some("B"));
+        assert!(delivered.profile_fallback_applied);
+        assert!(delivered.dispatch_not_applied.is_none());
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_profile_without_agent_applies_to_auto_resolution() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        configure_profile_cells(&app, &[("codex", &[("A", true), ("B", true), ("C", true)])]).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        // auto resolution: no currentCodingAgent/lastCodingAgent on the replica,
+        // so the sender agent (codex) picks the row; the requested letter C
+        // applies to that row.
+        let mut message = dispatch_wake_message("auto", Some("C"));
+        message.sender_agent = Some("codex".to_string());
+
+        let delivered = poller
+            .deliver_wake_with_origin(&app, &message, WakeDeliveryOrigin::FilesystemPoller)
+            .await
+            .unwrap();
+
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].shell, "codex");
+        assert!(calls[0].shell_args.contains(&"--c".to_string()));
+        assert!(calls[0].skip_tooling_save);
+        assert_effective_agent_and_profile(&delivered, "codex", "C");
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_outranks_replica_pin() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        // Replica pinned to tooling.profile=B.
+        std::fs::write(
+            fixture.target_cwd.join("config.json"),
+            r#"{"identity":"../../_agent_dev-rust","tooling":{"profile":"B"}}"#,
+        )
+        .unwrap();
+        configure_profile_cells(&app, &[("codex", &[("A", true), ("B", true), ("C", true)])]).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        assert_effective_agent_and_profile(&delivered, "codex", "C");
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert!(calls[0].shell_args.contains(&"--c".to_string()));
+        // The pin is untouched on disk (the hook never writes, and the flagged
+        // spawn suppresses tooling writes anyway).
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture.target_cwd.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["tooling"]["profile"], "B");
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_respawn_of_exited_session_honors_flags() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        configure_profile_cells(&app, &[("codex", &[("A", true), ("B", true), ("C", true)])]).await;
+        let exited_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "exited",
+            SessionStatus::Exited(0),
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hooks.destroy_calls.lock().unwrap().as_slice(), &[exited_id]);
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        // Respawn path: auto-resume stays enabled (spawn_with_resume true).
+        assert!(!calls[0].skip_auto_resume);
+        assert!(calls[0].shell_args.contains(&"--c".to_string()));
+        assert!(calls[0].skip_tooling_save);
+        assert_effective_agent_and_profile(&delivered, "codex", "C");
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_no_write_guarantee() {
+        // Flagged cold spawn: the recorded spawn decision suppresses tooling
+        // writes (skip_tooling_save == true at the test-hook boundary).
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].skip_tooling_save);
+
+        // No-flag `auto` wake: today's persist behavior is kept.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("auto", None),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].skip_tooling_save);
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_live_target_annotates_not_applied() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let live_id =
+            add_mailbox_session(&app, &fixture.target_cwd, "live", SessionStatus::Idle, None).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(live_id, true);
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("C")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        // Still delivered to the live PTY.
+        assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[live_id]);
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        // Annotated as not-applied; no effective values (nothing spawned).
+        assert_eq!(
+            delivered.dispatch_not_applied.as_deref(),
+            Some("live-target")
+        );
+        assert!(delivered.effective_agent_id.is_none());
+        assert!(delivered.effective_profile.is_none());
+        assert!(!delivered.profile_fallback_applied);
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_invalid_profile_permanently_rejected() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let poller = MailboxPoller::new_with_test_hooks(MailboxTestHooks::default());
+
+        let err = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("codex", Some("3")),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.contains("single letter A through Z"),
+            "reason was: {err}"
+        );
+        assert!(is_permanent_delivery_error(&err));
+    }
+
+    #[tokio::test]
+    async fn wake_dispatch_hand_written_invalid_profile_is_rejected_with_reason() {
+        // A hand-written outbox JSON bypasses the CLI's pre-enqueue validation
+        // (1635-1); the daemon must terminally reject it with the A-Z reason.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        {
+            let settings = app.state::<SettingsState>();
+            settings
+                .write()
+                .await
+                .project_paths
+                .push(fixture.sender_cwd.to_string_lossy().to_string());
+        }
+        let outbox_dir = fixture
+            .sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox");
+        std::fs::create_dir_all(&outbox_dir).unwrap();
+        let mut msg = dispatch_wake_message("codex", Some("3"));
+        msg.id = "hand-written-invalid".to_string();
+        msg.token = Some(MAILBOX_MASTER_TOKEN.to_string());
+        let path = outbox_dir.join("hand-written-invalid.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
+
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        poller.poll(&app).await.unwrap();
+        poller.settle_wake_workers().await;
+
+        assert!(!path.exists());
+        let reason = std::fs::read_to_string(
+            outbox_dir
+                .join("rejected")
+                .join("hand-written-invalid.reason.txt"),
+        )
+        .unwrap();
+        assert!(
+            reason.contains("single letter A through Z"),
+            "reason was: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_without_flags_produces_legacy_delivered_json() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+        let delivered = poller
+            .deliver_wake_with_origin(
+                &app,
+                &dispatch_wake_message("auto", None),
+                WakeDeliveryOrigin::FilesystemPoller,
+            )
+            .await
+            .unwrap();
+
+        let json = serde_json::to_value(&delivered).unwrap();
+        assert!(json.get("effectiveAgentId").is_none());
+        assert!(json.get("effectiveProfile").is_none());
+        assert!(json.get("profileFallbackApplied").is_none());
+        assert!(json.get("dispatchNotApplied").is_none());
+        assert!(json.get("requestedProfile").is_none());
+    }
+
+    #[tokio::test]
+    async fn wake_db_api_empty_preferred_agent_is_no_flag() {
+        // The API/DB shape (`build_outbox_message` writes preferred_agent "")
+        // must behave exactly like a no-flag wake: skip_tooling_save stays
+        // false and the delivered JSON carries no annotation keys.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let hooks = MailboxTestHooks::default();
+        hooks.inject_results.lock().unwrap().push_back(Ok(()));
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut message = wake_message_to_target();
+        message.id = "db-api-empty-agent".to_string();
+        message.preferred_agent = String::new();
+        message.sender_agent = None;
+        message.requested_profile = None;
+
+        let delivered = poller
+            .deliver_wake_with_origin(&app, &message, WakeDeliveryOrigin::DbQueue)
+            .await
+            .unwrap();
+
+        let calls = hooks.spawn_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].skip_tooling_save);
+        let json = serde_json::to_value(&delivered).unwrap();
+        assert!(json.get("effectiveAgentId").is_none());
+        assert!(json.get("effectiveProfile").is_none());
+        assert!(json.get("profileFallbackApplied").is_none());
+        assert!(json.get("dispatchNotApplied").is_none());
     }
 
     #[tokio::test]

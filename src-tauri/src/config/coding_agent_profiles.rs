@@ -15,6 +15,10 @@ pub struct ProfileResolutionRequest<'a> {
     pub launch_path: Option<&'a Path>,
     pub agent_matrix_name: Option<&'a str>,
     pub requested_profile: Option<&'a str>,
+    /// When true and `requested_profile` is present, the explicit request
+    /// outranks the instance override (replica pin) for this resolution only.
+    /// Wake dispatch sets this; all other callers leave it false.
+    pub requested_profile_authoritative: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,6 +583,7 @@ pub fn resolve_profile_selection(
             launch_path,
             agent_matrix_name: None,
             requested_profile,
+            requested_profile_authoritative: false,
         },
     );
     if let Some(warning) = instance_read.and_then(|read| read.warning) {
@@ -667,11 +672,22 @@ pub fn resolve_profile(
             normalize_profile_from_source(Some(letter.clone()), &mut warnings, "agent default")
         });
 
-    let requested_profile = instance_override
-        .or(explicit)
-        .or(origin_default)
-        .or(agent_default)
-        .unwrap_or_else(|| "A".to_string());
+    // #1635-2 D2: a wake dispatch request outranks the replica pin for that
+    // spawn only; every other caller keeps the historical ranking (instance
+    // override wins over the explicit request).
+    let requested_profile = if request.requested_profile_authoritative {
+        explicit
+            .or(instance_override)
+            .or(origin_default)
+            .or(agent_default)
+            .unwrap_or_else(|| "A".to_string())
+    } else {
+        instance_override
+            .or(explicit)
+            .or(origin_default)
+            .or(agent_default)
+            .unwrap_or_else(|| "A".to_string())
+    };
 
     let mut fallback_chain = Vec::new();
     let mut effective_profile = "A".to_string();
@@ -802,6 +818,7 @@ mod tests {
                 launch_path: None,
                 agent_matrix_name: Some("dev-rust"),
                 requested_profile: Some("D"),
+                requested_profile_authoritative: false,
             },
         );
 
@@ -822,6 +839,7 @@ mod tests {
                 launch_path: None,
                 agent_matrix_name: None,
                 requested_profile: Some("B"),
+                requested_profile_authoritative: false,
             },
         );
 
@@ -848,11 +866,54 @@ mod tests {
                 launch_path: Some(&agent_dir),
                 agent_matrix_name: None,
                 requested_profile: Some("B"),
+                requested_profile_authoritative: false,
             },
         );
 
         assert_eq!(resolved.requested_profile, "C");
         assert_eq!(resolved.effective_profile, "C");
+    }
+
+    #[test]
+    fn dispatch_authoritative_request_outranks_instance_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent_dir = temp.path().join(".ac").join("_agent_dev-rust");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("config.json"),
+            r#"{"tooling":{"instanceProfileOverride":"C"}}"#,
+        )
+        .unwrap();
+
+        let settings = settings_with_cells(&[("codex", vec!["A", "B", "C"])]);
+        // Historical ranking (picker, self-switch, restart, drift): the replica
+        // pin wins over the explicit request.
+        let pinned = resolve_profile(
+            &settings,
+            ProfileResolutionRequest {
+                coding_agent_id: "codex",
+                launch_path: Some(&agent_dir),
+                agent_matrix_name: None,
+                requested_profile: Some("B"),
+                requested_profile_authoritative: false,
+            },
+        );
+        assert_eq!(pinned.requested_profile, "C");
+        assert_eq!(pinned.effective_profile, "C");
+
+        // Wake dispatch: the explicit request outranks the pin for this spawn.
+        let dispatched = resolve_profile(
+            &settings,
+            ProfileResolutionRequest {
+                coding_agent_id: "codex",
+                launch_path: Some(&agent_dir),
+                agent_matrix_name: None,
+                requested_profile: Some("B"),
+                requested_profile_authoritative: true,
+            },
+        );
+        assert_eq!(dispatched.requested_profile, "B");
+        assert_eq!(dispatched.effective_profile, "B");
     }
 
     #[test]
@@ -926,6 +987,7 @@ mod tests {
                 launch_path: Some(&replica),
                 agent_matrix_name: None,
                 requested_profile: None,
+                requested_profile_authoritative: false,
             },
         );
 
