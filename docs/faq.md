@@ -48,7 +48,7 @@ It is the role-template browser shown when you create a new agent. AC can downlo
 
 ## Does AC work on macOS?
 
-It compiles and runs. We do not have day-to-day macOS testing — help is welcome in [issue #320](https://github.com/mblua/AgentsCommander/issues/320). Built on Windows. Runs on Linux. Works on macOS.
+macOS is not supported yet because maintainer and test capacity is insufficient. A release artifact is not a support promise, so a normal install stops on macOS. Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported; Linux x86_64/AMD64 support is partial and in progress. See the [platform contract](install-with-agent.md#support-gates). If you deliberately test Linux or macOS, use the [reproducible report template](install-with-agent.md#help-extend-linux-and-macos-support) or follow [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Is it free?
 

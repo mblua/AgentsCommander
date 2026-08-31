@@ -6,8 +6,9 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 
 ## Prerequisites
 
+- A host covered by the [platform support policy](install-with-agent.md#support-gates). Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported; Linux x86_64/AMD64 is partial and requires explicit confirmation before installation. macOS is not a normal install target yet.
 - At least one supported coding-agent CLI (Claude Code, Codex, Antigravity, or Pi) installed and authenticated as its CLI requires. See [Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis) for the exact upstream links and Pi install commands. You can install more than one; AC lets you pick per agent.
-- Node.js 18+ and npm if you install AgentsCommander from npm.
+- Node.js 18+ and npm only if you deliberately choose the secondary npm route.
 - Git installed.
 - A repo you want the agents to work on (it can be empty).
 
@@ -15,35 +16,9 @@ You do **not** need Rust to run AgentsCommander. Rust is only needed if you want
 
 ## 1. Install AgentsCommander
 
-The fastest install path is npm:
+Use the copyable [install-with-a-Coding-Agent prompt](../README.md#install-with-a-coding-agent). The Coding Agent reads the pinned [installation contract](install-with-agent.md), reports your host's support tier, selected stable release asset, checksum, destination, commands, privilege and `PATH` effects, validation, and rollback, then waits for your approval.
 
-```bash
-npm install -g @mblua/agentscommander
-```
-
-Start AgentsCommander:
-
-```bash
-agentscommander
-```
-
-The npm package is `@mblua/agentscommander`. The installed command is still `agentscommander`.
-
-If you prefer a desktop installer or manual download, get the latest asset for your platform from [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest):
-
-| Platform | Asset |
-|---|---|
-| Windows 10 1809+ | `Agents Commander_X.Y.Z_x64-setup.exe` or the portable `agentscommander.exe` |
-| Linux | `agentscommander_*_amd64.AppImage` |
-| macOS | `Agents Commander_*.dmg` (Apple Silicon + Intel) |
-
-Windows code signing is planned through SignPath and pending setup. Current Windows artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. Verify downloads with the release `SHASUMS256.txt`; on Windows you can inspect signature status with:
-
-```powershell
-Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
-```
-
-Run the installer, or drop the portable `.exe` into any folder and double-click. On first launch AC creates its config directory next to the binary (e.g. `.agentscommander/` on Windows). See [Portable instances](features/portable-instances.md) for the rules.
+After it verifies the exact asset against `SHASUMS256.txt` and validates the executable, start AgentsCommander from the approved location. If you choose a secondary release or npm route, use the same platform and trust gates in the canonical guide.
 
 ## 2. Open or create an AC project
 
@@ -88,11 +63,4 @@ That's the loop. Every message is a file you can `cat`, `git diff`, and audit.
 - [Feature index](features/README.md): every feature page, grouped by what it does.
 - [Use cases](use-cases.md) — recipes other people are running.
 - [Troubleshooting](troubleshooting.md) — when something does not work.
-
-
-## Uninstalling on Windows
-
-If you installed AgentsCommander using the setup installer (.exe), you can remove it using the standard Windows settings:
-1. Open Windows **Settings** > **Apps** > **Installed apps**.
-2. Search for **Agents Commander**.
-3. Click the menu (three dots) next to it and select **Uninstall**.
+- [Install and rollback](install-with-agent.md) — platform gates, checksum verification, secondary routes, and uninstall guidance.

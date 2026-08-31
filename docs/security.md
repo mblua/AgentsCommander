@@ -141,17 +141,18 @@ Turn it off in **Settings → General → Container Coding Agents**, or set `con
 
 Windows code signing is planned through SignPath Foundation and is pending setup and approval. Current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
-Verify every downloaded release asset against the `SHASUMS256.txt` file attached to the GitHub release. On Windows, inspect Authenticode status with:
+Verify every exact downloaded filename against the `SHASUMS256.txt` file attached to the same GitHub release. A checksum match does not protect against replacement of both files through a compromised publisher or repository account. On Windows, inspect Authenticode status separately with:
 
 ```powershell
-Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
+Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
 ```
 
-Linux and macOS builds are not signed today.
+Linux and macOS builds are not signed today. Build availability does not change the [platform support tiers](install-with-agent.md#support-gates); macOS is not supported yet.
 
 ## Known gaps
 
-- **macOS code signing** is not yet in place ([#320](https://github.com/mblua/AgentsCommander/issues/320)).
+- **macOS support and code signing** are not yet in place. Use the explicit [tester/contributor path](install-with-agent.md#help-extend-linux-and-macos-support), not a normal install.
 - **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same room share filesystem access. If you need hard isolation, run each agent in its own VM or container.

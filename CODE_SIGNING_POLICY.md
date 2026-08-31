@@ -27,12 +27,13 @@ You can inspect the Authenticode status of any Windows `.exe` or `.msi` file:
 
 **PowerShell**:
 ```powershell
-Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
+Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
 ```
 
 Until Windows signing is active, `Status` may read `NotSigned`. Once SignPath signing is active, signed artifacts should report `Valid` and identify SignPath Foundation as the signer.
 
-For every release, also verify the downloaded file against the attached `SHASUMS256.txt` checksum file.
+For every release, also verify the exact downloaded filename against the attached `SHASUMS256.txt` checksum file. A matching checksum detects corruption or a file that differs from the release record; it does not protect against an attacker who can replace both the asset and checksum through a compromised publisher or repository account. See the [installation verification steps](docs/install-with-agent.md#verify-a-downloaded-asset-manually).
 
 ## Privacy
 

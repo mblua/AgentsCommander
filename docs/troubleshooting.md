@@ -4,34 +4,36 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 
 ## Installation
 
+Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is partial and requires an explicit warning and confirmation. macOS is not a normal install target yet.
+
 ### Windows: SmartScreen blocks the installer
 
-Windows code signing is planned through SignPath, but current release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. SmartScreen can also warn on newly signed apps before they build reputation. Before running a downloaded installer, verify its checksum against the release `SHASUMS256.txt` file and inspect Authenticode status:
+Windows code signing is planned through SignPath, but current release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. SmartScreen can also warn on newly signed apps before they build reputation. Do not bypass the warning silently. Before running a downloaded installer, [verify its exact filename and checksum](install-with-agent.md#verify-a-downloaded-asset-manually) against the same release's `SHASUMS256.txt`, then inspect Authenticode status separately:
 
 ```powershell
-Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
+Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
 ```
 
-Until Windows signing is active, `Status` may read `NotSigned`. Once SignPath signing is active, `Status` should read `Valid`. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
+Until Windows signing is active, `Status` may read `NotSigned`. Ask separately before running unsigned software. Once SignPath signing is active, `Status` should read `Valid`. A matching checksum is not publisher-compromise protection and does not make an unsigned artifact signed. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
 ### Linux: `.AppImage` will not execute
 
-```bash
-chmod +x agentscommander_*_amd64.AppImage
-./agentscommander_*_amd64.AppImage
-```
-
-If the AppImage fails to start with `error while loading shared libraries: libwebkit2gtk-4.1.so.0`, install the WebKit runtime:
+Linux x86_64/AMD64 support is partial and in progress. Continue only after acknowledging that tier and verifying `Agents.Commander_<version>_amd64.AppImage` against the same release's `SHASUMS256.txt`.
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-0 libappindicator3-1 librsvg2-2
+asset='Agents.Commander_<version>_amd64.AppImage'
+chmod +x "$asset"
+"./$asset"
 ```
 
-### macOS: "AgentsCommander cannot be opened"
+`chmod` exits 0 without output; the next command launches the verified AppImage. If it fails with `error while loading shared libraries: libwebkit2gtk-4.1.so.0`, stop and identify the WebKitGTK 4.1 runtime package for that exact distribution and version. Linux package names vary. A Coding Agent must report the package source and exact command, then ask separately before elevation or a system package change.
 
-macOS releases are unsigned for now (see [issue #320](https://github.com/mblua/AgentsCommander/issues/320)). Allow the app once via System Settings → Privacy & Security, then it launches normally.
+### macOS: installation stops
 
-We are looking for macOS testers. If you can help reproduce or fix macOS-specific issues, comment on [#320](https://github.com/mblua/AgentsCommander/issues/320).
+macOS is not supported yet because maintainer and test capacity is insufficient. A `.dmg` or other artifact on a release does not make macOS supported. Do not bypass Gatekeeper as part of a normal installation.
+
+If you deliberately choose the tester/contributor path, use the [reproducible platform report template](install-with-agent.md#help-extend-linux-and-macos-support) and follow [`CONTRIBUTING.md`](../CONTRIBUTING.md). That choice is separate from normal install approval.
 
 ## Coding-agent detection
 
