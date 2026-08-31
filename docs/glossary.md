@@ -82,7 +82,7 @@ The single agent in a team that can send messages to any team member, edit the t
 
 ## Portable instance
 
-A renamed copy of `agentscommander.exe` (with an `_<suffix>` like `agentscommander_team-a.exe`) that runs fully isolated: its own config directory, its own mutex, its own web port.
+A renamed raw executable (with an `_<suffix>` such as `agentscommander_team-a.exe`) that selects a distinct writable adjacent config directory, normally enforced with `portable.txt`, plus its own mutex and web port. Project `.ac/` state is still shared when two instances register the same project.
 
 ## Profile
 

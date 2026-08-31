@@ -54,7 +54,10 @@ release, asset list, or SHASUMS256.txt is missing, ambiguous, or conflicting.
 
 Before changing anything, detect and report the OS name and version, native CPU
 architecture, process architecture if different, any existing AgentsCommander
-installation and configuration, and the support tier from the pinned guide.
+installation, the active runtime-selected configuration, and the support tier
+from the pinned guide. Do not assume that configuration is next to the binary;
+stop if multiple plausible configuration directories or ambiguous evidence make
+the active selection uncertain.
 Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported. Linux
 x86_64/AMD64 is partial/in progress: explain the limitations and wait for my
 explicit confirmation before continuing. macOS is not supported yet: stop the
@@ -75,8 +78,9 @@ repository account.
 
 After approval, download the exact asset and SHASUMS256.txt from the same stable
 release, require one exact filename record, verify the complete SHA-256 digest,
-preserve existing configuration, run only the approved commands, validate from
-the exact installed path, and report the result. Stop safely on any mismatch.
+back up the active selected configuration, run only the approved commands,
+validate from the exact installed path, and report the result. Stop safely on
+any mismatch.
 
 Never bypass a security control silently, elevate automatically, use
 `curl | shell`, use a mirror, build from source as a fallback, use an emulated or
@@ -94,7 +98,7 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 - **Direct multiple rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to room orchestrators, send work to different teams, and keep initiatives aligned across parallel rooms.
 - **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
-- **Local state, no telemetry.** All state lives in plain JSON, TOML, and markdown next to the binary. Portable: copy the `.exe` to any drive and it carries its own config.
+- **Local state, no telemetry.** Machine-local state stays in the runtime-selected configuration directory; shared team state stays in each project's `.ac/` tree. Without a public config override, a [marked, writable portable copy](docs/features/portable-instances.md#config-directory-rule) keeps its configuration beside the native executable.
 
 You bring the coding agents. AgentsCommander coordinates them.
 

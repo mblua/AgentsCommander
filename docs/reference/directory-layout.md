@@ -9,28 +9,34 @@ AgentsCommander keeps its on-disk data in two distinct trees:
 | Tree | Location | Scope |
 |---|---|---|
 | Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration, tracked in the project's git |
-| Instance config dir | `<binary folder>/.<binary stem>/` | Per-instance state, never shared |
+| Application config dir | Runtime-selected override, adjacent candidate, or home fallback | Machine-local application state, never shared |
 
-In this deployment the binary is `agentscommander_ac2.exe` sitting next to the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`.
+In the deployment documented below, the writable adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`.
 
-## The config-dir rule
+## The config-dir selection rule
 
-The per-instance config directory lives next to the binary and is named after the binary's file stem with a leading dot (`src-tauri/src/config/mod.rs`, `resolve_instance_location`):
+Production resolves the application config directory once per process (`src-tauri/src/config/mod.rs`, `resolve_instance_location`):
 
-```
+1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its value verbatim and skips all remaining probes.
+2. Otherwise AC derives `<native-executable-folder>/.<native-executable-stem>` and inspects `portable.txt` beside that executable. With the marker, the adjacent candidate must pass the write probe or startup fails. Without it, a successful probe selects the candidate, a conclusively unwritable candidate selects the home fallback, and an indeterminate result fails startup.
+3. If no usable executable parent and stem can be derived, AC selects the home fallback when one is available. The normal production identity uses `$HOME/.agentscommander-new`; the `dev` identity uses `$HOME/.agentscommander-new-dev`.
+
+Debug builds may use the internal `AGENTSCOMMANDER_TEST_CONFIG_DIR` after the public override and before executable-derived resolution; release builds never read it. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the operational rule.
+
+These examples apply only after the adjacent candidate is selected:
+
+```text
 C:\tools\agentscommander.exe        ->  C:\tools\.agentscommander\
 C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 ```
 
-- The stem comes from the running executable only. Renaming the binary gives you a fresh, isolated instance; see [Portable instances](../features/portable-instances.md).
-- If `current_exe()` is unavailable, AC falls back to `$HOME/<config-dir-name>`.
-- Debug builds honor the `AGENTSCOMMANDER_TEST_CONFIG_DIR` override.
-- Replica agent directories inside rooms follow the same naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`).
+- The adjacent candidate's stem comes from the running executable only. Renaming changes that candidate but does not override the public environment variable or guarantee that adjacency is writable.
+- Replica agent directories inside rooms always follow the executable-stem naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`); that local name is independent of the application's selected config location.
 
 The rule has two consequences:
 
 - `.ac/` is shared: commit it to the project's git so the team gets the same agents, teams, rooms, and tool configuration.
-- The instance dir is per-instance: never commit or share it. It holds tokens, sessions, logs, and machine-local state. AC writes a `.gitignore` inside it so those files stay out of git when the binary runs inside a repository.
+- The selected application config dir is machine-local: never commit or share it. It holds tokens, sessions, logs, and other local state. AC writes a `.gitignore` inside it so those files stay out of git when the selected path is inside a repository.
 
 ## `.ac/` (shared, tracked in the project git)
 
@@ -64,7 +70,7 @@ The project-scoped tree. AC creates and maintains it, and the project commits it
 
 ## `.agentscommander_ac2/` (per-instance, never shared)
 
-Per-user instantiation state next to the binary. Everything in this tree is per-instance: never commit it, never share it. The inventory below reflects this deployment and is cross-checked against the `src-tauri/src/` writers.
+This deployment's selected machine-local application state. Never commit or share it. The inventory below reflects this adjacent-selection deployment and is cross-checked against the `src-tauri/src/` writers.
 
 ### Files
 
@@ -110,12 +116,12 @@ Per-user instantiation state next to the binary. Everything in this tree is per-
 
 The seed manifest at `.ac/seed-manifest.toml` records every file AC seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`) and the replica config folders (rows under `config:<dest>` scopes such as `__agent_<name>/.claude/`). `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
 
-The manifest never tracks the per-instance dir: that state is outside `.ac` by construction.
+The manifest never tracks the selected application config dir. A public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership.
 
 ## Shared vs per-instance in one rule
 
 - `<project>/.ac/`: shared, commit it.
-- `<binary folder>/.<binary stem>/`: per-instance, never commit or share. Tokens, sessions, logs, and the coding-agent catalog live there per machine and per binary.
+- The active selected application config directory: machine-local, never commit or share. Tokens, sessions, logs, and the coding-agent catalog live there; its path follows the selection rule above.
 
 ## Cross-references
 

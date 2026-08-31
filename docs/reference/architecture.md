@@ -638,11 +638,11 @@ graph TD
 
 ## 8. Persistence: Files on Disk
 
-The config directory is **per instance**: `<binary folder>/.<binary stem>/`, next to the executable (portable), with a legacy `$HOME` fallback when `current_exe()` is unavailable. Example: `C:\tools\agentscommander.exe` → `C:\tools\.agentscommander\`. A differently named binary gets its own isolated config dir. See [Directory layout](directory-layout.md) for the full on-disk contract.
+The application config directory is selected once at runtime: a nonblank public override wins; otherwise a successfully probed executable-adjacent candidate is used, while an unmarked conclusively unwritable candidate falls back to the home profile directory. `portable.txt` makes the adjacent choice fail closed, and indeterminate probes stop startup. A renamed binary is isolated only when it selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full contract.
 
 ```mermaid
 graph TD
-    subgraph "Per-instance config dir (next to binary)"
+    subgraph "Active selected application config dir"
         SETTINGS["settings.json<br/>Shell, agents, bots,<br/>voice config, window prefs"]
         SESSIONS["sessions.json<br/>Session registry<br/>for restore on startup"]
         MASTER["master-token.txt<br/>host credential"]
@@ -759,7 +759,7 @@ graph TD
 | `phone/messaging.rs` | Message pump and delivery |
 | `phone/consumption.rs` | Message consumption tracking |
 | `phone/terminal_snapshot.rs` | Snapshot request/response plumbing |
-| `config/mod.rs` | `config_dir()`: per-instance next-to-binary resolution |
+| `config/mod.rs` | `config_dir()`: override, adjacent-candidate, marker, write-probe, and home-fallback resolution |
 | `config/settings.rs` | `AppSettings`, `AgentConfig`, load/save JSON |
 | `config/teams.rs` | Team discovery, FQNs, routing rules |
 | `config/projects.rs` | Dual-path project registry |

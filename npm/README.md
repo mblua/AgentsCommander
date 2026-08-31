@@ -27,13 +27,23 @@ AgentsCommander does not install or authenticate Coding Agent CLIs for you.
 
 ## Preserve existing configuration
 
-The npm launcher runs the native executable from the package's `bin/` directory. AgentsCommander keeps its `.agentscommander*` configuration next to that native executable. Before an npm update or uninstall, resolve the global package directory and copy that adjacent configuration to a user-controlled backup location:
+The npm launcher runs the native executable from the package's `bin/` directory, but that directory provides only a configuration candidate. AgentsCommander resolves one active configuration directory at process startup, in this order:
+
+1. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` selects its original value verbatim and skips the remaining probes.
+2. Without that override, the candidate is `.<native-executable-stem>` beside the native executable. If `portable.txt` is beside that executable, a successful write probe selects the candidate; any probe failure is a startup error, with no home fallback. Without the marker, a successful probe selects the candidate, a conclusively unwritable candidate selects the home fallback, and an indeterminate result is a startup error.
+3. If no usable native-executable parent and stem can be resolved, AgentsCommander also uses the home fallback when one is available. For the normal production identity, that fallback is `$HOME/.agentscommander-new`.
+
+An empty or whitespace-only public override is ignored. See the complete [configuration-selection rule](https://github.com/mblua/AgentsCommander/blob/main/docs/features/portable-instances.md#config-directory-rule).
+
+Before an npm update or uninstall, resolve the global package directory:
 
 ```bash
 npm root -g
 ```
 
-The command exits 0 and prints the global `node_modules` directory. Under it, inspect `@mblua/agentscommander/bin/` for the native executable and its adjacent `.agentscommander*` directory. Do not continue if you cannot identify and preserve an existing configuration.
+The command exits 0 and prints the global `node_modules` directory. Use it to locate `@mblua/agentscommander/bin/` and the native executable, then identify the active directory from the precedence above and the existing launch environment. The presence of an adjacent directory alone does not prove that it was selected.
+
+Copy the complete active configuration directory to a user-controlled backup and verify the copy before running npm. Stop before any update or uninstall if more than one plausible configuration directory exists, the launch environment is unknown, a relative override cannot be resolved from the actual launch context, or any other evidence leaves the selection ambiguous. If the selection is unambiguous and the selected directory does not exist, record that there is no existing configuration to preserve.
 
 ## Install and validate
 
@@ -53,7 +63,7 @@ Success exits 0 and prints the AgentsCommander command help. The npm package is 
 
 ## Uninstall
 
-Preserve the adjacent configuration first, then run:
+Identify, back up, and verify the active selected configuration as described above, then run:
 
 ```bash
 npm uninstall -g @mblua/agentscommander

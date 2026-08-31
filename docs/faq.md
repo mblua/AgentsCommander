@@ -20,7 +20,7 @@ No. AgentsCommander is a Rust + SolidJS Tauri app. There is no Python runtime re
 
 ## Where is the data stored?
 
-Locally, in the per-instance config directory next to the binary (for example `C:\tools\.agentscommander\` for `C:\tools\agentscommander.exe`), with a legacy `$HOME` fallback when the executable path is unavailable. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See [Portable instances](features/portable-instances.md) and [`PRIVACY.md`](../PRIVACY.md).
+Locally, in the runtime-selected application config directory. A nonblank `AGENTSCOMMANDER_CONFIG_DIR` wins; otherwise AC selects a successfully probed executable-adjacent candidate, or the home fallback when an unmarked candidate is conclusively unwritable. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See the exact [config directory rule](features/portable-instances.md#config-directory-rule) and [`PRIVACY.md`](../PRIVACY.md).
 
 ## Does AC send telemetry?
 
@@ -28,7 +28,7 @@ No telemetry, no analytics, no crash reports. The one automatic network check is
 
 ## Can I run multiple AC instances side by side?
 
-Yes — that is what [portable instances](features/portable-instances.md) are for. Copy the `.exe`, rename it with a `_<suffix>`, and run. Each copy gets its own config directory, mutex, and web port.
+Yes — that is what [portable instances](features/portable-instances.md) are for. Put each renamed raw executable in a writable location and use `portable.txt` to require its distinct adjacent config directory. The suffix gives it a distinct mutex and web port. A public config override still wins, so confirm the copies select different directories.
 
 ## How do agents coordinate?
 

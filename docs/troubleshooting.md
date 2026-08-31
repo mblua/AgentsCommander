@@ -162,4 +162,4 @@ Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) wi
 
 - Your platform and version (`agentscommander --version`)
 - The exact error message
-- A copy of `<config-dir>/app.log` (the persistent log next to the binary; see [Log filtering](reference/log-filtering.md#where-logs-go))
+- A copy of `<config-dir>/app.log` from the active selected configuration directory (see [Log filtering](reference/log-filtering.md#where-logs-go))

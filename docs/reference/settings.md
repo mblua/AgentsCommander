@@ -4,15 +4,15 @@ For developers editing `settings.json` by hand, or scripting AgentsCommander con
 
 ## File location
 
-`settings.json` lives **next to the binary** in the per-instance config directory:
+`settings.json` lives in the configuration directory selected once at runtime:
 
-| Binary | Config directory | Settings file |
+| Selected case | Config directory | Settings file |
 |---|---|---|
-| `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
-| `C:\work\agentscommander_team-a.exe` | `C:\work\.agentscommander_team-a\` | `C:\work\.agentscommander_team-a\settings.json` |
-| (debug build) | adds `-dev` suffix | `…\.agentscommander-dev\settings.json` |
+| Nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
+| Adjacent candidate selected for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
+| Unmarked adjacent candidate is conclusively unwritable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
 
-See [Portable instances](../features/portable-instances.md) for the rule.
+When no public override is selected, `portable.txt` requires the adjacent candidate to be writable or startup fails; an indeterminate marker or write probe also fails instead of guessing. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete precedence and identity-specific fallback names.
 
 ## Editing rules
 
@@ -180,12 +180,12 @@ See [Terminal snapshots](../features/terminal-snapshots.md) for authorization, c
 
 ### Projects
 
-Each registered project is stored in two forms: a canonical absolute path (the existing fields) and a portable path relative to the folder holding the running binary (the companion fields, added for [portable instances](../features/portable-instances.md#portable-project-paths)). The three absolute fields and their three companions are index-aligned.
+Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory; for an absolute config override it is the override directory's parent. A home fallback or relative override has no base. The three absolute fields and their three companions are index-aligned.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `projectPath` | string \| null | `null` | Legacy single-project field: the first active registration's absolute path. Kept for backward compat. |
-| `projectPathRelativeToInstance` | string \| null | `null` | Companion of `projectPath`. Portable form relative to the binary's directory, or `null` when there is no portable form. |
+| `projectPathRelativeToInstance` | string \| null | `null` | Companion of `projectPath`. Portable form relative to the selected instance base, or `null` when there is no portable form. |
 | `projectPaths` | string[] | `[]` | All active projects registered in the sidebar. New entries appended by `new-project` / `open-project`. |
 | `projectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `projectPaths`: one slot per entry, same length and order. `null` where an entry has no portable form. |
 | `archivedProjectPaths` | string[] | `[]` | Absolute paths of archived (registered but hidden) projects. |
@@ -193,7 +193,7 @@ Each registered project is stored in two forms: a canonical absolute path (the e
 
 See [Project archiving](../features/project-archiving.md).
 
-**Companion format.** A companion string is relative to the directory of the running executable (see [Portable instances](../features/portable-instances.md#portable-project-paths)), always written with `/` separators on every OS. `.` means the instance folder itself; `..` is allowed as long as it does not climb above the filesystem root. A project on a different Windows drive or UNC share than the binary has no relative form, so its companion slot is `null` and it stays absolute-only.
+**Companion format.** A companion string is relative to the [selected instance base](../features/portable-instances.md#portable-project-paths), always written with `/` separators on every OS. `.` means the base itself; `..` is allowed as long as it does not climb above the filesystem root. A project on a different Windows drive or UNC share than the base has no relative form, so its companion slot is `null` and it stays absolute-only.
 
 **Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
 
@@ -342,7 +342,7 @@ the listener.
 To configure Web Remote Access for a trusted LAN:
 
 1. Close AC. Use the [File location](#file-location) section above to find the
-   per-instance `settings.json` next to the binary. Do not edit a global or
+   active selected `settings.json`. Do not edit a guessed adjacent, global, or
    shared `.ac/` file.
 2. Change only the existing `webServerBind` and `webServerPort` keys. Do not
    replace the whole JSON document. Substitute the host's real private LAN
