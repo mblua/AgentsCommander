@@ -15,6 +15,7 @@ pub mod purge_wg;
 pub mod raise_hand;
 pub mod role_experiment;
 pub mod self_clear;
+pub mod self_restart;
 pub mod self_switch;
 pub mod send;
 pub mod session_safety;
@@ -137,6 +138,9 @@ pub enum Commands {
     /// Hand off via SELF-HANDOFF.md, switch or hard-reset the caller, then resume from it
     #[command(name = "self-handoff-and-switch")]
     SelfSwitch(self_switch::SelfSwitchArgs),
+    /// Hand off via SELF-HANDOFF.md, respawn the caller with the same coding agent and profile, then resume from it
+    #[command(name = "self-handoff-and-restart")]
+    SelfRestart(self_restart::SelfRestartArgs),
     /// Show this session's raised-hand communication indicator in the Sidebar orchestrator row
     #[command(name = "raise-hand")]
     RaiseHand(raise_hand::RaiseHandArgs),
@@ -415,6 +419,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::Send(args) => send::execute(args),
         Commands::SelfClear(args) => self_clear::execute(args),
         Commands::SelfSwitch(args) => self_switch::execute(args),
+        Commands::SelfRestart(args) => self_restart::execute(args),
         Commands::RaiseHand(args) => raise_hand::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
@@ -782,7 +787,7 @@ mod tests {
             "`<root> role-experiment variant set` is not in the walked set"
         );
 
-        // Vacuity floor, derived rather than round: 39 `Commands` variants (37
+        // Vacuity floor, derived rather than round: 40 `Commands` variants (38
         // unconditional plus two behind #[cfg(target_os = "windows")]) plus 35
         // in nine nested Subcommand enums plus the root itself. clap's synthetic
         // `help` nodes mirror the sibling tree and recurse, so the real
