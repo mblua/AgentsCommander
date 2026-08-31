@@ -188,6 +188,14 @@ pub struct LeanPeerInfo {
     /// Omitted when there is no reading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_percent: Option<u8>,
+    /// Effective coding-agent id of the peer's chosen live session. Omitted
+    /// when the peer has no live session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Effective profile letter of that session (post-fallback). Omitted when
+    /// the peer has no live session or the session is not an agent session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// Maximum length (in Unicode chars) of `roleSummary`, **including any
@@ -263,6 +271,8 @@ impl From<&PeerInfo> for LeanPeerInfo {
             teams: p.teams.clone(),
             role_summary: lean_role_summary(&p.role),
             context_percent: p.context_percent,
+            agent: p.agent.clone(),
+            profile: p.profile.clone(),
         }
     }
 }
@@ -311,6 +321,14 @@ struct PeerInfo {
     /// session was not sampled yet, or no session matches this peer).
     #[serde(skip_serializing_if = "Option::is_none")]
     context_percent: Option<u8>,
+    /// Effective coding-agent id of the peer's chosen live session (the
+    /// session the peer status was computed from). None when no session matched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+    /// Effective profile letter of that session (post-fallback). None when no
+    /// session matched or the session is not an agent session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     // ────────────────────────────────────────────────────────────────
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     coding_agents: HashMap<String, CodingAgentEntry>,
@@ -379,6 +397,8 @@ struct CandidateSession {
     status: SessionStatus,
     waiting_for_input: bool,
     context_percent: Option<u8>,
+    agent_id: Option<String>,
+    effective_profile: Option<String>,
 }
 
 struct PeerStatus {
@@ -389,6 +409,8 @@ struct PeerStatus {
     waiting_for_input: bool,
     exit_code: Option<i32>,
     context_percent: Option<u8>,
+    agent_id: Option<String>,
+    effective_profile: Option<String>,
 }
 
 impl PeerStatus {
@@ -401,6 +423,8 @@ impl PeerStatus {
             waiting_for_input: false,
             exit_code: None,
             context_percent: None,
+            agent_id: None,
+            effective_profile: None,
         }
     }
 }
@@ -439,6 +463,8 @@ fn build_session_index_from(rows: &[PersistedSession]) -> HashMap<String, Vec<Ca
             status,
             waiting_for_input: ps.waiting_for_input.unwrap_or(false),
             context_percent: ps.context_percent,
+            agent_id: ps.agent_id.clone(),
+            effective_profile: ps.effective_profile.clone(),
         });
     }
     index
@@ -510,6 +536,8 @@ fn compute_peer_status(
         waiting_for_input: chosen.waiting_for_input,
         exit_code,
         context_percent: chosen.context_percent,
+        agent_id: chosen.agent_id.clone(),
+        effective_profile: chosen.effective_profile.clone(),
     }
 }
 
@@ -629,6 +657,8 @@ fn build_wg_peer(
         waiting_for_input: ps.waiting_for_input,
         exit_code: ps.exit_code,
         context_percent: ps.context_percent,
+        agent: ps.agent_id,
+        profile: ps.effective_profile,
         coding_agents: peer_config.tooling.coding_agents,
     }
 }
@@ -864,6 +894,8 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                 waiting_for_input: ps.waiting_for_input,
                 exit_code: ps.exit_code,
                 context_percent: ps.context_percent,
+                agent: ps.agent_id,
+                profile: ps.effective_profile,
                 coding_agents: peer_config.tooling.coding_agents,
             });
         }
@@ -1078,6 +1110,8 @@ fn build_root_agent_synthetic_peer(
         exit_code: None,
         // Synthetic root-agent peer: no session in this verb's cwd namespace.
         context_percent: None,
+        agent: None,
+        profile: None,
         coding_agents: std::collections::HashMap::new(),
     })
 }
@@ -1241,6 +1275,8 @@ fn snapshot_target_projection(
         teams: vec![target.team],
         role_summary: String::new(),
         context_percent: None,
+        agent: None,
+        profile: None,
     }
 }
 
@@ -1412,6 +1448,8 @@ mod tests {
             status,
             waiting_for_input: waiting,
             context_percent: None,
+            agent_id: None,
+            effective_profile: None,
         }
     }
 
@@ -1987,6 +2025,8 @@ mod tests {
             waiting_for_input: false,
             exit_code: None,
             context_percent: None,
+            agent: None,
+            profile: None,
             coding_agents: HashMap::new(),
         }
     }
@@ -2165,6 +2205,129 @@ mod tests {
             !json.contains("contextPercent"),
             "None must omit the key: {json}"
         );
+    }
+
+    // ── #1641: agent/profile projection through the peer→session join ──
+
+    /// Project a computed peer status onto the sample fixture so lean-JSON
+    /// assertions run over the full projection path (CandidateSession →
+    /// PeerStatus → PeerInfo → LeanPeerInfo).
+    fn peer_with_status(name: &str, status: &PeerStatus) -> PeerInfo {
+        let mut peer = sample_peer_info(name);
+        peer.working = status.working;
+        peer.session_status = status.session_status.to_string();
+        peer.waiting_for_input = status.waiting_for_input;
+        peer.agent = status.agent_id.clone();
+        peer.profile = status.effective_profile.clone();
+        peer
+    }
+
+    #[test]
+    fn build_session_index_from_copies_agent_and_effective_profile() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.agent_id = Some("codex".into());
+        row.effective_profile = Some("B".into());
+        let index = build_session_index_from(&[row]);
+        let candidates = index
+            .get(&canon_or_norm(r"C:\work"))
+            .expect("row indexed by its cwd");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].agent_id.as_deref(), Some("codex"));
+        assert_eq!(candidates[0].effective_profile.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn lean_peer_reports_agent_and_profile_for_live_agent_session() {
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.agent_id = Some("codex".into());
+        row.effective_profile = Some("B".into());
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        let peer = peer_with_status("project:wg-1-team/dev", &status);
+        let json = serde_json::to_string(&LeanPeerInfo::from(&peer)).unwrap();
+        assert!(json.contains("\"agent\":\"codex\""), "got {json}");
+        assert!(json.contains("\"profile\":\"B\""), "got {json}");
+    }
+
+    #[test]
+    fn lean_peer_omits_agent_and_profile_for_cold_peer() {
+        let index = build_session_index_from(&[]);
+        let status = compute_peer_status(r"C:\nowhere", None, &index);
+        assert_eq!(status.session_status, "none");
+        let peer = peer_with_status("project:wg-1-team/dev", &status);
+        let json = serde_json::to_string(&LeanPeerInfo::from(&peer)).unwrap();
+        assert!(!json.contains("\"agent\""), "got {json}");
+        assert!(!json.contains("\"profile\""), "got {json}");
+    }
+
+    #[test]
+    fn lean_peer_omits_profile_for_plain_shell_session() {
+        // Live session with an agent id but no effective profile (plain-shell
+        // or pre-#1641 row): agent is reported, profile is omitted.
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.agent_id = Some("codex".into());
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        let peer = peer_with_status("project:wg-1-team/dev", &status);
+        let json = serde_json::to_string(&LeanPeerInfo::from(&peer)).unwrap();
+        assert!(json.contains("\"agent\":\"codex\""), "got {json}");
+        assert!(!json.contains("\"profile\""), "got {json}");
+    }
+
+    #[test]
+    fn lean_peer_reports_effective_profile_after_fallback() {
+        // Requested "C" but the cell fell back to "B": the lean output must
+        // surface what actually spawned, not what was requested.
+        let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
+        row.agent_id = Some("codex".into());
+        row.requested_profile = Some("C".into());
+        row.effective_profile = Some("B".into());
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\work", None, &index);
+        let peer = peer_with_status("project:wg-1-team/dev", &status);
+        let json = serde_json::to_string(&LeanPeerInfo::from(&peer)).unwrap();
+        assert!(json.contains("\"profile\":\"B\""), "got {json}");
+        assert!(
+            !json.contains("\"C\""),
+            "requested letter must not leak: {json}"
+        );
+    }
+
+    #[test]
+    fn old_sessions_json_without_effective_profile_loads_and_omits() {
+        // Pre-#1641 row: no effectiveProfile key (and no agentId) — must
+        // deserialize and project with both fields omitted; no migration.
+        let json = r#"{
+            "name": "legacy",
+            "shell": "claude",
+            "shellArgs": [],
+            "workingDirectory": "C:\\legacy",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "status": "running",
+            "waitingForInput": false
+        }"#;
+        let row: PersistedSession = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(row.effective_profile, None);
+        assert_eq!(row.agent_id, None);
+        let index = build_session_index_from(&[row]);
+        let status = compute_peer_status(r"C:\legacy", None, &index);
+        let peer = peer_with_status("project:wg-1-team/dev", &status);
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.agent, None);
+        assert_eq!(lean.profile, None);
+        let out = serde_json::to_string(&lean).unwrap();
+        assert!(!out.contains("\"agent\""), "got {out}");
+        assert!(!out.contains("\"profile\""), "got {out}");
+    }
+
+    #[test]
+    fn peer_info_carries_agent_and_profile_into_lean_projection() {
+        let mut peer = sample_peer_info("project:wg-1-team/dev");
+        peer.agent = Some("codex".into());
+        peer.profile = Some("B".into());
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.agent.as_deref(), Some("codex"));
+        assert_eq!(lean.profile.as_deref(), Some("B"));
     }
 
     // §6.3 — field preservation parity

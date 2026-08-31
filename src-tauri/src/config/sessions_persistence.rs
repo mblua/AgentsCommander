@@ -384,6 +384,11 @@ pub struct PersistedSession {
     pub agent_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_profile: Option<String>,
+    /// Effective profile letter the session actually spawned with (after the
+    /// cell fallback walk). Absent for plain-shell sessions and for rows
+    /// written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<String>,
     /// Telegram bot id that was ON for this session at the last successful
     /// bridge attach. None means Telegram was OFF.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1677,6 +1682,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             agent_id: s.agent_id.clone(),
             agent_label: s.agent_label.clone(),
             requested_profile: s.requested_profile.clone(),
+            effective_profile: s.effective_profile.clone(),
             telegram_bot_id: s.telegram_bot_id.clone(),
             // Fix A: read detach state directly from the Session (via SessionInfo). The
             // `DetachedSessionsState` set is NOT consulted at persist time — the Destroyed
@@ -2555,6 +2561,43 @@ mod tests {
         assert_eq!(json["telegramBotId"], "bot-1");
         let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back.telegram_bot_id.as_deref(), Some("bot-1"));
+    }
+
+    #[test]
+    fn persisted_session_round_trips_effective_profile() {
+        let ps = PersistedSession {
+            last_prompt: None,
+            name: "agent-session".into(),
+            shell: "codex".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            agent_id: Some("codex".into()),
+            effective_profile: Some("B".into()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&ps).expect("serialize");
+        assert_eq!(json["effectiveProfile"], "B");
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.effective_profile.as_deref(), Some("B"));
+
+        // None omits the key entirely (additive schema: rows written before
+        // this phase serialize back without the field).
+        let plain = PersistedSession {
+            last_prompt: None,
+            name: "plain-shell".into(),
+            shell: "cmd".into(),
+            shell_args: vec![],
+            working_directory: "C:/x".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&plain).expect("serialize");
+        assert!(
+            json.get("effectiveProfile").is_none(),
+            "None must omit effectiveProfile: {json}"
+        );
+        let back: PersistedSession = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.effective_profile, None);
     }
 
     // (#630 fleet-safety) A pre-existing sessions.json record that predates this
