@@ -5,7 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power and activate Teams as parallel Rooms. Each Room is a separate filesystem workspace with replicas of its Team's agents and clones of its assigned repositories. <b>AgentsCommander only adds, never subtracts.</b>
+  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power and activate Teams as parallel Rooms. Each Room is a separate filesystem workspace with replicas of its Team's agents and clones of its assigned repositories. <b>Parallelize the work. Keep the thread. Share the setup.</b>
 </p>
 
 <p align="center">
@@ -96,14 +96,14 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 
 ## The 30-second pitch
 
-> **Run multiple coding-agent Teams in parallel without sharing a working tree.** Define agents and Teams in source-controlled files, then activate a Team as one or more Rooms. Each Room is a separate filesystem workspace with its own agent replicas, repository clones, messaging area, and build or test state. We only add, never subtract.
+> **See which Team is working on each task—even while several Teams work in parallel.** Define agents and Teams in source-controlled files, then activate a Team as one or more Rooms. Each Room is a separate filesystem workspace with its own agent replicas, repository clones, messaging area, and build or test state. The UI keeps every Room's task, sessions, branches, and repository state visible.
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
 - **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
 - **Keep each Room isolated on disk.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, filesystem write boundaries, and a Room-specific executable. Run multiple Teams—or multiple Rooms for the same Team—without mixing source changes or build and test state.
-- **Treat multi-agent configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files and review changes with git.
+- **Return without rebuilding the map.** A Room keeps its task, agent replicas, repository clones, and messages on disk. Come back later, reopen a Room's closed session, and AC asks Claude Code, Codex, Antigravity, or Pi to continue the prior conversation in that same workspace.
+- **Share configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files so teammates can pull the same reviewed setup instead of recreating it.
 - **Coordinate Teams through auditable files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole organization fits in `ls`.
-- **Schedule recurring prompts when you need them.** A Loop delivers a prompt to a Room's orchestrator on a cron schedule, waking or respawning the session when necessary. A Loop schedules delivery; it does not train models or learn on its own.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** Machine-local state stays in the configuration directory selected by the exact binary version; shared team state stays in each project's `.ac/` tree. The published `v0.30.3` resolver and the newer, unpublished `main` resolver differ, so use the [versioned configuration rule](docs/features/portable-instances.md#config-directory-rule) before moving or deleting state.
 
