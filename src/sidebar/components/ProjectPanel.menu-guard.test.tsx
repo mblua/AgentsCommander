@@ -137,6 +137,12 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
       `[data-ac-testid="${rowSlotTestId(wgName, replicaName, "workgroups")}"]`
     );
     expect(slot?.getAttribute("data-kind")).toBe("blockedMenu");
+    const nameRow = slot?.parentElement;
+    const name = nameRow?.querySelector<HTMLElement>(".replica-item-name");
+    expect(nameRow?.classList.contains("replica-item-name-row")).toBe(true);
+    expect(nameRow?.classList.contains("coord-task-line")).toBe(true);
+    expect(name?.style.minWidth).toBe("0px");
+    expect(name?.style.flex).toBe("1 1 auto");
   });
 
   it("uses the backend message for the tooltip and exposes an accessible label", async () => {

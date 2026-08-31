@@ -2338,8 +2338,13 @@ const ProjectPanel: Component = () => {
                     </Show>
                   </div>
                 </Show>
-                <div class="replica-item-name-row">
-                  <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
+                <div class="replica-item-name-row coord-task-line">
+                  <span
+                    class="replica-item-name"
+                    style={{ "min-width": "0px", flex: "1 1 auto" }}
+                  >
+                    {replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
+                  </span>
                   <Show when={showBlockedMenu()}>
                     <span
                       class="coord-communication-slot coord-communication-slot--blocked-menu"
