@@ -526,6 +526,7 @@ fn blank_agent() -> AgentConfig {
         instructions_filename: None,
         config_seed: None,
         context_regex: None,
+        blocking_menus: None,
         backend: Default::default(),
     }
 }
@@ -546,6 +547,7 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         // #1032 - presets carry no context regex: it is per-agent user config with no
         // counterpart in a definition, so a seeded agent starts with the feature off.
         context_regex: None,
+        blocking_menus: None,
         backend: Default::default(),
     }
 }

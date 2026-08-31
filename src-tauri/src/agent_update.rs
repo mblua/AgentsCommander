@@ -3360,6 +3360,7 @@ mod tests {
                 instructions_filename: None,
                 config_seed: None,
                 context_regex: None,
+                blocking_menus: None,
                 backend: Default::default(),
             }],
             agent_auto_update_by_command: BTreeMap::from([("bob-1551-missing".to_string(), true)]),

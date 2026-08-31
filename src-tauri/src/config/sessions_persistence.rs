@@ -2402,6 +2402,7 @@ mod tests {
                 kind: SessionCommunicationKind::RaiseHand,
                 visible: true,
                 updated_at: "2026-06-30T11:00:00+00:00".into(),
+                message: None,
             }),
             created_at: Some("2026-05-15T00:00:00Z".into()),
             ..Default::default()
@@ -3867,6 +3868,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: "2026-06-30T13:00:00+00:00".into(),
+            message: None,
         });
         save_sessions_to_dir(temp.path(), &[raised, removable]).expect("persist raise-hand");
 
@@ -4478,6 +4480,7 @@ mod tests {
                 kind: SessionCommunicationKind::RaiseHand,
                 visible: true,
                 updated_at: "2026-06-30T11:00:00+00:00".into(),
+                message: None,
             }),
             ..Default::default()
         };

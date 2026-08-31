@@ -69,6 +69,7 @@ pub struct SessionRepo {
 #[serde(rename_all = "camelCase")]
 pub enum SessionCommunicationKind {
     RaiseHand,
+    BlockedMenu,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +78,8 @@ pub struct SessionCommunication {
     pub kind: SessionCommunicationKind,
     pub visible: bool,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +498,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: "2026-06-28T17:00:00+00:00".to_string(),
+            message: None,
         });
         let info = SessionInfo::from(&s);
         assert_eq!(info.communication, s.communication);

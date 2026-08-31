@@ -72,6 +72,9 @@ pub struct AgentConfig {
     /// #1032 - per-agent regex run over this agent's screen rows to read its
     /// context-window usage. Capture group 1 is the percentage. `None`/absent means
     /// the feature is off for this agent: no event, no reading, no PTY lock, no
+    /// #1032 - per-agent regex run over this agent's screen rows to read its
+    /// context-window usage. Capture group 1 is the percentage. `None`/absent means
+    /// the feature is off for this agent: no event, no reading, no PTY lock, no
     /// compile. Serialized as `contextRegex`.
     ///
     /// The engine ships no anchoring rules of its own; every rule that makes a
@@ -80,10 +83,45 @@ pub struct AgentConfig {
     /// workgroup coordinator, but it never drives remedial or destructive session action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_regex: Option<String>,
+    /// #1646 / #1647 - proactive detection patterns for terminal blocking menus (e.g. folder trust).
+    /// None = unmaterialized defaults (materialized at load time). Some(vec![]) = explicitly disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
     /// Backend used for future non-local session transports. Omitted/default
     /// keeps today's local-process behavior.
     #[serde(default, skip_serializing_if = "AgentBackendConfig::is_default")]
     pub backend: AgentBackendConfig,
+}
+
+/// #1646 / #1647 - one entry of an agent's `blockingMenus` array, or whatever the user wrote there.
+/// Untagged so `Invalid` catches malformed entries without failing settings deserialization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum BlockingMenuEntry {
+    Valid(BlockingMenuConfig),
+    /// Anything that did not deserialize as a `BlockingMenuConfig`. Skipped by evaluation.
+    Invalid(serde_json::Value),
+}
+
+impl BlockingMenuEntry {
+    pub fn valid(&self) -> Option<&BlockingMenuConfig> {
+        match self {
+            BlockingMenuEntry::Valid(config) => Some(config),
+            BlockingMenuEntry::Invalid(_) => None,
+        }
+    }
+}
+
+/// #1646 / #1647 - one configured blocking menu pattern and notification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockingMenuConfig {
+    pub pattern: String,
+    pub notification: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_against: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -586,6 +624,9 @@ pub struct AppSettings {
     /// user's file on the next save, so configuring nothing would still leave a trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watchers_geometry: Option<WindowGeometry>,
+    /// #1646 / #1647 - master kill switch for proactive detection of terminal blocking menus.
+    #[serde(default = "default_true")]
+    pub menu_guard_enabled: bool,
 }
 
 /// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
@@ -919,8 +960,45 @@ impl Default for AppSettings {
             container_credentials_from_host: true,
             watchers: BTreeMap::new(),
             watchers_geometry: None,
+            menu_guard_enabled: true,
         }
     }
+}
+
+/// #1646 / #1647 - default blocking menu patterns for known commands.
+pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntry> {
+    let stem = crate::config::coding_agents_catalog::command_executable_basename(command);
+    match stem.as_deref() {
+        Some("pi") => vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
+            pattern: r"^\s*Trust project folder\?".to_string(),
+            notification: "pi is waiting for you to answer the folder-trust menu in this terminal"
+                .to_string(),
+            enabled: true,
+            captured_against: Some("pi 0.52 / Windows".to_string()),
+        })],
+        Some("codex") => vec![BlockingMenuEntry::Valid(BlockingMenuConfig {
+            pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),
+            notification:
+                "codex is waiting for you to answer the folder-trust menu in this terminal"
+                    .to_string(),
+            enabled: true,
+            captured_against: Some("codex 0.x / Linux".to_string()),
+        })],
+        _ => vec![],
+    }
+}
+
+/// #1646 / #1647 - populate absent `blocking_menus` (`None`) on agents with command-derived defaults.
+/// Returns true if any agent's `blocking_menus` was initialized.
+pub fn materialize_blocking_menus(agents: &mut [AgentConfig]) -> bool {
+    let mut changed = false;
+    for agent in agents {
+        if agent.blocking_menus.is_none() {
+            agent.blocking_menus = Some(default_blocking_menus_for_command(&agent.command));
+            changed = true;
+        }
+    }
+    changed
 }
 
 pub(crate) fn command_token_basename(token: &str) -> String {
@@ -1855,6 +1933,10 @@ fn load_settings_from_path(path: &Path) -> AppSettings {
 
     // Auto-generate root token if missing.
     let mut needs_save = issue_248_migrated || profile_migrated_to_v2;
+    if materialize_blocking_menus(&mut settings.agents) {
+        log::info!("[settings-migration] materialized default blocking menus");
+        needs_save = true;
+    }
     if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
         log::info!("[settings-migration] repaired codingAgentProfiles invariants");
         needs_save = true;
@@ -1988,6 +2070,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     // next GUI launch finalizes the migration to disk via load_settings.
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+    materialize_blocking_menus(&mut settings.agents);
 
     // NO root_token auto-gen, NO save_settings call.
     settings
@@ -2043,6 +2126,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
     }
     apply_issue_248_migration(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+    materialize_blocking_menus(&mut settings.agents);
 
     Ok(settings)
 }
@@ -5976,6 +6060,7 @@ mod tests {
                     instructions_filename: None,
                     config_seed: None,
                     context_regex: None,
+                    blocking_menus: None,
                     backend: Default::default(),
                 })
                 .collect(),
@@ -6059,6 +6144,7 @@ mod tests {
                 dest: ".claude".to_string(),
             }),
             context_regex: None,
+            blocking_menus: None,
             backend: Default::default(),
         };
         let json = serde_json::to_string(&agent).unwrap();
@@ -8588,5 +8674,187 @@ mod tests {
             !back.contains("contextRegex"),
             "None must omit the key here, so an untouched config stays untouched: {back}"
         );
+    }
+
+    // ---- #1646 / #1647: blocking menus and menu guard -----------------------------
+
+    #[test]
+    fn test_blocking_menus_defaults_materialization() {
+        let mut agents = vec![
+            AgentConfig {
+                id: "pi".to_string(),
+                label: "Pi".to_string(),
+                command: "pi".to_string(),
+                color: "#10b981".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: None,
+                backend: Default::default(),
+            },
+            AgentConfig {
+                id: "codex".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#10b981".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: None,
+                backend: Default::default(),
+            },
+            AgentConfig {
+                id: "claude".to_string(),
+                label: "Claude".to_string(),
+                command: "claude".to_string(),
+                color: "#10b981".to_string(),
+                envs: Vec::new(),
+                isolated_home: false,
+                instructions_filename: None,
+                config_seed: None,
+                context_regex: None,
+                blocking_menus: None,
+                backend: Default::default(),
+            },
+        ];
+
+        let changed = super::materialize_blocking_menus(&mut agents);
+        assert!(changed);
+
+        // Pi
+        let pi_menus = agents[0].blocking_menus.as_ref().unwrap();
+        assert_eq!(pi_menus.len(), 1);
+        let pi_cfg = pi_menus[0].valid().unwrap();
+        assert_eq!(pi_cfg.pattern, r"^\s*Trust project folder\?");
+        assert_eq!(
+            pi_cfg.notification,
+            "pi is waiting for you to answer the folder-trust menu in this terminal"
+        );
+        assert!(pi_cfg.enabled);
+        assert_eq!(
+            pi_cfg.captured_against.as_deref(),
+            Some("pi 0.52 / Windows")
+        );
+
+        // Codex
+        let codex_menus = agents[1].blocking_menus.as_ref().unwrap();
+        assert_eq!(codex_menus.len(), 1);
+        let codex_cfg = codex_menus[0].valid().unwrap();
+        assert_eq!(
+            codex_cfg.pattern,
+            r"^\s*Do you trust the contents of this directory\?"
+        );
+        assert_eq!(
+            codex_cfg.notification,
+            "codex is waiting for you to answer the folder-trust menu in this terminal"
+        );
+        assert!(codex_cfg.enabled);
+        assert_eq!(
+            codex_cfg.captured_against.as_deref(),
+            Some("codex 0.x / Linux")
+        );
+
+        // Claude -> empty array
+        let claude_menus = agents[2].blocking_menus.as_ref().unwrap();
+        assert!(claude_menus.is_empty());
+
+        // Subsequent call returns false
+        assert!(!super::materialize_blocking_menus(&mut agents));
+    }
+
+    #[test]
+    fn test_blocking_menus_tolerant_parsing() {
+        let json = r##"{
+            "id": "pi",
+            "label": "Pi",
+            "command": "pi",
+            "color": "#10b981",
+            "blockingMenus": [
+                {
+                    "pattern": "^\\s*Trust",
+                    "notification": "prompt msg",
+                    "enabled": true
+                },
+                12345,
+                {
+                    "invalidFieldOnly": true
+                }
+            ]
+        }"##;
+
+        let agent: super::AgentConfig =
+            serde_json::from_str(json).expect("deserializes with invalid entries");
+        let menus = agent
+            .blocking_menus
+            .as_ref()
+            .expect("blocking_menus present");
+        assert_eq!(menus.len(), 3);
+        assert!(menus[0].valid().is_some());
+        assert!(menus[1].valid().is_none());
+        assert!(menus[2].valid().is_none());
+
+        let serialized = serde_json::to_string(&agent).expect("serializes back");
+        assert!(serialized.contains("12345"));
+        assert!(serialized.contains("invalidFieldOnly"));
+
+        let round_trip: super::AgentConfig =
+            serde_json::from_str(&serialized).expect("round trip deserializes");
+        assert_eq!(round_trip.blocking_menus, agent.blocking_menus);
+    }
+
+    #[test]
+    fn test_blocking_menus_explicit_empty_array() {
+        let json = r##"{
+            "id": "pi",
+            "label": "Pi",
+            "command": "pi",
+            "color": "#10b981",
+            "blockingMenus": []
+        }"##;
+
+        let agent: super::AgentConfig =
+            serde_json::from_str(json).expect("deserializes explicit empty array");
+        assert_eq!(agent.blocking_menus, Some(vec![]));
+
+        let mut agents = vec![agent];
+        let changed = super::materialize_blocking_menus(&mut agents);
+        assert!(
+            !changed,
+            "explicit empty array must not be overwritten by materialize_blocking_menus"
+        );
+        assert_eq!(agents[0].blocking_menus, Some(vec![]));
+    }
+
+    #[test]
+    fn test_menu_guard_master_switch() {
+        let def = AppSettings::default();
+        assert!(def.menu_guard_enabled);
+
+        let json = r#"{
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserializes");
+        assert!(s.menu_guard_enabled, "defaults to true when missing");
+
+        let json_disabled = r#"{
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "menuGuardEnabled": false
+        }"#;
+        let s_disabled: AppSettings =
+            serde_json::from_str(json_disabled).expect("deserializes disabled");
+        assert!(!s_disabled.menu_guard_enabled);
+
+        let serialized = serde_json::to_string(&s_disabled).expect("serializes");
+        assert!(serialized.contains("\"menuGuardEnabled\":false"));
     }
 }
