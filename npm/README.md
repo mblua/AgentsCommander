@@ -35,7 +35,7 @@ npm root -g
 npm view @mblua/agentscommander@latest version
 ```
 
-`npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to locate `@mblua/agentscommander/bin/`, then query the exact native executable there with `--version`; do not rely only on whichever `agentscommander` happens to be on `PATH`. `npm view` reports the selected registry version without installing it. If the package metadata, native binary, and selected version disagree or cannot be identified exactly, stop before mutation.
+`npm list` reports the installed package version and can exit nonzero when the package is absent. `npm root -g` exits 0 and prints the global `node_modules` directory. Use that root to inspect the installed `@mblua/agentscommander/package.json`, `install.js`, `run.js`, and native file under `bin/`. Correlate the package-manager record and `package.json` version with the install script's version and release URL, the launcher's exact native path, and the corresponding GitHub tag, asset, and checksum. `npm view` reports the selected registry version without installing it. If the local records, independent release evidence, native file, or selected version disagree or cannot be identified exactly, stop before mutation. Do not probe the native binary for a self-reported version unless its exact tag proves support; `v0.30.3` and `main` at this documentation commit do not support such a flag.
 
 The existing binary's exact resolver determines what must be preserved. The selected package's exact release tag determines post-install behavior. Verify both against the corresponding `v<version>` source tag; do not use `main` as evidence for a published npm package.
 
@@ -65,11 +65,11 @@ Replace `<version>` with the exact version already inspected and approved; do no
 Validate the installed command:
 
 ```bash
-agentscommander --version
+npm list -g @mblua/agentscommander --depth=0
 agentscommander --help
 ```
 
-Both commands must exit 0. Confirm that `--version` reports the approved package version; `--help` must print the AgentsCommander command help. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the approved package version; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
 
 ## Uninstall
 

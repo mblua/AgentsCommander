@@ -41,7 +41,11 @@ For a release tagged `v<version>`, these are the only assets mapped for this wor
 
 Do not resolve, preserve, migrate, or delete configuration until you have reported both of these identities:
 
-- **Existing binary version:** query the exact existing executable with `--version` and corroborate it with package or installer metadata when available. If no existing installation is present, report that explicitly. If a binary exists but its exact version or source provenance cannot be established, stop an update or uninstall.
+- **Existing binary version and provenance:** establish both from consistent, read-only evidence tied to the exact executable path and installation route:
+  - **npm:** correlate the installed package-manager record and `package.json` version with that package's `install.js` version and release URL, its `run.js` native-binary path, and the matching GitHub tag, asset, and checksum record;
+  - **installer:** correlate verifiable installed-product or package metadata with the original GitHub release tag, exact installer filename, and checksum record; or
+  - **raw asset:** correlate the original GitHub release URL and tag, exact asset filename and checksum record, the local file's matching digest, and file or platform metadata when that metadata is conclusive.
+  Use independent release evidence to corroborate the local installation record. If no existing installation is present, report that explicitly. If evidence conflicts or cannot establish the exact version and provenance, stop an update or uninstall. Do not invoke a self-version flag unless the exact inspected tag proves that the binary implements it; `v0.30.3` and `main` at this pinned guide commit do not.
 - **Selected release version:** resolve and report the exact stable GitHub tag before downloading or changing anything. Use that tag's source, not `main`, to determine post-install behavior.
 
 The existing binary's exact resolver determines which configuration must be preserved. The selected release's exact resolver determines where the replacement will read and write. If the versions use different rules, report both paths and obtain approval for an explicit preservation or migration plan; do not silently move state.
@@ -76,7 +80,7 @@ Before an update or uninstall, identify the selected directory from the existing
 Before downloading, creating a directory, installing, overwriting, changing `PATH`, or launching an artifact:
 
 1. Detect and report the OS name and version, native CPU architecture, and process architecture if it differs.
-2. Look for an existing AgentsCommander command, executable, package, and installation directory without performing a broad or destructive filesystem scan. Report the exact existing binary version before resolving its configuration. Stop an update or uninstall if that version is unavailable, conflicting, or ambiguous.
+2. Look for an existing AgentsCommander command, executable, package, and installation directory without performing a broad or destructive filesystem scan. Establish and report the exact existing binary version and provenance with the route-specific evidence above before resolving its configuration. Stop an update or uninstall if that evidence is unavailable, conflicting, or ambiguous.
 3. Apply the support table above. Stop on an unsupported combination. On Linux, explain the partial tier and wait for explicit confirmation before continuing. On macOS, stop the normal install and offer only the tester/contributor path below.
 4. Resolve and report the pinned guide commit, exact selected stable release tag and URL, exact mapped asset name and URL, and the exact matching record from that release's `SHASUMS256.txt`.
 5. Inspect the exact tag source for both the existing and selected versions, then report the existing selected configuration and the replacement's expected selection. Stop if multiple candidates, existing unattributed state, mounted/read-only ephemeral state, or ambiguous evidence prevents a safe plan.
@@ -108,7 +112,7 @@ After approval:
 3. Compute the asset's SHA-256 digest and compare the complete 64-character value. On a missing, duplicate, malformed, or mismatched record, do not run the asset; report the failure and remove only the unverified files created by this attempt.
 4. Inspect Windows Authenticode status. A checksum match does not turn `NotSigned` into `Valid`; obtain the separate unsigned-software consent before launch.
 5. Run only the approved commands. For the Windows raw asset, verify it before renaming it to `agentscommander.exe` in the approved destination.
-6. Validate with the installed executable's exact path and `--version` or `--help`, then report the observed output and final locations. Do not claim success from a download alone.
+6. Validate the installed executable's exact path with `--help`, then re-check the route-specific version/provenance evidence against the approved release and report the observed output and final locations. Do not claim success from a download alone.
 7. If validation fails, execute only the approved rollback: restore the previous executable for an update, or remove only the new installation files for a fresh install. Keep existing configuration unless the user separately asks to remove it.
 
 Never bypass SmartScreen, Gatekeeper, an execution policy, certificate checks, or another security control silently. Never elevate automatically, use `curl | shell`, use a mirror, build from source as a fallback, use emulation or a substitute asset, fall back to npm, or install or authenticate a Coding Agent CLI.

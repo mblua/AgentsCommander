@@ -1010,9 +1010,9 @@ A minimized window yields `capture_unavailable`; that is documented behavior, no
 
 ## Backwards compatibility
 
-The CLI surface follows AC's project version (`agentscommander --version`). Flags may be added; existing flags will not silently change meaning. Output formats (`list-peers`, `list-sessions`, `create-agent`) are JSON — fields can be added but existing fields stay stable within a major version.
+The CLI surface follows the AC project version recorded in verified package or GitHub release metadata. Published `v0.30.3` and `main` at this documentation commit expose no self-version flag. Flags may be added; existing flags will not silently change meaning. Output formats (`list-peers`, `list-sessions`, `create-agent`) are JSON — fields can be added but existing fields stay stable within a major version.
 
-If you discover a regression, file an issue with the exact command, the output, and your version.
+If you discover a regression, file an issue with the exact command, output, and route-specific version/provenance evidence.
 
 ## See also
 

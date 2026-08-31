@@ -160,6 +160,6 @@ See [Log filtering](reference/log-filtering.md) for the five levels, the live se
 
 Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) with:
 
-- Your platform and version (`agentscommander --version`)
+- Your platform and route-specific AgentsCommander version/provenance evidence (installed npm or installer metadata, or the exact GitHub release tag, asset, and checksum)
 - The exact error message
 - A copy of `<config-dir>/app.log` from the configuration directory selected by that exact version (see [Log filtering](reference/log-filtering.md#where-logs-go))
