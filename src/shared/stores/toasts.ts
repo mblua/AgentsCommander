@@ -2,12 +2,19 @@ import { createStore, reconcile } from "solid-js/store";
 
 export type ToastKind = "error" | "success" | "info";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface PushToastOptions {
   message: string;
   kind?: ToastKind;            // default "info"
   /** Auto-dismiss delay. `null` = sticky (stays until dismissed). Omit to use
    *  the per-kind default below. */
   durationMs?: number | null;
+  action?: ToastAction;
+  tag?: string;
 }
 
 export interface Toast {
@@ -15,6 +22,8 @@ export interface Toast {
   kind: ToastKind;
   message: string;
   exiting: boolean;
+  action?: ToastAction;
+  tag?: string;
 }
 
 // Errors stay until dismissed (the #574 failure MUST be noticed); info/success
@@ -85,9 +94,25 @@ export const toastStore = {
   },
 
   push(opts: PushToastOptions): number {
+    if (opts.tag) {
+      const existingIndex = toasts.findIndex((toast) => toast.tag === opts.tag);
+      if (existingIndex !== -1) {
+        setToasts(existingIndex, "message", opts.message);
+        setToasts(existingIndex, "action", opts.action);
+        return toasts[existingIndex].id;
+      }
+    }
+
     const id = nextId++;
     const kind = opts.kind ?? "info";
-    const toast: Toast = { id, kind, message: opts.message, exiting: false };
+    const toast: Toast = {
+      id,
+      kind,
+      message: opts.message,
+      exiting: false,
+      action: opts.action,
+      tag: opts.tag,
+    };
 
     const evicted: number[] = [];
     const next = [...toasts, toast];
@@ -113,6 +138,12 @@ export const toastStore = {
 
   dismiss(id: number): void {
     startToastExit(id);
+  },
+
+  dismissByTag(tag: string): void {
+    for (const toast of toasts) {
+      if (toast.tag === tag) startToastExit(toast.id);
+    }
   },
 
   /** Remove all toasts + cancel all timers (onCleanup + test reset). */

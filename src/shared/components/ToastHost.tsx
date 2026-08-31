@@ -1,4 +1,4 @@
-import { Component, For } from "solid-js";
+import { Component, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { toastStore, type ToastKind } from "../stores/toasts";
 
@@ -42,6 +42,21 @@ const ToastHost: Component = () => {
               on:mousedown={(e) => e.stopPropagation()}
             >
               <span class="toast-item__message">{toast.message}</span>
+              <Show when={toast.action}>
+                {(action) => (
+                  <button
+                    class="toast-item__action"
+                    type="button"
+                    data-ac-testid="toast.item.action"
+                    onClick={() => {
+                      action().onClick();
+                      toastStore.dismiss(toast.id);
+                    }}
+                  >
+                    {action().label}
+                  </button>
+                )}
+              </Show>
               <button
                 class="toast-item__dismiss"
                 type="button"

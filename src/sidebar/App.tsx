@@ -22,6 +22,7 @@ import {
   onSessionSwitched,
   onSessionRenamed,
   onSessionCommunicationChanged,
+  resolveBlockingMenu,
   onSessionIdle,
   onSessionBusy,
   onSessionContext,
@@ -702,6 +703,26 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     await register(
       onSessionCommunicationChanged(({ sessionId, communication }) => {
         sessionsStore.setCommunication(sessionId, communication);
+        if (
+          communication?.kind === "blockedMenu" &&
+          communication.visible === true &&
+          communication.message
+        ) {
+          toastStore.push({
+            message: communication.message,
+            kind: "info",
+            durationMs: null,
+            tag: `blockedMenu:${sessionId}`,
+            action: {
+              label: "Resolved by user",
+              onClick: () => {
+                void resolveBlockingMenu(sessionId);
+              },
+            },
+          });
+        } else {
+          toastStore.dismissByTag(`blockedMenu:${sessionId}`);
+        }
       })
     );
 
