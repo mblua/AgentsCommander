@@ -12,7 +12,7 @@ Claude Code, Codex, Antigravity, and Pi have first-class tuned integrations. Pi 
 
 ## What about OpenCode?
 
-Usable today. OpenCode is provider-agnostic, so you add it as a custom coding agent (Settings, Coding Agents, Add agent) and point it at any provider or model. That is what lets AC drive any model through it, including OpenRouter Fusion. What is still planned is a first-class tuned integration: its own `CodingAgentKind` variant with resume tokens and idle tuning. The current enum is in `session/profile.rs::CodingAgentKind`. Track the tuned integration on the [roadmap](../ROADMAP.md).
+Usable today. Add OpenCode as a custom coding agent (Settings, Coding Agents, Add agent), then configure it with any provider or model OpenCode supports. AgentsCommander launches and coordinates the CLI without restricting that choice. What is still planned is a first-class tuned integration: its own `CodingAgentKind` variant with resume tokens and idle tuning. The current enum is in `session/profile.rs::CodingAgentKind`. Track the tuned integration on the [roadmap](../ROADMAP.md).
 
 ## Do I need Python or LangChain?
 

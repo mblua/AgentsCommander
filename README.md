@@ -5,11 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power, put your Fusion team on a <b>Loop</b>, and let scheduled, recurring runs compound toward the best answer, while you sleep. <b>AgentsCommander only adds, never subtracts.</b> <i>Road to the Dark Factory.</i>
-</p>
-
-<p align="center">
-  <sub><i>A Fusion team combines multiple models in one team: point OpenCode at any provider and any model can join, even OpenRouter Fusion.</i></sub>
+  <b>Compound your coding agents.</b> Multi-agent systems are how tomorrow’s software teams will work. Keep agent configurations as source code, bring any CLI coding agent at full power, and put the work on a <b>Loop</b> so scheduled runs build on your Team’s versioned operational experience while you sleep. <b>AgentsCommander only adds, never subtracts.</b> <i>Road to the Dark Factory.</i>
 </p>
 
 <p align="center">
@@ -100,17 +96,17 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 
 ## The 30-second pitch
 
-> **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: bring any coding agent at full power, put a Fusion team of cheaper models on a **Loop**, and let scheduled runs compound toward the best answer. We only add, never subtract.
+> **A Dark Factory runs with the lights off, no humans on the floor.** AgentsCommander is how you get there: define agents and Teams in source-controlled files, activate each Team as a Room, and schedule recurring work with a **Loop**. Each run can build on the roles, skills, plans, and prompts your Team has reviewed and versioned. We only add, never subtract.
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
-- **Direct multiple rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across teams. Ask it to talk to room orchestrators, send work to different teams, and keep initiatives aligned across parallel rooms.
-- **Multi-agent Teams that coordinate through files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole org fits in `ls`.
+- **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
+- **Treat multi-agent configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files and review changes with git.
+- **Coordinate Teams through auditable files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole organization fits in `ls`.
+- **Compound operational practice.** A Loop delivers a prompt to a Room's orchestrator on a schedule. When a run improves a role, skill, plan, or prompt, record and review that change in the canonical Project files so later work can build on it. Loops do not train models or learn on their own.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** Machine-local state stays in the configuration directory selected by the exact binary version; shared team state stays in each project's `.ac/` tree. The published `v0.30.3` resolver and the newer, unpublished `main` resolver differ, so use the [versioned configuration rule](docs/features/portable-instances.md#config-directory-rule) before moving or deleting state.
 
 You bring the coding agents. AgentsCommander coordinates them.
-
-> **OpenRouter Fusion compounds models on a single request. AgentsCommander compounds agents, models, and Fusion itself: on a Loop, across a team.** Point OpenCode at any provider and bring any model (including OpenRouter Fusion) into the team.
 
 ## See it work
 
@@ -162,7 +158,8 @@ Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/c
 These are not accidents.
 
 - **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions. External protocols, including MCP, belong where they improve a concrete integration without hiding the workflow.
-- **Files before databases.** All state and communication is persisted to plain files (JSON, TOML, markdown). Every change is visible via `git diff`, trivial to inspect, easy to debug. Databases can be introduced later for performance-critical paths once the data model is mature.
+- **Configuration is source code.** Canonical agent, Team, and Loop configuration lives in plain Markdown, JSON, and TOML under each Project's `.ac/` tree. Commit those shared files and review them like code; machine-local instance state stays outside that tree, and Rooms are gitignored runtime replicas.
+- **Files before databases.** Shared configuration and inter-agent messages use plain files that are easy to inspect and debug. Databases can be introduced for performance-critical runtime paths without hiding how a Team is defined or how its agents coordinate.
 - **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role-prompt file) inside its own directory. Multiple role prompts within the same directory or its subdirectories are forbidden. Coding agents assume the entire contents of their working directory are relevant context; if two role prompts coexisted, an agent could read another agent's role and leak context.
 
 ## Documentation
