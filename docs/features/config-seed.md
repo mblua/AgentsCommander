@@ -58,7 +58,7 @@ The path roots:
 
 - `<workspace>` is the project's `.ac` root.
 - `<matrix>` is the agent's canonical `_agent_<name>` directory.
-- `<config_dir>` is the per-binary config directory next to the AC executable (see [Portable instances](portable-instances.md#config-directory-rule)).
+- `<config_dir>` is the application config directory selected by the exact binary version (see [Portable instances](portable-instances.md#config-directory-rule)).
 - `<letter>` is the session's resolved profile letter, lowercased, so profile `B` looks for `default_profile_b<dest>`. See [Coding Agent Profiles](coding-agent-profiles.md) for how the letter is resolved.
 
 ### The two kinds of tier

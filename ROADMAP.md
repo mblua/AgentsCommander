@@ -2,7 +2,7 @@
 
 This is what's next for AgentsCommander. Items are grouped by status: **Shipped** / **Planned** / **Considering**. Order within each section is rough priority.
 
-This file is a snapshot. The authoritative status for any item lives in its linked GitHub issue.
+This file is a snapshot. The authoritative status for tracked work lives in its linked GitHub issue; current installation support lives in the [platform contract](docs/install-with-agent.md#support-gates).
 
 ## Shipped (highlights)
 
@@ -52,7 +52,8 @@ This file is a snapshot. The authoritative status for any item lives in its link
 
 ### Platform
 
-- **macOS first-class verification** - testers wanted. ([#320](https://github.com/mblua/AgentsCommander/issues/320))
+- **Linux support expansion** - Linux x86_64/AMD64 support is partial and in progress. Broaden distribution and feature coverage, including gaps where capabilities remain Windows-only. Testers can use the [reproducible platform report](docs/install-with-agent.md#help-extend-linux-and-macos-support).
+- **macOS support and verification** - macOS is not supported yet because maintainer and test capacity is insufficient. Testers and contributors are welcome through the explicit [collaboration path](docs/install-with-agent.md#help-extend-linux-and-macos-support); artifact availability does not change the support tier.
 - **Web landing page** on `agentscommander.dev` or GitHub Pages from `/docs`. ([#321](https://github.com/mblua/AgentsCommander/issues/321))
 
 ## Considering
