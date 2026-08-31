@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
@@ -4860,6 +4860,23 @@ pub async fn create_root_agent_session(
     .await
 }
 
+/// #1646 / #1647 - Resolves a blocking menu episode for a session.
+/// Clears the blocked menu in SessionManager and publishes the updated communication state.
+#[tauri::command]
+pub async fn resolve_blocking_menu<R: Runtime>(
+    app: AppHandle<R>,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    menu_guard: State<'_, Arc<crate::pty::menu_guard::MenuGuard>>,
+    id: String,
+) -> Result<(), String> {
+    let session_id = Uuid::parse_str(&id).map_err(|e| format!("Invalid session ID: {e}"))?;
+    menu_guard.resolve_current_episode(session_id);
+    let session_mgr = session_mgr.read().await;
+    session_mgr.clear_blocked_menu(session_id).await;
+    crate::session::selection::publish_session_communication(&app, session_id, None);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4963,6 +4980,7 @@ mod tests {
                     instructions_filename: None,
                     config_seed: None,
                     context_regex: None,
+                    blocking_menus: None,
                     backend: Default::default(),
                 },
                 AgentConfig {
@@ -4975,6 +4993,7 @@ mod tests {
                     instructions_filename: None,
                     config_seed: None,
                     context_regex: None,
+                    blocking_menus: None,
                     backend: Default::default(),
                 },
             ],
@@ -5039,6 +5058,7 @@ mod tests {
                 instructions_filename: Some("AGENTS.md".to_string()),
                 config_seed: None,
                 context_regex: None,
+                blocking_menus: None,
                 backend: Default::default(),
             }],
             ..AppSettings::default()
@@ -5094,6 +5114,7 @@ mod tests {
                 instructions_filename: None,
                 config_seed: None,
                 context_regex: None,
+                blocking_menus: None,
                 backend: Default::default(),
             }],
             ..AppSettings::default()
@@ -5939,6 +5960,7 @@ mod tests {
             .manage(crate::DetachedSessionsState::default())
             .manage(telegram)
             .manage(crate::session::warnings::new_session_warning_state())
+            .manage(Arc::new(crate::pty::menu_guard::MenuGuard::new()))
             .manage(coordinator.clone())
             .manage(target_gate_state.clone())
             .manage(shutdown);
@@ -6549,6 +6571,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: "2026-07-16T00:00:00Z".to_string(),
+            message: None,
         };
         session_mgr
             .read()
@@ -9021,6 +9044,7 @@ mod tests {
                 instructions_filename: None,
                 config_seed: None,
                 context_regex: None,
+                blocking_menus: None,
                 backend: Default::default(),
             }],
             ..AppSettings::default()
@@ -9310,6 +9334,7 @@ mod tests {
             instructions_filename: None,
             config_seed: None,
             context_regex: None,
+            blocking_menus: None,
             backend: Default::default(),
         });
 
@@ -9389,6 +9414,7 @@ mod tests {
             instructions_filename: None,
             config_seed: None,
             context_regex: None,
+            blocking_menus: None,
             backend: Default::default(),
         }];
 
@@ -9466,6 +9492,7 @@ mod tests {
                 kind: crate::session::session::SessionCommunicationKind::RaiseHand,
                 visible: true,
                 updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+                message: None,
             })
         };
         let hidden_hand = || {
@@ -9473,6 +9500,7 @@ mod tests {
                 kind: crate::session::session::SessionCommunicationKind::RaiseHand,
                 visible: false,
                 updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+                message: None,
             })
         };
 
@@ -10763,6 +10791,92 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn test_resolve_blocking_menu_command() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let session =
+            create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy())
+                .await;
+        let session_id = Uuid::parse_str(&session.id).unwrap();
+
+        let menu_guard = app.state::<Arc<crate::pty::menu_guard::MenuGuard>>();
+        let pi_entries = crate::config::settings::default_blocking_menus_for_command("pi");
+        let menu_rows = vec![crate::pty::watchers::frame::LogicalRow {
+            start: 0,
+            end: 0,
+            text: "Trust project folder?".to_string(),
+        }];
+
+        // Evaluate to trigger blocked state
+        let eval = menu_guard.evaluate_logical_rows(session_id, &menu_rows, &pi_entries);
+        assert!(eval.is_blocked);
+        assert!(menu_guard.is_blocked(session_id));
+
+        // Set blocked menu in session manager
+        session_mgr
+            .read()
+            .await
+            .set_blocked_menu(
+                session_id,
+                eval.matched_notification.unwrap(),
+                chrono::Utc::now(),
+            )
+            .await;
+
+        let events = capture_session_lifecycle(&app);
+
+        // Invoke resolve_blocking_menu
+        let res = super::resolve_blocking_menu(
+            app.handle().clone(),
+            app.state::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+            app.state::<Arc<crate::pty::menu_guard::MenuGuard>>(),
+            session.id.clone(),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        // Verify menu_guard is no longer blocked for this session
+        assert!(!menu_guard.is_blocked(session_id));
+
+        // Verify session manager communication is cleared
+        let stored = session_mgr
+            .read()
+            .await
+            .get_session(session_id)
+            .await
+            .unwrap();
+        assert!(stored.communication.is_none());
+
+        // Verify session_communication_changed event was emitted
+        let mut found_comm_event = false;
+        while let Ok((event, payload)) = events.try_recv() {
+            if event == "session_communication_changed" {
+                assert!(payload.contains(&session.id));
+                assert!(payload.contains("\"communication\":null"));
+                found_comm_event = true;
+                break;
+            }
+        }
+        assert!(
+            found_comm_event,
+            "must emit session_communication_changed event"
+        );
+
         close_test_coordinator(&app).await;
     }
 }

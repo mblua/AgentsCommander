@@ -803,6 +803,7 @@ mod tests {
             instructions_filename: None,
             config_seed: None,
             context_regex: None,
+            blocking_menus: None,
             backend: Default::default(),
         }];
         settings

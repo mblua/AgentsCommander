@@ -926,6 +926,7 @@ impl SessionManager {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: updated_at.to_rfc3339(),
+            message: None,
         };
         session.communication = Some(communication.clone());
         Some((true, communication))
@@ -951,6 +952,49 @@ impl SessionManager {
             session.communication = None;
         }
         should_clear
+    }
+
+    /// #1646 / #1647 - Sets `session.communication` to `BlockedMenu` with a custom message.
+    /// Returns `Some((changed, communication))` or `None` if the session was not found or is exited.
+    pub async fn set_blocked_menu(
+        &self,
+        id: Uuid,
+        message: String,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(bool, SessionCommunication)> {
+        let mut state = self.state.write().await;
+        if state.pending_create.contains_key(&id) {
+            return None;
+        }
+        let session = state.sessions.get_mut(&id)?;
+        if matches!(session.status, SessionStatus::Exited(_)) {
+            return None;
+        }
+
+        if let Some(existing) = session.communication.as_ref() {
+            if existing.kind == SessionCommunicationKind::BlockedMenu
+                && existing.visible
+                && existing.message.as_deref() == Some(&message)
+            {
+                return Some((false, existing.clone()));
+            }
+        }
+
+        let communication = SessionCommunication {
+            kind: SessionCommunicationKind::BlockedMenu,
+            visible: true,
+            updated_at: updated_at.to_rfc3339(),
+            message: Some(message),
+        };
+        session.communication = Some(communication.clone());
+        Some((true, communication))
+    }
+
+    /// #1646 / #1647 - Clears `session.communication` if currently `Some` with `kind == SessionCommunicationKind::BlockedMenu` and `visible == true`.
+    /// Returns `true` if cleared.
+    pub async fn clear_blocked_menu(&self, id: Uuid) -> bool {
+        self.clear_communication_if_kind(id, SessionCommunicationKind::BlockedMenu)
+            .await
     }
 
     /// (#747) Re-apply a persisted raise-hand onto a restored session record.
@@ -2961,6 +3005,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: original_raise_time.clone(),
+            message: None,
         };
 
         assert!(
@@ -2988,6 +3033,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: "2026-06-30T11:00:00+00:00".to_string(),
+            message: None,
         };
 
         // Non-coordinator record: rejected, communication stays None.
