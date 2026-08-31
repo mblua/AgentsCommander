@@ -265,6 +265,12 @@ agentscommander_lib::cli::self_clear -> agentscommander_lib::config
 agentscommander_lib::cli::self_clear -> agentscommander_lib::config::root_agent
 agentscommander_lib::cli::self_clear -> agentscommander_lib::phone::mailbox
 agentscommander_lib::cli::self_clear -> agentscommander_lib::phone::types
+agentscommander_lib::cli::self_restart -> agentscommander_lib
+agentscommander_lib::cli::self_restart -> agentscommander_lib::cli
+agentscommander_lib::cli::self_restart -> agentscommander_lib::cli::self_clear
+agentscommander_lib::cli::self_restart -> agentscommander_lib::config
+agentscommander_lib::cli::self_restart -> agentscommander_lib::phone::mailbox
+agentscommander_lib::cli::self_restart -> agentscommander_lib::phone::types
 agentscommander_lib::cli::self_switch -> agentscommander_lib
 agentscommander_lib::cli::self_switch -> agentscommander_lib::cli
 agentscommander_lib::cli::self_switch -> agentscommander_lib::cli::self_clear
