@@ -5842,6 +5842,21 @@ mod tests {
             })
             .unwrap();
         assert_eq!(version, 3);
+        let due_index: (String, String, String) = conn
+            .query_row(
+                r#"SELECT name,tbl_name,sql FROM sqlite_schema
+                   WHERE type='index' AND name='idx_pty_input_due'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(due_index.0, "idx_pty_input_due");
+        assert_eq!(due_index.1, "pty_input_operations");
+        assert_eq!(
+            due_index.2.split_whitespace().collect::<Vec<_>>().join(" "),
+            "CREATE INDEX idx_pty_input_due ON \
+             pty_input_operations(source_plane, status, next_attempt_at, lease_until)"
+        );
         assert_eq!(
             snapshot_table(&conn, "pty_input_operations"),
             expected_operations
