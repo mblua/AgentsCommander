@@ -53,3 +53,12 @@ export function replicaHasRaisedHand(wg: AcWorkgroup, replica: AcAgentReplica): 
 export function workgroupHasRaisedHand(wg: AcWorkgroup): boolean {
   return wg.agents.some((replica) => replicaHasRaisedHand(wg, replica));
 }
+
+export function replicaHasBlockedMenu(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
+  const communication = findReplicaSession(wg, replica)?.communication;
+  return communication?.kind === "blockedMenu" && communication?.visible === true;
+}
+
+export function workgroupHasBlockedMenu(wg: AcWorkgroup): boolean {
+  return wg.agents.some((replica) => replicaHasBlockedMenu(wg, replica));
+}

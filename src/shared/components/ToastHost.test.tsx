@@ -59,6 +59,41 @@ describe("ToastHost (#574)", () => {
     expect(q("toast.item")).toBeNull();
   });
 
+  it("renders an action button that fires and dismisses the toast", async () => {
+    vi.useFakeTimers();
+    dispose = renderHost();
+    const onClick = vi.fn();
+    toastStore.push({
+      message: "Interactive menu requires user input",
+      durationMs: null,
+      action: { label: "Resolved by user", onClick },
+    });
+
+    const action = q<HTMLButtonElement>("toast.item.action");
+    expect(action?.textContent).toBe("Resolved by user");
+    action!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(q("toast.item")?.classList.contains("toast-item--exiting")).toBe(true);
+    await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+    expect(q("toast.item")).toBeNull();
+  });
+
+  it("dismissByTag removes the matching toast", async () => {
+    vi.useFakeTimers();
+    dispose = renderHost();
+    toastStore.push({ message: "blocked", durationMs: null, tag: "blockedMenu:one" });
+    toastStore.push({ message: "other", durationMs: null, tag: "blockedMenu:two" });
+
+    toastStore.dismissByTag("blockedMenu:one");
+
+    expect(qa("toast.item")[0].classList.contains("toast-item--exiting")).toBe(true);
+    expect(qa("toast.item")[1].classList.contains("toast-item--exiting")).toBe(false);
+    await vi.advanceTimersByTimeAsync(TOAST_EXIT_MS);
+    expect(qa("toast.item")).toHaveLength(1);
+    expect(q("toast.item")?.textContent ?? "").toContain("other");
+  });
+
   it("renders one node per toast", () => {
     dispose = renderHost();
     toastStore.error("a");
