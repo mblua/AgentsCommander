@@ -2608,6 +2608,7 @@ async fn finish_pty_input_before_boundary(
             | C::LeaseLost
             | C::SpawnFailedSafe
             | C::StoreTransient
+            | C::MenuGuardBlocked
     ) {
         if store
             .retry_pty_input_offloaded(
@@ -3793,6 +3794,14 @@ impl MailboxPoller {
                 self.retry_tracker.remove(&path);
             }
             Err(e) => {
+                if crate::pty::menu_guard::is_menu_guard_deferred_error(&e) {
+                    log::debug!(
+                        "[mailbox] message delivery deferred by menu guard {:?}: {}",
+                        path,
+                        e
+                    );
+                    return;
+                }
                 let is_permanent = is_permanent_delivery_error(&e);
                 let should_reject = is_permanent || {
                     let state = self
@@ -6576,6 +6585,13 @@ impl MailboxPoller {
             {
                 return Err(C::PurgeInProgress);
             }
+            let menu_guard = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>();
+            if menu_guard
+                .as_ref()
+                .is_some_and(|g| g.is_blocked(session_id))
+            {
+                return Err(C::MenuGuardBlocked);
+            }
             let authority = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
                 self.validate_claimed_host_authority(app, claimed).await
             } else {
@@ -8598,7 +8614,10 @@ impl MailboxPoller {
                     }
                 }
             };
-            let ready = wake_settle_ready(waiting, rendered);
+            let menu_blocked = app
+                .try_state::<Arc<crate::pty::menu_guard::MenuGuard>>()
+                .is_some_and(|g| g.is_blocked(session_id));
+            let ready = !menu_blocked && wake_settle_ready(waiting, rendered);
 
             let was_settling = idle_since.is_some();
             let (next_idle_since, action) = settle_tick(
@@ -8613,6 +8632,13 @@ impl MailboxPoller {
 
             match action {
                 SettleAction::InjectNow => {
+                    if menu_blocked {
+                        return Err(format!(
+                            "{}: session {} is blocked by interactive menu",
+                            crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
+                            session_id
+                        ));
+                    }
                     if start.elapsed() >= max_wait {
                         log::warn!(
                             "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway (waiting_for_input={}, rendered={})",
@@ -8723,8 +8749,19 @@ impl MailboxPoller {
         let max_wait = std::time::Duration::from_secs(10);
         let poll = std::time::Duration::from_millis(500);
         let start = std::time::Instant::now();
+        let menu_guard = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>();
 
         loop {
+            if menu_guard
+                .as_ref()
+                .is_some_and(|g| g.is_blocked(session_id))
+            {
+                if start.elapsed() >= max_wait {
+                    return;
+                }
+                tokio::time::sleep(poll).await;
+                continue;
+            }
             let Some(r) = idle.purge_readiness(&[session_id]).into_iter().next() else {
                 return; // no snapshot: proceed to inject (best-effort)
             };
@@ -26701,6 +26738,157 @@ mod tests {
             Some(false),
             "seeded live busy peer must be non-purgeable: {}",
             peer
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wake_settle_defers_and_does_not_burn_attempts() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let msg_path = temp.path().join("test_msg.json");
+        std::fs::write(&msg_path, "{}").unwrap();
+
+        let mut poller = MailboxPoller::new();
+        let deferred_err = format!(
+            "{}: session 123 is blocked by interactive menu",
+            crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED
+        );
+
+        // Record outcome with deferred error
+        poller
+            .record_message_outcome(msg_path.clone(), Err(deferred_err.clone()))
+            .await;
+
+        // Attempt tracker must NOT have recorded an attempt or burned retry count
+        assert!(!poller.retry_tracker.contains_key(&msg_path));
+        assert!(msg_path.exists());
+        assert!(!temp.path().join("rejected").exists());
+    }
+
+    #[tokio::test]
+    async fn test_settle_live_holds_during_menu_guard_block() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let sid = add_mailbox_session(
+            &app,
+            temp.path(),
+            "wg-1-dev-team/dev",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+
+        let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+        let entries = vec![crate::config::settings::BlockingMenuEntry::Valid(
+            crate::config::settings::BlockingMenuConfig {
+                pattern: "trust".to_string(),
+                notification: "dialog".to_string(),
+                enabled: true,
+                captured_against: None,
+            },
+        )];
+        menu_guard.evaluate_logical_rows(
+            sid,
+            &[crate::pty::watchers::frame::LogicalRow {
+                text: "Do you trust the author?".to_string(),
+                start: 0,
+                end: 0,
+            }],
+            &entries,
+        );
+        assert!(menu_guard.is_blocked(sid));
+
+        let app_with_guard = tauri::test::mock_builder()
+            .manage(
+                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .inner()
+                    .clone(),
+            )
+            .manage(menu_guard)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let poller = MailboxPoller::new();
+        let res = poller
+            .settle_until_ready(
+                app_with_guard.handle(),
+                sid,
+                Duration::from_millis(50),
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                None,
+            )
+            .await;
+
+        let err = res.unwrap_err();
+        assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
+    }
+
+    #[tokio::test]
+    async fn test_pty_input_operation_retried_on_menu_guard() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("messages.db");
+        let store = crate::api::message_store::MessageStore::open(path).unwrap();
+
+        let op_id = Uuid::new_v4().to_string();
+        store
+            .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                injection_id: op_id.clone(),
+                sender_fqn: "proj:wg-1-team/lead".into(),
+                target_fqn: "proj:wg-1-team/dev".into(),
+                op_id: op_id.clone(),
+                nonce_sha256: "a".repeat(64),
+                request_fingerprint: "b".repeat(64),
+                confirmation_tag: None,
+                requested_agent_id: None,
+                payload: b"hello".to_vec(),
+                source_plane: crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                sender_incarnation_fingerprint: "c".repeat(64),
+                sender_identity_fingerprint: "d".repeat(64),
+                target_identity_fingerprint: "e".repeat(64),
+                authority_session_id: Uuid::new_v4().to_string(),
+                authority_client_id: Some("client".into()),
+                authority_client_generation: Some(Uuid::new_v4().to_string()),
+                issued_at: crate::phone::types::canonical_pty_timestamp(chrono::Utc::now()),
+                expires_at: crate::phone::types::canonical_pty_timestamp(
+                    chrono::Utc::now() + chrono::Duration::minutes(10),
+                ),
+            })
+            .unwrap();
+
+        store
+            .claim_pty_input(
+                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                Some(&op_id),
+                "lease-test",
+                chrono::Utc::now(),
+            )
+            .unwrap();
+
+        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+            Arc::new(store.clone()),
+            op_id.clone(),
+            "lease-test".to_string(),
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+        );
+
+        finish_pty_input_before_boundary(
+            &store,
+            &mut heartbeat,
+            &op_id,
+            "lease-test",
+            crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
+        )
+        .await;
+
+        let op = store
+            .query_pty_input_by_injection(&op_id)
+            .unwrap()
+            .expect("operation exists");
+        assert_eq!(op.status, crate::phone::types::PtyInputPublicStatus::Queued);
+        assert_eq!(
+            op.reason.map(|r| r.code),
+            Some(crate::phone::types::PtyInputReasonCode::MenuGuardBlocked)
         );
     }
 }

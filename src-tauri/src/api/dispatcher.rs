@@ -312,6 +312,21 @@ where
                     .await?;
                 crate::api::audit::record("-", &row.sender_fqn, "send-dispatch", "delivered");
             }
+            Err(reason) if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason) => {
+                store
+                    .release_delivery_lease_offloaded(
+                        row.message_id.clone(),
+                        reason,
+                        chrono::Utc::now(),
+                    )
+                    .await?;
+                crate::api::audit::record(
+                    "-",
+                    &row.sender_fqn,
+                    "send-dispatch",
+                    "menu-guard-deferred",
+                );
+            }
             Err(reason) => {
                 let status = store
                     .mark_delivery_failed_offloaded(
@@ -554,5 +569,36 @@ mod tests {
         .await
         .expect("dispatcher shutdown must be bounded");
         assert_eq!(targets.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_menu_guard_deferred_releases_lease() {
+        let store = store();
+        let message_id = enqueue(&store, "op-deferred", "hello");
+
+        let config = DispatcherConfig::default();
+        let processed = dispatch_due_with(&store, chrono::Utc::now(), &config, |_msg| async {
+            Err(format!(
+                "{}: session 123 is blocked by interactive menu",
+                crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED
+            ))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(processed, 1);
+
+        // Verify status is queued and attempt count is preserved (0)
+        let messages = store
+            .lease_due(
+                chrono::Utc::now(),
+                10,
+                Duration::from_secs(60),
+                "test-worker",
+            )
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_id, message_id);
+        assert_eq!(messages[0].attempt, 0);
     }
 }

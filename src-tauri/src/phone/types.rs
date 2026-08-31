@@ -105,6 +105,7 @@ pub enum PtyInputReasonCode {
     LeaseLost,
     SpawnFailedSafe,
     StoreTransient,
+    MenuGuardBlocked,
     FinalRevalidationFailed,
     TextWriteFailed,
     RequiredEnterFailed,
@@ -164,6 +165,7 @@ pub const fn pty_input_reason_code_name(code: PtyInputReasonCode) -> &'static st
         C::LeaseLost => "lease_lost",
         C::SpawnFailedSafe => "spawn_failed_safe",
         C::StoreTransient => "store_transient",
+        C::MenuGuardBlocked => "menu_guard_blocked",
         C::FinalRevalidationFailed => "final_revalidation_failed",
         C::TextWriteFailed => "text_write_failed",
         C::RequiredEnterFailed => "required_enter_failed",
@@ -226,6 +228,7 @@ pub const fn safe_detail(code: PtyInputReasonCode) -> &'static str {
         C::LeaseLost => "The preparation lease was lost before actuation.",
         C::SpawnFailedSafe => "Target spawn failed without leaving an ambiguous session.",
         C::StoreTransient => "A transient operation-store failure prevented actuation.",
+        C::MenuGuardBlocked => "The target session is blocked by an interactive menu.",
         C::FinalRevalidationFailed => {
             "Final authority or readiness validation failed after the no-replay boundary."
         }
@@ -442,6 +445,7 @@ pub const fn pty_input_reason_allowed_for_status(
                     | C::LeaseLost
                     | C::SpawnFailedSafe
                     | C::StoreTransient
+                    | C::MenuGuardBlocked
             )
         ),
         S::Actuating => reason.is_none(),
@@ -990,5 +994,29 @@ mod tests {
         let json = serde_json::to_value(PtyInputReasonCode::ArtifactUnclaimed).unwrap();
         assert_eq!(json, "artifact_unclaimed");
         assert!(!safe_detail(PtyInputReasonCode::ArtifactUnclaimed).is_empty());
+    }
+
+    #[test]
+    fn test_validate_enqueued_pty_input_result_allows_menu_guard_blocked_under_queued() {
+        let now = Utc::now();
+        let issued_at = canonical_pty_timestamp(now);
+        let queued_at = canonical_pty_timestamp(now);
+        let expires_at =
+            canonical_pty_timestamp(now + chrono::Duration::seconds(PTY_INPUT_TTL_SECS));
+        let id = Uuid::new_v4().to_string();
+        let mut result = PtyInputResult::new(id.clone(), PtyInputPublicStatus::Queued);
+        result.op_id = Some(id);
+        result.sender = Some("sender".to_string());
+        result.target = Some("target".to_string());
+        result.payload_bytes = Some(100);
+        result.payload_sha256 = Some("a".repeat(64));
+        result.source_plane = Some(PtyInputSourcePlane::HostCli);
+        result.issued_at = Some(issued_at);
+        result.expires_at = Some(expires_at);
+        result.queued_at = Some(queued_at);
+        result.reason = Some(PtyInputReason::from_code(
+            PtyInputReasonCode::MenuGuardBlocked,
+        ));
+        assert!(validate_enqueued_pty_input_result(&result).is_ok());
     }
 }
