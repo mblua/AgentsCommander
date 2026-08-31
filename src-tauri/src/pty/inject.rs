@@ -356,6 +356,16 @@ where
         .await
         .map_err(|error| error.to_string())?;
 
+    if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+        if menu_guard.is_blocked(session_id) {
+            return Err(format!(
+                "{}: session {} is blocked by interactive menu",
+                crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
+                session_id
+            ));
+        }
+    }
+
     // Deliberately synchronous and immediately adjacent to the serialized write
     // boundary. Callers of the supported variant perform their final
     // filesystem/config guard here.
@@ -946,6 +956,69 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err, format!("Session not found: {id}"));
+        assert!(backend.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_injection_blocked_when_menu_guard_active() {
+        let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = session_manager
+            .read()
+            .await
+            .create_session(
+                "claude".to_string(),
+                Vec::new(),
+                "C:\\test".to_string(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id;
+
+        let backend = Arc::new(RecordingBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+
+        let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+        let entries = vec![crate::config::settings::BlockingMenuEntry::Valid(
+            crate::config::settings::BlockingMenuConfig {
+                pattern: "Do you trust".to_string(),
+                notification: "trust dialog".to_string(),
+                enabled: true,
+                captured_against: None,
+            },
+        )];
+        let eval = menu_guard.evaluate_logical_rows(
+            id,
+            &[crate::pty::watchers::frame::LogicalRow {
+                text: "Do you trust the authors of this file?".to_string(),
+                start: 0,
+                end: 0,
+            }],
+            &entries,
+        );
+        assert!(eval.is_blocked);
+        assert!(menu_guard.is_blocked(id));
+
+        let app = tauri::test::mock_builder()
+            .manage(session_manager)
+            .manage(pty)
+            .manage(menu_guard)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let err = inject_text_into_session(app.handle(), id, "echo hello")
+            .await
+            .unwrap_err();
+
+        assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
+        assert!(err.contains(&id.to_string()));
         assert!(backend.writes.lock().unwrap().is_empty());
     }
 }

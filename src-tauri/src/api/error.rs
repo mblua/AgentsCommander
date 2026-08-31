@@ -206,7 +206,7 @@ fn pty_input_http_status(code: crate::phone::types::PtyInputReasonCode) -> Statu
         | C::FinalRevalidationFailed => StatusCode::CONFLICT,
         C::CapacityExceeded => StatusCode::TOO_MANY_REQUESTS,
         C::RestoreInProgress | C::PurgeInProgress => StatusCode::LOCKED,
-        C::ReadinessTimeout | C::SpawnFailedSafe | C::StoreTransient => {
+        C::ReadinessTimeout | C::SpawnFailedSafe | C::StoreTransient | C::MenuGuardBlocked => {
             StatusCode::SERVICE_UNAVAILABLE
         }
         C::StoreCorrupt
@@ -365,6 +365,10 @@ mod tests {
             ),
             (
                 crate::phone::types::PtyInputReasonCode::StoreTransient,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
         ] {
