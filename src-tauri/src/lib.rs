@@ -2843,6 +2843,10 @@ pub fn run(
             watcher_engine.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&watcher_engine));
             app.manage(watcher_history);
+            // #1646 / #1647 - proactive detection of terminal blocking menus
+            let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+            menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
+            app.manage(Arc::clone(&menu_guard));
             // The authoritative scope of the activity window. `open_watchers_window` writes it
             // before every emit and the window pulls it after subscribing, so a re-scope that
             // races the window's own load is recovered instead of dropped in silence.
@@ -3449,6 +3453,7 @@ pub fn run(
             commands::session::destroy_session,
             commands::session::close_coordinator,
             commands::session::restart_session,
+            commands::session::resolve_blocking_menu,
             commands::session::switch_session,
             commands::session::rename_session,
             commands::session::set_last_prompt,
@@ -4423,6 +4428,7 @@ mod tests {
                 instructions_filename: None,
                 config_seed: None,
                 context_regex: None,
+                blocking_menus: None,
                 backend: Default::default(),
             }],
             ..AppSettings::default()

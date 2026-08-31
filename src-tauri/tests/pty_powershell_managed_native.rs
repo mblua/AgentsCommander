@@ -380,6 +380,7 @@ fn agent_config(id: &str, command: &str) -> agentscommander_lib::config::setting
         instructions_filename: None,
         config_seed: None,
         context_regex: None,
+        blocking_menus: None,
         backend: Default::default(),
     }
 }

@@ -13452,6 +13452,7 @@ mod tests {
             instructions_filename: None,
             config_seed: None,
             context_regex: None,
+            blocking_menus: None,
             backend: Default::default(),
         }
     }
@@ -16034,6 +16035,7 @@ mod tests {
             kind: SessionCommunicationKind::RaiseHand,
             visible: true,
             updated_at: "2026-07-19T00:00:00Z".to_string(),
+            message: None,
         };
         let manager = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -25805,6 +25807,7 @@ mod tests {
                         kind: SessionCommunicationKind::RaiseHand,
                         visible: true,
                         updated_at: original_raise_time.clone(),
+                        message: None,
                     },
                 )
                 .await,

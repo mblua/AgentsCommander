@@ -15,6 +15,7 @@ pub mod input_activity;
 pub mod job; // #632 - per-agent Job Object for tree-kill
 pub mod local_backend;
 pub mod manager;
+pub mod menu_guard; // #1646 / #1647 - proactive detection of terminal blocking menus
 pub mod output;
 pub mod spawn_diagnostics; // #942 - spawn/first-output/exit evidence for hang triage
 pub mod terminal_snapshot;
