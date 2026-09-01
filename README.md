@@ -38,58 +38,13 @@
 Paste this prompt into a Coding Agent you already trust. It inspects first, shows you an exact plan, and waits before changing your machine.
 
 ```text
-Install AgentsCommander safely on this machine.
+Install AgentsCommander safely using only the official `mblua/AgentsCommander` repository, its latest stable GitHub Release, and the canonical guide: https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md
 
-Use only the official mblua/AgentsCommander repository, its latest stable
-GitHub Release, and the canonical guide at:
-https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md
+First resolve/report the current `main` snapshot's full commit SHA, then read the guide at that pinned commit. Treat the entire pinned guide, especially `Support gates`, `Use only pinned official evidence`, `Resolve versions before configuration`, and `Coding Agent contract`, as binding. Fail closed on every stop condition and on missing, ambiguous, or conflicting required evidence.
 
-First resolve and report the full Git commit SHA for the current main snapshot,
-then read the guide at that pinned commit. Stop if the guide, commit, stable
-release, asset list, or SHASUMS256.txt is missing, ambiguous, or conflicting.
+Before any download or mutation, perform/report every required read-only preflight and the complete plan: OS/version/architectures/support tier; existing install/version/provenance; independently resolved target stable tag; each exact release tag's resolver (`main` is not published-binary evidence); existing/replacement configuration selections; mapped release/asset URLs and exact checksum record; destination, commands, created/overwritten files, privilege, PATH/system-wide effects, preservation, validation, and rollback. Apply the guide's gates exactly: Windows 10 1809+/11 x86_64/AMD64 is full; Linux x86_64/AMD64 is partial/in progress and requires explained limitations plus explicit confirmation; macOS is unsupported and only the explicit tester/contributor path may be offered; all other platforms stop. Prefer least privilege. Await plan approval plus separate consent for elevation, system-wide/PATH changes, overwrites, and unsigned execution.
 
-Before changing anything, detect and report the OS name and version, native CPU
-architecture, process architecture if different, any existing AgentsCommander
-installation, its exact binary version, and the support tier from the pinned
-guide. Independently resolve and report the exact selected stable release tag.
-Do not resolve or preserve configuration until both versions are known and you
-have inspected each exact release tag's resolver; main is not evidence for a
-published binary. Report both the existing selection and the replacement's
-expected selection. Stop if a version is unknown, state cannot be attributed,
-multiple plausible directories exist, a candidate is mounted/read-only and
-ephemeral, or any evidence is ambiguous.
-Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported. Linux
-x86_64/AMD64 is partial/in progress: explain the limitations and wait for my
-explicit confirmation before continuing. macOS is not supported yet: stop the
-normal install and offer only the explicit tester/contributor path. Stop on any
-other OS or architecture without emulation, substitution, or fallback.
-
-Select only an asset explicitly mapped by the pinned guide. Report the stable
-release tag and URL, exact asset name and URL, exact checksum record,
-destination, every command, files created or overwritten, privilege level,
-PATH or system-wide effects, configuration-preservation plan, validation, and
-rollback. Prefer least privilege. Wait for my approval of that complete plan.
-
-Treat elevation, system-wide or PATH changes, overwrites, and running unsigned
-software as separate consent decisions. Current Windows artifacts may be
-unsigned. Explain that a matching release checksum detects corruption or an
-asset mismatch but does not protect against compromise of the publisher or
-repository account.
-
-After approval, download the exact asset and SHASUMS256.txt from the same stable
-release, require one exact filename record, verify the complete SHA-256 digest,
-back up the persistent configuration selected by the verified existing version,
-run only the approved commands,
-validate from the exact installed path, and report the result. Stop safely on
-any mismatch. For a v0.30.3 AppImage update or uninstall, stop before mutation
-when its selected candidate is in the temporary read-only mount, any existing
-state is present, or selection is ambiguous; do not invent an external or home
-configuration path.
-
-Never bypass a security control silently, elevate automatically, use
-`curl | shell`, use a mirror, build from source as a fallback, use an emulated or
-substitute asset, fall back to npm, or install or authenticate a Coding Agent
-CLI for me.
+Only afterward follow the guide's exact same-release download, one-record full-SHA-256 verification, backup of persistent configuration selected by the verified existing version, approved execution, exact-path validation/reporting, and rollback rules. Enforce its v0.30.3 AppImage stops and no-invented-config rule. Warn that Windows artifacts may be unsigned and that a matching release checksum detects corruption/asset mismatch, not publisher/repository-account compromise. Enforce all prohibitions: silent security bypass, automatic elevation, `curl | shell`, mirrors, source fallback, emulation/substitute assets, npm fallback, and installing/authenticating a Coding Agent CLI for me.
 ```
 
 Read the complete [installation contract, platform matrix, trust boundaries, and rollback rules](docs/install-with-agent.md). Prefer a manual release download or npm? Those remain [secondary routes](docs/install-with-agent.md#manual-alternatives), with the same platform policy.
