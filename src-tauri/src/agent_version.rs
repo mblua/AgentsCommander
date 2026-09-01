@@ -11,6 +11,8 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use futures::future::{BoxFuture, Shared};
+use futures::FutureExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -255,12 +257,39 @@ pub enum CancellableProbeOutcome {
     CleanupFailed(String),
 }
 
+struct RecoverableProbeReader {
+    completion: Shared<BoxFuture<'static, Result<Vec<u8>, String>>>,
+    abort: tokio::task::AbortHandle,
+    abort_requested: bool,
+    #[cfg(test)]
+    settlement_hook: Option<ProbeReaderSettlementHook>,
+}
+
+#[cfg(test)]
+pub(crate) struct ProbeReaderSettlementHook {
+    pub(crate) hold_completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) before_panic: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) release_panic: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) retry_started: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 /// Drain a pipe to EOF but retain only the first `PROBE_OUTPUT_CAP` bytes.
-fn spawn_capped_reader<R>(mut reader: R) -> tokio::task::JoinHandle<Vec<u8>>
+fn spawn_capped_reader<R>(
+    mut reader: R,
+    #[cfg(test)] mut settlement_hook: Option<ProbeReaderSettlementHook>,
+) -> RecoverableProbeReader
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    #[cfg(test)]
+    let hold_completion = settlement_hook
+        .as_mut()
+        .and_then(|hook| hook.hold_completion.take());
+    let reader = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(hold_completion) = hold_completion {
+            let _ = hold_completion.await;
+        }
         let mut kept: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
@@ -275,7 +304,18 @@ where
             }
         }
         kept
-    })
+    });
+    let abort = reader.abort_handle();
+    let completion = async move { reader.await.map_err(|error| error.to_string()) }
+        .boxed()
+        .shared();
+    RecoverableProbeReader {
+        completion,
+        abort,
+        abort_requested: false,
+        #[cfg(test)]
+        settlement_hook,
+    }
 }
 
 fn record_probe_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
@@ -286,27 +326,50 @@ fn record_probe_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
 }
 
 async fn settle_probe_reader(
-    reader: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
+    reader: &mut Option<RecoverableProbeReader>,
     defects: &mut Vec<String>,
     attempt: &mut crate::pty::job::SettlementAttempt,
 ) -> Vec<u8> {
-    let Some(mut reader) = reader.take() else {
+    let Some(reader) = reader.as_mut() else {
         return Vec::new();
     };
+    let completion = reader.completion.clone();
+    #[cfg(test)]
+    if let Some(hook) = reader.settlement_hook.as_mut() {
+        if let Some(release_panic) = hook.release_panic.take() {
+            if let Some(before_panic) = hook.before_panic.take() {
+                let _ = before_panic.send(());
+            }
+            let _ = release_panic.await;
+            panic!("injected probe panic during reader settlement");
+        }
+        if let Some(retry_started) = hook.retry_started.take() {
+            let _ = retry_started.send(());
+        }
+    }
+    if reader.abort_requested {
+        reader.abort.abort();
+        let _ = completion.await;
+        return Vec::new();
+    }
     if attempt.expired() {
         record_probe_attempt_expiry(defects, "reader settlement");
         attempt.restart();
     }
-    match tokio::time::timeout(attempt.remaining(), &mut reader).await {
+    match tokio::time::timeout(attempt.remaining(), completion.clone()).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
-            defects.push(format!("reader join failed: {error}"));
+            let detail = format!("reader join failed: {error}");
+            if !defects.iter().any(|defect| defect == &detail) {
+                defects.push(detail);
+            }
             Vec::new()
         }
         Err(_) => {
             record_probe_attempt_expiry(defects, "reader settlement");
-            reader.abort();
-            let _ = reader.await;
+            reader.abort_requested = true;
+            reader.abort.abort();
+            let _ = completion.await;
             attempt.restart();
             Vec::new()
         }
@@ -332,6 +395,8 @@ pub(crate) struct ProbeSettlementHook {
     pub(crate) settlement_window: Option<Duration>,
     pub(crate) native_observations: std::collections::VecDeque<ProbeNativeObservation>,
     pub(crate) panic_after_native_proof_release: bool,
+    pub(crate) panic_after_native_query_defect: bool,
+    pub(crate) stdout_reader: Option<ProbeReaderSettlementHook>,
 }
 
 #[cfg(test)]
@@ -390,8 +455,9 @@ where
 
 struct ProbeProcessOwner {
     child: Option<tokio::process::Child>,
-    stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
-    stderr: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    stdout: Option<RecoverableProbeReader>,
+    stderr: Option<RecoverableProbeReader>,
+    defects: Vec<String>,
     #[cfg(windows)]
     job: Option<crate::pty::job::JobObject>,
     #[cfg(unix)]
@@ -436,10 +502,8 @@ impl ProbeProcessOwner {
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
             .unwrap_or(0);
-        let stdout = child.stdout.take().map(spawn_capped_reader);
-        let stderr = child.stderr.take().map(spawn_capped_reader);
         #[cfg(test)]
-        let settlement_hook = PROBE_SETTLEMENT_HOOK
+        let mut settlement_hook = PROBE_SETTLEMENT_HOOK
             .try_with(|scope| {
                 let mut scope = scope.borrow_mut();
                 if scope.remaining_spawns == 0 {
@@ -451,10 +515,29 @@ impl ProbeProcessOwner {
             })
             .ok()
             .flatten();
+        #[cfg(test)]
+        let stdout_reader_hook = settlement_hook
+            .as_mut()
+            .and_then(|hook| hook.stdout_reader.take());
+        #[cfg(test)]
+        let stdout = child
+            .stdout
+            .take()
+            .map(move |reader| spawn_capped_reader(reader, stdout_reader_hook));
+        #[cfg(test)]
+        let stderr = child
+            .stderr
+            .take()
+            .map(|reader| spawn_capped_reader(reader, None));
+        #[cfg(not(test))]
+        let stdout = child.stdout.take().map(spawn_capped_reader);
+        #[cfg(not(test))]
+        let stderr = child.stderr.take().map(spawn_capped_reader);
         Ok(Self {
             child: Some(child),
             stdout,
             stderr,
+            defects: Vec::new(),
             #[cfg(windows)]
             job: Some(job),
             #[cfg(unix)]
@@ -487,7 +570,7 @@ impl ProbeProcessOwner {
         #[cfg(not(test))]
         let settlement_window = ACTIVE_SETTLEMENT_WINDOW;
         let mut attempt = crate::pty::job::SettlementAttempt::new(settlement_window);
-        let mut defects = Vec::new();
+        let defects = &mut self.defects;
         let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
 
         #[cfg(windows)]
@@ -535,7 +618,7 @@ impl ProbeProcessOwner {
                         }
                     }
                     if attempt.expired() {
-                        record_probe_attempt_expiry(&mut defects, "direct-child settlement");
+                        record_probe_attempt_expiry(defects, "direct-child settlement");
                         #[cfg(windows)]
                         if let Some(job) = self.job.as_ref() {
                             let _ = job.terminate_checked();
@@ -573,8 +656,8 @@ impl ProbeProcessOwner {
             }
         }
 
-        let stdout = settle_probe_reader(&mut self.stdout, &mut defects, &mut attempt).await;
-        let stderr = settle_probe_reader(&mut self.stderr, &mut defects, &mut attempt).await;
+        let stdout = settle_probe_reader(&mut self.stdout, defects, &mut attempt).await;
+        let stderr = settle_probe_reader(&mut self.stderr, defects, &mut attempt).await;
 
         #[cfg(test)]
         {
@@ -594,13 +677,13 @@ impl ProbeProcessOwner {
             if let Some(release) = release.as_mut() {
                 loop {
                     if attempt.expired() {
-                        record_probe_attempt_expiry(&mut defects, "native-proof barrier");
+                        record_probe_attempt_expiry(defects, "native-proof barrier");
                         attempt.restart();
                     }
                     match tokio::time::timeout(attempt.remaining(), &mut *release).await {
                         Ok(_) => break,
                         Err(_) => {
-                            record_probe_attempt_expiry(&mut defects, "native-proof barrier");
+                            record_probe_attempt_expiry(defects, "native-proof barrier");
                             attempt.restart();
                         }
                     }
@@ -648,10 +731,16 @@ impl ProbeProcessOwner {
                             defects.push(format!("job accounting failed: {error}"));
                             query_defect_recorded = true;
                         }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected probe panic after native query defect");
+                        }
                     }
                 }
                 if attempt.expired() {
-                    record_probe_attempt_expiry(&mut defects, "job accounting proof");
+                    record_probe_attempt_expiry(defects, "job accounting proof");
                     let _ = job.terminate_checked();
                     attempt.restart();
                 }
@@ -712,10 +801,16 @@ impl ProbeProcessOwner {
                             defects.push(format!("process-group accounting failed: {error}"));
                             errno_defect_recorded = true;
                         }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected probe panic after native query defect");
+                        }
                     }
                 }
                 if attempt.expired() {
-                    record_probe_attempt_expiry(&mut defects, "process-group accounting proof");
+                    record_probe_attempt_expiry(defects, "process-group accounting proof");
                     // SAFETY: this remains the retained positive process group.
                     unsafe {
                         libc::kill(-self.pgid, libc::SIGKILL);
@@ -731,7 +826,7 @@ impl ProbeProcessOwner {
         ProbeSettlement {
             stdout,
             stderr,
-            defects,
+            defects: defects.clone(),
         }
     }
 
@@ -1416,6 +1511,8 @@ mod tests {
                         settlement_window: Some(Duration::from_millis(60)),
                         native_observations,
                         panic_after_native_proof_release: false,
+                        panic_after_native_query_defect: false,
+                        stdout_reader: None,
                     },
                     async move {
                         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();

@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
@@ -1836,10 +1837,27 @@ enum UpdaterStepOutcome {
     ContainmentFailed,
 }
 
+struct RecoverableUpdateReader {
+    completion: Shared<BoxFuture<'static, Result<Vec<u8>, String>>>,
+    abort: tokio::task::AbortHandle,
+    abort_requested: bool,
+    #[cfg(test)]
+    settlement_hook: Option<TargetReaderSettlementHook>,
+}
+
+#[cfg(test)]
+struct TargetReaderSettlementHook {
+    hold_completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    before_panic: Option<tokio::sync::oneshot::Sender<()>>,
+    release_panic: Option<tokio::sync::oneshot::Receiver<()>>,
+    retry_started: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 struct TargetProcessOwner {
     child: Option<tokio::process::Child>,
-    stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
-    stderr: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    stdout: Option<RecoverableUpdateReader>,
+    stderr: Option<RecoverableUpdateReader>,
+    defects: Vec<String>,
     #[cfg(windows)]
     job: Option<crate::pty::job::JobObject>,
     #[cfg(unix)]
@@ -1855,6 +1873,8 @@ struct TargetSettlementHook {
     settlement_window: Option<Duration>,
     native_observations: std::collections::VecDeque<TargetNativeObservation>,
     panic_after_native_proof_release: bool,
+    panic_after_native_query_defect: bool,
+    stdout_reader: Option<TargetReaderSettlementHook>,
 }
 
 #[cfg(test)]
@@ -1908,17 +1928,34 @@ impl TargetProcessOwner {
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
             .unwrap_or(0);
-        let stdout = child.stdout.take().map(spawn_update_reader);
-        let stderr = child.stderr.take().map(spawn_update_reader);
         #[cfg(test)]
-        let settlement_hook = TARGET_SETTLEMENT_HOOK
+        let mut settlement_hook = TARGET_SETTLEMENT_HOOK
             .try_with(|hook| hook.borrow_mut().take())
             .ok()
             .flatten();
+        #[cfg(test)]
+        let stdout_reader_hook = settlement_hook
+            .as_mut()
+            .and_then(|hook| hook.stdout_reader.take());
+        #[cfg(test)]
+        let stdout = child
+            .stdout
+            .take()
+            .map(move |reader| spawn_update_reader(reader, stdout_reader_hook));
+        #[cfg(test)]
+        let stderr = child
+            .stderr
+            .take()
+            .map(|reader| spawn_update_reader(reader, None));
+        #[cfg(not(test))]
+        let stdout = child.stdout.take().map(spawn_update_reader);
+        #[cfg(not(test))]
+        let stderr = child.stderr.take().map(spawn_update_reader);
         Ok(Self {
             child: Some(child),
             stdout,
             stderr,
+            defects: Vec::new(),
             #[cfg(windows)]
             job: Some(job),
             #[cfg(unix)]
@@ -1951,7 +1988,7 @@ impl TargetProcessOwner {
         #[cfg(not(test))]
         let settlement_window = PROCESS_SETTLEMENT_WINDOW;
         let mut attempt = crate::pty::job::SettlementAttempt::new(settlement_window);
-        let mut defects = Vec::new();
+        let defects = &mut self.defects;
         let cleanup_required = !matches!(wait, TargetWait::Exited(Ok(_)));
 
         #[cfg(windows)]
@@ -1995,7 +2032,7 @@ impl TargetProcessOwner {
                         }
                     }
                     if attempt.expired() {
-                        record_update_attempt_expiry(&mut defects, "direct-child settlement");
+                        record_update_attempt_expiry(defects, "direct-child settlement");
                         #[cfg(windows)]
                         if let Some(job) = self.job.as_ref() {
                             let _ = job.terminate_checked();
@@ -2030,8 +2067,8 @@ impl TargetProcessOwner {
             }
         }
 
-        let stdout = settle_update_reader(&mut self.stdout, &mut defects, &mut attempt).await;
-        let stderr = settle_update_reader(&mut self.stderr, &mut defects, &mut attempt).await;
+        let stdout = settle_update_reader(&mut self.stdout, defects, &mut attempt).await;
+        let stderr = settle_update_reader(&mut self.stderr, defects, &mut attempt).await;
 
         #[cfg(test)]
         {
@@ -2051,13 +2088,13 @@ impl TargetProcessOwner {
             if let Some(release) = release.as_mut() {
                 loop {
                     if attempt.expired() {
-                        record_update_attempt_expiry(&mut defects, "native-proof barrier");
+                        record_update_attempt_expiry(defects, "native-proof barrier");
                         attempt.restart();
                     }
                     match tokio::time::timeout(attempt.remaining(), &mut *release).await {
                         Ok(_) => break,
                         Err(_) => {
-                            record_update_attempt_expiry(&mut defects, "native-proof barrier");
+                            record_update_attempt_expiry(defects, "native-proof barrier");
                             attempt.restart();
                         }
                     }
@@ -2105,10 +2142,16 @@ impl TargetProcessOwner {
                             defects.push(format!("job accounting failed: {error}"));
                             query_defect_recorded = true;
                         }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected updater panic after native query defect");
+                        }
                     }
                 }
                 if attempt.expired() {
-                    record_update_attempt_expiry(&mut defects, "job accounting proof");
+                    record_update_attempt_expiry(defects, "job accounting proof");
                     let _ = job.terminate_checked();
                     attempt.restart();
                 }
@@ -2169,10 +2212,16 @@ impl TargetProcessOwner {
                             defects.push(format!("process-group accounting failed: {error}"));
                             errno_defect_recorded = true;
                         }
+                        #[cfg(test)]
+                        if self.settlement_hook.as_mut().is_some_and(|hook| {
+                            std::mem::take(&mut hook.panic_after_native_query_defect)
+                        }) {
+                            panic!("injected updater panic after native query defect");
+                        }
                     }
                 }
                 if attempt.expired() {
-                    record_update_attempt_expiry(&mut defects, "process-group accounting proof");
+                    record_update_attempt_expiry(defects, "process-group accounting proof");
                     // SAFETY: this remains the retained group identity.
                     unsafe {
                         libc::kill(-self.pgid, libc::SIGKILL);
@@ -2187,7 +2236,7 @@ impl TargetProcessOwner {
         TargetSettlement {
             stdout,
             stderr,
-            defects,
+            defects: defects.clone(),
         }
     }
 
@@ -2302,15 +2351,37 @@ impl TargetOwnerSlot {
     }
 }
 
-fn spawn_update_reader<R>(mut reader: R) -> tokio::task::JoinHandle<Vec<u8>>
+fn spawn_update_reader<R>(
+    mut reader: R,
+    #[cfg(test)] mut settlement_hook: Option<TargetReaderSettlementHook>,
+) -> RecoverableUpdateReader
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    #[cfg(test)]
+    let hold_completion = settlement_hook
+        .as_mut()
+        .and_then(|hook| hook.hold_completion.take());
+    let reader = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(hold_completion) = hold_completion {
+            let _ = hold_completion.await;
+        }
         let mut bytes = Vec::new();
         let _ = tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut bytes).await;
         bytes
-    })
+    });
+    let abort = reader.abort_handle();
+    let completion = async move { reader.await.map_err(|error| error.to_string()) }
+        .boxed()
+        .shared();
+    RecoverableUpdateReader {
+        completion,
+        abort,
+        abort_requested: false,
+        #[cfg(test)]
+        settlement_hook,
+    }
 }
 
 fn record_update_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
@@ -2321,27 +2392,50 @@ fn record_update_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
 }
 
 async fn settle_update_reader(
-    reader: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
+    reader: &mut Option<RecoverableUpdateReader>,
     defects: &mut Vec<String>,
     attempt: &mut crate::pty::job::SettlementAttempt,
 ) -> Vec<u8> {
-    let Some(mut reader) = reader.take() else {
+    let Some(reader) = reader.as_mut() else {
         return Vec::new();
     };
+    let completion = reader.completion.clone();
+    #[cfg(test)]
+    if let Some(hook) = reader.settlement_hook.as_mut() {
+        if let Some(release_panic) = hook.release_panic.take() {
+            if let Some(before_panic) = hook.before_panic.take() {
+                let _ = before_panic.send(());
+            }
+            let _ = release_panic.await;
+            panic!("injected updater panic during reader settlement");
+        }
+        if let Some(retry_started) = hook.retry_started.take() {
+            let _ = retry_started.send(());
+        }
+    }
+    if reader.abort_requested {
+        reader.abort.abort();
+        let _ = completion.await;
+        return Vec::new();
+    }
     if attempt.expired() {
         record_update_attempt_expiry(defects, "reader settlement");
         attempt.restart();
     }
-    match tokio::time::timeout(attempt.remaining(), &mut reader).await {
+    match tokio::time::timeout(attempt.remaining(), completion.clone()).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
-            defects.push(format!("reader join failed: {error}"));
+            let detail = format!("reader join failed: {error}");
+            if !defects.iter().any(|defect| defect == &detail) {
+                defects.push(detail);
+            }
             Vec::new()
         }
         Err(_) => {
             record_update_attempt_expiry(defects, "reader settlement");
-            reader.abort();
-            let _ = reader.await;
+            reader.abort_requested = true;
+            reader.abort.abort();
+            let _ = completion.await;
             attempt.restart();
             Vec::new()
         }
@@ -6307,9 +6401,14 @@ mod tests {
                         release_native_proof: Some(release_proof_rx),
                         settlement_window: None,
                         native_observations: std::collections::VecDeque::from([
+                            TargetNativeObservation::Error(
+                                "injected pre-panic updater cleanup defect",
+                            ),
                             TargetNativeObservation::Empty,
                         ]),
-                        panic_after_native_proof_release: true,
+                        panic_after_native_proof_release: false,
+                        panic_after_native_query_defect: true,
+                        stdout_reader: None,
                     },
                     run_update_target(handle, gate, target),
                 )
@@ -6348,6 +6447,131 @@ mod tests {
             .send(())
             .expect("release updater proof into injected panic");
         let result = target_task.await.expect("retained updater target task");
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let events = drain_frames(&mut frames);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_update_command_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_updates_finished")
+                .count(),
+            1
+        );
+        assert_eq!(events[0]["payload"]["error"], CANCELLATION_CLEANUP_ERROR);
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn target_panic_during_real_updater_reader_settlement_recovers_same_reader() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = UpdateTarget {
+            command: "missing-updater-reader-panic-target".to_string(),
+            label: "Updater reader panic target".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (reader_ready_tx, reader_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_panic_tx, release_panic_rx) = tokio::sync::oneshot::channel();
+        let (retry_started_tx, retry_started_rx) = tokio::sync::oneshot::channel();
+        let (release_reader_tx, release_reader_rx) = tokio::sync::oneshot::channel();
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                with_target_settlement_hook(
+                    TargetSettlementHook {
+                        before_native_proof: None,
+                        release_native_proof: None,
+                        settlement_window: None,
+                        native_observations: std::collections::VecDeque::from([
+                            TargetNativeObservation::Empty,
+                        ]),
+                        panic_after_native_proof_release: false,
+                        panic_after_native_query_defect: false,
+                        stdout_reader: Some(TargetReaderSettlementHook {
+                            hold_completion: Some(release_reader_rx),
+                            before_panic: Some(reader_ready_tx),
+                            release_panic: Some(release_panic_rx),
+                            retry_started: Some(retry_started_tx),
+                        }),
+                    },
+                    run_update_target(handle, gate, target),
+                )
+                .await
+            }
+        });
+        reader_ready_rx
+            .await
+            .expect("real updater reader settlement began while reader remained blocked");
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_command_started"
+        );
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
+        });
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_cancellation_changed"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("row response is ready while updater reader remains held")
+            .expect("row cancellation task");
+        assert_eq!(
+            response.disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "terminal remains reader-blocked"
+        );
+        release_panic_tx
+            .send(())
+            .expect("release updater reader settlement into injected panic");
+        tokio::time::timeout(Duration::from_secs(2), retry_started_rx)
+            .await
+            .expect("retained updater reader was polled again")
+            .expect("retained updater reader retry signal");
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "terminal waits for retained reader"
+        );
+        release_reader_tx
+            .send(())
+            .expect("allow the retained updater reader to complete");
+        let result = tokio::time::timeout(Duration::from_secs(15), target_task)
+            .await
+            .expect("retained updater reader settled")
+            .expect("retained updater reader target task");
         assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
         assert_eq!(
             result.error.as_deref(),
@@ -6422,11 +6646,13 @@ mod tests {
                             settlement_window: None,
                             native_observations: std::collections::VecDeque::from([
                                 crate::agent_version::ProbeNativeObservation::Error(
-                                    "injected panic cleanup defect",
+                                    "injected pre-panic probe cleanup defect",
                                 ),
                                 crate::agent_version::ProbeNativeObservation::Empty,
                             ]),
-                            panic_after_native_proof_release: true,
+                            panic_after_native_proof_release: false,
+                            panic_after_native_query_defect: true,
+                            stdout_reader: None,
                         },
                         run_update_target(handle, gate, target),
                     ),
@@ -6491,6 +6717,147 @@ mod tests {
             1
         );
         assert_eq!(events[0]["payload"]["error"], CANCELLATION_CLEANUP_ERROR);
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn target_panic_during_real_probe_reader_settlement_recovers_same_reader() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let stem = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &'static [&'static str] = if cfg!(windows) {
+            &["/D", "/C", "echo 1.2.3"]
+        } else {
+            &["-c", "printf '1.2.3\\n'"]
+        };
+        let target = UpdateTarget {
+            command: command.to_string(),
+            label: "Probe reader panic target".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (reader_ready_tx, reader_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_panic_tx, release_panic_rx) = tokio::sync::oneshot::channel();
+        let (retry_started_tx, retry_started_rx) = tokio::sync::oneshot::channel();
+        let (release_reader_tx, release_reader_rx) = tokio::sync::oneshot::channel();
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                crate::agent_version::with_version_probe_args_for_test(
+                    stem,
+                    args,
+                    crate::agent_version::with_probe_settlement_hook_after_spawns(
+                        1,
+                        crate::agent_version::ProbeSettlementHook {
+                            before_native_proof: None,
+                            release_native_proof: None,
+                            settlement_window: None,
+                            native_observations: std::collections::VecDeque::from([
+                                crate::agent_version::ProbeNativeObservation::Empty,
+                            ]),
+                            panic_after_native_proof_release: false,
+                            panic_after_native_query_defect: false,
+                            stdout_reader: Some(crate::agent_version::ProbeReaderSettlementHook {
+                                hold_completion: Some(release_reader_rx),
+                                before_panic: Some(reader_ready_tx),
+                                release_panic: Some(release_panic_rx),
+                                retry_started: Some(retry_started_tx),
+                            }),
+                        },
+                        run_update_target(handle, gate, target),
+                    ),
+                )
+                .await
+            }
+        });
+        reader_ready_rx
+            .await
+            .expect("real probe reader settlement began while reader remained blocked");
+        let started = next_frame(&mut frames).await;
+        let verifying = next_frame(&mut frames).await;
+        assert_eq!(started["event"], "agent_update_command_started");
+        assert_eq!(verifying["event"], "agent_update_command_verifying");
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            async move { cancel_all_updates(&handle, &gate).await }
+        });
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_cancellation_changed"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("batch response is ready while probe reader remains held")
+            .expect("batch cancellation task");
+        assert_eq!(response.requested.len(), 1);
+        assert_eq!(response.requested[0].command, target.command);
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "terminal remains reader-blocked"
+        );
+        release_panic_tx
+            .send(())
+            .expect("release probe reader settlement into injected panic");
+        tokio::time::timeout(Duration::from_secs(2), retry_started_rx)
+            .await
+            .expect("retained probe reader was polled again")
+            .expect("retained probe reader retry signal");
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "terminal waits for retained reader"
+        );
+        release_reader_tx
+            .send(())
+            .expect("allow the retained probe reader to complete");
+        let result = tokio::time::timeout(Duration::from_secs(15), target_task)
+            .await
+            .expect("retained probe reader settled")
+            .expect("retained probe reader target task");
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("Update task failed unexpectedly.")
+        );
+        assert!(result.install_after.is_none());
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let events = drain_frames(&mut frames);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_update_command_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_updates_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events[0]["payload"]["error"],
+            "Update task failed unexpectedly."
+        );
     }
 
     #[tokio::test]
@@ -6994,6 +7361,8 @@ mod tests {
                 settlement_window: None,
                 native_observations: std::collections::VecDeque::new(),
                 panic_after_native_proof_release: false,
+                panic_after_native_query_defect: false,
+                stdout_reader: None,
             });
             (Some(ready_rx), Some(release_tx))
         } else {
@@ -7123,6 +7492,8 @@ mod tests {
             settlement_window,
             native_observations,
             panic_after_native_proof_release: false,
+            panic_after_native_query_defect: false,
+            stdout_reader: None,
         });
         gate.owner_installed(&target.command, TargetWork::UpdaterStep(0), epoch);
         let waited = owner.wait(Duration::from_secs(10), &mut cancel).await;
@@ -7246,6 +7617,8 @@ mod tests {
                             settlement_window: None,
                             native_observations: std::collections::VecDeque::new(),
                             panic_after_native_proof_release: false,
+                            panic_after_native_query_defect: false,
+                            stdout_reader: None,
                         },
                         async {
                             let mut owner = TargetOwnerSlot::default();
