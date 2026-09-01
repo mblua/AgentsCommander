@@ -2711,11 +2711,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 selectAgentRail(agent.id, i());
               }}
               title={railTitle()}
-              aria-label={`Use ${agent.label || "agent"}: ${railTitle()}`}
+              aria-label={`Configuration for ${agent.label || "agent"}: ${railTitle()}`}
               data-ac-testid={`settings.agentRow.${i()}.use`}
               data-ac-role="button"
             >
-              Use
+              Configuration
             </button>
             <button
               class="settings-agent-row-delete"
