@@ -4,6 +4,7 @@ import type {
   TransportConnectionState,
   UnlistenFn,
 } from "./transport";
+import { noteEvent, noteInvokeSettle, noteInvokeStart } from "./ipc-blackbox";
 
 /** The subset of `@tauri-apps/api/event`'s listen options this transport uses.
  *  A string `target` reaches Tauri as `{ kind: 'AnyLabel', label }`
@@ -62,8 +63,16 @@ export class TauriTransport implements Transport {
   }
 
   async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-    await this.ready;
-    return this.invokeImpl!(cmd, args) as Promise<T>;
+    // #1652 - the id is taken BEFORE `await this.ready`, so a call issued while
+    // the dynamic import is still in flight is in the registry too. A stalled
+    // `init()` would otherwise be an invisible way for every invoke to hang.
+    const id = noteInvokeStart(cmd);
+    try {
+      await this.ready;
+      return (await this.invokeImpl!(cmd, args)) as T;
+    } finally {
+      noteInvokeSettle(id);
+    }
   }
 
   async listen<T>(
@@ -76,7 +85,9 @@ export class TauriTransport implements Transport {
       options?.scopeToCurrentWindow === true && this.currentWindowLabel !== null
         ? { target: this.currentWindowLabel }
         : undefined;
-    return this.listenImpl!(event, (e) => callback(e.payload as T), scoped);
+    // #1652 - the backend -> frontend liveness leg. `scoped` MUST still be
+    // forwarded unchanged; dropping it is the #1363 defect.
+    return this.listenImpl!(event, (e) => { noteEvent(event); callback(e.payload as T); }, scoped);
   }
 
   async emit<T>(event: string, payload: T): Promise<void> {
