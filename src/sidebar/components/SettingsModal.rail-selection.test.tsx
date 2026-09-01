@@ -114,7 +114,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       const titles = [
         "Already on the left comparison rail",
         "Already on the right comparison rail",
-        "Show this agent in the right comparison rail",
+        "Show this agent's configuration in the right comparison rail",
       ];
       for (const [i, configuredAgent] of AGENTS.entries()) {
         const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${i}.use`)!;
@@ -126,7 +126,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
         expect(use.textContent).toBe("Configuration");
         expect(use.getAttribute("data-ac-role")).toBe("button");
         expect(use.getAttribute("title")).toBe(title);
-        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${configuredAgent.label}: ${title}`);
+        expect(use.getAttribute("aria-label")).toBe(`${configuredAgent.label}: ${title}`);
         expect(actions).toEqual([
           `settings.agentRow.${i}.use`,
           `settings.agentRow.${i}.remove`,
@@ -153,7 +153,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       ].entries()) {
         const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${i}.use`)!;
         expect(use.getAttribute("title")).toBe(title);
-        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${AGENTS[i]!.label}: ${title}`);
+        expect(use.getAttribute("aria-label")).toBe(`${AGENTS[i]!.label}: ${title}`);
         expect(use.disabled).toBe(false);
       }
     } finally {
@@ -431,7 +431,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       expect(head(r.root, 1).getAttribute("title")).toBe("Already on the right comparison rail");
 
       expect(head(r.root, 2).getAttribute("aria-disabled")).toBe("false");
-      expect(head(r.root, 2).getAttribute("title")).toBe("Show this agent in the right comparison rail");
+      expect(head(r.root, 2).getAttribute("title")).toBe("Show this agent's configuration in the right comparison rail");
 
       // After a swap both rows become live, and each announces a swap.
       click(r.root, "settings.agents.swapRails");
