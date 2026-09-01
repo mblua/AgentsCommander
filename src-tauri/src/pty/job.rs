@@ -60,6 +60,12 @@ pub use windows_impl::JobObject;
 #[cfg(windows)]
 pub(crate) use windows_impl::{spawn_suspended_contained, ContainedSpawnError};
 
+#[cfg(all(test, windows))]
+pub(crate) use windows_impl::{
+    with_contained_spawn_test_hook, with_contained_spawn_test_hook_after_spawns, InjectedFailure,
+    SpawnTestHook,
+};
+
 #[cfg(not(windows))]
 pub use stub_impl::JobObject;
 
@@ -284,24 +290,74 @@ mod windows_impl {
 
     #[cfg(test)]
     #[derive(Clone, Copy)]
-    pub(super) enum InjectedFailure {
+    pub(crate) enum InjectedFailure {
         Assignment,
         Resume,
     }
 
-    pub(super) struct SpawnTestHook {
+    pub(crate) struct SpawnTestHook {
         #[cfg(test)]
-        pub(super) after_spawn: Option<tokio::sync::oneshot::Sender<()>>,
+        pub(crate) after_spawn: Option<tokio::sync::oneshot::Sender<()>>,
         #[cfg(test)]
-        pub(super) release_spawn: Option<tokio::sync::oneshot::Receiver<()>>,
+        pub(crate) release_spawn: Option<tokio::sync::oneshot::Receiver<()>>,
         #[cfg(test)]
-        pub(super) after_reap: Option<tokio::sync::oneshot::Sender<()>>,
+        pub(crate) after_reap: Option<tokio::sync::oneshot::Sender<()>>,
         #[cfg(test)]
-        pub(super) release_query: Option<tokio::sync::oneshot::Receiver<()>>,
+        pub(crate) release_query: Option<tokio::sync::oneshot::Receiver<()>>,
         #[cfg(test)]
-        pub(super) failure: Option<InjectedFailure>,
+        pub(crate) failure: Option<InjectedFailure>,
         #[cfg(test)]
-        pub(super) settlement_window: Option<Duration>,
+        pub(crate) settlement_window: Option<Duration>,
+    }
+
+    #[cfg(test)]
+    struct ContainedSpawnTestHookScope {
+        remaining_spawns: usize,
+        hook: Option<SpawnTestHook>,
+    }
+
+    #[cfg(test)]
+    tokio::task_local! {
+        static CONTAINED_SPAWN_TEST_HOOK: std::cell::RefCell<ContainedSpawnTestHookScope>;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn with_contained_spawn_test_hook<F>(
+        hook: SpawnTestHook,
+        future: F,
+    ) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        CONTAINED_SPAWN_TEST_HOOK
+            .scope(
+                std::cell::RefCell::new(ContainedSpawnTestHookScope {
+                    remaining_spawns: 0,
+                    hook: Some(hook),
+                }),
+                future,
+            )
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn with_contained_spawn_test_hook_after_spawns<F>(
+        remaining_spawns: usize,
+        hook: SpawnTestHook,
+        future: F,
+    ) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        CONTAINED_SPAWN_TEST_HOOK
+            .scope(
+                std::cell::RefCell::new(ContainedSpawnTestHookScope {
+                    remaining_spawns,
+                    hook: Some(hook),
+                }),
+                future,
+            )
+            .await
     }
 
     fn record_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
@@ -514,7 +570,22 @@ mod windows_impl {
     pub(crate) async fn spawn_suspended_contained(
         command: &mut tokio::process::Command,
     ) -> Result<(tokio::process::Child, JobObject), ContainedSpawnError> {
-        spawn_suspended_contained_impl(command, None).await
+        #[cfg(test)]
+        let hook = CONTAINED_SPAWN_TEST_HOOK
+            .try_with(|scope| {
+                let mut scope = scope.borrow_mut();
+                if scope.remaining_spawns == 0 {
+                    scope.hook.take()
+                } else {
+                    scope.remaining_spawns -= 1;
+                    None
+                }
+            })
+            .ok()
+            .flatten();
+        #[cfg(not(test))]
+        let hook = None;
+        spawn_suspended_contained_impl(command, hook).await
     }
 
     impl Drop for JobObject {

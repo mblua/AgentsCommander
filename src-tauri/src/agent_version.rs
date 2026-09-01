@@ -331,6 +331,7 @@ pub(crate) struct ProbeSettlementHook {
     pub(crate) release_native_proof: Option<tokio::sync::oneshot::Receiver<()>>,
     pub(crate) settlement_window: Option<Duration>,
     pub(crate) native_observations: std::collections::VecDeque<ProbeNativeObservation>,
+    pub(crate) panic_after_native_proof_release: bool,
 }
 
 #[cfg(test)]
@@ -341,8 +342,14 @@ pub(crate) enum ProbeNativeObservation {
 }
 
 #[cfg(test)]
+struct ProbeSettlementHookScope {
+    remaining_spawns: usize,
+    hook: Option<ProbeSettlementHook>,
+}
+
+#[cfg(test)]
 tokio::task_local! {
-    static PROBE_SETTLEMENT_HOOK: std::cell::RefCell<Option<ProbeSettlementHook>>;
+    static PROBE_SETTLEMENT_HOOK: std::cell::RefCell<ProbeSettlementHookScope>;
 }
 
 #[cfg(test)]
@@ -351,7 +358,33 @@ where
     F: std::future::Future,
 {
     PROBE_SETTLEMENT_HOOK
-        .scope(std::cell::RefCell::new(Some(hook)), future)
+        .scope(
+            std::cell::RefCell::new(ProbeSettlementHookScope {
+                remaining_spawns: 0,
+                hook: Some(hook),
+            }),
+            future,
+        )
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_probe_settlement_hook_after_spawns<F>(
+    remaining_spawns: usize,
+    hook: ProbeSettlementHook,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    PROBE_SETTLEMENT_HOOK
+        .scope(
+            std::cell::RefCell::new(ProbeSettlementHookScope {
+                remaining_spawns,
+                hook: Some(hook),
+            }),
+            future,
+        )
         .await
 }
 
@@ -368,25 +401,35 @@ struct ProbeProcessOwner {
 }
 
 impl ProbeProcessOwner {
-    async fn spawn(command: &mut tokio::process::Command) -> Result<Self, ProbeOutcome> {
+    async fn spawn(command: &mut tokio::process::Command) -> Result<Self, CancellableProbeOutcome> {
         #[cfg(windows)]
         let (mut child, job) = match crate::pty::job::spawn_suspended_contained(command).await {
             Ok(pair) => pair,
             Err(crate::pty::job::ContainedSpawnError::Spawn(error)) => {
-                return Err(ProbeOutcome::Failed(format!("spawn failed: {error}")))
+                return Err(CancellableProbeOutcome::Completed(ProbeOutcome::Failed(
+                    format!("spawn failed: {error}"),
+                )))
             }
-            Err(error) => {
-                log::warn!("[agent-version] contained probe launch rejected: {error}");
-                return Err(ProbeOutcome::Failed(
+            Err(crate::pty::job::ContainedSpawnError::Containment(reason)) => {
+                log::warn!(
+                    "[agent-version] contained probe launch rejected: process containment failed at {reason}"
+                );
+                return Err(CancellableProbeOutcome::Completed(ProbeOutcome::Failed(
                     "Version probe process-tree containment unavailable.".to_string(),
-                ));
+                )));
+            }
+            Err(crate::pty::job::ContainedSpawnError::Cleanup(detail)) => {
+                log::warn!("[agent-version] contained probe launch cleanup defective: {detail}");
+                return Err(CancellableProbeOutcome::CleanupFailed(detail));
             }
         };
 
         #[cfg(not(windows))]
-        let mut child = command
-            .spawn()
-            .map_err(|error| ProbeOutcome::Failed(format!("spawn failed: {error}")))?;
+        let mut child = command.spawn().map_err(|error| {
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(format!(
+                "spawn failed: {error}"
+            )))
+        })?;
 
         #[cfg(unix)]
         let pgid = child
@@ -397,7 +440,15 @@ impl ProbeProcessOwner {
         let stderr = child.stderr.take().map(spawn_capped_reader);
         #[cfg(test)]
         let settlement_hook = PROBE_SETTLEMENT_HOOK
-            .try_with(|hook| hook.borrow_mut().take())
+            .try_with(|scope| {
+                let mut scope = scope.borrow_mut();
+                if scope.remaining_spawns == 0 {
+                    scope.hook.take()
+                } else {
+                    scope.remaining_spawns -= 1;
+                    None
+                }
+            })
             .ok()
             .flatten();
         Ok(Self {
@@ -426,11 +477,10 @@ impl ProbeProcessOwner {
         }
     }
 
-    async fn settle(mut self, wait: &ProbeWait) -> ProbeSettlement {
+    async fn settle(&mut self, wait: &ProbeWait) -> ProbeSettlement {
         #[cfg(test)]
-        let mut hook = self.settlement_hook.take();
-        #[cfg(test)]
-        let settlement_window = hook
+        let settlement_window = self
+            .settlement_hook
             .as_ref()
             .and_then(|hook| hook.settlement_window)
             .unwrap_or(ACTIVE_SETTLEMENT_WINDOW);
@@ -527,17 +577,27 @@ impl ProbeProcessOwner {
         let stderr = settle_probe_reader(&mut self.stderr, &mut defects, &mut attempt).await;
 
         #[cfg(test)]
-        if let Some(hook) = hook.as_mut() {
-            if let Some(ready) = hook.before_native_proof.take() {
+        {
+            let (ready, mut release) = self
+                .settlement_hook
+                .as_mut()
+                .map(|hook| {
+                    (
+                        hook.before_native_proof.take(),
+                        hook.release_native_proof.take(),
+                    )
+                })
+                .unwrap_or((None, None));
+            if let Some(ready) = ready {
                 let _ = ready.send(());
             }
-            if let Some(mut release) = hook.release_native_proof.take() {
+            if let Some(release) = release.as_mut() {
                 loop {
                     if attempt.expired() {
                         record_probe_attempt_expiry(&mut defects, "native-proof barrier");
                         attempt.restart();
                     }
-                    match tokio::time::timeout(attempt.remaining(), &mut release).await {
+                    match tokio::time::timeout(attempt.remaining(), &mut *release).await {
                         Ok(_) => break,
                         Err(_) => {
                             record_probe_attempt_expiry(&mut defects, "native-proof barrier");
@@ -546,6 +606,13 @@ impl ProbeProcessOwner {
                     }
                 }
             }
+            let panic_after_release = self
+                .settlement_hook
+                .as_mut()
+                .is_some_and(|hook| std::mem::take(&mut hook.panic_after_native_proof_release));
+            if panic_after_release {
+                panic!("injected probe panic during native settlement");
+            }
         }
 
         #[cfg(windows)]
@@ -553,7 +620,8 @@ impl ProbeProcessOwner {
             let mut query_defect_recorded = false;
             loop {
                 #[cfg(test)]
-                let proof = match hook
+                let proof = match self
+                    .settlement_hook
                     .as_mut()
                     .and_then(|hook| hook.native_observations.pop_front())
                 {
@@ -596,7 +664,8 @@ impl ProbeProcessOwner {
             let mut errno_defect_recorded = false;
             loop {
                 #[cfg(test)]
-                let proof = match hook
+                let proof = match self
+                    .settlement_hook
                     .as_mut()
                     .and_then(|hook| hook.native_observations.pop_front())
                 {
@@ -664,6 +733,64 @@ impl ProbeProcessOwner {
             stderr,
             defects,
         }
+    }
+
+    async fn settle_observing_cancellation<F>(
+        &mut self,
+        wait: &ProbeWait,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observed: F,
+    ) -> (ProbeSettlement, bool)
+    where
+        F: FnOnce(),
+    {
+        if matches!(wait, ProbeWait::Cancelled) {
+            observed();
+            return (self.settle(wait).await, true);
+        }
+        let settlement = self.settle(wait);
+        tokio::pin!(settlement);
+        tokio::select! {
+            biased;
+            _ = wait_for_probe_cancellation(cancel) => {
+                observed();
+                (settlement.await, true)
+            }
+            settled = &mut settlement => (settled, false),
+        }
+    }
+}
+
+/// The startup-update target keeps this slot outside its caught future. The
+/// private process owner therefore survives a panic while wait/settlement is
+/// being polled and can resume cleanup before any terminal publication.
+#[derive(Default)]
+pub(crate) struct RetainedProbeOwner {
+    owner: Option<ProbeProcessOwner>,
+}
+
+impl RetainedProbeOwner {
+    pub(crate) fn is_some(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        drop(self.owner.take());
+    }
+
+    pub(crate) async fn settle_after_panic<F>(
+        &mut self,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observed: F,
+    ) -> Option<String>
+    where
+        F: FnOnce(),
+    {
+        let owner = self.owner.as_mut()?;
+        let (settlement, _) = owner
+            .settle_observing_cancellation(&ProbeWait::Cancelled, cancel, observed)
+            .await;
+        (!settlement.defects.is_empty()).then(|| settlement.defects.join("; "))
     }
 }
 
@@ -749,6 +876,38 @@ pub async fn probe_version_cancellable(
     timeout: Duration,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> CancellableProbeOutcome {
+    let mut owner = RetainedProbeOwner::default();
+    let outcome = probe_version_cancellable_retained(
+        program,
+        args,
+        timeout,
+        &mut cancel,
+        &mut owner,
+        || {},
+        || {},
+    )
+    .await;
+    owner.clear();
+    outcome
+}
+
+/// Startup-update adapter with externally retained ownership. `owner_installed`
+/// runs synchronously only after the real process owner is stored in `owner_slot`;
+/// `cancellation_observed` runs while that owner is still retained and before
+/// settlement is awaited to completion.
+pub(crate) async fn probe_version_cancellable_retained<I, O>(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    owner_slot: &mut RetainedProbeOwner,
+    owner_installed: I,
+    cancellation_observed: O,
+) -> CancellableProbeOutcome
+where
+    I: FnOnce(),
+    O: FnOnce(),
+{
     let mut command = {
         let mut c = tokio::process::Command::new(program);
         c.args(args);
@@ -763,27 +922,22 @@ pub async fn probe_version_cancellable(
         command.process_group(0);
     }
 
-    let mut owner = match ProbeProcessOwner::spawn(&mut command).await {
+    let owner = match ProbeProcessOwner::spawn(&mut command).await {
         Ok(owner) => owner,
-        Err(outcome) => return CancellableProbeOutcome::Completed(outcome),
+        Err(outcome) => return outcome,
     };
-    let waited = owner.wait(timeout, &mut cancel).await;
-    let cancelled_during_wait = matches!(waited, ProbeWait::Cancelled);
-    let settlement = owner.settle(&waited);
-    tokio::pin!(settlement);
-    let (settlement, cancellation_observed) = if cancelled_during_wait {
-        (settlement.await, true)
-    } else {
-        tokio::select! {
-            biased;
-            _ = wait_for_probe_cancellation(&mut cancel) => (settlement.await, true),
-            settled = &mut settlement => (settled, false),
-        }
-    };
+    debug_assert!(!owner_slot.is_some());
+    owner_slot.owner = Some(owner);
+    owner_installed();
+    let owner = owner_slot.owner.as_mut().expect("retained probe owner");
+    let waited = owner.wait(timeout, cancel).await;
+    let (settlement, cancellation_was_observed) = owner
+        .settle_observing_cancellation(&waited, cancel, cancellation_observed)
+        .await;
     if !settlement.defects.is_empty() {
         return CancellableProbeOutcome::CleanupFailed(settlement.defects.join("; "));
     }
-    if cancellation_observed {
+    if cancellation_was_observed {
         return CancellableProbeOutcome::Cancelled;
     }
     match &waited {
@@ -1261,6 +1415,7 @@ mod tests {
                         release_native_proof: Some(release_proof_rx),
                         settlement_window: Some(Duration::from_millis(60)),
                         native_observations,
+                        panic_after_native_proof_release: false,
                     },
                     async move {
                         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();

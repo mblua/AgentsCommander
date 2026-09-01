@@ -36,9 +36,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent_version::{
-    probe_version, probe_version_cancellable, version_probe_args, AgentInstallCache,
+    probe_version, probe_version_cancellable_retained, version_probe_args, AgentInstallCache,
     CancellableProbeOutcome, Completion, InstallState, InstallStatus, ProbeOutcome, ProbeTicket,
-    Scheduling, INSTALL_CACHE_TTL, PROBE_TIMEOUT,
+    RetainedProbeOwner, Scheduling, INSTALL_CACHE_TTL, PROBE_TIMEOUT,
 };
 use crate::config::agent_command::{
     is_bare_program_token, normalize_legacy_agent_command, resolve_program,
@@ -313,6 +313,8 @@ struct TargetControl {
     step_admission_hook: Option<StepAdmissionTestHook>,
     #[cfg(test)]
     response_release_hook: Option<ResponseReleaseTestHook>,
+    #[cfg(test)]
+    post_probe_settled_hook: Option<PostProbeSettledTestHook>,
 }
 
 #[cfg(test)]
@@ -325,6 +327,12 @@ struct StepAdmissionTestHook {
 
 #[cfg(test)]
 struct ResponseReleaseTestHook {
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+#[cfg(test)]
+struct PostProbeSettledTestHook {
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
@@ -347,6 +355,8 @@ impl TargetControl {
             step_admission_hook: None,
             #[cfg(test)]
             response_release_hook: None,
+            #[cfg(test)]
+            post_probe_settled_hook: None,
         }
     }
 }
@@ -894,6 +904,27 @@ impl AgentUpdateGate {
         }
     }
 
+    #[cfg(test)]
+    async fn hold_after_post_probe_settled_for_test(&self, command: &str) {
+        let (ready, release) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let hook = state
+                .controls
+                .get_mut(command)
+                .and_then(|control| control.post_probe_settled_hook.as_mut());
+            match hook {
+                Some(hook) => (hook.ready.take(), hook.release.take()),
+                None => (None, None),
+            }
+        };
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+
     fn owner_installed(&self, command: &str, work: TargetWork, epoch: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         {
@@ -921,6 +952,27 @@ impl AgentUpdateGate {
                 control.phase = TargetPhase::Cleanup(work, epoch);
                 control.acceptance.open();
             }
+        }
+    }
+
+    /// Complete the committed-to-owner handoff when spawn/resolve returned
+    /// without ever constructing a process owner. This is deliberately distinct
+    /// from `owner_installed`/`owner_returned`: a rejected launch must remain in
+    /// `SpawnCommitted` and must not become visibly running/verifying.
+    fn completed_without_owner(&self, command: &str, work: TargetWork, epoch: u64) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(control) = state.controls.get_mut(command) else {
+            return false;
+        };
+        if control.phase != TargetPhase::SpawnCommitted(work, epoch) {
+            return control.claim == TargetClaim::CancellationReserved;
+        }
+        if control.claim == TargetClaim::CancellationReserved {
+            control.phase = TargetPhase::Cleanup(work, epoch);
+            control.acceptance.open();
+            true
+        } else {
+            false
         }
     }
 
@@ -1533,13 +1585,20 @@ pub async fn probe_command_install_state(command: &str) -> InstallState {
 enum TargetProbeOutcome {
     Completed(InstallState),
     Cancelled,
-    CleanupFailed,
+    CleanupFailed(String),
 }
 
-async fn probe_command_install_state_cancellable(
+async fn probe_command_install_state_cancellable<I, O>(
     command: &str,
-    cancel: tokio::sync::watch::Receiver<bool>,
-) -> TargetProbeOutcome {
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    owner_slot: &mut RetainedProbeOwner,
+    owner_installed: I,
+    cancellation_observed: O,
+) -> TargetProbeOutcome
+where
+    I: FnOnce(),
+    O: FnOnce(),
+{
     if *cancel.borrow() {
         return TargetProbeOutcome::Cancelled;
     }
@@ -1547,7 +1606,17 @@ async fn probe_command_install_state_cancellable(
         Ok(probe) => probe,
         Err(state) => return TargetProbeOutcome::Completed(state),
     };
-    match probe_version_cancellable(&path, args, PROBE_TIMEOUT, cancel).await {
+    match probe_version_cancellable_retained(
+        &path,
+        args,
+        PROBE_TIMEOUT,
+        cancel,
+        owner_slot,
+        owner_installed,
+        cancellation_observed,
+    )
+    .await
+    {
         CancellableProbeOutcome::Completed(ProbeOutcome::Version(version)) => {
             TargetProbeOutcome::Completed(InstallState::installed(version, &path))
         }
@@ -1557,7 +1626,7 @@ async fn probe_command_install_state_cancellable(
         CancellableProbeOutcome::Cancelled => TargetProbeOutcome::Cancelled,
         CancellableProbeOutcome::CleanupFailed(detail) => {
             log::warn!("[agent-update] cancellable probe cleanup defective: {detail}");
-            TargetProbeOutcome::CleanupFailed
+            TargetProbeOutcome::CleanupFailed(detail)
         }
     }
 }
@@ -1763,7 +1832,7 @@ enum UpdaterStepOutcome {
     Succeeded,
     Failed(String),
     Cancelled,
-    CleanupFailed,
+    CleanupFailed(String),
     ContainmentFailed,
 }
 
@@ -1785,6 +1854,7 @@ struct TargetSettlementHook {
     release_native_proof: Option<tokio::sync::oneshot::Receiver<()>>,
     settlement_window: Option<Duration>,
     native_observations: std::collections::VecDeque<TargetNativeObservation>,
+    panic_after_native_proof_release: bool,
 }
 
 #[cfg(test)]
@@ -1792,6 +1862,21 @@ enum TargetNativeObservation {
     Empty,
     Active,
     Error(&'static str),
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static TARGET_SETTLEMENT_HOOK: std::cell::RefCell<Option<TargetSettlementHook>>;
+}
+
+#[cfg(test)]
+async fn with_target_settlement_hook<F>(hook: TargetSettlementHook, future: F) -> F::Output
+where
+    F: Future,
+{
+    TARGET_SETTLEMENT_HOOK
+        .scope(std::cell::RefCell::new(Some(hook)), future)
+        .await
 }
 
 impl TargetProcessOwner {
@@ -1802,9 +1887,15 @@ impl TargetProcessOwner {
             Err(crate::pty::job::ContainedSpawnError::Spawn(error)) => {
                 return Err(UpdaterStepOutcome::Failed(error.to_string()))
             }
-            Err(error) => {
-                log::warn!("[agent-update] contained updater launch rejected: {error}");
+            Err(crate::pty::job::ContainedSpawnError::Containment(reason)) => {
+                log::warn!(
+                    "[agent-update] contained updater launch rejected: process containment failed at {reason}"
+                );
                 return Err(UpdaterStepOutcome::ContainmentFailed);
+            }
+            Err(crate::pty::job::ContainedSpawnError::Cleanup(detail)) => {
+                log::warn!("[agent-update] contained updater launch cleanup defective: {detail}");
+                return Err(UpdaterStepOutcome::CleanupFailed(detail));
             }
         };
         #[cfg(not(windows))]
@@ -1819,6 +1910,11 @@ impl TargetProcessOwner {
             .unwrap_or(0);
         let stdout = child.stdout.take().map(spawn_update_reader);
         let stderr = child.stderr.take().map(spawn_update_reader);
+        #[cfg(test)]
+        let settlement_hook = TARGET_SETTLEMENT_HOOK
+            .try_with(|hook| hook.borrow_mut().take())
+            .ok()
+            .flatten();
         Ok(Self {
             child: Some(child),
             stdout,
@@ -1828,7 +1924,7 @@ impl TargetProcessOwner {
             #[cfg(unix)]
             pgid,
             #[cfg(test)]
-            settlement_hook: None,
+            settlement_hook,
         })
     }
 
@@ -1845,11 +1941,10 @@ impl TargetProcessOwner {
         }
     }
 
-    async fn settle(mut self, wait: &TargetWait) -> TargetSettlement {
+    async fn settle(&mut self, wait: &TargetWait) -> TargetSettlement {
         #[cfg(test)]
-        let mut hook = self.settlement_hook.take();
-        #[cfg(test)]
-        let settlement_window = hook
+        let settlement_window = self
+            .settlement_hook
             .as_ref()
             .and_then(|hook| hook.settlement_window)
             .unwrap_or(PROCESS_SETTLEMENT_WINDOW);
@@ -1939,17 +2034,27 @@ impl TargetProcessOwner {
         let stderr = settle_update_reader(&mut self.stderr, &mut defects, &mut attempt).await;
 
         #[cfg(test)]
-        if let Some(hook) = hook.as_mut() {
-            if let Some(ready) = hook.before_native_proof.take() {
+        {
+            let (ready, mut release) = self
+                .settlement_hook
+                .as_mut()
+                .map(|hook| {
+                    (
+                        hook.before_native_proof.take(),
+                        hook.release_native_proof.take(),
+                    )
+                })
+                .unwrap_or((None, None));
+            if let Some(ready) = ready {
                 let _ = ready.send(());
             }
-            if let Some(mut release) = hook.release_native_proof.take() {
+            if let Some(release) = release.as_mut() {
                 loop {
                     if attempt.expired() {
                         record_update_attempt_expiry(&mut defects, "native-proof barrier");
                         attempt.restart();
                     }
-                    match tokio::time::timeout(attempt.remaining(), &mut release).await {
+                    match tokio::time::timeout(attempt.remaining(), &mut *release).await {
                         Ok(_) => break,
                         Err(_) => {
                             record_update_attempt_expiry(&mut defects, "native-proof barrier");
@@ -1958,6 +2063,13 @@ impl TargetProcessOwner {
                     }
                 }
             }
+            let panic_after_release = self
+                .settlement_hook
+                .as_mut()
+                .is_some_and(|hook| std::mem::take(&mut hook.panic_after_native_proof_release));
+            if panic_after_release {
+                panic!("injected updater panic during native settlement");
+            }
         }
 
         #[cfg(windows)]
@@ -1965,7 +2077,8 @@ impl TargetProcessOwner {
             let mut query_defect_recorded = false;
             loop {
                 #[cfg(test)]
-                let proof = match hook
+                let proof = match self
+                    .settlement_hook
                     .as_mut()
                     .and_then(|hook| hook.native_observations.pop_front())
                 {
@@ -2008,7 +2121,8 @@ impl TargetProcessOwner {
             let mut errno_defect_recorded = false;
             loop {
                 #[cfg(test)]
-                let proof = match hook
+                let proof = match self
+                    .settlement_hook
                     .as_mut()
                     .and_then(|hook| hook.native_observations.pop_front())
                 {
@@ -2078,7 +2192,7 @@ impl TargetProcessOwner {
     }
 
     async fn settle_observing_cancellation<F>(
-        self,
+        &mut self,
         wait: &TargetWait,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
         observed: F,
@@ -2100,6 +2214,91 @@ impl TargetProcessOwner {
             }
             settled = &mut settlement => settled,
         }
+    }
+}
+
+struct TargetOwnerLease {
+    work: TargetWork,
+    epoch: u64,
+    cancel: tokio::sync::watch::Receiver<bool>,
+}
+
+/// One externally retained owner/receiver/handoff lease for a target. The slot
+/// lives outside `run_update_target_body`'s caught future, so unwinding during
+/// updater or probe settlement cannot discard the only cleanup authority.
+#[derive(Default)]
+struct TargetOwnerSlot {
+    lease: Option<TargetOwnerLease>,
+    updater: Option<TargetProcessOwner>,
+    probe: RetainedProbeOwner,
+}
+
+impl TargetOwnerSlot {
+    fn arm(&mut self, work: TargetWork, epoch: u64, cancel: tokio::sync::watch::Receiver<bool>) {
+        debug_assert!(self.lease.is_none());
+        debug_assert!(self.updater.is_none());
+        debug_assert!(!self.probe.is_some());
+        self.lease = Some(TargetOwnerLease {
+            work,
+            epoch,
+            cancel,
+        });
+    }
+
+    fn identity(&self) -> (TargetWork, u64) {
+        let lease = self.lease.as_ref().expect("active target owner lease");
+        (lease.work, lease.epoch)
+    }
+
+    fn complete_without_owner(&mut self, gate: &AgentUpdateGate, command: &str) -> bool {
+        let (work, epoch) = self.identity();
+        let reserved = gate.completed_without_owner(command, work, epoch);
+        self.clear();
+        reserved
+    }
+
+    fn owner_returned(&mut self, gate: &AgentUpdateGate, command: &str) -> bool {
+        let (work, epoch) = self.identity();
+        let reserved = gate.owner_returned(command, work, epoch);
+        self.clear();
+        reserved
+    }
+
+    fn clear(&mut self) {
+        drop(self.updater.take());
+        self.probe.clear();
+        self.lease = None;
+    }
+
+    async fn settle_after_panic(
+        &mut self,
+        gate: &AgentUpdateGate,
+        command: &str,
+    ) -> Option<String> {
+        let lease = self.lease.as_mut()?;
+        let work = lease.work;
+        let epoch = lease.epoch;
+        let detail = if let Some(owner) = self.updater.as_mut() {
+            let settlement = owner
+                .settle_observing_cancellation(&TargetWait::Cancelled, &mut lease.cancel, || {
+                    gate.owner_observed_cancellation(command, work, epoch)
+                })
+                .await;
+            (!settlement.defects.is_empty()).then(|| settlement.defects.join("; "))
+        } else if self.probe.is_some() {
+            self.probe
+                .settle_after_panic(&mut lease.cancel, || {
+                    gate.owner_observed_cancellation(command, work, epoch)
+                })
+                .await
+        } else {
+            gate.completed_without_owner(command, work, epoch);
+            self.clear();
+            return None;
+        };
+        gate.owner_returned(command, work, epoch);
+        self.clear();
+        detail
     }
 }
 
@@ -2170,7 +2369,7 @@ async fn run_update_sequence_cancellable(
     target: &UpdateTarget,
     step_timeout: Duration,
     gate: &AgentUpdateGate,
-    owner_slot: &mut Option<TargetProcessOwner>,
+    owner_slot: &mut TargetOwnerSlot,
 ) -> UpdaterStepOutcome {
     for (step_index, cmd) in target.commands.iter().enumerate() {
         log::info!(
@@ -2185,13 +2384,14 @@ async fn run_update_sequence_cancellable(
         };
         #[cfg(test)]
         gate.hold_after_step_begin_for_test(&target.command).await;
-        let StepAdmission::Committed { epoch, mut cancel } =
+        let StepAdmission::Committed { epoch, cancel } =
             gate.commit_step(&target.command, work, epoch)
         else {
             return UpdaterStepOutcome::Cancelled;
         };
         #[cfg(test)]
         gate.hold_after_step_commit_for_test(&target.command).await;
+        owner_slot.arm(work, epoch, cancel);
 
         let mut command = {
             let mut command = if cfg!(windows) {
@@ -2214,26 +2414,38 @@ async fn run_update_sequence_cancellable(
         command.process_group(0);
 
         match TargetProcessOwner::spawn(&mut command).await {
-            Ok(owner) => *owner_slot = Some(owner),
+            Ok(owner) => owner_slot.updater = Some(owner),
             Err(outcome) => {
-                gate.owner_returned(&target.command, work, epoch);
-                return outcome;
+                let reserved = owner_slot.complete_without_owner(gate, &target.command);
+                return if reserved && !matches!(outcome, UpdaterStepOutcome::CleanupFailed(_)) {
+                    UpdaterStepOutcome::Cancelled
+                } else {
+                    outcome
+                };
             }
         }
         gate.owner_installed(&target.command, work, epoch);
-        let waited = owner_slot
-            .as_mut()
-            .expect("installed target owner")
-            .wait(step_timeout, &mut cancel)
-            .await;
-        let settlement = owner_slot
-            .take()
-            .expect("settled target owner")
-            .settle_observing_cancellation(&waited, &mut cancel, || {
-                gate.owner_observed_cancellation(&target.command, work, epoch);
-            })
-            .await;
-        let cancellation_reserved = gate.owner_returned(&target.command, work, epoch);
+        let waited = {
+            let lease = owner_slot.lease.as_mut().expect("installed target lease");
+            owner_slot
+                .updater
+                .as_mut()
+                .expect("installed target owner")
+                .wait(step_timeout, &mut lease.cancel)
+                .await
+        };
+        let settlement = {
+            let lease = owner_slot.lease.as_mut().expect("settled target lease");
+            owner_slot
+                .updater
+                .as_mut()
+                .expect("settled target owner")
+                .settle_observing_cancellation(&waited, &mut lease.cancel, || {
+                    gate.owner_observed_cancellation(&target.command, work, epoch);
+                })
+                .await
+        };
+        let cancellation_reserved = owner_slot.owner_returned(gate, &target.command);
         if !settlement.defects.is_empty() {
             log::warn!(
                 "[agent-update] process cleanup defective for {} ({}): {}",
@@ -2241,7 +2453,7 @@ async fn run_update_sequence_cancellable(
                 target.command,
                 settlement.defects.join("; ")
             );
-            return UpdaterStepOutcome::CleanupFailed;
+            return UpdaterStepOutcome::CleanupFailed(settlement.defects.join("; "));
         }
         if cancellation_reserved || matches!(waited, TargetWait::Cancelled) {
             return UpdaterStepOutcome::Cancelled;
@@ -2305,13 +2517,13 @@ async fn run_update_sequence(target: &UpdateTarget, step_timeout: Duration) -> A
         update_commands: target.commands.clone(),
         install_before: None,
     }]);
-    let mut owner = None;
+    let mut owner = TargetOwnerSlot::default();
     let outcome = run_update_sequence_cancellable(target, step_timeout, &gate, &mut owner).await;
     let (ok, outcome, error) = match outcome {
         UpdaterStepOutcome::Succeeded => (true, AgentUpdateOutcome::Succeeded, None),
         UpdaterStepOutcome::Failed(error) => (false, AgentUpdateOutcome::Failed, Some(error)),
         UpdaterStepOutcome::Cancelled => (false, AgentUpdateOutcome::Cancelled, None),
-        UpdaterStepOutcome::CleanupFailed => (
+        UpdaterStepOutcome::CleanupFailed(_) => (
             false,
             AgentUpdateOutcome::Failed,
             Some(CANCELLATION_CLEANUP_ERROR.to_string()),
@@ -2469,21 +2681,23 @@ impl TargetTerminalizer {
                 self.gate
                     .wait_response_release_if_cancelled(&self.target.command)
                     .await;
-                let reserved_result =
-                    if candidate.error.as_deref() == Some(CANCELLATION_CLEANUP_ERROR) {
-                        candidate
-                    } else if self.gate.supervisor_failure_reserved(&self.target.command) {
-                        failed_update_result(
-                            &self.target,
-                            self.install_before.clone(),
-                            self.settled_post_probe
-                                .as_ref()
-                                .map(|settled| settled.0.clone()),
-                            "Update supervisor stopped unexpectedly.",
-                        )
-                    } else {
-                        cancelled_update_result(&self.target, self.install_before.clone())
-                    };
+                let reserved_result = if candidate.error.as_deref()
+                    == Some(CANCELLATION_CLEANUP_ERROR)
+                    || candidate.error.as_deref() == Some("Update task failed unexpectedly.")
+                {
+                    candidate
+                } else if self.gate.supervisor_failure_reserved(&self.target.command) {
+                    failed_update_result(
+                        &self.target,
+                        self.install_before.clone(),
+                        self.settled_post_probe
+                            .as_ref()
+                            .map(|settled| settled.0.clone()),
+                        "Update supervisor stopped unexpectedly.",
+                    )
+                } else {
+                    cancelled_update_result(&self.target, self.install_before.clone())
+                };
                 match self.gate.publish_terminal(reserved_result.clone(), true) {
                     TerminalPublish::Published => reserved_result,
                     TerminalPublish::AlreadyTerminal => self
@@ -2593,6 +2807,7 @@ async fn run_target_probe(
     gate: &AgentUpdateGate,
     target: &UpdateTarget,
     work: TargetWork,
+    owner_slot: &mut TargetOwnerSlot,
 ) -> TargetProbeOutcome {
     let Some((epoch, _)) = gate.begin_step(&target.command, work) else {
         return TargetProbeOutcome::Cancelled;
@@ -2605,32 +2820,40 @@ async fn run_target_probe(
     };
     #[cfg(test)]
     gate.hold_after_step_commit_for_test(&target.command).await;
-    gate.owner_installed(&target.command, work, epoch);
-    if work == TargetWork::PostProbe {
-        emit_all(
-            app,
-            "agent_update_command_verifying",
-            json!(AgentUpdateCommandRef {
-                command: target.command.clone(),
-                label: target.label.clone(),
-            }),
-        );
-    }
-    let mut observed_cancel = cancel.clone();
-    let probe = probe_command_install_state_cancellable(&target.command, cancel);
-    tokio::pin!(probe);
-    let outcome = tokio::select! {
-        biased;
-        _ = wait_for_target_cancellation(&mut observed_cancel) => {
-            gate.owner_observed_cancellation(&target.command, work, epoch);
-            probe.await
-        }
-        outcome = &mut probe => outcome,
+    owner_slot.arm(work, epoch, cancel);
+    let outcome = {
+        let lease = owner_slot.lease.as_mut().expect("committed probe lease");
+        probe_command_install_state_cancellable(
+            &target.command,
+            &mut lease.cancel,
+            &mut owner_slot.probe,
+            || {
+                gate.owner_installed(&target.command, work, epoch);
+                if work == TargetWork::PostProbe {
+                    emit_all(
+                        app,
+                        "agent_update_command_verifying",
+                        json!(AgentUpdateCommandRef {
+                            command: target.command.clone(),
+                            label: target.label.clone(),
+                        }),
+                    );
+                }
+            },
+            || {
+                gate.owner_observed_cancellation(&target.command, work, epoch);
+            },
+        )
+        .await
     };
-    if matches!(outcome, TargetProbeOutcome::Cancelled) {
-        gate.owner_observed_cancellation(&target.command, work, epoch);
-    }
-    let reserved = gate.owner_returned(&target.command, work, epoch);
+    let reserved = if owner_slot.probe.is_some() {
+        if matches!(outcome, TargetProbeOutcome::Cancelled) {
+            gate.owner_observed_cancellation(&target.command, work, epoch);
+        }
+        owner_slot.owner_returned(gate, &target.command)
+    } else {
+        owner_slot.complete_without_owner(gate, &target.command)
+    };
     if reserved && matches!(outcome, TargetProbeOutcome::Completed(_)) {
         TargetProbeOutcome::Cancelled
     } else {
@@ -2643,15 +2866,21 @@ async fn run_update_target_body(
     gate: &Arc<AgentUpdateGate>,
     target: &UpdateTarget,
     terminalizer: &mut TargetTerminalizer,
-    owner_slot: &mut Option<TargetProcessOwner>,
+    owner_slot: &mut TargetOwnerSlot,
 ) -> AgentUpdateResult {
-    let install_before = match run_target_probe(app, gate, target, TargetWork::PreProbe).await {
-        TargetProbeOutcome::Completed(install) => install,
-        TargetProbeOutcome::Cancelled => return cancelled_update_result(target, None),
-        TargetProbeOutcome::CleanupFailed => {
-            return failed_update_result(target, None, None, CANCELLATION_CLEANUP_ERROR)
-        }
-    };
+    let install_before =
+        match run_target_probe(app, gate, target, TargetWork::PreProbe, owner_slot).await {
+            TargetProbeOutcome::Completed(install) => install,
+            TargetProbeOutcome::Cancelled => return cancelled_update_result(target, None),
+            TargetProbeOutcome::CleanupFailed(detail) => {
+                log::warn!(
+                    "[agent-update] pre-probe cleanup defective for {} ({}): {detail}",
+                    target.label,
+                    target.command
+                );
+                return failed_update_result(target, None, None, CANCELLATION_CLEANUP_ERROR);
+            }
+        };
     terminalizer.store_install_before(install_before.clone());
 
     if gate.cancellation_reserved(&target.command) {
@@ -2667,13 +2896,18 @@ async fn run_update_target_body(
         UpdaterStepOutcome::Cancelled => {
             return cancelled_update_result(target, Some(install_before))
         }
-        UpdaterStepOutcome::CleanupFailed => {
+        UpdaterStepOutcome::CleanupFailed(detail) => {
+            log::warn!(
+                "[agent-update] updater cleanup defective for {} ({}): {detail}",
+                target.label,
+                target.command
+            );
             return failed_update_result(
                 target,
                 Some(install_before),
                 None,
                 CANCELLATION_CLEANUP_ERROR,
-            )
+            );
         }
         UpdaterStepOutcome::ContainmentFailed => {
             return failed_update_result(
@@ -2688,21 +2922,30 @@ async fn run_update_target_body(
         }
     }
 
-    let install_after = match run_target_probe(app, gate, target, TargetWork::PostProbe).await {
-        TargetProbeOutcome::Completed(install) => install,
-        TargetProbeOutcome::Cancelled => {
-            return cancelled_update_result(target, Some(install_before))
-        }
-        TargetProbeOutcome::CleanupFailed => {
-            return failed_update_result(
-                target,
-                Some(install_before),
-                None,
-                CANCELLATION_CLEANUP_ERROR,
-            )
-        }
-    };
+    let install_after =
+        match run_target_probe(app, gate, target, TargetWork::PostProbe, owner_slot).await {
+            TargetProbeOutcome::Completed(install) => install,
+            TargetProbeOutcome::Cancelled => {
+                return cancelled_update_result(target, Some(install_before))
+            }
+            TargetProbeOutcome::CleanupFailed(detail) => {
+                log::warn!(
+                    "[agent-update] post-probe cleanup defective for {} ({}): {detail}",
+                    target.label,
+                    target.command
+                );
+                return failed_update_result(
+                    target,
+                    Some(install_before),
+                    None,
+                    CANCELLATION_CLEANUP_ERROR,
+                );
+            }
+        };
     terminalizer.store_settled_post_probe(install_after.clone());
+    #[cfg(test)]
+    gate.hold_after_post_probe_settled_for_test(&target.command)
+        .await;
     successful_update_result(target, install_before, install_after)
 }
 
@@ -2715,7 +2958,7 @@ async fn run_update_target(
     target: UpdateTarget,
 ) -> AgentUpdateResult {
     let mut terminalizer = TargetTerminalizer::new(app.clone(), Arc::clone(&gate), target.clone());
-    let mut owner_slot = None;
+    let mut owner_slot = TargetOwnerSlot::default();
     let body = std::panic::AssertUnwindSafe(run_update_target_body(
         &app,
         &gate,
@@ -2728,15 +2971,14 @@ async fn run_update_target(
     let candidate = match body {
         Ok(result) => result,
         Err(_) => {
-            let cleanup_failed = if let Some(owner) = owner_slot.take() {
-                !owner
-                    .settle(&TargetWait::Cancelled)
-                    .await
-                    .defects
-                    .is_empty()
-            } else {
-                false
-            };
+            let cleanup_failure = owner_slot.settle_after_panic(&gate, &target.command).await;
+            if let Some(detail) = cleanup_failure.as_deref() {
+                log::warn!(
+                    "[agent-update] process cleanup after target panic defective for {} ({}): {detail}",
+                    target.label,
+                    target.command
+                );
+            }
             failed_update_result(
                 &target,
                 terminalizer.install_before.clone(),
@@ -2744,7 +2986,7 @@ async fn run_update_target(
                     .settled_post_probe
                     .as_ref()
                     .map(|settled| settled.0.clone()),
-                if cleanup_failed {
+                if cleanup_failure.is_some() {
                     CANCELLATION_CLEANUP_ERROR
                 } else {
                     "Update task failed unexpectedly."
@@ -4413,20 +4655,15 @@ mod tests {
         assert!(result.ok, "unexpected: {result:?}");
 
         let frames = drain_frames(&mut frames_rx);
-        assert_eq!(frames.len(), 3, "unexpected frames: {frames:?}");
+        assert_eq!(frames.len(), 2, "unexpected frames: {frames:?}");
         assert_eq!(frames[0]["event"], "agent_update_command_started");
         assert_eq!(frames[0]["payload"]["command"], "x-1551-missing");
         assert_eq!(frames[0]["payload"]["updateCommands"], json!(["exit 0"]));
         assert_eq!(frames[0]["payload"]["installBefore"]["status"], "missing");
-        assert_eq!(frames[1]["event"], "agent_update_command_verifying");
-        assert_eq!(
-            frames[1]["payload"],
-            json!({ "command": "x-1551-missing", "label": "X" })
-        );
-        assert_eq!(frames[2]["event"], "agent_update_command_finished");
-        assert_eq!(frames[2]["payload"]["ok"], true);
-        assert_eq!(frames[2]["payload"]["outcome"], "succeeded");
-        assert!(frames[2]["payload"]["installAfter"].is_object());
+        assert_eq!(frames[1]["event"], "agent_update_command_finished");
+        assert_eq!(frames[1]["payload"]["ok"], true);
+        assert_eq!(frames[1]["payload"]["outcome"], "succeeded");
+        assert!(frames[1]["payload"]["installAfter"].is_object());
 
         let snapshot = gate.snapshot();
         assert!(snapshot.running.is_empty());
@@ -5609,7 +5846,7 @@ mod tests {
 
     #[tokio::test]
     async fn step_admission_cancel_barrier_is_first_winner() {
-        let (app, _frames) = app_with_broadcaster();
+        let (app, mut frames) = app_with_broadcaster();
         let handle = app.handle().clone();
         let dir = tempfile::tempdir().expect("tempdir");
 
@@ -5642,7 +5879,7 @@ mod tests {
         let cancelled_sequence = tokio::spawn({
             let gate = Arc::clone(&gate);
             async move {
-                let mut owner = None;
+                let mut owner = TargetOwnerSlot::default();
                 run_update_sequence_cancellable(
                     &cancelled_target,
                     Duration::from_secs(30),
@@ -5657,6 +5894,12 @@ mod tests {
         assert_eq!(
             response.disposition,
             AgentUpdateCancelDisposition::Requested
+        );
+        let reserved = next_frame(&mut frames).await;
+        assert_eq!(reserved["event"], "agent_update_cancellation_changed");
+        assert_eq!(
+            reserved["payload"]["cancelRequested"][0]["command"],
+            "cancel-first"
         );
         assert!(!cancelled_marker.exists());
         release_commit_tx.send(()).expect("release commit boundary");
@@ -5709,7 +5952,7 @@ mod tests {
         let admitted_sequence = tokio::spawn({
             let gate = Arc::clone(&gate);
             async move {
-                let mut owner = None;
+                let mut owner = TargetOwnerSlot::default();
                 run_update_sequence_cancellable(
                     &admitted_target,
                     Duration::from_secs(30),
@@ -5725,7 +5968,12 @@ mod tests {
             let gate = Arc::clone(&gate);
             async move { cancel_update(&handle, &gate, "admission-first".to_string()).await }
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reserved = next_frame(&mut frames).await;
+        assert_eq!(reserved["event"], "agent_update_cancellation_changed");
+        assert_eq!(
+            reserved["payload"]["cancelRequested"][0]["command"],
+            "admission-first"
+        );
         assert!(
             !request.is_finished(),
             "response waits for the committed production owner handoff"
@@ -5752,49 +6000,577 @@ mod tests {
         assert!(!later_marker.exists(), "no later step may be admitted");
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_owner_install_waits_for_real_spawn_success() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let target = UpdateTarget {
+            command: "cmd.exe".to_string(),
+            label: "Probe handoff".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: cwd(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let probe = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                crate::agent_version::with_version_probe_args_for_test(
+                    "cmd",
+                    &["/D", "/C", "echo 1.2.3"],
+                    crate::pty::job::with_contained_spawn_test_hook(
+                        crate::pty::job::SpawnTestHook {
+                            after_spawn: Some(spawned_tx),
+                            release_spawn: Some(release_rx),
+                            after_reap: None,
+                            release_query: None,
+                            failure: None,
+                            settlement_window: None,
+                        },
+                        async move {
+                            let mut owner = TargetOwnerSlot::default();
+                            run_target_probe(
+                                &handle,
+                                &gate,
+                                &target,
+                                TargetWork::PostProbe,
+                                &mut owner,
+                            )
+                            .await
+                        },
+                    ),
+                )
+                .await
+            }
+        });
+        spawned_rx
+            .await
+            .expect("real probe spawned suspended before containment handoff");
+        {
+            let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+            let control = state.controls.get(&target.command).expect("target control");
+            assert!(matches!(
+                control.phase,
+                TargetPhase::SpawnCommitted(TargetWork::PostProbe, _)
+            ));
+            assert!(!control.acceptance.is_open());
+        }
+        assert!(gate.snapshot().verifying.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "no verifying event before handoff"
+        );
+
+        let cancel = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
+        });
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_cancellation_changed"
+        );
+        assert!(!cancel.is_finished());
+        {
+            let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+            assert!(!state
+                .controls
+                .get(&target.command)
+                .expect("target control")
+                .acceptance
+                .is_open());
+        }
+        release_tx.send(()).expect("release actual owner handoff");
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_command_verifying"
+        );
+        assert_eq!(
+            cancel.await.expect("cancel task").disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        assert!(matches!(
+            probe.await.expect("probe task"),
+            TargetProbeOutcome::Cancelled
+        ));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn rejected_spawn_cleanup_dominates_adapters_and_final_result() {
+        use crate::pty::job::{InjectedFailure, SpawnTestHook};
+
+        for failure in [InjectedFailure::Assignment, InjectedFailure::Resume] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let first_marker = dir.path().join("rejected-first.marker");
+            let later_marker = dir.path().join("forbidden-later.marker");
+            let target = UpdateTarget {
+                command: "rejected-updater".to_string(),
+                label: "Rejected updater".to_string(),
+                commands: vec![
+                    "echo forbidden>rejected-first.marker".to_string(),
+                    "echo forbidden>forbidden-later.marker".to_string(),
+                ],
+                cwd: dir.path().to_path_buf(),
+            };
+            let gate = Arc::new(AgentUpdateGate::new());
+            seed_retained_target(&gate, &target.command, &target.label);
+            let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
+            let (release_spawn_tx, release_spawn_rx) = tokio::sync::oneshot::channel();
+            let (reaped_tx, reaped_rx) = tokio::sync::oneshot::channel();
+            let (release_query_tx, release_query_rx) = tokio::sync::oneshot::channel();
+            let adapter = tokio::spawn({
+                let gate = Arc::clone(&gate);
+                let target = target.clone();
+                async move {
+                    crate::pty::job::with_contained_spawn_test_hook(
+                        SpawnTestHook {
+                            after_spawn: Some(spawned_tx),
+                            release_spawn: Some(release_spawn_rx),
+                            after_reap: Some(reaped_tx),
+                            release_query: Some(release_query_rx),
+                            failure: Some(failure),
+                            settlement_window: Some(Duration::from_millis(60)),
+                        },
+                        async move {
+                            let mut owner = TargetOwnerSlot::default();
+                            run_update_sequence_cancellable(
+                                &target,
+                                Duration::from_secs(30),
+                                &gate,
+                                &mut owner,
+                            )
+                            .await
+                        },
+                    )
+                    .await
+                }
+            });
+            spawned_rx.await.expect("updater spawned suspended");
+            {
+                let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+                assert!(matches!(
+                    state
+                        .controls
+                        .get(&target.command)
+                        .expect("target control")
+                        .phase,
+                    TargetPhase::SpawnCommitted(TargetWork::UpdaterStep(0), _)
+                ));
+            }
+            assert!(!first_marker.exists());
+            release_spawn_tx.send(()).expect("reject updater spawn");
+            reaped_rx.await.expect("rejected updater child reaped");
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            release_query_tx
+                .send(())
+                .expect("release updater native proof");
+            let UpdaterStepOutcome::CleanupFailed(detail) =
+                adapter.await.expect("updater adapter task")
+            else {
+                panic!("rejected updater cleanup did not dominate");
+            };
+            assert!(detail.contains(
+                "settlement attempt deadline exceeded during rejected-spawn proof barrier"
+            ));
+            assert!(!first_marker.exists());
+            assert!(!later_marker.exists(), "no later updater step may run");
+
+            let (app, mut frames) = app_with_broadcaster();
+            let handle = app.handle().clone();
+            let gate = Arc::new(AgentUpdateGate::new());
+            let target_dir = tempfile::tempdir().expect("target tempdir");
+            let target = UpdateTarget {
+                command: "cmd.exe".to_string(),
+                label: "Rejected post-probe".to_string(),
+                commands: vec!["exit 0".to_string()],
+                cwd: target_dir.path().to_path_buf(),
+            };
+            seed_retained_target(&gate, &target.command, &target.label);
+            let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
+            let (release_spawn_tx, release_spawn_rx) = tokio::sync::oneshot::channel();
+            let (reaped_tx, reaped_rx) = tokio::sync::oneshot::channel();
+            let (release_query_tx, release_query_rx) = tokio::sync::oneshot::channel();
+            let target_task = tokio::spawn({
+                let handle = handle.clone();
+                let gate = Arc::clone(&gate);
+                let target = target.clone();
+                async move {
+                    crate::agent_version::with_version_probe_args_for_test(
+                        "cmd",
+                        &["/D", "/C", "echo 1.2.3"],
+                        crate::pty::job::with_contained_spawn_test_hook_after_spawns(
+                            2,
+                            SpawnTestHook {
+                                after_spawn: Some(spawned_tx),
+                                release_spawn: Some(release_spawn_rx),
+                                after_reap: Some(reaped_tx),
+                                release_query: Some(release_query_rx),
+                                failure: Some(failure),
+                                settlement_window: Some(Duration::from_millis(60)),
+                            },
+                            run_update_target(handle, gate, target),
+                        ),
+                    )
+                    .await
+                }
+            });
+            if spawned_rx.await.is_err() {
+                let early = target_task.await.expect("early target task");
+                panic!("target completed before rejected post-probe barrier: {early:?}");
+            }
+            {
+                let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+                let control = state.controls.get(&target.command).expect("target control");
+                assert!(matches!(
+                    control.phase,
+                    TargetPhase::SpawnCommitted(TargetWork::PostProbe, _)
+                ));
+                assert!(!control.acceptance.is_open());
+            }
+            let before_cancel = drain_frames(&mut frames);
+            assert!(before_cancel
+                .iter()
+                .any(|event| event["event"] == "agent_update_command_started"));
+            assert!(!before_cancel
+                .iter()
+                .any(|event| event["event"] == "agent_update_command_verifying"));
+            let cancel = tokio::spawn({
+                let handle = handle.clone();
+                let gate = Arc::clone(&gate);
+                let command = target.command.clone();
+                async move { cancel_update(&handle, &gate, command).await }
+            });
+            assert_eq!(
+                next_frame(&mut frames).await["event"],
+                "agent_update_cancellation_changed"
+            );
+            assert!(!cancel.is_finished());
+            release_spawn_tx.send(()).expect("reject post-probe spawn");
+            reaped_rx.await.expect("rejected probe child reaped");
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            release_query_tx
+                .send(())
+                .expect("release rejected probe native proof");
+            assert_eq!(
+                cancel.await.expect("cancel task").disposition,
+                AgentUpdateCancelDisposition::Requested
+            );
+            let result = target_task.await.expect("target task");
+            assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+            assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
+            assert!(result.install_after.is_none());
+            let remaining = drain_frames(&mut frames);
+            assert!(!remaining
+                .iter()
+                .any(|event| event["event"] == "agent_update_command_verifying"));
+            assert_eq!(
+                remaining
+                    .iter()
+                    .filter(|event| event["event"] == "agent_update_command_finished")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn target_panic_during_real_updater_settlement_retains_owner() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = UpdateTarget {
+            command: "missing-updater-panic-target".to_string(),
+            label: "Updater panic target".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                with_target_settlement_hook(
+                    TargetSettlementHook {
+                        before_native_proof: Some(proof_ready_tx),
+                        release_native_proof: Some(release_proof_rx),
+                        settlement_window: None,
+                        native_observations: std::collections::VecDeque::from([
+                            TargetNativeObservation::Empty,
+                        ]),
+                        panic_after_native_proof_release: true,
+                    },
+                    run_update_target(handle, gate, target),
+                )
+                .await
+            }
+        });
+        proof_ready_rx
+            .await
+            .expect("real updater reached retained native proof");
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_command_started"
+        );
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
+        });
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_cancellation_changed"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("row response is ready while updater proof remains held")
+            .expect("row cancellation task");
+        assert_eq!(
+            response.disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(frames.try_recv().is_err(), "terminal remains proof-blocked");
+        release_proof_tx
+            .send(())
+            .expect("release updater proof into injected panic");
+        let result = target_task.await.expect("retained updater target task");
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("Update task failed unexpectedly.")
+        );
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let events = drain_frames(&mut frames);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_update_command_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_updates_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events[0]["payload"]["error"],
+            "Update task failed unexpectedly."
+        );
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn target_panic_during_real_probe_settlement_retains_owner() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let stem = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &'static [&'static str] = if cfg!(windows) {
+            &["/D", "/C", "echo 1.2.3"]
+        } else {
+            &["-c", "printf '1.2.3\\n'"]
+        };
+        let target = UpdateTarget {
+            command: command.to_string(),
+            label: "Probe panic target".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                crate::agent_version::with_version_probe_args_for_test(
+                    stem,
+                    args,
+                    crate::agent_version::with_probe_settlement_hook_after_spawns(
+                        1,
+                        crate::agent_version::ProbeSettlementHook {
+                            before_native_proof: Some(proof_ready_tx),
+                            release_native_proof: Some(release_proof_rx),
+                            settlement_window: None,
+                            native_observations: std::collections::VecDeque::from([
+                                crate::agent_version::ProbeNativeObservation::Error(
+                                    "injected panic cleanup defect",
+                                ),
+                                crate::agent_version::ProbeNativeObservation::Empty,
+                            ]),
+                            panic_after_native_proof_release: true,
+                        },
+                        run_update_target(handle, gate, target),
+                    ),
+                )
+                .await
+            }
+        });
+        proof_ready_rx
+            .await
+            .expect("real post-probe reached retained native proof");
+        let started = next_frame(&mut frames).await;
+        let verifying = next_frame(&mut frames).await;
+        assert_eq!(started["event"], "agent_update_command_started");
+        assert_eq!(verifying["event"], "agent_update_command_verifying");
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            async move { cancel_all_updates(&handle, &gate).await }
+        });
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_cancellation_changed"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("batch response is ready while probe proof remains held")
+            .expect("batch cancellation task");
+        assert_eq!(response.requested.len(), 1);
+        assert_eq!(response.requested[0].command, target.command);
+        assert!(!target_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(frames.try_recv().is_err(), "terminal remains proof-blocked");
+        release_proof_tx
+            .send(())
+            .expect("release probe proof into injected panic");
+        let result = target_task.await.expect("retained probe target task");
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
+        assert!(result.install_after.is_none());
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let events = drain_frames(&mut frames);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_update_command_finished")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "agent_updates_finished")
+                .count(),
+            1
+        );
+        assert_eq!(events[0]["payload"]["error"], CANCELLATION_CLEANUP_ERROR);
+    }
+
     #[tokio::test]
     async fn post_probe_settled_cancel_wins_before_terminal() {
         let (app, mut frames) = app_with_broadcaster();
         let handle = app.handle().clone();
         let gate = Arc::new(AgentUpdateGate::new());
-        seed_retained_target(&gate, "codex", "Codex");
-        set_target_phase(&gate, "codex", TargetPhase::Verifying);
-        let target = UpdateTarget {
-            command: "codex".to_string(),
-            label: "Codex".to_string(),
-            commands: vec!["exit 0".to_string()],
-            cwd: cwd(),
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let stem = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &'static [&'static str] = if cfg!(windows) {
+            &["/D", "/C", "echo 1.2.3"]
+        } else {
+            &["-c", "printf '1.2.3\\n'"]
         };
-        let mut terminalizer =
-            TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
-        terminalizer.store_install_before(installed("1.0.0"));
-        terminalizer.store_settled_post_probe(installed("2.0.0"));
+        let target = UpdateTarget {
+            command: command.to_string(),
+            label: "Post-probe cancel winner".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        gate.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .controls
+            .get_mut(&target.command)
+            .expect("target control")
+            .post_probe_settled_hook = Some(PostProbeSettledTestHook {
+            ready: Some(settled_tx),
+            release: Some(release_rx),
+        });
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                crate::agent_version::with_version_probe_args_for_test(
+                    stem,
+                    args,
+                    run_update_target(handle, gate, target),
+                )
+                .await
+            }
+        });
+        settled_rx
+            .await
+            .expect("production owner returned and post-probe value was stored");
+        let started = next_frame(&mut frames).await;
+        let verifying = next_frame(&mut frames).await;
+        assert_eq!(started["event"], "agent_update_command_started");
+        assert_eq!(verifying["event"], "agent_update_command_verifying");
+        assert!(gate.snapshot().results.is_empty());
 
         let cancel = tokio::spawn({
             let handle = handle.clone();
             let gate = Arc::clone(&gate);
-            async move { cancel_update(&handle, &gate, "codex".to_string()).await }
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
         });
         let cancellation_event = next_frame(&mut frames).await;
         assert_eq!(
             cancellation_event["event"],
             "agent_update_cancellation_changed"
         );
-        let terminal = tokio::spawn(async move {
-            terminalizer
-                .publish(successful_update_result(
-                    &target,
-                    installed("1.0.0"),
-                    installed("2.0.0"),
-                ))
-                .await
-        });
-        let response = cancel.await.expect("cancel task");
+        assert!(gate.snapshot().results.is_empty());
+        release_tx
+            .send(())
+            .expect("give cancellation the production gate race");
+        let response = tokio::time::timeout(Duration::from_secs(2), cancel)
+            .await
+            .expect("owner-settled cancellation response")
+            .expect("cancel task");
         assert_eq!(
             response.disposition,
             AgentUpdateCancelDisposition::Requested
         );
-        let result = terminal.await.expect("terminalizer");
+        let result = target_task.await.expect("production target task");
         assert_eq!(result.outcome, AgentUpdateOutcome::Cancelled);
         assert!(result.install_after.is_none());
 
@@ -5821,13 +6597,14 @@ mod tests {
         let (app, mut frames) = app_with_broadcaster();
         let handle = app.handle().clone();
         let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
         seed_retained_target(&gate, "codex", "Codex");
         set_target_phase(&gate, "codex", TargetPhase::Verifying);
         let target = UpdateTarget {
             command: "codex".to_string(),
             label: "Codex".to_string(),
             commands: vec!["exit 7".to_string()],
-            cwd: cwd(),
+            cwd: dir.path().to_path_buf(),
         };
         let terminalizer =
             TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
@@ -5903,27 +6680,66 @@ mod tests {
         let (app, mut frames) = app_with_broadcaster();
         let handle = app.handle().clone();
         let gate = Arc::new(AgentUpdateGate::new());
-        seed_retained_target(&gate, "codex", "Codex");
-        set_target_phase(&gate, "codex", TargetPhase::Verifying);
-        let target = UpdateTarget {
-            command: "codex".to_string(),
-            label: "Codex".to_string(),
-            commands: vec!["exit 0".to_string()],
-            cwd: cwd(),
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let stem = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &'static [&'static str] = if cfg!(windows) {
+            &["/D", "/C", "echo 1.2.3"]
+        } else {
+            &["-c", "printf '1.2.3\\n'"]
         };
-        let mut terminalizer =
-            TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
-        terminalizer.store_install_before(installed("1.0.0"));
-        terminalizer.store_settled_post_probe(installed("2.0.0"));
-        let result = terminalizer
-            .publish(successful_update_result(
-                &target,
-                installed("1.0.0"),
-                installed("2.0.0"),
-            ))
-            .await;
+        let target = UpdateTarget {
+            command: command.to_string(),
+            label: "Post-probe completion winner".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        gate.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .controls
+            .get_mut(&target.command)
+            .expect("target control")
+            .post_probe_settled_hook = Some(PostProbeSettledTestHook {
+            ready: Some(settled_tx),
+            release: Some(release_rx),
+        });
+        let target_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                crate::agent_version::with_version_probe_args_for_test(
+                    stem,
+                    args,
+                    run_update_target(handle, gate, target),
+                )
+                .await
+            }
+        });
+        settled_rx
+            .await
+            .expect("production owner returned and post-probe value was stored");
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_command_started"
+        );
+        assert_eq!(
+            next_frame(&mut frames).await["event"],
+            "agent_update_command_verifying"
+        );
+        release_tx
+            .send(())
+            .expect("give completion the production gate race");
+        let result = target_task.await.expect("production target task");
         assert_eq!(result.outcome, AgentUpdateOutcome::Succeeded);
-        let response = cancel_update(&handle, &gate, "codex".to_string()).await;
+        let command_finished = next_frame(&mut frames).await;
+        assert_eq!(command_finished["event"], "agent_update_command_finished");
+        assert_eq!(command_finished["payload"]["outcome"], "succeeded");
+        let response = cancel_update(&handle, &gate, target.command.clone()).await;
         assert_eq!(
             response.disposition,
             AgentUpdateCancelDisposition::AlreadyTerminal
@@ -5938,10 +6754,8 @@ mod tests {
         })
         .await;
         let events = drain_frames(&mut frames);
-        assert_eq!(events.len(), 2, "unexpected events: {events:?}");
-        assert_eq!(events[0]["event"], "agent_update_command_finished");
-        assert_eq!(events[0]["payload"]["outcome"], "succeeded");
-        assert_eq!(events[1]["event"], "agent_updates_finished");
+        assert_eq!(events.len(), 1, "unexpected events: {events:?}");
+        assert_eq!(events[0]["event"], "agent_updates_finished");
         assert!(!events
             .iter()
             .any(|event| event["event"] == "agent_update_cancellation_changed"));
@@ -6179,6 +6993,7 @@ mod tests {
                 release_native_proof: Some(release_rx),
                 settlement_window: None,
                 native_observations: std::collections::VecDeque::new(),
+                panic_after_native_proof_release: false,
             });
             (Some(ready_rx), Some(release_tx))
         } else {
@@ -6307,6 +7122,7 @@ mod tests {
             release_native_proof: hold_native_proof.then_some(release_proof_rx),
             settlement_window,
             native_observations,
+            panic_after_native_proof_release: false,
         });
         gate.owner_installed(&target.command, TargetWork::UpdaterStep(0), epoch);
         let waited = owner.wait(Duration::from_secs(10), &mut cancel).await;
@@ -6429,8 +7245,19 @@ mod tests {
                             release_native_proof: Some(release_proof_rx),
                             settlement_window: None,
                             native_observations: std::collections::VecDeque::new(),
+                            panic_after_native_proof_release: false,
                         },
-                        run_target_probe(&handle, &gate, &target, TargetWork::PostProbe),
+                        async {
+                            let mut owner = TargetOwnerSlot::default();
+                            run_target_probe(
+                                &handle,
+                                &gate,
+                                &target,
+                                TargetWork::PostProbe,
+                                &mut owner,
+                            )
+                            .await
+                        },
                     ),
                 )
                 .await;
