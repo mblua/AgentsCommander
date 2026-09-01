@@ -67,6 +67,8 @@ This creates a **draft release** with:
 - Linux `.AppImage`
 - macOS `.dmg` (Apple Silicon + Intel) — unsigned today
 
+The build matrix describes produced artifacts, not public support tiers. Release notes and install copy must use the [canonical platform contract](install-with-agent.md#support-gates): documented Windows x86_64 is fully supported, Linux x86_64 is partial/in progress, and macOS is not supported yet.
+
 The workflow file is `.github/workflows/release.yml`.
 Every release matrix row passes `--config src-tauri/tauri.prod.conf.json`;
 the macOS rows add their `--target` after the production config.
@@ -78,9 +80,10 @@ The release shows up under [Releases](https://github.com/mblua/AgentsCommander/r
 - **Asset count.** Every platform produced an installer. Re-run the failing job if one is missing.
 - **Windows signature status.** Until SignPath integration is active, the installer may be unsigned. Inspect the Authenticode status:
   ```powershell
-  Get-AuthenticodeSignature "Agents Commander_X.Y.Z_x64-setup.exe"
+  Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
+  Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
   ```
-- **Checksums.** Verify downloaded assets against `SHASUMS256.txt`. If a Windows artifact is unsigned, keep the release notes truthful about that status.
+- **Checksums.** Verify each exact downloaded filename against `SHASUMS256.txt`. A checksum match is not publisher-compromise protection. If a Windows artifact is unsigned, keep the release notes truthful about that separate status.
 - **Signed Windows artifacts.** Once SignPath signing is active, right-click the installer, choose Properties > Digital Signatures, and confirm SignPath Foundation. `Get-AuthenticodeSignature` should report `Valid`.
 - **Changelog.** Add curated highlights at the top (the auto-generated list goes underneath). Use the previous release as a tone reference.
 - **Tag matches the bump.** If you tagged `v0.8.42` but the binary reports `0.8.41`, abort and re-bump.
@@ -95,7 +98,7 @@ GitHub Releases is the source of truth for per-release detail, but `CHANGELOG.md
 
 The shipper builds a room-suffixed exe alongside the canonical one:
 
-```
+```text
 target/release/agentscommander.exe                # canonical
 target/release/agentscommander_standalone_wg-N.exe # room build
 ```

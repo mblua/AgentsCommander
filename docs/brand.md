@@ -64,7 +64,7 @@ character even if the brand fonts are missing.
 
 ### UI stack
 
-```
+```text
 "Geist", "Outfit", "General Sans", "Segoe UI", sans-serif
 ```
 
@@ -82,7 +82,7 @@ Weight scale: 400 (body) · 500 (active row) · 600 (section labels) · 700
 
 ### Terminal stack
 
-```
+```text
 "Cascadia Code", "JetBrains Mono", "Fira Code", monospace
 ```
 
@@ -161,7 +161,7 @@ keep the word.
 | Each agent gets a real PTY. You watch every step in xterm.js. | Seamless step-by-step visibility into your agentic workflows. |
 | Agents coordinate by writing markdown files to each other — files you can `cat`, `git diff`, and audit. | Unleash next-gen multi-agent collaboration with our magical coordination layer. |
 | Pick Claude Code for the architect role, Codex for the dev role. No vendor lock-in. | Cutting-edge cross-model orchestration empowers you to choose. |
-| Built on Windows, runs on Linux, works on macOS — file issues, we'll fix them. | Blazing-fast cross-platform support out of the box. |
+| Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux support is partial; macOS is not supported yet. | Blazing-fast cross-platform support out of the box. |
 
 ### Tone tells
 
@@ -169,12 +169,12 @@ keep the word.
   command.
 - We say "Claude Code, Codex, Pi, and Antigravity," not "leading AI coding assistants."
   We name the product.
-- Numbers beat adjectives. "60-second install to first running agent"
-  beats "quick setup."
-- Footguns and limits in the open. "macOS not yet tested" out-converts
-  silence on macOS.
+- Numbers beat adjectives. "Windows 10 version 1809 or newer on x86_64/AMD64"
+  beats "broad Windows support."
+- Footguns and support tiers in the open. Say that Linux support is partial
+  and macOS is not supported yet, then give testers a reproducible report path.
 
 ---
 
-— Last reviewed: 2026-05-27. Tokens cross-checked against `variables.css`.
+— Last reviewed: 2026-08-31. Tokens cross-checked against `variables.css`.
 If you change a token in `variables.css`, update this file in the same PR.

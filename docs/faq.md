@@ -20,7 +20,7 @@ No. AgentsCommander is a Rust + SolidJS Tauri app. There is no Python runtime re
 
 ## Where is the data stored?
 
-Locally, in the per-instance config directory next to the binary (for example `C:\tools\.agentscommander\` for `C:\tools\agentscommander.exe`), with a legacy `$HOME` fallback when the executable path is unavailable. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See [Portable instances](features/portable-instances.md) and [`PRIVACY.md`](../PRIVACY.md).
+Locally, in the application config directory selected by the exact binary version. Published `v0.30.3` immediately selects an executable-adjacent directory when it can derive one; the public override, marker, and writability rules belong to the newer unpublished `main` resolver. Projects keep their shared state in their own `.ac/` folder. Plain JSON, TOML, and markdown — every file is human-readable and `git diff`-able. See the versioned [config directory rule](features/portable-instances.md#config-directory-rule) and [`PRIVACY.md`](../PRIVACY.md).
 
 ## Does AC send telemetry?
 
@@ -28,7 +28,7 @@ No telemetry, no analytics, no crash reports. The one automatic network check is
 
 ## Can I run multiple AC instances side by side?
 
-Yes — that is what [portable instances](features/portable-instances.md) are for. Copy the `.exe`, rename it with a `_<suffix>`, and run. Each copy gets its own config directory, mutex, and web port.
+Yes — that is what [portable instances](features/portable-instances.md) are for. Put each renamed raw executable in a writable location and confirm that its exact version selects a distinct adjacent directory. `v0.30.3` ignores `portable.txt`; the marker and public override apply only to the newer unpublished resolver until a later tag is verified. The suffix gives each instance a distinct mutex and web port.
 
 ## How do agents coordinate?
 
@@ -48,7 +48,7 @@ It is the role-template browser shown when you create a new agent. AC can downlo
 
 ## Does AC work on macOS?
 
-It compiles and runs. We do not have day-to-day macOS testing — help is welcome in [issue #320](https://github.com/mblua/AgentsCommander/issues/320). Built on Windows. Runs on Linux. Works on macOS.
+macOS is not supported yet because maintainer and test capacity is insufficient. A release artifact is not a support promise, so a normal install stops on macOS. Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported; Linux x86_64/AMD64 support is partial and in progress. See the [platform contract](install-with-agent.md#support-gates). If you deliberately test Linux or macOS, use the [reproducible report template](install-with-agent.md#help-extend-linux-and-macos-support) or follow [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Is it free?
 
