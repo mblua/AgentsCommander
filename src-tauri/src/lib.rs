@@ -2359,6 +2359,19 @@ pub(crate) fn spawn_restore_startup(
     })
 }
 
+/// (#1652) Pins the type of the closure `generate_handler!` produces. The
+/// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
+/// the `let` that binds it. A bare binding is therefore
+/// `error[E0282]: type annotations needed`, and annotating the OUTER closure's
+/// parameter does not reach it. This identity function supplies the expected
+/// type on the binding itself. Preferred over
+/// `let generated: Box<dyn Fn(..) -> bool + Send + Sync> = ...` because
+/// `pty_write` is the highest-frequency command and boxing adds an indirection
+/// to every invoke.
+fn pin_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(f: F) -> F {
+    f
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -2569,6 +2582,13 @@ pub fn run(
     let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
     let non_stop_state_for_setup = non_stop_state.clone();
 
+    // (#1652) IPC observer: the process-side view of the frontend -> backend
+    // invoke stream. Managed for `ipc_blackbox_report`, stamped by the
+    // `invoke_handler` wrapper below, and watched by the loop started in setup.
+    let ipc_observer = crate::loops::ipc_observer::IpcObserver::new();
+    let ipc_observer_for_setup = std::sync::Arc::clone(&ipc_observer);
+    let ipc_observer_for_handler = std::sync::Arc::clone(&ipc_observer);
+
     // Config-seed critical-section lock. Serializes `perform_config_seed` for a
     // replica so concurrent same-replica spawns cannot clobber each other's
     // in-flight seed scratch (see `ConfigSeedLockState`).
@@ -2641,6 +2661,7 @@ pub fn run(
         .manage(spec_board_state.clone())
         .manage(loop_scheduler.clone())
         .manage(non_stop_state)
+        .manage(ipc_observer)
         .manage(web_access_token.clone())
         .manage(broadcaster.clone())
         .manage(WebServerHandle::default())
@@ -2846,6 +2867,16 @@ pub fn run(
             // #1646 / #1647 - proactive detection of terminal blocking menus
             let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
             menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
+            // (#1652) Started at the top of setup and NOT in the post-restore
+            // tail: a freeze detector that waits for the restore is blind for
+            // exactly the window that grows with the session count. It depends
+            // only on the app handle and the shutdown signal, both available
+            // here. Same reasoning as the #1398 hotkey registration above.
+            crate::loops::ipc_observer::start(
+                app.handle().clone(),
+                std::sync::Arc::clone(&ipc_observer_for_setup),
+                shutdown_for_setup.clone(),
+            );
             app.manage(Arc::clone(&menu_guard));
             // The authoritative scope of the activity window. `open_watchers_window` writes it
             // before every emit and the window pulls it after subscribing, so a re-scope that
@@ -3448,155 +3479,190 @@ pub fn run(
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::session::create_session,
-            commands::session::destroy_session,
-            commands::session::close_coordinator,
-            commands::session::restart_session,
-            commands::session::resolve_blocking_menu,
-            commands::session::switch_session,
-            commands::session::rename_session,
-            commands::session::set_last_prompt,
-            commands::session::list_sessions,
-            commands::session::get_active_session,
-            session::warnings::drain_session_warnings,
-            commands::session::create_root_agent_session,
-            commands::task::task_get_title,
-            commands::task::task_set_title,
-              commands::task::task_clean,
-            commands::task::task_clean_at,
-            commands::task::task_set_title_at,
-            commands::pty::pty_write,
-            commands::pty::pty_resize,
-            commands::pty::get_screen_snapshot,
-            commands::pty::activate_terminal_output,
-            commands::pty::detach_terminal_output,
-            commands::pty::get_session_context,
-            commands::pty::get_watcher_activity,
-            commands::pty::preview_watcher_pattern,
-            commands::pty::preview_watcher_reach,
-            commands::config::get_settings,
-            commands::config::get_coding_agent_catalog,
-            commands::config::list_reseedable_agent_commands,
-            commands::config::reseed_coding_agent_default,
-            commands::config::update_settings,
-            commands::resource_monitor::get_resource_snapshot,
-            commands::resource_monitor::kill_resource_group,
-            commands::config::save_settings_draft,
-            commands::config::set_terminal_snapshots_enabled,
-            commands::config::update_coding_agent_profiles,
-            commands::config::update_coding_agent_env_settings,
-            commands::config::set_agent_default_profile,
-            commands::config::set_instance_profile_override,
-            commands::config::resolve_coding_agent_profile,
-            commands::config::preview_coding_agent_profile_selection,
-            commands::config::apply_coding_agent_profile_selection,
-            commands::config::set_sounds_enabled,
-            commands::config::set_theme_light,
-            commands::config::set_main_resource_monitor_attached,
-            commands::config::set_rail_collapse,
-            commands::config::set_log_level,
-            commands::config::get_update_status,
-            commands::config::get_agent_update_status,
-            commands::config::agent_update_answer,
-            commands::config::get_agent_update_overview,
-            commands::repos::search_repos,
-            commands::repos::git_remote_url,
-            commands::telegram::telegram_attach,
-            commands::telegram::telegram_detach,
-            commands::telegram::telegram_list_bridges,
-            commands::telegram::telegram_get_bridge,
-            commands::telegram::telegram_send_test,
-            commands::telegram::telegram_send_image,
-            commands::testability::ui_automation_enabled,
-            commands::testability::ui_automation_frontend_ready,
-            commands::testability::ui_automation_complete,
-            commands::window::detach_terminal,
-            commands::window::attach_terminal,
-            commands::window::list_detached_sessions,
-            commands::window::set_detached_geometry,
-            commands::window::set_watchers_geometry,
-            commands::window::open_in_explorer,
-            commands::window::open_guide_window,
-            commands::window::open_spec_board_window,
-            commands::window::open_resource_monitor_window,
-            commands::window::dock_resource_monitor_window,
-            commands::window::open_watchers_window,
-            commands::window::get_watchers_scope,
-            commands::window::open_external_url,
-            commands::window::focus_main_window,
-            commands::spec_board::spec_board_new,
-            commands::spec_board::spec_board_pick_open,
-            commands::spec_board::spec_board_open,
-            commands::spec_board::spec_board_save,
-            commands::spec_board::spec_board_pick_save,
-            commands::spec_board::spec_board_update_content,
-            commands::spec_board::spec_board_list_snapshots,
-            commands::spec_board::spec_board_checkout_snapshot,
-            commands::spec_board::spec_board_apply_external,
-            commands::spec_board::spec_board_keep_mine,
-            commands::spec_board::spec_board_close,
-            commands::voice::voice_transcribe,
-            commands::voice::voice_mark_recording,
-            commands::voice::voice_had_typing,
-            commands::config::save_debug_logs,
-            commands::config::drain_error_logs,
-            commands::config::open_web_remote,
-            commands::config::start_api_server,
-            commands::config::stop_api_server,
-            commands::config::api_server_status,
-            commands::config::mint_api_client,
-            commands::config::start_web_server,
-            commands::config::stop_web_server,
-            commands::config::get_web_server_status,
-            commands::config::get_web_server_owned_status,
-            commands::config::list_web_server_interfaces,
-            commands::config::get_instance_label,
-            commands::config::fetch_home_markdown,
-            commands::agent_creator::pick_folder,
-            commands::agent_creator::create_agent_folder,
-            commands::ac_discovery::discover_ac_agents,
-            commands::ac_discovery::check_project_path,
-            commands::ac_discovery::create_ac_project,
-            commands::ac_discovery::open_project,
-            commands::ac_discovery::new_project,
-            commands::ac_discovery::remove_project,
-            commands::ac_discovery::archive_project,
-            commands::ac_discovery::unarchive_project,
-            commands::ac_discovery::list_archived_projects,
-            commands::ac_discovery::discover_project,
-            commands::project_settings::get_project_groups,
-            commands::project_settings::update_project_groups,
-            commands::non_stop::non_stop_report,
-            commands::ac_discovery::keep_custom_context_template,
-            commands::ac_discovery::overwrite_context_template_with_default,
-            commands::ac_discovery::get_replica_context_files,
-            commands::ac_discovery::set_replica_context_files,
-            commands::loops::create_loop,
-            commands::loops::update_loop,
-            commands::loops::delete_loop,
-            commands::loops::toggle_loop,
-            commands::loops::run_loop_now,
-            commands::loops::get_loop_config,
-            commands::loops::preview_loop_cron,
-            commands::entity_creation::create_agent_matrix,
-            commands::entity_creation::delete_agent_matrix,
-            commands::entity_creation::list_all_agents,
-            commands::entity_creation::create_team,
-            commands::entity_creation::delete_team,
-            commands::entity_creation::update_team,
-            commands::entity_creation::get_team_config,
-            commands::entity_creation::create_workgroup,
-            commands::entity_creation::delete_workgroup,
-            commands::role_templates::list_role_templates,
-            commands::role_templates::get_agency_templates_status,
-            commands::role_templates::update_agency_templates,
-            commands::screenshot::screenshot_get_overlay_state,
-            commands::screenshot::screenshot_confirm_selection,
-            commands::screenshot::screenshot_cancel_capture,
-            commands::screenshot::screenshot_get_hotkey_status,
-            commands::screenshot::screenshot_reload_hotkey,
-        ])
+        // (#1652) Every invoke that reaches the app handler is stamped here,
+        // before dispatch: the only place in the process that sees the
+        // frontend -> backend direction as a stream, which is what lets
+        // `[ipc-observer] SILENCE` speak about the CHANNEL and not one command.
+        // Entry only - `generate_handler!` returns as soon as the command is
+        // dispatched, so there is no exit to hook. The exit side is the
+        // renderer's `settled` accounting (phase 2); the pair separates "never
+        // arrived" from "never came back".
+        //
+        // UNSTABLE API: `tauri::ipc::Invoke`'s own doc comment says it "is used
+        // internally by macros and is explicitly **NOT** stable"
+        // (tauri-2.10.3/src/ipc/mod.rs:209). `Cargo.lock` pins 2.10.3 and this
+        // wrapper is the ONLY place in the app depending on an explicitly
+        // unstable tauri type. The next tauri bump must re-check three things:
+        // `Invoke::message` public, `InvokeMessage::command()` public, and
+        // `generate_handler!` still expanding to a bindable closure expression.
+        //
+        // Blind spot, stated: Tauri routes plugin commands (`plugin:window|*`,
+        // `plugin:event|emit`, `plugin:dialog|open`) through `manager.extend_api`
+        // in a branch that never reaches `run_invoke_handler`
+        // (tauri-2.10.3/src/webview/mod.rs:1840-1890), so they never reach this
+        // closure - and the renderer's registry does not see them either, because
+        // `@tauri-apps/api`'s window/event/dialog helpers call
+        // `__TAURI_INTERNALS__.invoke` directly, not `TauriTransport.invoke`. The
+        // two sides therefore stay symmetric and no false "sent but never
+        // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
+        // this in every record block.
+        .invoke_handler({
+            let observer = ipc_observer_for_handler;
+            let generated = pin_handler(tauri::generate_handler![
+                commands::session::create_session,
+                commands::session::destroy_session,
+                commands::session::close_coordinator,
+                commands::session::restart_session,
+                commands::session::resolve_blocking_menu,
+                commands::session::switch_session,
+                commands::session::rename_session,
+                commands::session::set_last_prompt,
+                commands::session::list_sessions,
+                commands::session::get_active_session,
+                session::warnings::drain_session_warnings,
+                commands::session::create_root_agent_session,
+                commands::task::task_get_title,
+                commands::task::task_set_title,
+                  commands::task::task_clean,
+                commands::task::task_clean_at,
+                commands::task::task_set_title_at,
+                commands::pty::pty_write,
+                commands::pty::pty_resize,
+                commands::pty::get_screen_snapshot,
+                commands::pty::activate_terminal_output,
+                commands::pty::detach_terminal_output,
+                commands::pty::get_session_context,
+                commands::pty::get_watcher_activity,
+                commands::pty::preview_watcher_pattern,
+                commands::pty::preview_watcher_reach,
+                commands::config::get_settings,
+                commands::config::get_coding_agent_catalog,
+                commands::config::list_reseedable_agent_commands,
+                commands::config::reseed_coding_agent_default,
+                commands::config::update_settings,
+                commands::resource_monitor::get_resource_snapshot,
+                commands::resource_monitor::kill_resource_group,
+                commands::config::save_settings_draft,
+                commands::config::set_terminal_snapshots_enabled,
+                commands::config::update_coding_agent_profiles,
+                commands::config::update_coding_agent_env_settings,
+                commands::config::set_agent_default_profile,
+                commands::config::set_instance_profile_override,
+                commands::config::resolve_coding_agent_profile,
+                commands::config::preview_coding_agent_profile_selection,
+                commands::config::apply_coding_agent_profile_selection,
+                commands::config::set_sounds_enabled,
+                commands::config::set_theme_light,
+                commands::config::set_main_resource_monitor_attached,
+                commands::config::set_rail_collapse,
+                commands::config::set_log_level,
+                commands::config::get_update_status,
+                commands::config::get_agent_update_status,
+                commands::config::agent_update_answer,
+                commands::config::get_agent_update_overview,
+                commands::repos::search_repos,
+                commands::repos::git_remote_url,
+                commands::telegram::telegram_attach,
+                commands::telegram::telegram_detach,
+                commands::telegram::telegram_list_bridges,
+                commands::telegram::telegram_get_bridge,
+                commands::telegram::telegram_send_test,
+                commands::telegram::telegram_send_image,
+                commands::testability::ui_automation_enabled,
+                commands::testability::ui_automation_frontend_ready,
+                commands::testability::ui_automation_complete,
+                commands::window::detach_terminal,
+                commands::window::attach_terminal,
+                commands::window::list_detached_sessions,
+                commands::window::set_detached_geometry,
+                commands::window::set_watchers_geometry,
+                commands::window::open_in_explorer,
+                commands::window::open_guide_window,
+                commands::window::open_spec_board_window,
+                commands::window::open_resource_monitor_window,
+                commands::window::dock_resource_monitor_window,
+                commands::window::open_watchers_window,
+                commands::window::get_watchers_scope,
+                commands::window::open_external_url,
+                commands::window::focus_main_window,
+                commands::spec_board::spec_board_new,
+                commands::spec_board::spec_board_pick_open,
+                commands::spec_board::spec_board_open,
+                commands::spec_board::spec_board_save,
+                commands::spec_board::spec_board_pick_save,
+                commands::spec_board::spec_board_update_content,
+                commands::spec_board::spec_board_list_snapshots,
+                commands::spec_board::spec_board_checkout_snapshot,
+                commands::spec_board::spec_board_apply_external,
+                commands::spec_board::spec_board_keep_mine,
+                commands::spec_board::spec_board_close,
+                commands::voice::voice_transcribe,
+                commands::voice::voice_mark_recording,
+                commands::voice::voice_had_typing,
+                commands::config::save_debug_logs,
+                commands::config::drain_error_logs,
+                commands::config::open_web_remote,
+                commands::config::start_api_server,
+                commands::config::stop_api_server,
+                commands::config::api_server_status,
+                commands::config::mint_api_client,
+                commands::config::start_web_server,
+                commands::config::stop_web_server,
+                commands::config::get_web_server_status,
+                commands::config::get_web_server_owned_status,
+                commands::config::list_web_server_interfaces,
+                commands::config::get_instance_label,
+                commands::config::fetch_home_markdown,
+                commands::agent_creator::pick_folder,
+                commands::agent_creator::create_agent_folder,
+                commands::ac_discovery::discover_ac_agents,
+                commands::ac_discovery::check_project_path,
+                commands::ac_discovery::create_ac_project,
+                commands::ac_discovery::open_project,
+                commands::ac_discovery::new_project,
+                commands::ac_discovery::remove_project,
+                commands::ac_discovery::archive_project,
+                commands::ac_discovery::unarchive_project,
+                commands::ac_discovery::list_archived_projects,
+                commands::ac_discovery::discover_project,
+                commands::project_settings::get_project_groups,
+                commands::project_settings::update_project_groups,
+                commands::non_stop::non_stop_report,
+                commands::ipc_blackbox::ipc_blackbox_report,
+                commands::ac_discovery::keep_custom_context_template,
+                commands::ac_discovery::overwrite_context_template_with_default,
+                commands::ac_discovery::get_replica_context_files,
+                commands::ac_discovery::set_replica_context_files,
+                commands::loops::create_loop,
+                commands::loops::update_loop,
+                commands::loops::delete_loop,
+                commands::loops::toggle_loop,
+                commands::loops::run_loop_now,
+                commands::loops::get_loop_config,
+                commands::loops::preview_loop_cron,
+                commands::entity_creation::create_agent_matrix,
+                commands::entity_creation::delete_agent_matrix,
+                commands::entity_creation::list_all_agents,
+                commands::entity_creation::create_team,
+                commands::entity_creation::delete_team,
+                commands::entity_creation::update_team,
+                commands::entity_creation::get_team_config,
+                commands::entity_creation::create_workgroup,
+                commands::entity_creation::delete_workgroup,
+                commands::role_templates::list_role_templates,
+                commands::role_templates::get_agency_templates_status,
+                commands::role_templates::update_agency_templates,
+                commands::screenshot::screenshot_get_overlay_state,
+                commands::screenshot::screenshot_confirm_selection,
+                commands::screenshot::screenshot_cancel_capture,
+                commands::screenshot::screenshot_get_hotkey_status,
+                commands::screenshot::screenshot_reload_hotkey,
+            ]);
+            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                observer.note_invoke(invoke.message.command());
+                generated(invoke)
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building application")
         .run({
