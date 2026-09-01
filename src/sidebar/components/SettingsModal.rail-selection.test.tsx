@@ -123,10 +123,10 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
           ...r.root.querySelectorAll(`[data-ac-testid="settings.agentRow.${i}"] .settings-agent-row-actions button`),
         ].map((el) => el.getAttribute("data-ac-testid"));
 
-        expect(use.textContent).toBe("Use");
+        expect(use.textContent).toBe("Configuration");
         expect(use.getAttribute("data-ac-role")).toBe("button");
         expect(use.getAttribute("title")).toBe(title);
-        expect(use.getAttribute("aria-label")).toBe(`Use ${configuredAgent.label}: ${title}`);
+        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${configuredAgent.label}: ${title}`);
         expect(actions).toEqual([
           `settings.agentRow.${i}.use`,
           `settings.agentRow.${i}.remove`,
@@ -153,7 +153,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       ].entries()) {
         const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${i}.use`)!;
         expect(use.getAttribute("title")).toBe(title);
-        expect(use.getAttribute("aria-label")).toBe(`Use ${AGENTS[i]!.label}: ${title}`);
+        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${AGENTS[i]!.label}: ${title}`);
         expect(use.disabled).toBe(false);
       }
     } finally {
