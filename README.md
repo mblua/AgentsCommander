@@ -55,10 +55,10 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 
 - **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
 - **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
-- **Keep each Room isolated on disk.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, filesystem write boundaries, and a Room-specific executable. Run multiple Teams—or multiple Rooms for the same Team—without mixing source changes or build and test state.
+- **Keep each Room isolated on disk.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, filesystem write boundaries, and build or test state. Each session invokes the installed AgentsCommander executable with credentials whose token and root values are scoped to that Room. Run multiple Teams—or multiple Rooms for the same Team—without mixing source changes or build and test state.
 - **Return without rebuilding the map.** A Room keeps its task, agent replicas, repository clones, and messages on disk. Come back later, reopen a Room's closed session, and AC asks Claude Code, Codex, Antigravity, or Pi to continue the prior conversation in that same workspace.
 - **Share configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files so teammates can pull the same reviewed setup instead of recreating it.
-- **Coordinate Teams through auditable files.** Agents exchange markdown messages in a `messaging/` folder you can `cat`, `git diff`, and audit. The whole organization fits in `ls`.
+- **Coordinate Teams through auditable files.** Agents exchange Markdown messages in a `messaging/` folder you can read with `cat`, inspect in an editor, search, and audit directly on disk. The whole organization fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
 - **Local state, no telemetry.** Machine-local state stays in the configuration directory selected by the exact binary version; shared team state stays in each project's `.ac/` tree. The published `v0.30.3` resolver and the newer, unpublished `main` resolver differ, so use the [versioned configuration rule](docs/features/portable-instances.md#config-directory-rule) before moving or deleting state.
 
@@ -83,7 +83,7 @@ Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Why this exists
 
-Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain markdown files that any human, any tool, and any `git diff` can inspect. You see every step in a real terminal, and the coordination state stays visible on disk.
+Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain Markdown files that humans and file tools can read, search, and audit directly on disk. You see every step in a real terminal, and the coordination state stays visible on disk.
 
 ## What you can build
 
@@ -114,7 +114,7 @@ Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/c
 These are not accidents.
 
 - **Start with files and CLIs.** AgentsCommander keeps the core workflow in plain files and real terminal sessions. External protocols, including MCP, belong where they improve a concrete integration without hiding the workflow.
-- **Configuration is source code.** Canonical agent, Team, and Loop configuration lives in plain Markdown, JSON, and TOML under each Project's `.ac/` tree. Commit those shared files and review them like code; machine-local instance state stays outside that tree, and Rooms are gitignored runtime replicas.
+- **Configuration is source code.** Canonical agent, Team, and Loop configuration lives in plain Markdown, JSON, and TOML under each Project's `.ac/` tree. Commit those shared files and review them like code. Gitignored runtime and machine-local state—such as Rooms, Loop state, and project-local settings—can also live under `.ac/`; keep it distinct from the versioned configuration.
 - **Files before databases.** Shared configuration and inter-agent messages use plain files that are easy to inspect and debug. Databases can be introduced for performance-critical runtime paths without hiding how a Team is defined or how its agents coordinate.
 - **One agent = one directory.** An agent is defined by a `CLAUDE.md` file (or equivalent role-prompt file) inside its own directory. Multiple role prompts within the same directory or its subdirectories are forbidden. Coding agents assume the entire contents of their working directory are relevant context; if two role prompts coexisted, an agent could read another agent's role and leak context.
 
