@@ -29,10 +29,35 @@ pub const DETAIL_MAX_CHARS: usize = 160;
 const ACTIVE_SETTLEMENT_WINDOW: Duration = Duration::from_secs(10);
 const ACTIVE_SETTLEMENT_POLL: Duration = Duration::from_millis(25);
 
+#[cfg(test)]
+tokio::task_local! {
+    static VERSION_PROBE_ARGS_OVERRIDE: (&'static str, &'static [&'static str]);
+}
+
+#[cfg(test)]
+pub(crate) async fn with_version_probe_args_for_test<F>(
+    stem: &'static str,
+    args: &'static [&'static str],
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    VERSION_PROBE_ARGS_OVERRIDE
+        .scope((stem, args), future)
+        .await
+}
+
 /// #1551 - fixed probe argv per known program stem (lowercase, extension stripped).
 /// No catalog/user/project string ever reaches argv. Cursor (`agent`) is absent on
 /// purpose: it has no update command and its bare name collides with other vendors.
 pub fn version_probe_args(program_stem: &str) -> Option<&'static [&'static str]> {
+    #[cfg(test)]
+    if let Ok((stem, args)) = VERSION_PROBE_ARGS_OVERRIDE.try_with(|override_| *override_) {
+        if program_stem == stem {
+            return Some(args);
+        }
+    }
     match program_stem {
         "claude" | "codex" | "hermes" | "pi" | "opencode" | "agy" => Some(&["--version"]),
         _ => None,
@@ -253,23 +278,36 @@ where
     })
 }
 
+fn record_probe_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
+    let detail = format!("settlement attempt deadline exceeded during {stage}");
+    if !defects.iter().any(|defect| defect == &detail) {
+        defects.push(detail);
+    }
+}
+
 async fn settle_probe_reader(
     reader: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
     defects: &mut Vec<String>,
+    attempt: &mut crate::pty::job::SettlementAttempt,
 ) -> Vec<u8> {
     let Some(mut reader) = reader.take() else {
         return Vec::new();
     };
-    match tokio::time::timeout(ACTIVE_SETTLEMENT_WINDOW, &mut reader).await {
+    if attempt.expired() {
+        record_probe_attempt_expiry(defects, "reader settlement");
+        attempt.restart();
+    }
+    match tokio::time::timeout(attempt.remaining(), &mut reader).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
             defects.push(format!("reader join failed: {error}"));
             Vec::new()
         }
         Err(_) => {
-            defects.push("reader settlement exceeded 10s".to_string());
+            record_probe_attempt_expiry(defects, "reader settlement");
             reader.abort();
             let _ = reader.await;
+            attempt.restart();
             Vec::new()
         }
     }
@@ -287,6 +325,36 @@ struct ProbeSettlement {
     defects: Vec<String>,
 }
 
+#[cfg(test)]
+pub(crate) struct ProbeSettlementHook {
+    pub(crate) before_native_proof: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) release_native_proof: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) settlement_window: Option<Duration>,
+    pub(crate) native_observations: std::collections::VecDeque<ProbeNativeObservation>,
+}
+
+#[cfg(test)]
+pub(crate) enum ProbeNativeObservation {
+    Empty,
+    Active,
+    Error(&'static str),
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static PROBE_SETTLEMENT_HOOK: std::cell::RefCell<Option<ProbeSettlementHook>>;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_probe_settlement_hook<F>(hook: ProbeSettlementHook, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    PROBE_SETTLEMENT_HOOK
+        .scope(std::cell::RefCell::new(Some(hook)), future)
+        .await
+}
+
 struct ProbeProcessOwner {
     child: Option<tokio::process::Child>,
     stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
@@ -295,6 +363,8 @@ struct ProbeProcessOwner {
     job: Option<crate::pty::job::JobObject>,
     #[cfg(unix)]
     pgid: i32,
+    #[cfg(test)]
+    settlement_hook: Option<ProbeSettlementHook>,
 }
 
 impl ProbeProcessOwner {
@@ -325,6 +395,11 @@ impl ProbeProcessOwner {
             .unwrap_or(0);
         let stdout = child.stdout.take().map(spawn_capped_reader);
         let stderr = child.stderr.take().map(spawn_capped_reader);
+        #[cfg(test)]
+        let settlement_hook = PROBE_SETTLEMENT_HOOK
+            .try_with(|hook| hook.borrow_mut().take())
+            .ok()
+            .flatten();
         Ok(Self {
             child: Some(child),
             stdout,
@@ -333,6 +408,8 @@ impl ProbeProcessOwner {
             job: Some(job),
             #[cfg(unix)]
             pgid,
+            #[cfg(test)]
+            settlement_hook,
         })
     }
 
@@ -350,6 +427,16 @@ impl ProbeProcessOwner {
     }
 
     async fn settle(mut self, wait: &ProbeWait) -> ProbeSettlement {
+        #[cfg(test)]
+        let mut hook = self.settlement_hook.take();
+        #[cfg(test)]
+        let settlement_window = hook
+            .as_ref()
+            .and_then(|hook| hook.settlement_window)
+            .unwrap_or(ACTIVE_SETTLEMENT_WINDOW);
+        #[cfg(not(test))]
+        let settlement_window = ACTIVE_SETTLEMENT_WINDOW;
+        let mut attempt = crate::pty::job::SettlementAttempt::new(settlement_window);
         let mut defects = Vec::new();
         let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
 
@@ -385,7 +472,6 @@ impl ProbeProcessOwner {
 
         if cleanup_required {
             if let Some(child) = self.child.as_mut() {
-                let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
                 let mut wait_defect_recorded = false;
                 loop {
                     match child.try_wait() {
@@ -398,8 +484,8 @@ impl ProbeProcessOwner {
                             }
                         }
                     }
-                    if Instant::now() >= deadline {
-                        defects.push("direct child settlement exceeded 10s".to_string());
+                    if attempt.expired() {
+                        record_probe_attempt_expiry(&mut defects, "direct-child settlement");
                         #[cfg(windows)]
                         if let Some(job) = self.job.as_ref() {
                             let _ = job.terminate_checked();
@@ -412,9 +498,9 @@ impl ProbeProcessOwner {
                             }
                         }
                         let _ = child.start_kill();
-                        deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                        attempt.restart();
                     }
-                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
                 }
             }
         }
@@ -423,9 +509,6 @@ impl ProbeProcessOwner {
         // emptiness query that is eligible to prove settlement.
         drop(self.child.take());
 
-        // A successful direct child may still have descendants (including a
-        // descendant holding a pipe). Terminate those tree members as normal
-        // end-of-owner cleanup; failure is evaluated by the accounting proof.
         #[cfg(windows)]
         if !cleanup_required {
             if let Some(job) = self.job.as_ref() {
@@ -440,17 +523,58 @@ impl ProbeProcessOwner {
             }
         }
 
-        let stdout = settle_probe_reader(&mut self.stdout, &mut defects).await;
-        let stderr = settle_probe_reader(&mut self.stderr, &mut defects).await;
+        let stdout = settle_probe_reader(&mut self.stdout, &mut defects, &mut attempt).await;
+        let stderr = settle_probe_reader(&mut self.stderr, &mut defects, &mut attempt).await;
+
+        #[cfg(test)]
+        if let Some(hook) = hook.as_mut() {
+            if let Some(ready) = hook.before_native_proof.take() {
+                let _ = ready.send(());
+            }
+            if let Some(mut release) = hook.release_native_proof.take() {
+                loop {
+                    if attempt.expired() {
+                        record_probe_attempt_expiry(&mut defects, "native-proof barrier");
+                        attempt.restart();
+                    }
+                    match tokio::time::timeout(attempt.remaining(), &mut release).await {
+                        Ok(_) => break,
+                        Err(_) => {
+                            record_probe_attempt_expiry(&mut defects, "native-proof barrier");
+                            attempt.restart();
+                        }
+                    }
+                }
+            }
+        }
 
         #[cfg(windows)]
         if let Some(job) = self.job.as_ref() {
-            let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
             let mut query_defect_recorded = false;
             loop {
-                match job.active_processes() {
-                    Ok(0) => break,
-                    Ok(_) => {}
+                #[cfg(test)]
+                let proof = match hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        ProbeNativeObservation::Empty => Ok(true),
+                        ProbeNativeObservation::Active => Ok(false),
+                        ProbeNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => job
+                        .active_processes()
+                        .map(|active| active == 0)
+                        .map_err(|error| error.to_string()),
+                };
+                #[cfg(not(test))]
+                let proof = job
+                    .active_processes()
+                    .map(|active| active == 0)
+                    .map_err(|error| error.to_string());
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
                     Err(error) => {
                         if !query_defect_recorded {
                             defects.push(format!("job accounting failed: {error}"));
@@ -458,47 +582,81 @@ impl ProbeProcessOwner {
                         }
                     }
                 }
-                if Instant::now() >= deadline {
-                    defects.push("job active settlement exceeded 10s".to_string());
+                if attempt.expired() {
+                    record_probe_attempt_expiry(&mut defects, "job accounting proof");
                     let _ = job.terminate_checked();
-                    deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                    attempt.restart();
                 }
-                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
 
         #[cfg(unix)]
         if self.pgid > 0 {
-            let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
             let mut errno_defect_recorded = false;
             loop {
-                // SAFETY: signal 0 performs no mutation and checks the retained
-                // positive process-group identity.
-                let result = unsafe { libc::kill(-self.pgid, 0) };
-                if result == -1 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::ESRCH) {
-                        break;
+                #[cfg(test)]
+                let proof = match hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        ProbeNativeObservation::Empty => Ok(true),
+                        ProbeNativeObservation::Active => Ok(false),
+                        ProbeNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => {
+                        // SAFETY: signal zero performs no mutation and checks the retained PGID.
+                        let result = unsafe { libc::kill(-self.pgid, 0) };
+                        if result == -1 {
+                            let error = std::io::Error::last_os_error();
+                            if error.raw_os_error() == Some(libc::ESRCH) {
+                                Ok(true)
+                            } else {
+                                Err(error.to_string())
+                            }
+                        } else {
+                            Ok(false)
+                        }
                     }
-                    if !errno_defect_recorded {
-                        defects.push(format!("process-group accounting failed: {error}"));
-                        errno_defect_recorded = true;
+                };
+                #[cfg(not(test))]
+                let proof = {
+                    // SAFETY: signal zero performs no mutation and checks the retained PGID.
+                    let result = unsafe { libc::kill(-self.pgid, 0) };
+                    if result == -1 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() == Some(libc::ESRCH) {
+                            Ok(true)
+                        } else {
+                            Err(error.to_string())
+                        }
+                    } else {
+                        Ok(false)
+                    }
+                };
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => {
+                        if !errno_defect_recorded {
+                            defects.push(format!("process-group accounting failed: {error}"));
+                            errno_defect_recorded = true;
+                        }
                     }
                 }
-                if Instant::now() >= deadline {
-                    defects.push("process-group settlement exceeded 10s".to_string());
-                    // A nonempty group stays owned and nonterminal; request
-                    // termination again and start another monotonic attempt.
+                if attempt.expired() {
+                    record_probe_attempt_expiry(&mut defects, "process-group accounting proof");
+                    // SAFETY: this remains the retained positive process group.
                     unsafe {
                         libc::kill(-self.pgid, libc::SIGKILL);
                     }
-                    deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                    attempt.restart();
                 }
-                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
 
-        // The retained Job is closed by RAII only after its final zero query.
         #[cfg(windows)]
         drop(self.job.take());
         ProbeSettlement {
@@ -610,11 +768,25 @@ pub async fn probe_version_cancellable(
         Err(outcome) => return CancellableProbeOutcome::Completed(outcome),
     };
     let waited = owner.wait(timeout, &mut cancel).await;
-    let settlement = owner.settle(&waited).await;
+    let cancelled_during_wait = matches!(waited, ProbeWait::Cancelled);
+    let settlement = owner.settle(&waited);
+    tokio::pin!(settlement);
+    let (settlement, cancellation_observed) = if cancelled_during_wait {
+        (settlement.await, true)
+    } else {
+        tokio::select! {
+            biased;
+            _ = wait_for_probe_cancellation(&mut cancel) => (settlement.await, true),
+            settled = &mut settlement => (settled, false),
+        }
+    };
     if !settlement.defects.is_empty() {
         return CancellableProbeOutcome::CleanupFailed(settlement.defects.join("; "));
     }
-    match waited {
+    if cancellation_observed {
+        return CancellableProbeOutcome::Cancelled;
+    }
+    match &waited {
         ProbeWait::Cancelled => CancellableProbeOutcome::Cancelled,
         ProbeWait::TimedOut => {
             let detail = format!("timed out after {}s (killed)", timeout.as_secs());
@@ -633,7 +805,7 @@ pub async fn probe_version_cancellable(
             CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
         }
         ProbeWait::Exited(Ok(status)) => CancellableProbeOutcome::Completed(
-            parse_probe_completion(program, status, &settlement.stdout, &settlement.stderr),
+            parse_probe_completion(program, *status, &settlement.stdout, &settlement.stderr),
         ),
     }
 }
@@ -1070,16 +1242,106 @@ mod tests {
         assert_eq!(outcome, CancellableProbeOutcome::Cancelled);
     }
 
+    #[cfg(any(windows, unix))]
+    async fn cancel_during_probe_settlement(
+        program: &str,
+        args: Vec<&str>,
+        native_observations: std::collections::VecDeque<ProbeNativeObservation>,
+    ) -> CancellableProbeOutcome {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        let probe = tokio::spawn({
+            let program = PathBuf::from(program);
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            async move {
+                with_probe_settlement_hook(
+                    ProbeSettlementHook {
+                        before_native_proof: Some(proof_ready_tx),
+                        release_native_proof: Some(release_proof_rx),
+                        settlement_window: Some(Duration::from_millis(60)),
+                        native_observations,
+                    },
+                    async move {
+                        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                        probe_version_cancellable(
+                            &program,
+                            &borrowed,
+                            Duration::from_secs(10),
+                            cancel_rx,
+                        )
+                        .await
+                    },
+                )
+                .await
+            }
+        });
+        proof_ready_rx
+            .await
+            .expect("probe direct handle dropped before native proof");
+        cancel_tx
+            .send(true)
+            .expect("request cancellation during settlement");
+        tokio::task::yield_now().await;
+        assert!(
+            !probe.is_finished(),
+            "probe terminal outcome must remain behind native proof"
+        );
+        release_proof_tx
+            .send(())
+            .expect("release probe native proof");
+        tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .expect("probe settlement completed")
+            .expect("probe task")
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn cancelled_contained_probe() {
         cancel_blocked_probe("cmd.exe", vec!["/C", "cmd /C ping -n 30 127.0.0.1 >NUL"]).await;
+        let outcome = cancel_during_probe_settlement(
+            "cmd.exe",
+            vec!["/D", "/C", "exit 0"],
+            std::collections::VecDeque::from([
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Error("injected query error"),
+                ProbeNativeObservation::Empty,
+            ]),
+        )
+        .await;
+        let CancellableProbeOutcome::CleanupFailed(detail) = outcome else {
+            panic!("expected later-settled cleanup failure, got {outcome:?}");
+        };
+        assert!(detail.contains("settlement attempt deadline exceeded during job accounting proof"));
+        assert!(detail.contains("job accounting failed: injected query error"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelled_probe_kills_unix_process_group_and_drains_readers() {
         cancel_blocked_probe("sh", vec!["-c", "sh -c 'sleep 30' & wait"]).await;
+        let outcome = cancel_during_probe_settlement(
+            "sh",
+            vec!["-c", "exit 0"],
+            std::collections::VecDeque::from([
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Active,
+                ProbeNativeObservation::Error("EPERM"),
+                ProbeNativeObservation::Empty,
+            ]),
+        )
+        .await;
+        let CancellableProbeOutcome::CleanupFailed(detail) = outcome else {
+            panic!("expected later-settled cleanup failure, got {outcome:?}");
+        };
+        assert!(detail.contains(
+            "settlement attempt deadline exceeded during process-group accounting proof"
+        ));
+        assert!(detail.contains("process-group accounting failed: EPERM"));
     }
 
     #[test]

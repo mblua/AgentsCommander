@@ -2040,15 +2040,19 @@ mod tests {
 
     #[tokio::test]
     async fn agent_update_cancel_transport_parity() {
-        async fn next_json(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> Value {
+        async fn next_text(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> String {
             let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
                 .expect("event timeout")
                 .expect("event frame");
             match frame {
-                WsOutMsg::Text(text) => serde_json::from_str(&text).expect("event json"),
+                WsOutMsg::Text(text) => text,
                 WsOutMsg::Binary(_) => panic!("unexpected binary event"),
             }
+        }
+
+        fn decode(text: &str) -> Value {
+            serde_json::from_str(text).expect("event json")
         }
 
         fn retain(gate: &crate::agent_update::AgentUpdateGate, commands: &[(&str, &str)]) {
@@ -2082,20 +2086,21 @@ mod tests {
             dispatch_inner(&web, "agent_update_cancel", &json!({ "command": "claude" }))
                 .await
                 .expect("web cancellation");
+        let desktop_bytes = serde_json::to_vec(&desktop_response).expect("desktop bytes");
+        let web_bytes = serde_json::to_vec(&web_response).expect("web bytes");
+        assert_eq!(desktop_bytes, web_bytes);
         assert_eq!(
-            serde_json::to_vec(&desktop_response).expect("desktop bytes"),
-            serde_json::to_vec(&web_response).expect("web bytes")
+            std::str::from_utf8(&desktop_bytes).expect("desktop response utf8"),
+            r#"{"command":"claude","disposition":"requested"}"#
         );
         assert_eq!(
             web_response,
             json!({ "command": "claude", "disposition": "requested" })
         );
-        let desktop_event = next_json(&mut desktop_events).await;
-        let web_event = next_json(&mut web_events).await;
-        assert_eq!(
-            serde_json::to_vec(&desktop_event).expect("desktop event bytes"),
-            serde_json::to_vec(&web_event).expect("web event bytes")
-        );
+        let desktop_event_text = next_text(&mut desktop_events).await;
+        let web_event_text = next_text(&mut web_events).await;
+        assert_eq!(desktop_event_text, web_event_text);
+        let desktop_event = decode(&desktop_event_text);
         assert_eq!(desktop_event["event"], "agent_update_cancellation_changed");
         assert_eq!(
             desktop_event["payload"],
@@ -2118,18 +2123,20 @@ mod tests {
         let web_response = dispatch_inner(&web, "agent_updates_cancel_all", &json!({}))
             .await
             .expect("web batch cancellation");
+        let desktop_bytes =
+            serde_json::to_vec(&desktop_response).expect("desktop batch response bytes");
+        let web_bytes = serde_json::to_vec(&web_response).expect("web batch response bytes");
+        assert_eq!(desktop_bytes, web_bytes);
         assert_eq!(
-            serde_json::to_vec(
-                &serde_json::to_value(&desktop_response).expect("desktop batch wire value"),
-            )
-            .expect("desktop batch bytes"),
-            serde_json::to_vec(&web_response).expect("web batch bytes")
+            std::str::from_utf8(&desktop_bytes).expect("desktop batch response utf8"),
+            r#"{"alreadyRequested":[],"alreadyTerminal":[],"requested":[{"command":"claude","label":"Claude"},{"command":"codex","label":"Codex"}]}"#
         );
         assert_eq!(web_response["requested"][0]["command"], "claude");
         assert_eq!(web_response["requested"][1]["command"], "codex");
-        let desktop_event = next_json(&mut desktop_events).await;
-        let web_event = next_json(&mut web_events).await;
-        assert_eq!(desktop_event, web_event);
+        let desktop_event_text = next_text(&mut desktop_events).await;
+        let web_event_text = next_text(&mut web_events).await;
+        assert_eq!(desktop_event_text, web_event_text);
+        let desktop_event = decode(&desktop_event_text);
         assert_eq!(desktop_event["payload"]["cancelAllRequested"], true);
         assert_eq!(
             desktop_event["payload"]["cancelRequested"],
@@ -2137,6 +2144,40 @@ mod tests {
                 { "command": "claude", "label": "Claude" },
                 { "command": "codex", "label": "Codex" }
             ])
+        );
+
+        crate::agent_update::emit_agent_update_transport_contract_for_test(&desktop.app_handle);
+        crate::agent_update::emit_agent_update_transport_contract_for_test(&web.app_handle);
+        let desktop_verifying = next_text(&mut desktop_events).await;
+        let web_verifying = next_text(&mut web_events).await;
+        assert_eq!(desktop_verifying, web_verifying);
+        let verifying = decode(&desktop_verifying);
+        assert_eq!(verifying["event"], "agent_update_command_verifying");
+        assert_eq!(
+            verifying["payload"],
+            json!({ "command": "claude", "label": "Claude" })
+        );
+
+        let desktop_terminal = next_text(&mut desktop_events).await;
+        let web_terminal = next_text(&mut web_events).await;
+        assert_eq!(desktop_terminal, web_terminal);
+        let terminal = decode(&desktop_terminal);
+        assert_eq!(terminal["event"], "agent_update_command_finished");
+        assert_eq!(
+            terminal["payload"],
+            json!({
+                "change": "unknown",
+                "command": "claude",
+                "installAfter": null,
+                "installBefore": {
+                    "seq": 0,
+                    "status": "installed",
+                    "version": "1.2.3"
+                },
+                "label": "Claude",
+                "ok": false,
+                "outcome": "cancelled"
+            })
         );
     }
 }

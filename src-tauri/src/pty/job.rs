@@ -23,6 +23,37 @@
 //!
 //! Non-Windows builds use a zero-sized stub so PtyManager stays platform-agnostic.
 
+/// One monotonic native-settlement attempt budget. Updater, probe, and rejected
+/// suspended-spawn cleanup pass this same deadline through direct-child, reader,
+/// and native tree proof work; a new deadline is created only after the current
+/// attempt has actually expired.
+pub(crate) struct SettlementAttempt {
+    window: std::time::Duration,
+    deadline: std::time::Instant,
+}
+
+impl SettlementAttempt {
+    pub(crate) fn new(window: std::time::Duration) -> Self {
+        Self {
+            window,
+            deadline: std::time::Instant::now() + window,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> std::time::Duration {
+        self.deadline
+            .saturating_duration_since(std::time::Instant::now())
+    }
+
+    pub(crate) fn expired(&self) -> bool {
+        self.remaining().is_zero()
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.deadline = std::time::Instant::now() + self.window;
+    }
+}
+
 #[cfg(windows)]
 pub use windows_impl::JobObject;
 
@@ -35,7 +66,9 @@ pub use stub_impl::JobObject;
 #[cfg(windows)]
 mod windows_impl {
     use std::fmt;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    use super::SettlementAttempt;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -267,9 +300,22 @@ mod windows_impl {
         pub(super) release_query: Option<tokio::sync::oneshot::Receiver<()>>,
         #[cfg(test)]
         pub(super) failure: Option<InjectedFailure>,
+        #[cfg(test)]
+        pub(super) settlement_window: Option<Duration>,
     }
 
-    async fn drain_failed_spawn_pipe<R>(mut pipe: Option<R>) -> bool
+    fn record_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
+        let detail = format!("settlement attempt deadline exceeded during {stage}");
+        if !defects.iter().any(|defect| defect == &detail) {
+            defects.push(detail);
+        }
+    }
+
+    async fn drain_failed_spawn_pipe<R>(
+        mut pipe: Option<R>,
+        attempt: &mut SettlementAttempt,
+        defects: &mut Vec<String>,
+    ) -> bool
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
     {
@@ -280,11 +326,17 @@ mod windows_impl {
             let mut sink = Vec::new();
             let _ = tokio::io::AsyncReadExt::read_to_end(&mut pipe, &mut sink).await;
         });
-        match tokio::time::timeout(SETTLEMENT_WINDOW, &mut reader).await {
+        if attempt.expired() {
+            record_attempt_expiry(defects, "pipe drainage");
+            attempt.restart();
+        }
+        match tokio::time::timeout(attempt.remaining(), &mut reader).await {
             Ok(_) => true,
             Err(_) => {
+                record_attempt_expiry(defects, "pipe drainage");
                 reader.abort();
                 let _ = reader.await;
+                attempt.restart();
                 false
             }
         }
@@ -300,6 +352,14 @@ mod windows_impl {
         let mut hook = hook;
         #[cfg(not(test))]
         let _ = hook;
+        #[cfg(test)]
+        let settlement_window = hook
+            .as_ref()
+            .and_then(|hook| hook.settlement_window)
+            .unwrap_or(SETTLEMENT_WINDOW);
+        #[cfg(not(test))]
+        let settlement_window = SETTLEMENT_WINDOW;
+        let mut attempt = SettlementAttempt::new(settlement_window);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         if let Some(job) = job.as_ref() {
@@ -309,7 +369,6 @@ mod windows_impl {
         if let Err(error) = child.start_kill() {
             defects.push(format!("kill: {error}"));
         }
-        let mut wait_deadline = Instant::now() + SETTLEMENT_WINDOW;
         let mut wait_defect_recorded = false;
         loop {
             match child.try_wait() {
@@ -322,15 +381,15 @@ mod windows_impl {
                     }
                 }
             }
-            if Instant::now() >= wait_deadline {
-                defects.push("direct child settlement exceeded 10s".to_string());
+            if attempt.expired() {
+                record_attempt_expiry(&mut defects, "direct-child settlement");
                 if let Some(job) = job.as_ref() {
                     let _ = job.terminate_checked();
                 }
                 let _ = child.start_kill();
-                wait_deadline = Instant::now() + SETTLEMENT_WINDOW;
+                attempt.restart();
             }
-            tokio::time::sleep(SETTLEMENT_POLL).await;
+            tokio::time::sleep(SETTLEMENT_POLL.min(attempt.remaining())).await;
         }
         // Dropping the Child here releases Tokio's direct process handle before
         // the first query that is eligible to prove ActiveProcesses == 0.
@@ -341,19 +400,30 @@ mod windows_impl {
             if let Some(tx) = hook.after_reap.take() {
                 let _ = tx.send(());
             }
-            if let Some(rx) = hook.release_query.take() {
-                let _ = rx.await;
+            if let Some(mut rx) = hook.release_query.take() {
+                loop {
+                    if attempt.expired() {
+                        record_attempt_expiry(&mut defects, "rejected-spawn proof barrier");
+                        attempt.restart();
+                    }
+                    match tokio::time::timeout(attempt.remaining(), &mut rx).await {
+                        Ok(_) => break,
+                        Err(_) => {
+                            record_attempt_expiry(&mut defects, "rejected-spawn proof barrier");
+                            attempt.restart();
+                        }
+                    }
+                }
             }
         }
 
-        let stdout_settled = drain_failed_spawn_pipe(stdout).await;
-        let stderr_settled = drain_failed_spawn_pipe(stderr).await;
+        let stdout_settled = drain_failed_spawn_pipe(stdout, &mut attempt, &mut defects).await;
+        let stderr_settled = drain_failed_spawn_pipe(stderr, &mut attempt, &mut defects).await;
         if !stdout_settled || !stderr_settled {
             defects.push("reader drain required abort".to_string());
         }
 
         if let Some(job) = job.as_ref() {
-            let mut deadline = Instant::now() + SETTLEMENT_WINDOW;
             let mut query_defect_recorded = false;
             loop {
                 match job.active_processes() {
@@ -366,12 +436,12 @@ mod windows_impl {
                         }
                     }
                 }
-                if Instant::now() >= deadline {
-                    defects.push("accounting settlement exceeded 10s".to_string());
+                if attempt.expired() {
+                    record_attempt_expiry(&mut defects, "job accounting proof");
                     let _ = job.terminate_checked();
-                    deadline = Instant::now() + SETTLEMENT_WINDOW;
+                    attempt.restart();
                 }
-                tokio::time::sleep(SETTLEMENT_POLL).await;
+                tokio::time::sleep(SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
         drop(job);
@@ -633,6 +703,7 @@ mod win_tests {
                     after_reap: None,
                     release_query: None,
                     failure: None,
+                    settlement_window: None,
                 }),
             )
             .await
@@ -673,6 +744,7 @@ mod win_tests {
                     after_reap: Some(reaped_tx),
                     release_query: Some(query_rx),
                     failure: Some(failure),
+                    settlement_window: Some(Duration::from_millis(60)),
                 }),
             )
             .await
@@ -685,6 +757,7 @@ mod win_tests {
             .await
             .expect("direct child reaped and handle dropped");
         assert!(!marker.exists(), "a rejected launch never executes");
+        tokio::time::sleep(Duration::from_millis(75)).await;
         query_tx.send(()).expect("release accounting query");
         let error = task
             .await
@@ -693,6 +766,12 @@ mod win_tests {
         assert!(
             error.to_string().contains("containment"),
             "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains(
+                "settlement attempt deadline exceeded during rejected-spawn proof barrier"
+            ),
+            "the rejected-spawn cleanup must retain its expired attempt defect: {error}"
         );
         assert!(!marker.exists(), "the rejected command remained suspended");
     }

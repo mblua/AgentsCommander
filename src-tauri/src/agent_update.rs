@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::FutureExt;
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -89,19 +90,47 @@ pub enum AgentUpdateCancelDisposition {
     NotInPass,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUpdateCancelResponse {
     pub command: String,
     pub disposition: AgentUpdateCancelDisposition,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl Serialize for AgentUpdateCancelResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("AgentUpdateCancelResponse", 2)?;
+        state.serialize_field("command", &self.command)?;
+        state.serialize_field("disposition", &self.disposition)?;
+        state.end()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUpdateCancelAllResponse {
     pub requested: Vec<AgentUpdateCommandRef>,
     pub already_requested: Vec<AgentUpdateCommandRef>,
     pub already_terminal: Vec<AgentUpdateCommandRef>,
+}
+
+impl Serialize for AgentUpdateCancelAllResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // `serde_json::Value` uses its configured map order while Tauri emits
+        // this typed response directly. Pin one explicit wire order shared by
+        // both paths so their actual bytes match without test canonicalization.
+        let mut state = serializer.serialize_struct("AgentUpdateCancelAllResponse", 3)?;
+        state.serialize_field("alreadyRequested", &self.already_requested)?;
+        state.serialize_field("alreadyTerminal", &self.already_terminal)?;
+        state.serialize_field("requested", &self.requested)?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +309,24 @@ struct TargetControl {
     terminal_publication: Arc<AsyncFence>,
     terminal_emitted: bool,
     supervisor_failure: bool,
+    #[cfg(test)]
+    step_admission_hook: Option<StepAdmissionTestHook>,
+    #[cfg(test)]
+    response_release_hook: Option<ResponseReleaseTestHook>,
+}
+
+#[cfg(test)]
+struct StepAdmissionTestHook {
+    after_begin: Option<tokio::sync::oneshot::Sender<()>>,
+    release_commit: Option<tokio::sync::oneshot::Receiver<()>>,
+    after_commit: Option<tokio::sync::oneshot::Sender<()>>,
+    release_spawn: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+#[cfg(test)]
+struct ResponseReleaseTestHook {
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl TargetControl {
@@ -296,6 +343,10 @@ impl TargetControl {
             terminal_publication: Arc::new(AsyncFence::default()),
             terminal_emitted: false,
             supervisor_failure: false,
+            #[cfg(test)]
+            step_admission_hook: None,
+            #[cfg(test)]
+            response_release_hook: None,
         }
     }
 }
@@ -323,6 +374,8 @@ pub struct AgentUpdateGate {
     /// A tokio mutex because it is held across the persist await; the std `state`
     /// lock is never held across an await.
     answer_serial: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    wait_registered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 /// #1551 - a registered-but-unanswered prompt: the answer channel plus the label
@@ -412,6 +465,8 @@ impl AgentUpdateGate {
             }),
             release: tokio::sync::Notify::new(),
             answer_serial: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            wait_registered: Mutex::new(None),
         }
     }
 
@@ -669,26 +724,36 @@ impl AgentUpdateGate {
             .contains(command)
     }
 
-    /// Release the gate. IDEMPOTENT: once `finished` is set it stays set and a
-    /// repeated call only overwrites `results`. FIRST clears the pending prompt
-    /// and all pending oneshot senders (in the same lock section), so a
-    /// post-panic snapshot never resurrects a dead prompt that no event is left
-    /// to clear; THEN sets finished + results and wakes the waiters.
-    pub fn mark_finished(&self, results: Vec<AgentUpdateResult>) {
+    /// Store the final pass snapshot while admission remains closed. The sole
+    /// supervisor calls this before emitting `agent_updates_finished`.
+    fn store_final_results(&self, results: Vec<AgentUpdateResult>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending.clear();
+        state.pending_prompt = None;
+        state.running.clear();
+        state.results = results;
+    }
+
+    /// Atomically open terminal fences and make finished visible, then notify
+    /// admission waiters. This is intentionally separate from result storage so
+    /// the pass-finished event is enqueued before any waiter can return.
+    fn release_finished(&self) {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.pending.clear();
-            state.pending_prompt = None;
-            // #1551 - a panic or a lost event can never leave a stuck `Updating...`.
-            state.running.clear();
             for control in state.controls.values_mut() {
                 control.phase = TargetPhase::Terminal;
                 control.terminal_publication.open();
             }
             state.finished = true;
-            state.results = results;
         }
         self.release.notify_waiters();
+    }
+
+    /// Legacy/test convenience for callers that do not emit a pass-finished
+    /// event. Production finalization uses the split store/emit/release sequence.
+    pub fn mark_finished(&self, results: Vec<AgentUpdateResult>) {
+        self.store_final_results(results);
+        self.release_finished();
     }
 
     pub fn snapshot(&self) -> AgentUpdateStatus {
@@ -763,6 +828,69 @@ impl AgentUpdateGate {
         StepAdmission::Committed {
             epoch,
             cancel: control.cancel.subscribe(),
+        }
+    }
+
+    #[cfg(test)]
+    async fn hold_after_step_begin_for_test(&self, command: &str) {
+        let (ready, release) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let hook = state
+                .controls
+                .get_mut(command)
+                .and_then(|control| control.step_admission_hook.as_mut());
+            match hook {
+                Some(hook) => (hook.after_begin.take(), hook.release_commit.take()),
+                None => (None, None),
+            }
+        };
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn hold_after_step_commit_for_test(&self, command: &str) {
+        let (ready, release) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let hook = state
+                .controls
+                .get_mut(command)
+                .and_then(|control| control.step_admission_hook.as_mut());
+            match hook {
+                Some(hook) => (hook.after_commit.take(), hook.release_spawn.take()),
+                None => (None, None),
+            }
+        };
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn hold_response_release_for_test(&self, command: &str) {
+        let (ready, release) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let hook = state
+                .controls
+                .get_mut(command)
+                .and_then(|control| control.response_release_hook.as_mut());
+            match hook {
+                Some(hook) => (hook.ready.take(), hook.release.take()),
+                None => (None, None),
+            }
+        };
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.await;
         }
     }
 
@@ -944,9 +1072,17 @@ impl AgentUpdateGate {
                     continue;
                 }
                 control.supervisor_failure = true;
-                control.claim = TargetClaim::CancellationReserved;
+                let reserved_here = control.claim == TargetClaim::Open;
+                if reserved_here {
+                    control.claim = TargetClaim::CancellationReserved;
+                }
                 let _ = control.cancel.send(true);
-                control.response_release.open();
+                // Only a supervisor-created reservation has no external RPC
+                // response owner. A live row/batch reservation keeps this fence
+                // until its ResponseReleaseGuard reaches the return tail.
+                if reserved_here {
+                    control.response_release.open();
+                }
                 if matches!(
                     control.phase,
                     TargetPhase::Pending | TargetPhase::Prompting | TargetPhase::Starting(_, _)
@@ -988,6 +1124,15 @@ impl AgentUpdateGate {
     pub async fn wait_until_done(&self) {
         loop {
             let notified = self.release.notified();
+            #[cfg(test)]
+            if let Some(registered) = self
+                .wait_registered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = registered.send(());
+            }
             if self
                 .state
                 .lock()
@@ -1101,6 +1246,8 @@ pub async fn cancel_update(
     if let Some(fence) = terminal_publication {
         fence.wait().await;
     }
+    #[cfg(test)]
+    gate.hold_response_release_for_test(&command).await;
     release_guard.release();
     AgentUpdateCancelResponse {
         command,
@@ -1636,6 +1783,15 @@ struct TargetProcessOwner {
 struct TargetSettlementHook {
     before_native_proof: Option<tokio::sync::oneshot::Sender<()>>,
     release_native_proof: Option<tokio::sync::oneshot::Receiver<()>>,
+    settlement_window: Option<Duration>,
+    native_observations: std::collections::VecDeque<TargetNativeObservation>,
+}
+
+#[cfg(test)]
+enum TargetNativeObservation {
+    Empty,
+    Active,
+    Error(&'static str),
 }
 
 impl TargetProcessOwner {
@@ -1690,6 +1846,16 @@ impl TargetProcessOwner {
     }
 
     async fn settle(mut self, wait: &TargetWait) -> TargetSettlement {
+        #[cfg(test)]
+        let mut hook = self.settlement_hook.take();
+        #[cfg(test)]
+        let settlement_window = hook
+            .as_ref()
+            .and_then(|hook| hook.settlement_window)
+            .unwrap_or(PROCESS_SETTLEMENT_WINDOW);
+        #[cfg(not(test))]
+        let settlement_window = PROCESS_SETTLEMENT_WINDOW;
+        let mut attempt = crate::pty::job::SettlementAttempt::new(settlement_window);
         let mut defects = Vec::new();
         let cleanup_required = !matches!(wait, TargetWait::Exited(Ok(_)));
 
@@ -1721,7 +1887,6 @@ impl TargetProcessOwner {
         }
         if cleanup_required {
             if let Some(child) = self.child.as_mut() {
-                let mut deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
                 let mut wait_defect_recorded = false;
                 loop {
                     match child.try_wait() {
@@ -1734,8 +1899,8 @@ impl TargetProcessOwner {
                             }
                         }
                     }
-                    if Instant::now() >= deadline {
-                        defects.push("direct child settlement exceeded 10s".to_string());
+                    if attempt.expired() {
+                        record_update_attempt_expiry(&mut defects, "direct-child settlement");
                         #[cfg(windows)]
                         if let Some(job) = self.job.as_ref() {
                             let _ = job.terminate_checked();
@@ -1748,9 +1913,9 @@ impl TargetProcessOwner {
                             }
                         }
                         let _ = child.start_kill();
-                        deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
+                        attempt.restart();
                     }
-                    tokio::time::sleep(PROCESS_SETTLEMENT_POLL).await;
+                    tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
                 }
             }
         }
@@ -1770,27 +1935,58 @@ impl TargetProcessOwner {
             }
         }
 
-        let stdout = settle_update_reader(&mut self.stdout, &mut defects).await;
-        let stderr = settle_update_reader(&mut self.stderr, &mut defects).await;
+        let stdout = settle_update_reader(&mut self.stdout, &mut defects, &mut attempt).await;
+        let stderr = settle_update_reader(&mut self.stderr, &mut defects, &mut attempt).await;
 
         #[cfg(test)]
-        if let Some(mut hook) = self.settlement_hook.take() {
+        if let Some(hook) = hook.as_mut() {
             if let Some(ready) = hook.before_native_proof.take() {
                 let _ = ready.send(());
             }
-            if let Some(release) = hook.release_native_proof.take() {
-                let _ = release.await;
+            if let Some(mut release) = hook.release_native_proof.take() {
+                loop {
+                    if attempt.expired() {
+                        record_update_attempt_expiry(&mut defects, "native-proof barrier");
+                        attempt.restart();
+                    }
+                    match tokio::time::timeout(attempt.remaining(), &mut release).await {
+                        Ok(_) => break,
+                        Err(_) => {
+                            record_update_attempt_expiry(&mut defects, "native-proof barrier");
+                            attempt.restart();
+                        }
+                    }
+                }
             }
         }
 
         #[cfg(windows)]
         if let Some(job) = self.job.as_ref() {
-            let mut deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
             let mut query_defect_recorded = false;
             loop {
-                match job.active_processes() {
-                    Ok(0) => break,
-                    Ok(_) => {}
+                #[cfg(test)]
+                let proof = match hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        TargetNativeObservation::Empty => Ok(true),
+                        TargetNativeObservation::Active => Ok(false),
+                        TargetNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => job
+                        .active_processes()
+                        .map(|active| active == 0)
+                        .map_err(|error| error.to_string()),
+                };
+                #[cfg(not(test))]
+                let proof = job
+                    .active_processes()
+                    .map(|active| active == 0)
+                    .map_err(|error| error.to_string());
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
                     Err(error) => {
                         if !query_defect_recorded {
                             defects.push(format!("job accounting failed: {error}"));
@@ -1798,40 +1994,78 @@ impl TargetProcessOwner {
                         }
                     }
                 }
-                if Instant::now() >= deadline {
-                    defects.push("job active settlement exceeded 10s".to_string());
+                if attempt.expired() {
+                    record_update_attempt_expiry(&mut defects, "job accounting proof");
                     let _ = job.terminate_checked();
-                    deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
+                    attempt.restart();
                 }
-                tokio::time::sleep(PROCESS_SETTLEMENT_POLL).await;
+                tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
 
         #[cfg(unix)]
         if self.pgid > 0 {
-            let mut deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
             let mut errno_defect_recorded = false;
             loop {
-                // SAFETY: signal zero is a read-only group existence query.
-                let result = unsafe { libc::kill(-self.pgid, 0) };
-                if result == -1 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::ESRCH) {
-                        break;
+                #[cfg(test)]
+                let proof = match hook
+                    .as_mut()
+                    .and_then(|hook| hook.native_observations.pop_front())
+                {
+                    Some(observation) => match observation {
+                        TargetNativeObservation::Empty => Ok(true),
+                        TargetNativeObservation::Active => Ok(false),
+                        TargetNativeObservation::Error(detail) => Err(detail.to_string()),
+                    },
+                    None => {
+                        // SAFETY: signal zero is a read-only group existence query.
+                        let result = unsafe { libc::kill(-self.pgid, 0) };
+                        if result == -1 {
+                            let error = std::io::Error::last_os_error();
+                            if error.raw_os_error() == Some(libc::ESRCH) {
+                                Ok(true)
+                            } else {
+                                Err(error.to_string())
+                            }
+                        } else {
+                            Ok(false)
+                        }
                     }
-                    if !errno_defect_recorded {
-                        defects.push(format!("process-group accounting failed: {error}"));
-                        errno_defect_recorded = true;
+                };
+                #[cfg(not(test))]
+                let proof = {
+                    // SAFETY: signal zero is a read-only group existence query.
+                    let result = unsafe { libc::kill(-self.pgid, 0) };
+                    if result == -1 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() == Some(libc::ESRCH) {
+                            Ok(true)
+                        } else {
+                            Err(error.to_string())
+                        }
+                    } else {
+                        Ok(false)
+                    }
+                };
+                match proof {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => {
+                        if !errno_defect_recorded {
+                            defects.push(format!("process-group accounting failed: {error}"));
+                            errno_defect_recorded = true;
+                        }
                     }
                 }
-                if Instant::now() >= deadline {
-                    defects.push("process-group settlement exceeded 10s".to_string());
+                if attempt.expired() {
+                    record_update_attempt_expiry(&mut defects, "process-group accounting proof");
+                    // SAFETY: this remains the retained group identity.
                     unsafe {
                         libc::kill(-self.pgid, libc::SIGKILL);
                     }
-                    deadline = Instant::now() + PROCESS_SETTLEMENT_WINDOW;
+                    attempt.restart();
                 }
-                tokio::time::sleep(PROCESS_SETTLEMENT_POLL).await;
+                tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
             }
         }
         #[cfg(windows)]
@@ -1840,6 +2074,31 @@ impl TargetProcessOwner {
             stdout,
             stderr,
             defects,
+        }
+    }
+
+    async fn settle_observing_cancellation<F>(
+        self,
+        wait: &TargetWait,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observed: F,
+    ) -> TargetSettlement
+    where
+        F: FnOnce(),
+    {
+        if matches!(wait, TargetWait::Cancelled) {
+            observed();
+            return self.settle(wait).await;
+        }
+        let settlement = self.settle(wait);
+        tokio::pin!(settlement);
+        tokio::select! {
+            biased;
+            _ = wait_for_target_cancellation(cancel) => {
+                observed();
+                settlement.await
+            }
+            settled = &mut settlement => settled,
         }
     }
 }
@@ -1855,23 +2114,36 @@ where
     })
 }
 
+fn record_update_attempt_expiry(defects: &mut Vec<String>, stage: &str) {
+    let detail = format!("settlement attempt deadline exceeded during {stage}");
+    if !defects.iter().any(|defect| defect == &detail) {
+        defects.push(detail);
+    }
+}
+
 async fn settle_update_reader(
     reader: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
     defects: &mut Vec<String>,
+    attempt: &mut crate::pty::job::SettlementAttempt,
 ) -> Vec<u8> {
     let Some(mut reader) = reader.take() else {
         return Vec::new();
     };
-    match tokio::time::timeout(PROCESS_SETTLEMENT_WINDOW, &mut reader).await {
+    if attempt.expired() {
+        record_update_attempt_expiry(defects, "reader settlement");
+        attempt.restart();
+    }
+    match tokio::time::timeout(attempt.remaining(), &mut reader).await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(error)) => {
             defects.push(format!("reader join failed: {error}"));
             Vec::new()
         }
         Err(_) => {
-            defects.push("reader settlement exceeded 10s".to_string());
+            record_update_attempt_expiry(defects, "reader settlement");
             reader.abort();
             let _ = reader.await;
+            attempt.restart();
             Vec::new()
         }
     }
@@ -1911,11 +2183,15 @@ async fn run_update_sequence_cancellable(
         let Some((epoch, _)) = gate.begin_step(&target.command, work) else {
             return UpdaterStepOutcome::Cancelled;
         };
+        #[cfg(test)]
+        gate.hold_after_step_begin_for_test(&target.command).await;
         let StepAdmission::Committed { epoch, mut cancel } =
             gate.commit_step(&target.command, work, epoch)
         else {
             return UpdaterStepOutcome::Cancelled;
         };
+        #[cfg(test)]
+        gate.hold_after_step_commit_for_test(&target.command).await;
 
         let mut command = {
             let mut command = if cfg!(windows) {
@@ -1950,13 +2226,12 @@ async fn run_update_sequence_cancellable(
             .expect("installed target owner")
             .wait(step_timeout, &mut cancel)
             .await;
-        if matches!(waited, TargetWait::Cancelled) {
-            gate.owner_observed_cancellation(&target.command, work, epoch);
-        }
         let settlement = owner_slot
             .take()
             .expect("settled target owner")
-            .settle(&waited)
+            .settle_observing_cancellation(&waited, &mut cancel, || {
+                gate.owner_observed_cancellation(&target.command, work, epoch);
+            })
             .await;
         let cancellation_reserved = gate.owner_returned(&target.command, work, epoch);
         if !settlement.defects.is_empty() {
@@ -2255,6 +2530,42 @@ fn emit_all(app: &AppHandle, event: &str, payload: Value) {
     }
 }
 
+/// Exercise the production event serializer/broadcaster for transport parity.
+/// The WebSocket transport test compares the untouched text frames emitted by
+/// this same path for both Tauri- and Web-routed cancellation state.
+#[cfg(test)]
+pub(crate) fn emit_agent_update_transport_contract_for_test(app: &AppHandle) {
+    emit_all(
+        app,
+        "agent_update_command_verifying",
+        json!(AgentUpdateCommandRef {
+            command: "claude".to_string(),
+            label: "Claude".to_string(),
+        }),
+    );
+    emit_all(
+        app,
+        "agent_update_command_finished",
+        json!(AgentUpdateResult {
+            command: "claude".to_string(),
+            label: "Claude".to_string(),
+            ok: false,
+            outcome: AgentUpdateOutcome::Cancelled,
+            error: None,
+            install_before: Some(InstallState {
+                status: InstallStatus::Installed,
+                version: Some("1.2.3".to_string()),
+                path: None,
+                detail: None,
+                seq: 0,
+            }),
+            install_after: None,
+            change: AgentUpdateChange::Unknown,
+            verification_error: None,
+        }),
+    );
+}
+
 /// #1551 - the two effects of the pass end, named fields so the supervisor cannot
 /// pass them in the wrong slots.
 struct PassEnd<I: FnOnce(), E: FnOnce()> {
@@ -2262,22 +2573,19 @@ struct PassEnd<I: FnOnce(), E: FnOnce()> {
     emit: E,
 }
 
-/// #1551 - the ONLY transition to `finished`. Order is load-bearing (happens-before):
-/// (1) invalidate the install cache while the gate is still un-finished, so an overview
-///     that later observes `is_finished() == true` (gate lock acquired after `mark_finished`
-///     released it) necessarily observes generation G+1 on its cache lock take (the cache
-///     lock was released by `invalidate_all` before the gate lock was taken by `mark_finished`);
-/// (2) mark the gate finished (results replaced, `running`/`pending` cleared, waiters released);
-/// (3) announce. A client refreshing on the event therefore sees `finished` AND G+1, and no
-///     ticket opened after `finished` became observable can carry the pre-pass generation.
+/// #1551 - the ONLY production transition to `finished`. Order is load-bearing:
+/// invalidate cache -> store the final snapshot while unfinished -> enqueue the
+/// pass-finished event -> atomically open terminal fences/mark finished -> notify
+/// admission. Post-update probe scheduling happens only after this returns.
 fn finish_pass<I: FnOnce(), E: FnOnce()>(
     gate: &AgentUpdateGate,
     results: Vec<AgentUpdateResult>,
     end: PassEnd<I, E>,
 ) {
     (end.invalidate)();
-    gate.mark_finished(results);
+    gate.store_final_results(results);
     (end.emit)();
+    gate.release_finished();
 }
 
 async fn run_target_probe(
@@ -2289,10 +2597,14 @@ async fn run_target_probe(
     let Some((epoch, _)) = gate.begin_step(&target.command, work) else {
         return TargetProbeOutcome::Cancelled;
     };
+    #[cfg(test)]
+    gate.hold_after_step_begin_for_test(&target.command).await;
     let StepAdmission::Committed { epoch, cancel } = gate.commit_step(&target.command, work, epoch)
     else {
         return TargetProbeOutcome::Cancelled;
     };
+    #[cfg(test)]
+    gate.hold_after_step_commit_for_test(&target.command).await;
     gate.owner_installed(&target.command, work, epoch);
     if work == TargetWork::PostProbe {
         emit_all(
@@ -2304,7 +2616,17 @@ async fn run_target_probe(
             }),
         );
     }
-    let outcome = probe_command_install_state_cancellable(&target.command, cancel).await;
+    let mut observed_cancel = cancel.clone();
+    let probe = probe_command_install_state_cancellable(&target.command, cancel);
+    tokio::pin!(probe);
+    let outcome = tokio::select! {
+        biased;
+        _ = wait_for_target_cancellation(&mut observed_cancel) => {
+            gate.owner_observed_cancellation(&target.command, work, epoch);
+            probe.await
+        }
+        outcome = &mut probe => outcome,
+    };
     if matches!(outcome, TargetProbeOutcome::Cancelled) {
         gate.owner_observed_cancellation(&target.command, work, epoch);
     }
@@ -4675,46 +4997,80 @@ mod tests {
     // #1551 - the pass end
     // ---------------------------------------------------------------------
 
-    #[test]
-    fn finish_pass_invalidates_before_the_gate_is_finished_and_emits_after() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finish_pass_emits_before_releasing_admission() {
         let cache = Arc::new(AgentInstallCache::new());
         let ticket = cache.try_begin("bob").expect("ticket");
         assert!(matches!(
             ticket.complete(InstallState::missing("seed".to_string())),
             Completion::Committed(_)
         ));
-        let gate = AgentUpdateGate::new();
-        let invalidate_saw_finished = std::cell::Cell::new(true);
-        let emit_saw = std::cell::Cell::new((false, 0_u64, false));
+        let gate = Arc::new(AgentUpdateGate::new());
         let results = vec![ok_result("claude", "Claude")];
 
-        finish_pass(
-            &gate,
-            results,
-            PassEnd {
-                invalidate: || {
-                    invalidate_saw_finished.set(gate.is_finished());
-                    cache.invalidate_all();
-                },
-                emit: || {
-                    emit_saw.set((
-                        gate.is_finished(),
-                        cache.generation(),
-                        matches!(
-                            cache.lookup("bob", Instant::now(), INSTALL_CACHE_TTL),
-                            CacheLookup::Absent
-                        ),
-                    ));
-                },
-            },
-        );
+        let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
+        *gate
+            .wait_registered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(registered_tx);
+        let waiter_returned = Arc::new(AtomicBool::new(false));
+        let waiter = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            let waiter_returned = Arc::clone(&waiter_returned);
+            async move {
+                gate.wait_until_done().await;
+                waiter_returned.store(true, Ordering::SeqCst);
+            }
+        });
+        registered_rx
+            .await
+            .expect("waiter registered its notification before the finished check");
 
+        let (emit_entered_tx, emit_entered_rx) = std::sync::mpsc::channel();
+        let (release_emit_tx, release_emit_rx) = std::sync::mpsc::channel();
+        let finish = tokio::task::spawn_blocking({
+            let gate = Arc::clone(&gate);
+            let cache = Arc::clone(&cache);
+            move || {
+                finish_pass(
+                    &gate,
+                    results,
+                    PassEnd {
+                        invalidate: || {
+                            assert!(!gate.is_finished());
+                            cache.invalidate_all();
+                        },
+                        emit: || {
+                            assert!(!gate.is_finished(), "emit precedes admission release");
+                            assert_eq!(gate.snapshot().results.len(), 1);
+                            assert_eq!(cache.generation(), 1);
+                            emit_entered_tx.send(()).expect("announce emitter entry");
+                            release_emit_rx
+                                .recv_timeout(Duration::from_secs(5))
+                                .expect("release pass-finished emitter");
+                        },
+                    },
+                );
+            }
+        });
+        emit_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("pass-finished emitter reached");
+        assert!(!gate.is_finished());
         assert!(
-            !invalidate_saw_finished.get(),
-            "the cache is invalidated while the gate is still un-finished"
+            !waiter_returned.load(Ordering::SeqCst),
+            "admission waiter cannot return while the emitter is blocked"
         );
-        assert_eq!(emit_saw.get(), (true, 1, true));
+        release_emit_tx.send(()).expect("release emitter");
+        finish.await.expect("finish task");
+        waiter.await.expect("admission waiter");
+        assert!(waiter_returned.load(Ordering::SeqCst));
         assert_eq!(gate.snapshot().results.len(), 1);
+        assert!(gate.is_finished());
+        assert!(matches!(
+            cache.lookup("bob", Instant::now(), INSTALL_CACHE_TTL),
+            CacheLookup::Absent
+        ));
     }
 
     #[tokio::test]
@@ -4810,6 +5166,87 @@ mod tests {
         assert_no_frame(&mut quiet_rx).await;
         assert!(quiet_gate.is_finished());
         assert_eq!(quiet_cache.generation(), 1);
+    }
+
+    #[tokio::test]
+    async fn pass_panic_preserves_live_cancellation_response_release() {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        seed_retained_target(&gate, "panic-row", "Panic row");
+        set_target_phase(&gate, "panic-row", TargetPhase::Running(0, 1));
+        let (response_ready_tx, response_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_response_tx, release_response_rx) = tokio::sync::oneshot::channel();
+        gate.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .controls
+            .get_mut("panic-row")
+            .expect("panic row control")
+            .response_release_hook = Some(ResponseReleaseTestHook {
+            ready: Some(response_ready_tx),
+            release: Some(release_response_rx),
+        });
+
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            async move { cancel_update(&handle, &gate, "panic-row".to_string()).await }
+        });
+        let changed = next_frame(&mut frames).await;
+        assert_eq!(changed["event"], "agent_update_cancellation_changed");
+
+        let panic_settlement = tokio::spawn({
+            let supervisor = PassSupervisor {
+                app: handle.clone(),
+                gate: Arc::clone(&gate),
+            };
+            async move {
+                let mut runtime = PassRuntime {
+                    started: true,
+                    known_targets: vec![UpdateTarget {
+                        command: "panic-row".to_string(),
+                        label: "Panic row".to_string(),
+                        commands: vec!["exit 0".to_string()],
+                        cwd: cwd(),
+                    }],
+                    ..PassRuntime::default()
+                };
+                supervisor.settle_pass_panic(&mut runtime).await;
+                (supervisor, runtime)
+            }
+        });
+
+        response_ready_rx
+            .await
+            .expect("cancellation reached its response-release tail");
+        assert!(
+            !panic_settlement.is_finished(),
+            "supervisor terminalization must retain the live caller fence"
+        );
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "no terminal event before response release"
+        );
+
+        release_response_tx
+            .send(())
+            .expect("release cancellation response");
+        let response = cancellation.await.expect("cancellation task");
+        assert_eq!(
+            response.disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        let (supervisor, runtime) = panic_settlement.await.expect("panic settlement task");
+        supervisor.finalize(runtime).await;
+        let remaining = drain_frames(&mut frames);
+        assert_eq!(remaining[0]["event"], "agent_update_command_finished");
+        assert_eq!(
+            remaining[0]["payload"]["error"],
+            "Update supervisor stopped unexpectedly."
+        );
+        assert_eq!(remaining[1]["event"], "agent_updates_finished");
     }
 
     #[tokio::test]
@@ -5062,15 +5499,57 @@ mod tests {
         assert_eq!(incomparable["verificationError"], "after detail");
         assert!(incomparable.get("error").is_none());
 
-        let cancelled =
-            serde_json::to_value(cancelled_update_result(&target, Some(installed("1.2.3"))))
-                .expect("cancelled json");
+        let before_fallback = serde_json::to_value(successful_update_result(
+            &target,
+            InstallState::missing("before detail".to_string()),
+            installed("2.0.0"),
+        ))
+        .expect("before fallback json");
+        assert_eq!(before_fallback["verificationError"], "before detail");
+
+        let literal_fallback = serde_json::to_value(successful_update_result(
+            &target,
+            InstallState {
+                status: InstallStatus::Installed,
+                version: None,
+                path: None,
+                detail: None,
+                seq: 0,
+            },
+            installed("2.0.0"),
+        ))
+        .expect("literal fallback json");
+        assert_eq!(
+            literal_fallback["verificationError"],
+            "Version comparison unavailable."
+        );
+
+        let cancelled_result = cancelled_update_result(&target, Some(installed("1.2.3")));
+        let cancelled = serde_json::to_value(&cancelled_result).expect("cancelled json");
         assert_eq!(cancelled["ok"], false);
         assert_eq!(cancelled["outcome"], "cancelled");
         assert!(cancelled["installBefore"].is_object());
         assert!(cancelled["installAfter"].is_null());
         assert!(cancelled.get("error").is_none());
         assert!(cancelled.get("verificationError").is_none());
+        let cancelled_keys: std::collections::BTreeSet<&str> = cancelled
+            .as_object()
+            .expect("cancelled object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            cancelled_keys,
+            std::collections::BTreeSet::from([
+                "change",
+                "command",
+                "installAfter",
+                "installBefore",
+                "label",
+                "ok",
+                "outcome",
+            ])
+        );
 
         let failed = serde_json::to_value(failed_update_result(
             &target,
@@ -5101,71 +5580,176 @@ mod tests {
         assert_eq!(status["verifying"], json!([]));
         assert_eq!(status["cancelRequested"], json!([]));
         assert_eq!(status["cancelAllRequested"], false);
+
+        let gate = AgentUpdateGate::new();
+        seed_retained_target(&gate, &target.command, &target.label);
+        assert!(matches!(
+            gate.publish_terminal(cancelled_result.clone(), false),
+            TerminalPublish::Published
+        ));
+        gate.command_event_emitted(&target.command);
+        gate.store_final_results(vec![cancelled_result]);
+        let stored = gate.snapshot();
+        assert!(
+            stored.in_progress,
+            "stored final snapshot remains admission-blocking"
+        );
+        assert_eq!(stored.results.len(), 1);
+        assert_eq!(stored.results[0].outcome, AgentUpdateOutcome::Cancelled);
+        assert!(stored.results[0].install_after.is_none());
+        gate.release_finished();
+        let remounted: AgentUpdateStatus = serde_json::from_value(
+            serde_json::to_value(gate.snapshot()).expect("snapshot wire value"),
+        )
+        .expect("snapshot survives serialization");
+        assert!(!remounted.in_progress);
+        assert_eq!(remounted.results[0].outcome, AgentUpdateOutcome::Cancelled);
+        assert!(remounted.results[0].install_after.is_none());
     }
 
     #[tokio::test]
     async fn step_admission_cancel_barrier_is_first_winner() {
         let (app, _frames) = app_with_broadcaster();
         let handle = app.handle().clone();
+        let dir = tempfile::tempdir().expect("tempdir");
 
-        // Cancellation owns the final-check mutex first: commit is refused and
-        // the admitted marker stays zero even after the response.
+        // Cancellation owns the real final-check boundary first. The production
+        // sequence is held after `begin_step`; its response precedes release,
+        // commit is refused, and the real shell marker never spawns.
         let gate = Arc::new(AgentUpdateGate::new());
-        seed_retained_target(&gate, "codex", "Codex");
-        let (epoch, _) = gate
-            .begin_step("codex", TargetWork::UpdaterStep(0))
-            .expect("starting reservation");
-        let response = cancel_update(&handle, &gate, "codex".to_string()).await;
+        let cancelled_marker = dir.path().join("cancelled-first.marker");
+        let cancelled_target = UpdateTarget {
+            command: "cancel-first".to_string(),
+            label: "Cancel first".to_string(),
+            commands: vec!["echo forbidden>cancelled-first.marker".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &cancelled_target.command, &cancelled_target.label);
+        let (began_tx, began_rx) = tokio::sync::oneshot::channel();
+        let (release_commit_tx, release_commit_rx) = tokio::sync::oneshot::channel();
+        gate.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .controls
+            .get_mut(&cancelled_target.command)
+            .expect("cancel-first control")
+            .step_admission_hook = Some(StepAdmissionTestHook {
+            after_begin: Some(began_tx),
+            release_commit: Some(release_commit_rx),
+            after_commit: None,
+            release_spawn: None,
+        });
+        let cancelled_sequence = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            async move {
+                let mut owner = None;
+                run_update_sequence_cancellable(
+                    &cancelled_target,
+                    Duration::from_secs(30),
+                    &gate,
+                    &mut owner,
+                )
+                .await
+            }
+        });
+        began_rx.await.expect("production begin-step barrier");
+        let response = cancel_update(&handle, &gate, "cancel-first".to_string()).await;
         assert_eq!(
             response.disposition,
             AgentUpdateCancelDisposition::Requested
         );
+        assert!(!cancelled_marker.exists());
+        release_commit_tx.send(()).expect("release commit boundary");
         assert!(matches!(
-            gate.commit_step("codex", TargetWork::UpdaterStep(0), epoch),
-            StepAdmission::Cancelled
+            cancelled_sequence.await.expect("cancel-first sequence"),
+            UpdaterStepOutcome::Cancelled
         ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !cancelled_marker.exists(),
+            "no spawn can follow the response"
+        );
 
-        // Admission owns the mutex first. The cancellation response waits until
-        // the installed owner observes the retained signal.
+        // Admission owns the same production boundary first. Hold immediately
+        // after commit: cancellation must wait for the actual owner handoff. A
+        // first-step marker may win before the response, but neither it nor a
+        // later-step marker may appear after that response.
         let gate = Arc::new(AgentUpdateGate::new());
-        seed_retained_target(&gate, "claude", "Claude");
-        let (epoch, _) = gate
-            .begin_step("claude", TargetWork::UpdaterStep(0))
-            .expect("starting reservation");
-        let StepAdmission::Committed {
-            epoch,
-            cancel: owner_cancel,
-        } = gate.commit_step("claude", TargetWork::UpdaterStep(0), epoch)
-        else {
-            panic!("admission must win");
+        let admitted_marker = dir.path().join("admitted-first.marker");
+        let later_marker = dir.path().join("forbidden-later.marker");
+        let admitted_step = if cfg!(windows) {
+            "echo admitted>admitted-first.marker & ping -n 30 127.0.0.1 >NUL"
+        } else {
+            "echo admitted > admitted-first.marker; sleep 30"
         };
-        let admitted = Arc::new(AtomicUsize::new(1));
+        let admitted_target = UpdateTarget {
+            command: "admission-first".to_string(),
+            label: "Admission first".to_string(),
+            commands: vec![
+                admitted_step.to_string(),
+                "echo forbidden>forbidden-later.marker".to_string(),
+            ],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &admitted_target.command, &admitted_target.label);
+        let (committed_tx, committed_rx) = tokio::sync::oneshot::channel();
+        let (release_spawn_tx, release_spawn_rx) = tokio::sync::oneshot::channel();
+        gate.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .controls
+            .get_mut(&admitted_target.command)
+            .expect("admission-first control")
+            .step_admission_hook = Some(StepAdmissionTestHook {
+            after_begin: None,
+            release_commit: None,
+            after_commit: Some(committed_tx),
+            release_spawn: Some(release_spawn_rx),
+        });
+        let admitted_sequence = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            async move {
+                let mut owner = None;
+                run_update_sequence_cancellable(
+                    &admitted_target,
+                    Duration::from_secs(30),
+                    &gate,
+                    &mut owner,
+                )
+                .await
+            }
+        });
+        committed_rx.await.expect("production commit-step barrier");
         let request = tokio::spawn({
             let handle = handle.clone();
             let gate = Arc::clone(&gate);
-            async move { cancel_update(&handle, &gate, "claude".to_string()).await }
+            async move { cancel_update(&handle, &gate, "admission-first".to_string()).await }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             !request.is_finished(),
-            "response waits for owner acceptance"
+            "response waits for the committed production owner handoff"
         );
-        gate.owner_installed("claude", TargetWork::UpdaterStep(0), epoch);
-        assert!(
-            *owner_cancel.borrow(),
-            "the retained signal reached the owner"
-        );
-        gate.owner_observed_cancellation("claude", TargetWork::UpdaterStep(0), epoch);
+        release_spawn_tx
+            .send(())
+            .expect("release real spawn boundary");
         let response = request.await.expect("cancel task");
         assert_eq!(
             response.disposition,
             AgentUpdateCancelDisposition::Requested
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(admitted.load(Ordering::SeqCst), 1);
-        assert!(gate
-            .begin_step("claude", TargetWork::UpdaterStep(1))
-            .is_none());
+        let marker_at_response = admitted_marker.exists();
+        assert!(matches!(
+            admitted_sequence.await.expect("admission-first sequence"),
+            UpdaterStepOutcome::Cancelled
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            admitted_marker.exists(),
+            marker_at_response,
+            "the admitted marker cannot first appear after the response"
+        );
+        assert!(!later_marker.exists(), "no later step may be admitted");
     }
 
     #[tokio::test]
@@ -5573,8 +6157,13 @@ mod tests {
             command
         };
         command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
+        if hold_before_native_proof {
+            command.stdout(Stdio::null());
+            command.stderr(Stdio::null());
+        } else {
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
+        }
         command.kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
@@ -5588,6 +6177,8 @@ mod tests {
             owner.settlement_hook = Some(TargetSettlementHook {
                 before_native_proof: Some(ready_tx),
                 release_native_proof: Some(release_rx),
+                settlement_window: None,
+                native_observations: std::collections::VecDeque::new(),
             });
             (Some(ready_rx), Some(release_tx))
         } else {
@@ -5663,9 +6254,237 @@ mod tests {
         drain_frames(&mut frames)
     }
 
+    #[cfg(any(windows, unix))]
+    async fn updater_settlement_cancellation_case(
+        settlement_window: Option<Duration>,
+        native_observations: std::collections::VecDeque<TargetNativeObservation>,
+        hold_native_proof: bool,
+    ) -> (AgentUpdateResult, Vec<String>, Vec<Value>) {
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = UpdateTarget {
+            command: "settling-update".to_string(),
+            label: "Settling update".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let (epoch, _) = gate
+            .begin_step(&target.command, TargetWork::UpdaterStep(0))
+            .expect("updater begin");
+        let StepAdmission::Committed { epoch, mut cancel } =
+            gate.commit_step(&target.command, TargetWork::UpdaterStep(0), epoch)
+        else {
+            panic!("updater commit");
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("cmd.exe");
+            command.arg("/D").arg("/C").arg("exit 0");
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.arg("-c").arg("exit 0");
+            command.process_group(0);
+            command
+        };
+        command.current_dir(dir.path());
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command.kill_on_drop(true);
+        let Ok(mut owner) = TargetProcessOwner::spawn(&mut command).await else {
+            panic!("real contained updater owner");
+        };
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        owner.settlement_hook = Some(TargetSettlementHook {
+            before_native_proof: Some(proof_ready_tx),
+            release_native_proof: hold_native_proof.then_some(release_proof_rx),
+            settlement_window,
+            native_observations,
+        });
+        gate.owner_installed(&target.command, TargetWork::UpdaterStep(0), epoch);
+        let waited = owner.wait(Duration::from_secs(10), &mut cancel).await;
+        assert!(matches!(waited, TargetWait::Exited(Ok(_))));
+        let owner_task = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            let handle = handle.clone();
+            async move {
+                let settlement = owner
+                    .settle_observing_cancellation(&waited, &mut cancel, || {
+                        gate.owner_observed_cancellation(
+                            &target.command,
+                            TargetWork::UpdaterStep(0),
+                            epoch,
+                        );
+                    })
+                    .await;
+                let defects = settlement.defects.clone();
+                assert!(gate.owner_returned(&target.command, TargetWork::UpdaterStep(0), epoch));
+                let candidate = if defects.is_empty() {
+                    cancelled_update_result(&target, Some(installed("1.0.0")))
+                } else {
+                    failed_update_result(
+                        &target,
+                        Some(installed("1.0.0")),
+                        None,
+                        CANCELLATION_CLEANUP_ERROR,
+                    )
+                };
+                let result = TargetTerminalizer::new(handle, Arc::clone(&gate), target)
+                    .publish(candidate)
+                    .await;
+                (result, defects)
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), proof_ready_rx)
+            .await
+            .expect("updater reached native proof")
+            .expect("direct handle dropped before native proof");
+        let cancellation = tokio::spawn({
+            let gate = Arc::clone(&gate);
+            let handle = handle.clone();
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
+        });
+        let changed = next_frame(&mut frames).await;
+        assert_eq!(changed["event"], "agent_update_cancellation_changed");
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("settlement cancellation response precedes native proof")
+            .expect("settlement cancellation task");
+        assert_eq!(
+            response.disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        assert!(!owner_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        if hold_native_proof {
+            release_proof_tx.send(()).expect("release native proof");
+        }
+        let (result, defects) = tokio::time::timeout(Duration::from_secs(15), owner_task)
+            .await
+            .expect("settling owner completed after native proof")
+            .expect("settling owner task");
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let mut events = vec![changed];
+        events.extend(drain_frames(&mut frames));
+        (result, defects, events)
+    }
+
     #[tokio::test]
     async fn cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled() {
-        let events = exercise_contained_update_cancellation(TargetWork::PostProbe, false).await;
+        let (app, mut frames) = app_with_broadcaster();
+        let handle = app.handle().clone();
+        let gate = Arc::new(AgentUpdateGate::new());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = UpdateTarget {
+            command: if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "sh".to_string()
+            },
+            label: "Verification probe".to_string(),
+            commands: vec!["exit 0".to_string()],
+            cwd: dir.path().to_path_buf(),
+        };
+        seed_retained_target(&gate, &target.command, &target.label);
+        let install_before = InstallState::missing("pre-probe state".to_string());
+        let mut terminalizer =
+            TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
+        terminalizer.store_install_before(install_before.clone());
+        let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+        let probe_task = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let target = target.clone();
+            async move {
+                let stem = if cfg!(windows) { "cmd" } else { "sh" };
+                let args: &'static [&'static str] = if cfg!(windows) {
+                    &["/D", "/C", "cmd /C ping -n 30 127.0.0.1 >NUL"]
+                } else {
+                    &["-c", "sh -c 'sleep 30' & wait"]
+                };
+                let outcome = crate::agent_version::with_version_probe_args_for_test(
+                    stem,
+                    args,
+                    crate::agent_version::with_probe_settlement_hook(
+                        crate::agent_version::ProbeSettlementHook {
+                            before_native_proof: Some(proof_ready_tx),
+                            release_native_proof: Some(release_proof_rx),
+                            settlement_window: None,
+                            native_observations: std::collections::VecDeque::new(),
+                        },
+                        run_target_probe(&handle, &gate, &target, TargetWork::PostProbe),
+                    ),
+                )
+                .await;
+                assert!(matches!(outcome, TargetProbeOutcome::Cancelled));
+                terminalizer
+                    .publish(cancelled_update_result(&target, Some(install_before)))
+                    .await
+            }
+        });
+
+        let verifying = next_frame(&mut frames).await;
+        assert_eq!(verifying["event"], "agent_update_command_verifying");
+        assert_eq!(verifying["payload"]["command"], target.command);
+        let cancellation = tokio::spawn({
+            let handle = handle.clone();
+            let gate = Arc::clone(&gate);
+            let command = target.command.clone();
+            async move { cancel_update(&handle, &gate, command).await }
+        });
+        let changed = next_frame(&mut frames).await;
+        assert_eq!(changed["event"], "agent_update_cancellation_changed");
+        proof_ready_rx
+            .await
+            .expect("real ProbeProcessOwner reached native proof");
+        let response = tokio::time::timeout(Duration::from_secs(2), cancellation)
+            .await
+            .expect("cancellation response precedes native proof release")
+            .expect("cancellation task");
+        assert_eq!(
+            response.disposition,
+            AgentUpdateCancelDisposition::Requested
+        );
+        assert!(!probe_task.is_finished());
+        assert!(gate.snapshot().results.is_empty());
+        assert!(
+            frames.try_recv().is_err(),
+            "terminal event remains proof-blocked"
+        );
+        release_proof_tx
+            .send(())
+            .expect("release probe native proof");
+        let result = probe_task.await.expect("real verification probe task");
+        assert_eq!(result.outcome, AgentUpdateOutcome::Cancelled);
+        PassSupervisor {
+            app: handle,
+            gate: Arc::clone(&gate),
+        }
+        .finalize(PassRuntime {
+            started: true,
+            ..PassRuntime::default()
+        })
+        .await;
+        let mut events = vec![verifying, changed];
+        events.extend(drain_frames(&mut frames));
         let names: Vec<&str> = events
             .iter()
             .filter_map(|event| event["event"].as_str())
@@ -5710,6 +6529,41 @@ mod tests {
             command < pass,
             "native active-zero proof precedes both events"
         );
+
+        let observations = std::collections::VecDeque::from([
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Error("injected query error"),
+            TargetNativeObservation::Empty,
+        ]);
+        let (result, defects, events) = updater_settlement_cancellation_case(
+            Some(Duration::from_millis(60)),
+            observations,
+            true,
+        )
+        .await;
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
+        assert!(defects.iter().any(|defect| {
+            defect == "settlement attempt deadline exceeded during job accounting proof"
+        }));
+        assert!(
+            defects
+                .iter()
+                .any(|defect| defect == "job accounting failed: injected query error"),
+            "later-settled query defect was not retained: {defects:?}"
+        );
+        let command = events
+            .iter()
+            .position(|event| event["event"] == "agent_update_command_finished")
+            .expect("defective command terminal event");
+        let pass = events
+            .iter()
+            .position(|event| event["event"] == "agent_updates_finished")
+            .expect("defective pass terminal event");
+        assert!(command < pass);
+        assert_eq!(events[command]["payload"]["outcome"], "failed");
     }
 
     #[cfg(unix)]
@@ -5736,6 +6590,41 @@ mod tests {
             .position(|event| event["event"] == "agent_updates_finished")
             .expect("pass terminal event");
         assert!(command < pass, "group ESRCH proof precedes pass finish");
+
+        let observations = std::collections::VecDeque::from([
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Active,
+            TargetNativeObservation::Error("EPERM"),
+            TargetNativeObservation::Empty,
+        ]);
+        let (result, defects, events) = updater_settlement_cancellation_case(
+            Some(Duration::from_millis(60)),
+            observations,
+            true,
+        )
+        .await;
+        assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
+        assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
+        assert!(defects.iter().any(|defect| {
+            defect == "settlement attempt deadline exceeded during process-group accounting proof"
+        }));
+        assert!(
+            defects
+                .iter()
+                .any(|defect| defect == "process-group accounting failed: EPERM"),
+            "later-settled EPERM defect was not retained: {defects:?}"
+        );
+        let command = events
+            .iter()
+            .position(|event| event["event"] == "agent_update_command_finished")
+            .expect("defective command terminal event");
+        let pass = events
+            .iter()
+            .position(|event| event["event"] == "agent_updates_finished")
+            .expect("defective pass terminal event");
+        assert!(command < pass);
+        assert_eq!(events[command]["payload"]["outcome"], "failed");
     }
 
     #[tokio::test]
