@@ -11,11 +11,9 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig } from "../../shared/types";
 
-// #895 — the configured coding-agent list doubles as the rail picker: clicking
-// the first row targets the left/primary rail, clicking any later row targets
-// the right/comparison rail. The "Use" button is gone. When the clicked agent
-// already holds the *other* rail the two exchange places, so a click is never a
-// dead no-op and never collapses the comparison pair onto one agent.
+// #895 — the configured coding-agent list doubles as the rail picker. Use calls
+// the same selection closure: row 0 targets the left/primary rail, later rows
+// target the right/comparison rail, and opposite-rail occupants exchange places.
 
 function agent(id: string, label: string, command: string): AgentConfig {
   return { id, label, command, color: "#334155", envs: [], isolatedHome: false };
@@ -107,11 +105,202 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     document.body.replaceChildren();
   });
 
-  it("renders no Use button on any configured agent row", async () => {
+  it("renders a complete Use contract on every configured agent row", async () => {
     const r = renderAgents();
     try {
       await ready(r.root);
-      expect(r.root.querySelector('[data-ac-testid$=".use"]')).toBeNull();
+      await enterTwoRails(r.root);
+
+      const titles = [
+        "Already on the left comparison rail",
+        "Already on the right comparison rail",
+        "Show this agent in the right comparison rail",
+      ];
+      for (const [i, configuredAgent] of AGENTS.entries()) {
+        const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${i}.use`)!;
+        const title = titles[i]!;
+        const actions = [
+          ...r.root.querySelectorAll(`[data-ac-testid="settings.agentRow.${i}"] .settings-agent-row-actions button`),
+        ].map((el) => el.getAttribute("data-ac-testid"));
+
+        expect(use.textContent).toBe("Configuration");
+        expect(use.getAttribute("data-ac-role")).toBe("button");
+        expect(use.getAttribute("title")).toBe(title);
+        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${configuredAgent.label}: ${title}`);
+        expect(actions).toEqual([
+          `settings.agentRow.${i}.use`,
+          `settings.agentRow.${i}.remove`,
+          `settings.agentRow.${i}.toggle`,
+        ]);
+
+        if (i < 2) {
+          expect(use.disabled).toBe(true);
+          expect(use.matches(":disabled")).toBe(true);
+        } else {
+          expect(use.disabled).toBe(false);
+          expect(use.matches(":disabled")).toBe(false);
+        }
+      }
+      expect(r.root.querySelector('[data-ac-testid$=".unuse"]')).toBeNull();
+      expect(byTestId(r.root, "settings.profileRail.1.clear")).toBeTruthy();
+      expect(byTestId(r.root, "settings.profileRail.0.clear")).toBeNull();
+
+      click(r.root, "settings.agents.swapRails");
+      await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
+      for (const [i, title] of [
+        "Swap this agent onto the left comparison rail",
+        "Swap this agent onto the right comparison rail",
+      ].entries()) {
+        const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${i}.use`)!;
+        expect(use.getAttribute("title")).toBe(title);
+        expect(use.getAttribute("aria-label")).toBe(`Configuration for ${AGENTS[i]!.label}: ${title}`);
+        expect(use.disabled).toBe(false);
+      }
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  for (const target of AGENTS) {
+    it(`uses ${target.label} in one-rail view and clears a stale right id`, async () => {
+      const r = renderAgents();
+      try {
+        await ready(r.root);
+        await enterTwoRails(r.root);
+        const staleRightId = target.id === "codex" ? "claude" : "codex";
+        if (staleRightId === "codex") {
+          click(r.root, "settings.agents.swapRails");
+          await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
+        }
+        await pinLeft(r.root, staleRightId);
+        expect(railCountAttr(r.root)).toBe("1");
+        expect(rails(r.root)).toEqual([staleRightId, null]);
+
+        const use = byTestId<HTMLButtonElement>(
+          r.root,
+          `settings.agentRow.${AGENTS.indexOf(target)}.use`,
+        )!;
+        expect(use.disabled).toBe(false);
+        use.click();
+        await waitFor(() => expect(rails(r.root)).toEqual([target.id, null]));
+        expect(railCountAttr(r.root)).toBe("1");
+        expect(byTestId(r.root, "settings.profileRail.1")).toBeNull();
+      } finally {
+        r.cleanup();
+      }
+    });
+  }
+
+  for (const [index, target] of AGENTS.entries()) {
+    it(`uses ${target.label} in two-rail view to target the ${index === 0 ? "left" : "right"} rail`, async () => {
+      const r = renderAgents();
+      try {
+        await ready(r.root);
+        await enterTwoRails(r.root);
+        if (index < 2) {
+          // Row 0 holds right and row 1 holds left, proving both swap directions.
+          click(r.root, "settings.agents.swapRails");
+          await waitFor(() => expect(rails(r.root)).toEqual(["claude", "codex"]));
+        }
+
+        const use = byTestId<HTMLButtonElement>(r.root, `settings.agentRow.${index}.use`)!;
+        expect(use.disabled).toBe(false);
+        use.click();
+        await waitFor(() =>
+          expect(rails(r.root)).toEqual(index === 2 ? ["codex", "opencode"] : ["codex", "claude"]),
+        );
+      } finally {
+        r.cleanup();
+      }
+    });
+  }
+
+  it("keeps enabled and disabled Use clicks out of the row header", async () => {
+    const r = renderAgents();
+    let observer: MutationObserver | null = null;
+    let enabledHeader: HTMLElement | null = null;
+    let disabledHeader: HTMLElement | null = null;
+    let observeHeader: ((event: MouseEvent) => void) | null = null;
+    let observeDocument: ((event: MouseEvent) => void) | null = null;
+    try {
+      await ready(r.root);
+      await enterTwoRails(r.root);
+      enabledHeader = head(r.root, 2);
+      disabledHeader = head(r.root, 0);
+      let headerClickCount = 0;
+      const observedHeaderEvents = new WeakSet<MouseEvent>();
+      observeHeader = (event) => {
+        // Solid intentionally skips delegated handlers for disabled native
+        // controls, even though jsdom dispatches this synthetic event to raw
+        // native listeners. It cannot activate the selectable row header.
+        if (event.target instanceof HTMLButtonElement && event.target.disabled) return;
+        observedHeaderEvents.add(event);
+      };
+      observeDocument = (event) => {
+        // Solid delegates JSX click handlers from document. This observer runs
+        // after that delegate, while the event still exposes cancelBubble.
+        if (observedHeaderEvents.has(event) && !event.cancelBubble) headerClickCount += 1;
+      };
+      enabledHeader.addEventListener("click", observeHeader);
+      disabledHeader.addEventListener("click", observeHeader);
+      document.addEventListener("click", observeDocument);
+
+      let previousRails = rails(r.root);
+      const railTransitions: [string | null, string | null][] = [];
+      observer = new MutationObserver(() => {
+        const nextRails = rails(r.root);
+        if (nextRails[0] !== previousRails[0] || nextRails[1] !== previousRails[1]) {
+          railTransitions.push(nextRails);
+          previousRails = nextRails;
+        }
+      });
+      observer.observe(r.root, { attributes: true, childList: true, subtree: true });
+
+      const enabledUse = byTestId<HTMLButtonElement>(r.root, "settings.agentRow.2.use")!;
+      enabledUse.click();
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
+      await waitFor(() => expect(railTransitions).toEqual([["codex", "opencode"]]));
+      expect(headerClickCount).toBe(0);
+
+      const disabledUse = byTestId<HTMLButtonElement>(r.root, "settings.agentRow.0.use")!;
+      expect(disabledUse.disabled).toBe(true);
+      disabledUse.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(headerClickCount).toBe(0);
+      expect(rails(r.root)).toEqual(["codex", "opencode"]);
+      expect(railTransitions).toEqual([["codex", "opencode"]]);
+    } finally {
+      observer?.disconnect();
+      if (enabledHeader && observeHeader) enabledHeader.removeEventListener("click", observeHeader);
+      if (disabledHeader && observeHeader) disabledHeader.removeEventListener("click", observeHeader);
+      if (observeDocument) document.removeEventListener("click", observeDocument);
+      r.cleanup();
+    }
+  });
+
+  it("keeps Use ordered, focusable, and isolated from row-header keyboard selection", async () => {
+    const r = renderAgents();
+    try {
+      await ready(r.root);
+      await enterTwoRails(r.root);
+      const rowHeader = head(r.root, 2);
+      const use = byTestId<HTMLButtonElement>(r.root, "settings.agentRow.2.use")!;
+      const remove = byTestId<HTMLButtonElement>(r.root, "settings.agentRow.2.remove")!;
+      const toggle = byTestId<HTMLButtonElement>(r.root, "settings.agentRow.2.toggle")!;
+      const actions = [
+        ...rowHeader.querySelectorAll(".settings-agent-row-actions > button"),
+      ];
+
+      expect(rowHeader.contains(use)).toBe(true);
+      expect(actions).toEqual([use, remove, toggle]);
+      use.focus();
+      expect(document.activeElement).toBe(use);
+
+      use.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      use.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: " " }));
+      expect(rails(r.root)).toEqual(["codex", "claude"]);
+
+      use.click();
+      await waitFor(() => expect(rails(r.root)).toEqual(["codex", "opencode"]));
     } finally {
       r.cleanup();
     }
@@ -251,30 +440,6 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       expect(head(r.root, 0).getAttribute("title")).toBe("Swap this agent onto the left comparison rail");
       expect(head(r.root, 1).getAttribute("aria-disabled")).toBe("false");
       expect(head(r.root, 1).getAttribute("title")).toBe("Swap this agent onto the right comparison rail");
-    } finally {
-      r.cleanup();
-    }
-  });
-
-  // ── F3: no per-row rail button, so every row's action column is identical ──
-
-  it("gives every agent row the same two action buttons", async () => {
-    const r = renderAgents();
-    try {
-      await ready(r.root);
-      await enterTwoRails(r.root);
-      // A per-row Remove on exactly one row widened its action column, wrapped the
-      // rail pill and made that row taller — and the tall row moved on every click.
-      for (const i of [0, 1, 2]) {
-        const actions = [
-          ...r.root.querySelectorAll(`[data-ac-testid="settings.agentRow.${i}"] .settings-agent-row-actions button`),
-        ].map((el) => el.getAttribute("data-ac-testid"));
-        expect(actions).toEqual([`settings.agentRow.${i}.remove`, `settings.agentRow.${i}.toggle`]);
-      }
-      expect(r.root.querySelector('[data-ac-testid$=".unuse"]')).toBeNull();
-      // Clearing moved to the rail that owns the state.
-      expect(byTestId(r.root, "settings.profileRail.1.clear")).toBeTruthy();
-      expect(byTestId(r.root, "settings.profileRail.0.clear")).toBeNull();
     } finally {
       r.cleanup();
     }

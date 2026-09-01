@@ -636,7 +636,9 @@ impl DiscoveryBranchWatcher {
                 "[DiscoveryBranchWatcher] thread started, polling every {}s",
                 BRANCH_POLL_INTERVAL.as_secs()
             );
-            let rt = tokio::runtime::Runtime::new()
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
                 .expect("Failed to create tokio runtime for DiscoveryBranchWatcher");
             rt.block_on(async move {
                 loop {
