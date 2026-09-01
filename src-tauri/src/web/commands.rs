@@ -157,6 +157,27 @@ async fn dispatch_agent_update_command(
                 Err(e) => Err(e),
             })
         }
+        "agent_update_cancel" => Some(match require_str(args, "command") {
+            Ok(command) => {
+                crate::commands::config::agent_update_cancel_inner(&state.app_handle, command)
+                    .await
+                    .and_then(|response| {
+                        serde_json::to_value(response).map_err(|error| {
+                            format!("Failed to serialize cancellation response: {error}")
+                        })
+                    })
+            }
+            Err(error) => Err(error),
+        }),
+        "agent_updates_cancel_all" => Some(
+            crate::commands::config::agent_updates_cancel_all_inner(&state.app_handle)
+                .await
+                .and_then(|response| {
+                    serde_json::to_value(response).map_err(|error| {
+                        format!("Failed to serialize batch cancellation response: {error}")
+                    })
+                }),
+        ),
         "get_agent_update_overview" => Some(
             match crate::commands::config::agent_update_overview_inner(
                 &state.app_handle,
@@ -2015,5 +2036,107 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(install_frame["payload"]["command"], "bob-1551-missing");
+    }
+
+    #[tokio::test]
+    async fn agent_update_cancel_transport_parity() {
+        async fn next_json(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> Value {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("event timeout")
+                .expect("event frame");
+            match frame {
+                WsOutMsg::Text(text) => serde_json::from_str(&text).expect("event json"),
+                WsOutMsg::Binary(_) => panic!("unexpected binary event"),
+            }
+        }
+
+        fn retain(gate: &crate::agent_update::AgentUpdateGate, commands: &[(&str, &str)]) {
+            gate.mark_started_with_nodes(
+                commands
+                    .iter()
+                    .map(|(command, label)| crate::agent_update::AgentUpdateNode {
+                        command: (*command).to_string(),
+                        label: (*label).to_string(),
+                        update_commands: vec!["exit 0".to_string()],
+                        install_before: None,
+                    })
+                    .collect(),
+            );
+        }
+
+        let (desktop, mut desktop_events, desktop_gate) =
+            ws_state_with_agent_update(AppSettings::default(), false, false);
+        let (web, mut web_events, web_gate) =
+            ws_state_with_agent_update(AppSettings::default(), false, false);
+        retain(&desktop_gate, &[("claude", "Claude")]);
+        retain(&web_gate, &[("claude", "Claude")]);
+
+        let desktop_response = crate::commands::config::agent_update_cancel(
+            desktop.app_handle.clone(),
+            "claude".to_string(),
+        )
+        .await
+        .expect("desktop cancellation");
+        let web_response =
+            dispatch_inner(&web, "agent_update_cancel", &json!({ "command": "claude" }))
+                .await
+                .expect("web cancellation");
+        assert_eq!(
+            serde_json::to_vec(&desktop_response).expect("desktop bytes"),
+            serde_json::to_vec(&web_response).expect("web bytes")
+        );
+        assert_eq!(
+            web_response,
+            json!({ "command": "claude", "disposition": "requested" })
+        );
+        let desktop_event = next_json(&mut desktop_events).await;
+        let web_event = next_json(&mut web_events).await;
+        assert_eq!(
+            serde_json::to_vec(&desktop_event).expect("desktop event bytes"),
+            serde_json::to_vec(&web_event).expect("web event bytes")
+        );
+        assert_eq!(desktop_event["event"], "agent_update_cancellation_changed");
+        assert_eq!(
+            desktop_event["payload"],
+            json!({
+                "cancelRequested": [{ "command": "claude", "label": "Claude" }],
+                "cancelAllRequested": false
+            })
+        );
+
+        let (desktop, mut desktop_events, desktop_gate) =
+            ws_state_with_agent_update(AppSettings::default(), false, false);
+        let (web, mut web_events, web_gate) =
+            ws_state_with_agent_update(AppSettings::default(), false, false);
+        retain(&desktop_gate, &[("claude", "Claude"), ("codex", "Codex")]);
+        retain(&web_gate, &[("claude", "Claude"), ("codex", "Codex")]);
+        let desktop_response =
+            crate::commands::config::agent_updates_cancel_all(desktop.app_handle.clone())
+                .await
+                .expect("desktop batch cancellation");
+        let web_response = dispatch_inner(&web, "agent_updates_cancel_all", &json!({}))
+            .await
+            .expect("web batch cancellation");
+        assert_eq!(
+            serde_json::to_vec(
+                &serde_json::to_value(&desktop_response).expect("desktop batch wire value"),
+            )
+            .expect("desktop batch bytes"),
+            serde_json::to_vec(&web_response).expect("web batch bytes")
+        );
+        assert_eq!(web_response["requested"][0]["command"], "claude");
+        assert_eq!(web_response["requested"][1]["command"], "codex");
+        let desktop_event = next_json(&mut desktop_events).await;
+        let web_event = next_json(&mut web_events).await;
+        assert_eq!(desktop_event, web_event);
+        assert_eq!(desktop_event["payload"]["cancelAllRequested"], true);
+        assert_eq!(
+            desktop_event["payload"]["cancelRequested"],
+            json!([
+                { "command": "claude", "label": "Claude" },
+                { "command": "codex", "label": "Codex" }
+            ])
+        );
     }
 }

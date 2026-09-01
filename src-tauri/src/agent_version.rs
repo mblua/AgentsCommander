@@ -23,8 +23,11 @@ pub const INSTALL_CACHE_TTL: Duration = Duration::from_secs(600);
 pub const PROBE_OUTPUT_CAP: usize = 4 * 1024;
 /// Sanitized diagnostic length, in characters.
 pub const DETAIL_MAX_CHARS: usize = 160;
-/// Bounded wait for the pipe readers to finish draining.
-const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// One cleanup attempt may spend this long proving the native tree empty. A
+/// missed window records a defect but does not permit a terminal return; the
+/// owned reaper starts another attempt and remains nonterminal until proof.
+const ACTIVE_SETTLEMENT_WINDOW: Duration = Duration::from_secs(10);
+const ACTIVE_SETTLEMENT_POLL: Duration = Duration::from_millis(25);
 
 /// #1551 - fixed probe argv per known program stem (lowercase, extension stripped).
 /// No catalog/user/project string ever reaches argv. Cursor (`agent`) is absent on
@@ -217,12 +220,21 @@ pub enum ProbeOutcome {
     Failed(String),
 }
 
+/// Outcome of a probe whose process owner observes a retained cancellation
+/// signal. Cancelled and CleanupFailed are returned only after every native
+/// process/handle and pipe reader is definitively settled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancellableProbeOutcome {
+    Completed(ProbeOutcome),
+    Cancelled,
+    CleanupFailed(String),
+}
+
 /// Drain a pipe to EOF but retain only the first `PROBE_OUTPUT_CAP` bytes.
-fn spawn_capped_reader<R>(mut reader: R) -> tokio::sync::oneshot::Receiver<Vec<u8>>
+fn spawn_capped_reader<R>(mut reader: R) -> tokio::task::JoinHandle<Vec<u8>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let mut kept: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 4096];
@@ -237,24 +249,323 @@ where
                 }
             }
         }
-        let _ = tx.send(kept);
-    });
-    rx
+        kept
+    })
 }
 
-async fn collect_probe_output(
-    stdout_rx: &mut Option<tokio::sync::oneshot::Receiver<Vec<u8>>>,
-    stderr_rx: &mut Option<tokio::sync::oneshot::Receiver<Vec<u8>>>,
-) -> (Vec<u8>, Vec<u8>) {
-    let stdout = match stdout_rx {
-        Some(rx) => rx.await.unwrap_or_default(),
-        None => Vec::new(),
+async fn settle_probe_reader(
+    reader: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
+    defects: &mut Vec<String>,
+) -> Vec<u8> {
+    let Some(mut reader) = reader.take() else {
+        return Vec::new();
     };
-    let stderr = match stderr_rx {
-        Some(rx) => rx.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    (stdout, stderr)
+    match tokio::time::timeout(ACTIVE_SETTLEMENT_WINDOW, &mut reader).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            defects.push(format!("reader join failed: {error}"));
+            Vec::new()
+        }
+        Err(_) => {
+            defects.push("reader settlement exceeded 10s".to_string());
+            reader.abort();
+            let _ = reader.await;
+            Vec::new()
+        }
+    }
+}
+
+enum ProbeWait {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+struct ProbeSettlement {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    defects: Vec<String>,
+}
+
+struct ProbeProcessOwner {
+    child: Option<tokio::process::Child>,
+    stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    stderr: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    #[cfg(windows)]
+    job: Option<crate::pty::job::JobObject>,
+    #[cfg(unix)]
+    pgid: i32,
+}
+
+impl ProbeProcessOwner {
+    async fn spawn(command: &mut tokio::process::Command) -> Result<Self, ProbeOutcome> {
+        #[cfg(windows)]
+        let (mut child, job) = match crate::pty::job::spawn_suspended_contained(command).await {
+            Ok(pair) => pair,
+            Err(crate::pty::job::ContainedSpawnError::Spawn(error)) => {
+                return Err(ProbeOutcome::Failed(format!("spawn failed: {error}")))
+            }
+            Err(error) => {
+                log::warn!("[agent-version] contained probe launch rejected: {error}");
+                return Err(ProbeOutcome::Failed(
+                    "Version probe process-tree containment unavailable.".to_string(),
+                ));
+            }
+        };
+
+        #[cfg(not(windows))]
+        let mut child = command
+            .spawn()
+            .map_err(|error| ProbeOutcome::Failed(format!("spawn failed: {error}")))?;
+
+        #[cfg(unix)]
+        let pgid = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .unwrap_or(0);
+        let stdout = child.stdout.take().map(spawn_capped_reader);
+        let stderr = child.stderr.take().map(spawn_capped_reader);
+        Ok(Self {
+            child: Some(child),
+            stdout,
+            stderr,
+            #[cfg(windows)]
+            job: Some(job),
+            #[cfg(unix)]
+            pgid,
+        })
+    }
+
+    async fn wait(
+        &mut self,
+        timeout: Duration,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> ProbeWait {
+        let child = self.child.as_mut().expect("probe child owner");
+        tokio::select! {
+            result = child.wait() => ProbeWait::Exited(result),
+            _ = tokio::time::sleep(timeout) => ProbeWait::TimedOut,
+            _ = wait_for_probe_cancellation(cancel) => ProbeWait::Cancelled,
+        }
+    }
+
+    async fn settle(mut self, wait: &ProbeWait) -> ProbeSettlement {
+        let mut defects = Vec::new();
+        let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
+
+        #[cfg(windows)]
+        if cleanup_required {
+            if let Some(job) = self.job.as_ref() {
+                if let Err(error) = job.terminate_checked() {
+                    defects.push(format!("job termination failed: {error}"));
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        if cleanup_required && self.pgid > 0 {
+            // SAFETY: this is the positive process-group id created by
+            // `Command::process_group(0)` for this probe owner.
+            let killed = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
+            if killed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                defects.push(format!(
+                    "process-group termination failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                if let Err(error) = child.start_kill() {
+                    defects.push(format!("direct child termination failed: {error}"));
+                }
+            }
+        }
+
+        if cleanup_required {
+            if let Some(child) = self.child.as_mut() {
+                let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                let mut wait_defect_recorded = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(error) => {
+                            if !wait_defect_recorded {
+                                defects.push(format!("direct child wait failed: {error}"));
+                                wait_defect_recorded = true;
+                            }
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        defects.push("direct child settlement exceeded 10s".to_string());
+                        #[cfg(windows)]
+                        if let Some(job) = self.job.as_ref() {
+                            let _ = job.terminate_checked();
+                        }
+                        #[cfg(unix)]
+                        if self.pgid > 0 {
+                            // SAFETY: this remains the retained group identity.
+                            unsafe {
+                                libc::kill(-self.pgid, libc::SIGKILL);
+                            }
+                        }
+                        let _ = child.start_kill();
+                        deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                    }
+                    tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+                }
+            }
+        }
+
+        // Release Tokio's direct process handle before the first native
+        // emptiness query that is eligible to prove settlement.
+        drop(self.child.take());
+
+        // A successful direct child may still have descendants (including a
+        // descendant holding a pipe). Terminate those tree members as normal
+        // end-of-owner cleanup; failure is evaluated by the accounting proof.
+        #[cfg(windows)]
+        if !cleanup_required {
+            if let Some(job) = self.job.as_ref() {
+                job.terminate();
+            }
+        }
+        #[cfg(unix)]
+        if !cleanup_required && self.pgid > 0 {
+            // SAFETY: same owned positive group identity as above.
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+
+        let stdout = settle_probe_reader(&mut self.stdout, &mut defects).await;
+        let stderr = settle_probe_reader(&mut self.stderr, &mut defects).await;
+
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref() {
+            let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+            let mut query_defect_recorded = false;
+            loop {
+                match job.active_processes() {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        if !query_defect_recorded {
+                            defects.push(format!("job accounting failed: {error}"));
+                            query_defect_recorded = true;
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    defects.push("job active settlement exceeded 10s".to_string());
+                    let _ = job.terminate_checked();
+                    deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                }
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+            }
+        }
+
+        #[cfg(unix)]
+        if self.pgid > 0 {
+            let mut deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+            let mut errno_defect_recorded = false;
+            loop {
+                // SAFETY: signal 0 performs no mutation and checks the retained
+                // positive process-group identity.
+                let result = unsafe { libc::kill(-self.pgid, 0) };
+                if result == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::ESRCH) {
+                        break;
+                    }
+                    if !errno_defect_recorded {
+                        defects.push(format!("process-group accounting failed: {error}"));
+                        errno_defect_recorded = true;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    defects.push("process-group settlement exceeded 10s".to_string());
+                    // A nonempty group stays owned and nonterminal; request
+                    // termination again and start another monotonic attempt.
+                    unsafe {
+                        libc::kill(-self.pgid, libc::SIGKILL);
+                    }
+                    deadline = Instant::now() + ACTIVE_SETTLEMENT_WINDOW;
+                }
+                tokio::time::sleep(ACTIVE_SETTLEMENT_POLL).await;
+            }
+        }
+
+        // The retained Job is closed by RAII only after its final zero query.
+        #[cfg(windows)]
+        drop(self.job.take());
+        ProbeSettlement {
+            stdout,
+            stderr,
+            defects,
+        }
+    }
+}
+
+async fn wait_for_probe_cancellation(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+fn parse_probe_completion(
+    program: &Path,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> ProbeOutcome {
+    if status.success() {
+        match parse_version_token(&String::from_utf8_lossy(stdout))
+            .or_else(|| parse_version_token(&String::from_utf8_lossy(stderr)))
+        {
+            Some(version) => {
+                log::info!(
+                    "[agent-version] {} -> installed version {}",
+                    program.display(),
+                    version
+                );
+                ProbeOutcome::Version(version)
+            }
+            None => {
+                let mut detail = sanitize_detail(stdout);
+                if detail.is_empty() {
+                    detail = "<empty>".to_string();
+                }
+                let detail = format!("no version in output: {detail}");
+                log::warn!(
+                    "[agent-version] probe failed for {}: {detail}",
+                    program.display()
+                );
+                ProbeOutcome::Failed(detail)
+            }
+        }
+    } else {
+        let mut tail = sanitize_detail(stderr);
+        if tail.is_empty() {
+            tail = sanitize_detail(stdout);
+        }
+        if tail.is_empty() {
+            tail = "<no output>".to_string();
+        }
+        let detail = format!("exit code {}: {}", status.code().unwrap_or(-1), tail);
+        log::warn!(
+            "[agent-version] probe failed for {}: {detail}",
+            program.display()
+        );
+        ProbeOutcome::Failed(detail)
+    }
 }
 
 /// #1551 - run `<program> <args>` with a bound and read its version.
@@ -264,6 +575,22 @@ async fn collect_probe_output(
 /// runner is NOT reused: it executes shell strings, is pinned by six tests, and
 /// has a different failure contract.
 pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> ProbeOutcome {
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    match probe_version_cancellable(program, args, timeout, cancel_rx).await {
+        CancellableProbeOutcome::Completed(outcome) => outcome,
+        CancellableProbeOutcome::Cancelled => {
+            ProbeOutcome::Failed("probe cancelled unexpectedly".to_string())
+        }
+        CancellableProbeOutcome::CleanupFailed(detail) => ProbeOutcome::Failed(detail),
+    }
+}
+
+pub async fn probe_version_cancellable(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> CancellableProbeOutcome {
     let mut command = {
         let mut c = tokio::process::Command::new(program);
         c.args(args);
@@ -273,145 +600,41 @@ pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> 
         c.kill_on_drop(true);
         c
     };
-    // The GUI binary owns no console: without CREATE_NO_WINDOW every refresh
-    // pops one console window per probe.
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x0800_0000);
-    }
     #[cfg(unix)]
     {
         command.process_group(0);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(e) => return ProbeOutcome::Failed(format!("spawn failed: {e}")),
+    let mut owner = match ProbeProcessOwner::spawn(&mut command).await {
+        Ok(owner) => owner,
+        Err(outcome) => return CancellableProbeOutcome::Completed(outcome),
     };
-
-    let mut job: Option<crate::pty::job::JobObject> = {
-        #[cfg(windows)]
-        {
-            child.id().and_then(crate::pty::job::JobObject::for_child)
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    };
-
-    let mut stdout_rx = child.stdout.take().map(spawn_capped_reader);
-    let mut stderr_rx = child.stderr.take().map(spawn_capped_reader);
-
-    #[cfg(unix)]
-    let pid = child.id().unwrap_or(0);
-
-    let waited = tokio::time::timeout(timeout, child.wait()).await;
+    let waited = owner.wait(timeout, &mut cancel).await;
+    let settlement = owner.settle(&waited).await;
+    if !settlement.defects.is_empty() {
+        return CancellableProbeOutcome::CleanupFailed(settlement.defects.join("; "));
+    }
     match waited {
-        Ok(Ok(status)) => {
-            let joined = tokio::time::timeout(
-                READER_JOIN_TIMEOUT,
-                collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-            )
-            .await;
-            let (stdout, stderr) = match joined {
-                Ok(pair) => pair,
-                Err(_) => {
-                    // A descendant holds the pipe open: kill the tree so the
-                    // readers EOF, then join once more.
-                    if let Some(job) = job.take() {
-                        #[cfg(windows)]
-                        drop(job);
-                        #[cfg(not(windows))]
-                        let _ = job;
-                    }
-                    #[cfg(unix)]
-                    // SAFETY: `-pid` is the process group created by
-                    // `process_group(0)` at spawn; it contains only this probe.
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
-                    tokio::time::timeout(
-                        READER_JOIN_TIMEOUT,
-                        collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-                    )
-                    .await
-                    .unwrap_or_default()
-                }
-            };
-            if status.success() {
-                match parse_version_token(&String::from_utf8_lossy(&stdout))
-                    .or_else(|| parse_version_token(&String::from_utf8_lossy(&stderr)))
-                {
-                    Some(version) => {
-                        log::info!(
-                            "[agent-version] {} -> installed version {}",
-                            program.display(),
-                            version
-                        );
-                        ProbeOutcome::Version(version)
-                    }
-                    None => {
-                        let mut detail = sanitize_detail(&stdout);
-                        if detail.is_empty() {
-                            detail = "<empty>".to_string();
-                        }
-                        let detail = format!("no version in output: {detail}");
-                        log::warn!(
-                            "[agent-version] probe failed for {}: {detail}",
-                            program.display()
-                        );
-                        ProbeOutcome::Failed(detail)
-                    }
-                }
-            } else {
-                let mut tail = sanitize_detail(&stderr);
-                if tail.is_empty() {
-                    tail = sanitize_detail(&stdout);
-                }
-                if tail.is_empty() {
-                    tail = "<no output>".to_string();
-                }
-                let detail = format!("exit code {}: {}", status.code().unwrap_or(-1), tail);
-                log::warn!(
-                    "[agent-version] probe failed for {}: {detail}",
-                    program.display()
-                );
-                ProbeOutcome::Failed(detail)
-            }
-        }
-        Ok(Err(e)) => {
-            let detail = format!("spawn failed: {e}");
-            log::warn!(
-                "[agent-version] probe failed for {}: {detail}",
-                program.display()
-            );
-            ProbeOutcome::Failed(detail)
-        }
-        Err(_) => {
-            if let Some(job) = &job {
-                job.terminate();
-            }
-            let _ = child.kill().await;
-            #[cfg(unix)]
-            // SAFETY: `-pid` is the process group created by `process_group(0)`
-            // at spawn; it contains only this probe's own tree.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-            let _ = tokio::time::timeout(READER_JOIN_TIMEOUT, child.wait()).await;
-            let _ = tokio::time::timeout(
-                READER_JOIN_TIMEOUT,
-                collect_probe_output(&mut stdout_rx, &mut stderr_rx),
-            )
-            .await;
+        ProbeWait::Cancelled => CancellableProbeOutcome::Cancelled,
+        ProbeWait::TimedOut => {
             let detail = format!("timed out after {}s (killed)", timeout.as_secs());
             log::warn!(
                 "[agent-version] probe failed for {}: {detail}",
                 program.display()
             );
-            ProbeOutcome::Failed(detail)
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
         }
+        ProbeWait::Exited(Err(error)) => {
+            let detail = format!("spawn failed: {error}");
+            log::warn!(
+                "[agent-version] probe failed for {}: {detail}",
+                program.display()
+            );
+            CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
+        }
+        ProbeWait::Exited(Ok(status)) => CancellableProbeOutcome::Completed(
+            parse_probe_completion(program, status, &settlement.stdout, &settlement.stderr),
+        ),
     }
 }
 
@@ -629,6 +852,7 @@ impl Drop for ProbeTicket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn shell_program() -> &'static str {
         if cfg!(windows) {
@@ -824,6 +1048,38 @@ mod tests {
             started.elapsed() < Duration::from_secs(10),
             "probe timeout must kill the tree promptly"
         );
+    }
+
+    async fn cancel_blocked_probe(program: &str, args: Vec<&str>) {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let probe = tokio::spawn({
+            let program = PathBuf::from(program);
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            async move {
+                let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+                probe_version_cancellable(&program, &borrowed, Duration::from_secs(30), cancel_rx)
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_tx.send(true).expect("request cancellation");
+        let outcome = tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .expect("probe cancellation settled")
+            .expect("probe task");
+        assert_eq!(outcome, CancellableProbeOutcome::Cancelled);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelled_contained_probe() {
+        cancel_blocked_probe("cmd.exe", vec!["/C", "cmd /C ping -n 30 127.0.0.1 >NUL"]).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_probe_kills_unix_process_group_and_drains_readers() {
+        cancel_blocked_probe("sh", vec!["-c", "sh -c 'sleep 30' & wait"]).await;
     }
 
     #[test]

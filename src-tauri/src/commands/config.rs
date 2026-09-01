@@ -2552,6 +2552,21 @@ pub async fn agent_update_answer(
     agent_update_answer_inner(&app, settings.inner(), command, enabled).await
 }
 
+#[tauri::command]
+pub async fn agent_update_cancel(
+    app: AppHandle,
+    command: String,
+) -> Result<crate::agent_update::AgentUpdateCancelResponse, String> {
+    agent_update_cancel_inner(&app, command).await
+}
+
+#[tauri::command]
+pub async fn agent_updates_cancel_all(
+    app: AppHandle,
+) -> Result<crate::agent_update::AgentUpdateCancelAllResponse, String> {
+    agent_updates_cancel_all_inner(&app).await
+}
+
 /// #1551 - the managed startup gate, or a plain error string when an unmanaged
 /// (test) app asks for it, so a missing state never panics a command.
 fn managed_agent_update_gate(
@@ -2587,6 +2602,21 @@ pub async fn agent_update_answer_inner(
         })
     })
     .await
+}
+
+pub async fn agent_update_cancel_inner(
+    app: &AppHandle,
+    command: String,
+) -> Result<crate::agent_update::AgentUpdateCancelResponse, String> {
+    let gate = managed_agent_update_gate(app)?;
+    Ok(crate::agent_update::cancel_update(app, &gate, command).await)
+}
+
+pub async fn agent_updates_cancel_all_inner(
+    app: &AppHandle,
+) -> Result<crate::agent_update::AgentUpdateCancelAllResponse, String> {
+    let gate = managed_agent_update_gate(app)?;
+    Ok(crate::agent_update::cancel_all_updates(app, &gate).await)
 }
 
 /// #1551 - instant read of the Settings "Auto-update" table. Never awaits a probe;
