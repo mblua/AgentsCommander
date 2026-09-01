@@ -2647,7 +2647,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         case "swap":
           return `Swap this agent onto the ${railSide()} comparison rail`;
         default:
-          return `Show this agent in the ${railSide()} comparison rail`;
+          return `Show this agent's configuration in the ${railSide()} comparison rail`;
       }
     };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
@@ -2711,7 +2711,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 selectAgentRail(agent.id, i());
               }}
               title={railTitle()}
-              aria-label={`Configuration for ${agent.label || "agent"}: ${railTitle()}`}
+              aria-label={`${agent.label || "agent"}: ${railTitle()}`}
               data-ac-testid={`settings.agentRow.${i()}.use`}
               data-ac-role="button"
             >
