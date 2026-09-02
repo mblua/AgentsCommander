@@ -36,7 +36,7 @@ A finished row is terminal. Its text is built from that row's own result and nev
 | `Ready - <old> -> <new>` | the update ran and AC read a different version before and after |
 | `<version> (Nothing to update)` | the update ran and the version did not change; there was nothing to install |
 | `Update completed - Version could not be verified` | the update ran without error, but AC could not compare a version before and after. It is a success and is **not** counted as failed |
-| `Failed - <reason>` | the update failed. `<reason>` is the failure AC recorded; a result carrying no reason reads `Failed` |
+| `Failed - <reason>` | the update failed. `<reason>` is the failure AC recorded |
 | `Cancelled` | you cancelled this row. It counts as completed, it is **not** a failure, and it raises no failure notification |
 
 Two failures are worth naming because they look like cancellations and are not:
@@ -52,7 +52,7 @@ Below the timeline, `Cancel all` (accessible name `Cancel all coding agent updat
 
 What cancelling does:
 
-- it stops the step that is running now and terminates that step's whole process tree, then waits for those processes to be gone before the control reports back;
+- it stops the step that is running now and terminates that step's whole process tree. The control reports back as soon as the backend accepts the cancellation; the row itself stays unfinished until AC has proven those processes gone;
 - it prevents the later updater steps of that row, and any row that had not started yet;
 - for a row cancelled during `Verifying...`, it stops and settles the post-install version probe and the row ends as `Cancelled`;
 - `Cancel all` leaves rows that already finished exactly as they are. It fabricates no result for them and does not turn a finished row into a cancelled one.
@@ -68,7 +68,7 @@ Keyboard and pointer:
 - **Enter** on a focused cancel control cancels and does **not** answer a prompt that happens to be open;
 - every other **Enter**, and every **Escape**, answers an open prompt with No (see below).
 
-If the cancellation request never reaches the backend, AC shows a red notification that stays until you dismiss it: `Could not cancel the coding agent update.` for a row, `Could not cancel coding agent updates.` for `Cancel all`. Those two sentences are the whole message. AC never appends a backend diagnostic to them or to the overlay; diagnostics go to the browser console only.
+If the cancellation request fails, AC shows a red notification that stays until you dismiss it: `Could not cancel the coding agent update.` for a row, `Could not cancel coding agent updates.` for `Cancel all`. Those two sentences are the whole message. AC never appends a backend diagnostic to them or to the overlay; diagnostics go to the browser console only.
 
 ## The startup prompt
 
@@ -119,7 +119,7 @@ See [Settings reference](../reference/settings.md#coding-agents) for the field's
 
 ## The Auto-update list in Settings
 
-Settings > Coding Agents shows a read-only **Auto-update** table with one row per catalog entry that ships `updateCommands` (Cursor ships none, so it is not listed). Per row: **Auto-update** shows your remembered answer (`Yes`, `No`, or `Will ask at startup` when AC has never asked), **Installed** shows the detected version, `Installed` when the command resolves but AC does not run a version probe for it, `Not installed` when the command is not found or its version check fails (hover for the reason and the resolved path), and `Checking...` until the first check completes, and **Status** shows `Updating...` while the startup pass is updating that command and `Updated` or `Update failed` for the outcome of this AC start.
+Settings > Coding Agents shows a read-only **Auto-update** table with one row per catalog entry that ships `updateCommands` (Cursor ships none, so it is not listed). Per row: **Auto-update** shows your remembered answer (`Yes`, `No`, or `Will ask at startup` when AC has never asked), **Installed** shows the detected version, `Installed` when the command resolves but AC does not run a version probe for it, `Not installed` when the command is not found or its version check fails (hover for the reason and the resolved path), and `Checking...` until the first check completes, and **Status** shows `Updating...` while the startup pass is updating that command, `Updated` or `Update failed` for the outcome of this AC start, and `-` when this AC start recorded no result for that command.
 
 This **Status** column has only those four values, so it is coarser than the overlay's timeline. A row you cancelled reads `Update failed` here, and hovering it reads `unknown error`, because the column classifies on success alone and a cancelled update is not a success. The overlay's timeline is the surface that distinguishes cancelled, unchanged and unverified outcomes; read it, not this column, for what actually happened.
 
@@ -141,7 +141,7 @@ Rows marked `(not registered)` are supported but not registered in `agents[]`, s
 
 **"I answered No and got `You will not be asked again.`"** Same race, harmless outcome. The prompt had already closed, and since a No means "never update", nothing was pending anyway. The answer is stored.
 
-**"The prompt shows an error notification and stays open."** The answer did not reach the backend at all. The overlay keeps the prompt open on purpose so you can press the button again; the notification stays until you dismiss it because a silent failure here would leave you thinking you had answered.
+**"The prompt shows an error notification and stays open."** The answer request failed, so AC cannot confirm your answer was recorded. The overlay keeps the prompt open on purpose so you can press the button again; the notification stays until you dismiss it because a silent failure here would leave you thinking you had answered.
 
 **"AC updated an agent I never approved."** Check `agentAutoUpdateByCommand` for the agent's **command**, not its label or id. Two profiles sharing one command share one answer, so approving the update for one profile approves it for the binary they both use.
 
@@ -151,11 +151,11 @@ Rows marked `(not registered)` are supported but not registered in `agents[]`, s
 
 ## Where the strings on this page come from
 
-For contributors keeping this page in sync. Every literal quoted above is defined at one of these locations.
+For contributors keeping this page in sync. Every UI string quoted above - the overlay, the prompt, the toasts and notifications, and the Settings **Auto-update** table - is defined at one of these locations. Coding-agent command names, settings keys and values, file names and commands you run yourself are not listed.
 
 | Strings | Source |
 |---|---|
-| `Updating coding agents...`, `Coding agent updates complete` | `src/sidebar/components/AgentUpdateOverlay.tsx:112` |
+| `Updating coding agents...`, `Coding agent updates complete` | `src/sidebar/components/AgentUpdateOverlay.tsx:113` |
 | `Automatically update the <label> coding agent at startup?` | `src/sidebar/components/AgentUpdateOverlay.tsx:276` |
 | `Yes`, `No` (and the autofocus on `No`) | `src/sidebar/components/AgentUpdateOverlay.tsx:286`, `:291`, `:296` |
 | Enter/Escape answer No; Enter on a cancel control does not | `src/sidebar/components/AgentUpdateOverlay.tsx:183`, `:190` |
@@ -167,7 +167,11 @@ For contributors keeping this page in sync. Every literal quoted above is define
 | `(Nothing to update)`, `Update completed - Version could not be verified`, `Cancelled`, `Failed` | `src/sidebar/agent-update-status.ts:82-85` |
 | `Ready - <old> -> <new>` and the rest of the outcome text | `src/sidebar/agent-update-status.ts:175`, `:188` |
 | `<n> of <N> completed`, `, <n> failed` | `src/sidebar/agent-update-status.ts:287` |
-| Settings **Status** column values, including the cancelled-reads-failed classification | `src/sidebar/agent-update-status.ts:71`, `:126` |
+| **Auto-update** column `Yes`, `No`, `Will ask at startup` | `src/sidebar/agent-update-status.ts:70` |
+| **Installed** column `Checking...`, `Installed`, `Not installed` | `src/sidebar/agent-update-status.ts:80`, `:98`, `:102`, `:112` |
+| Settings **Status** column values `Updating...`, `Updated`, `Update failed`, and `-` for a command with no result (a cancelled row reads `Update failed` here) | `src/sidebar/agent-update-status.ts:71`, `:125-127` |
+| `unknown error`, the hover text of an `Update failed` cell whose result carries no reason | `src/sidebar/agent-update-status.ts:79`, used at `:127` |
+| `(not registered)` | `src/sidebar/components/AgentAutoUpdateStatusList.tsx:128` |
 | `Could not cancel the coding agent update.`, `Could not cancel coding agent updates.` | `src/sidebar/agent-update.ts:84-85` |
 | `Auto-update failed for <label> (<command>): <reason>` | `src/sidebar/agent-update.ts:139` |
 | Answering No removes the row from the pass | `src-tauri/src/agent_update.rs:582`, `src/sidebar/agent-update.ts:523` |
