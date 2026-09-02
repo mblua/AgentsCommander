@@ -14487,6 +14487,164 @@ mod tests {
         );
     }
 
+    /// #1682 - the privileged exact-agent-input plane bypasses `mark_busy`, so
+    /// the boundary transaction itself is the arming site for it.
+    #[tokio::test]
+    async fn the_pty_input_boundary_arms_the_session() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::session::profile::IdleTuning;
+
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .expect("verified route");
+        let target_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.target_cwd).expect("target identity");
+        let sender_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.sender_cwd).expect("sender identity");
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                target_id,
+                SessionBackendKind::LocalProcess,
+                Some(target_cwd_identity),
+                Some(route.target.replica_identity.clone()),
+            )
+            .expect("record target route");
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("record sender route");
+        let authority_route =
+            PtyManager::authority_route_proof(&pty, sender_id).expect("sender authority proof");
+        let permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .expect("target permit");
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(target_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let settings = app.state::<SettingsState>().inner().clone();
+        fn current_recipe(
+            session: &crate::session::session::Session,
+            settings: &AppSettings,
+        ) -> bool {
+            session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
+        }
+
+        assert!(
+            !sessions
+                .get_session(target_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+
+        let boundary_guard = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                current_recipe,
+                || true,
+            )
+            .await
+            .expect("the boundary must succeed");
+        drop(boundary_guard);
+
+        assert!(
+            sessions
+                .get_session(target_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
+    /// #1682 - the single injection funnel behind the inter-agent wake, so one
+    /// arming site there covers every injection caller (round-1 blocker B1).
+    #[tokio::test]
+    async fn an_injected_text_block_arms_the_session() {
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let session_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, session_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+
+        assert!(
+            !sessions
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+
+        crate::pty::inject::inject_text_into_session(&app, session_id, "arbitrary payload")
+            .await
+            .unwrap();
+
+        assert!(
+            sessions
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .agent_turn_armed
+        );
+    }
+
     #[tokio::test]
     async fn final_pty_boundary_linearizes_wrapper_trust_against_concurrent_settings_mutation() {
         use crate::pty::backend::SessionBackendKind;
@@ -26889,6 +27047,162 @@ mod tests {
         assert_eq!(
             op.reason.map(|r| r.code),
             Some(crate::phone::types::PtyInputReasonCode::MenuGuardBlocked)
+        );
+    }
+
+    /// #1682 - both privileged planes cancel a standing control-write mark when
+    /// they arm a turn: (a) the injection funnel, which clears through
+    /// `commands::pty::clear_control_write_mark`, and (b) the exact-agent-input
+    /// boundary, which clears through `IdleDetector::clear_control_write` directly.
+    /// Each half asserts the mark IS standing first; that pre-assertion is the
+    /// in-test control, without which the half passes on a mark never set.
+    #[tokio::test]
+    async fn arming_a_turn_clears_the_control_write_mark_on_both_privileged_planes() {
+        use crate::pty::backend::SessionBackendKind;
+        use crate::session::profile::IdleTuning;
+
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+
+        // (a) The injection plane.
+        let inject_id = add_mailbox_session_with_shell(
+            &app,
+            &fixture.target_cwd,
+            "pi-live",
+            "pi",
+            SessionStatus::Idle,
+        )
+        .await;
+        register_mock_pty_route(&app, inject_id);
+        {
+            let idle = app
+                .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .inner()
+                .clone();
+            idle.register_session(inject_id, IdleTuning::DEFAULT);
+            idle.set_pty_input_ready_for_test(inject_id);
+            crate::commands::pty::mark_successful_pty_write_busy(&app, inject_id, 3).await;
+            assert!(
+                idle.control_write_age(inject_id).is_some(),
+                "the control: a PTY write into the idle session must mark it"
+            );
+
+            crate::pty::inject::inject_text_into_session(&app, inject_id, "arbitrary payload")
+                .await
+                .unwrap();
+            assert!(
+                idle.control_write_age(inject_id).is_none(),
+                "the injection funnel arms the turn and must cancel the mark"
+            );
+        }
+
+        // (b) The exact-agent-input plane. Setup copied from
+        // `pty_input_boundary_yields_exactly_one_busy_record`.
+        let sender_id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "coordinator",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let target_id = add_mailbox_session(
+            &app,
+            &fixture.target_cwd,
+            "member",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+        let route = crate::config::teams::verify_pty_input_route(
+            &fixture.sender_cwd,
+            false,
+            CANONICAL_WAKE_TO,
+            &paths,
+        )
+        .expect("verified route");
+        let target_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.target_cwd).expect("target identity");
+        let sender_cwd_identity =
+            crate::path_identity::verify_directory(&fixture.sender_cwd).expect("sender identity");
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                target_id,
+                SessionBackendKind::LocalProcess,
+                Some(target_cwd_identity),
+                Some(route.target.replica_identity.clone()),
+            )
+            .expect("record target route");
+        pty.lock()
+            .unwrap()
+            .record_route_with_identities(
+                sender_id,
+                SessionBackendKind::LocalProcess,
+                Some(sender_cwd_identity),
+                Some(route.sender.replica_identity.clone()),
+            )
+            .expect("record sender route");
+        let authority_route =
+            PtyManager::authority_route_proof(&pty, sender_id).expect("sender authority proof");
+        let permit = PtyManager::acquire_input_writer(&pty, target_id)
+            .await
+            .expect("target permit");
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(target_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target_id);
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let settings = app.state::<SettingsState>().inner().clone();
+        fn current_recipe(
+            session: &crate::session::session::Session,
+            settings: &AppSettings,
+        ) -> bool {
+            session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
+        }
+
+        crate::commands::pty::mark_successful_pty_write_busy(&app, target_id, 3).await;
+        assert!(
+            idle.control_write_age(target_id).is_some(),
+            "the control: a preceding control write into the idle target must mark it"
+        );
+        // That helper necessarily destroys BOTH readiness legs the boundary
+        // requires (`mark_busy` clears `waiting_for_input`, and
+        // `record_activity_with_bytes` stamps `activity` and drops the session from
+        // `idle_set`). Restore the pre-write state; neither call touches the mark.
+        sessions.mark_idle(target_id).await;
+        idle.set_pty_input_ready_for_test(target_id);
+
+        let boundary_guard = sessions
+            .prepare_pty_input_boundary(
+                target_id,
+                &route.target,
+                SessionBackendKind::LocalProcess,
+                sender_id,
+                &route.sender,
+                SessionBackendKind::LocalProcess,
+                &authority_route,
+                &permit,
+                &idle,
+                &settings,
+                current_recipe,
+                || true,
+            )
+            .await
+            .expect("the boundary must succeed");
+        drop(boundary_guard);
+
+        assert!(
+            idle.control_write_age(target_id).is_none(),
+            "the exact-agent-input boundary arms the turn and must cancel the mark"
         );
     }
 }

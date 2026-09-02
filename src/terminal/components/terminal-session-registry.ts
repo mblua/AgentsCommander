@@ -40,6 +40,13 @@ export interface SessionTerminalEntry {
   readonly fitAddon: FitAddon;
   webglAddon: WebglAddon | null;
   readonly replayStatus: HTMLDivElement;
+  /** #1682 - the last-agent-message stamp element in the status strip. Hidden
+   *  and empty until a value arrives. */
+  readonly agentMessageStatus: HTMLDivElement;
+  /** #1682 - epoch ms of the rendered stamp, or `null` before the first one.
+   *  The monotonic watermark that keeps a late hydration from overwriting a
+   *  newer event that already landed on this same entry. */
+  agentMessageAtMs: number | null;
   /** True once snapshot or live output reached xterm (drives status text). */
   hasRenderedOutput: boolean;
   /** Suppresses `onResize` -> pty_resize while a snapshot resize is applied. */

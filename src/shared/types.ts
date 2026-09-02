@@ -125,6 +125,15 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
+/** #1682 - the instant of the most recent busy->idle edge on `sessionId` that the
+ *  backend judged an agent turn, RFC3339/UTC as it stored it. It is the backend's
+ *  proxy for the agent having finished responding, not a proof of it: an armed
+ *  session that submitted nothing still produces this event. */
+export interface SessionAgentMessagePayload {
+  sessionId: string;
+  at: string;
+}
+
 /** #1171 - what a watcher match means. Mirrors `WatcherMode` (`config/settings.rs`). */
 export type WatcherMode = "state" | "occurrence";
 
