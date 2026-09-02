@@ -775,6 +775,30 @@ describe("#1691 - verification, cancellation folds and terminal first-winner", (
     expect(toastStore.items).toHaveLength(0);
   });
 
+  it("an empty final payload still enters the summary when the store already holds results", async () => {
+    await wireAgentUpdateListeners();
+    fake.emitFromBackend("agent_updates_started", { nodes: [node("claude")] });
+    fake.emitFromBackend("agent_update_command_finished", failed("claude"));
+    expect(store.results).toEqual([failed("claude")]);
+
+    // This state is NOT reachable in production: the backend's finalize sweeps every
+    // target into the published result before it announces, so an empty `results` can
+    // never accompany a pass this surface saw produce one. It is constructed directly
+    // to pin the fold, which is the single input on which the two readings differ:
+    // `showSummary` tests the MERGED results, not the payload's. Testing the payload's
+    // length instead would send this surface down the immediate-toast path with an
+    // empty list, so the failure it already observed would never be toasted at all.
+    fake.emitFromBackend("agent_updates_finished", { results: [] });
+    expect(store.results).toEqual([failed("claude")]);
+    expect(store.summary).toBe("shown");
+    expect(toastStore.items).toHaveLength(0);
+
+    dismissAgentUpdateSummary();
+    expect(toastStore.items.map((item) => item.message)).toEqual([
+      "Auto-update failed for Claude (claude): exit code 1",
+    ]);
+  });
+
   // -------------------------------------------------------------------------
   // verifying
   // -------------------------------------------------------------------------

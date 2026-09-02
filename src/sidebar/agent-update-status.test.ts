@@ -22,7 +22,6 @@ import {
   deriveTimelineNodes,
   describeInstall,
   installedView,
-  isTerminalState,
   liveView,
   outcomeState,
   outcomeText,
@@ -307,21 +306,10 @@ describe("timeline derivations (#1551 round 5, #1691)", () => {
     }
   });
 
-  it("outcomeState and isTerminalState map the three terminal outcomes", () => {
+  it("outcomeState maps each outcome to its terminal row state", () => {
     expect(outcomeState(ok("a"))).toBe("ok");
     expect(outcomeState(failed("a", "boom"))).toBe("failed");
     expect(outcomeState(cancelled("a"))).toBe("cancelled");
-    expect(["ok", "failed", "cancelled"].map((state) => isTerminalState(state as never))).toEqual([
-      true,
-      true,
-      true,
-    ]);
-    expect(["pending", "updating", "verifying", "cancelling"].map((state) => isTerminalState(state as never))).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
   });
 
   it("deriveTimelineNodes derives every node state in node order with the four nonterminal words", () => {

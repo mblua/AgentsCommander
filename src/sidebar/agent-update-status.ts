@@ -197,10 +197,6 @@ export function outcomeState(result: AgentUpdateResult): NodeState {
   return "ok";
 }
 
-export function isTerminalState(state: NodeState): boolean {
-  return state === "ok" || state === "failed" || state === "cancelled";
-}
-
 /**
  * #1691 - first winner, then cancellation, then verification, then running. Cancellation
  * outranks verification so a verifying row that was already requested keeps saying
