@@ -41,7 +41,7 @@ A finished row is terminal. Its text is built from that row's own result and nev
 
 Two failures are worth naming because they look like cancellations and are not:
 
-- `Failed - Cancellation cleanup did not complete.` means AC asked the update to stop but could not confirm that its processes were gone. AC reports that truthfully as a failed row rather than claiming a clean cancellation.
+- `Failed - Cancellation cleanup did not complete.` means AC stopped the update and confirmed the step's process tree was gone, but the cleanup itself was defective: a kill or a bookkeeping call returned an error, or a settlement deadline expired and forced AC to kill again or to abandon an output reader. AC reports that truthfully as a failed row rather than claiming a clean cancellation.
 - `Failed - Updater process-tree containment unavailable; update stopped.` (Windows only) means AC could not put the updater into the job object it uses to contain and stop it, so it did not run the updater at all.
 
 ## Cancelling an update pass
@@ -135,7 +135,7 @@ Rows marked `(not registered)` are supported but not registered in `agents[]`, s
 
 **"I cancelled and the agent still got updated."** Cancellation stops the step that is running and everything after it; it does not reverse an updater command that had already finished. The row reads `Cancelled` because you stopped the pass.
 
-**"A row I cancelled reads `Failed - Cancellation cleanup did not complete.`"** AC could not confirm that the update's processes were gone, so it reports the row as failed rather than claiming a clean cancellation. Check for a leftover installer process before you re-run the update.
+**"A row I cancelled reads `Failed - Cancellation cleanup did not complete.`"** The update stopped and its process tree is gone: AC proves that before it reports this row at all. What failed is the cleanup around it, so AC will not claim a clean cancellation. Nothing is left for you to hunt down; to see which part failed, search `app.log` for `cleanup defective` ([Log filtering](../reference/log-filtering.md#where-logs-go) says where that file lives).
 
 **"I answered and got `This coding agent will be updated at the next startup.`"** Your answer arrived after the prompt had already closed on the backend, so nothing was updated this time. The answer is saved: the update runs at the next startup, and you are not asked again.
 
