@@ -523,17 +523,10 @@ const RootAgentBanner: Component = () => {
               {isDetached() ? <ReattachIcon /> : <DetachIcon />}
             </button>
 
-            <Show when={bridge()}>
-              <div
-                class="session-item-bridge-dot"
-                style={{ background: bridge()!.color }}
-                title={`Telegram: ${bridge()!.botLabel}`}
-              />
-            </Show>
             <button
               class={`session-item-telegram ${bridge() ? "active" : ""}`}
               onClick={handleTelegramClick}
-              title={bridge() ? "Detach Telegram" : "Attach Telegram"}
+              title={bridge() ? `Detach Telegram: ${bridge()!.botLabel}` : "Attach Telegram"}
               style={bridge() ? { color: bridge()!.color } : {}}
             ><TelegramIcon /></button>
             <Show when={showBotMenu()}>

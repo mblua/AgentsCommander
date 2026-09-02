@@ -2424,13 +2424,7 @@ const ProjectPanel: Component = () => {
                     </Show>
                   </div>
                 </Show>
-                <div class="replica-item-name-row coord-task-line">
-                  <span
-                    class="replica-item-name"
-                    style={{ "min-width": "0px", flex: "1 1 auto" }}
-                  >
-                    {replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
-                  </span>
+                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
                   <Show when={showBlockedMenu()}>
                     <span
                       class="coord-communication-slot coord-communication-slot--blocked-menu"
@@ -2442,22 +2436,28 @@ const ProjectPanel: Component = () => {
                       <RaiseHandIcon class="coord-communication-icon" />
                     </span>
                   </Show>
-                </div>
-                <div class="ac-discovery-badges" data-ac-testid={badgesTestId()}>
-                  {/* #552/#580: the coordinator idle (minutes) badge leads the
-                      row; the neutral AUTO-CLOSED pill REPLACES it when the team
-                      is auto-closed (mutually exclusive — the #580 XOR gate), so
-                      exactly one of the two renders first, before all others. */}
-                  <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
-                    {(b) => (
-                      <span
-                        class={`ac-discovery-badge coord-idle ${COORD_IDLE_CLASS[b().level]}`}
-                        title={idleBadgeTitle()}
-                      >
-                        {b().label}
-                      </span>
-                    )}
+                  {/* #592 - drift indicator for a WG replica session. Mirrors the
+                      SessionItem badge: the backend marks profileOutdated in
+                      list_sessions when the loaded cell != current config; clicking
+                      relaunches via the existing replica restart (re-stamps the hash
+                      and clears the flag). stopPropagation keeps the row from
+                      selecting the session under the click. */}
+                  <Show when={session()?.profileOutdated}>
+                    <ProfileOutdatedBadge
+                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      onReload={() => {
+                        const s = session();
+                        if (s) void restartReplicaSession(s.id);
+                      }}
+                    />
                   </Show>
+                  {/* #552/#580/#1730: the mutually exclusive trio, positions 2, 3 and 4 of this
+                      strip. AUTO-CLOSED and MANUALLY-CLOSED lead it and the coordinator idle
+                      (minutes) badge now trails them; before #1730 the idle badge led the whole
+                      row. The #580 XOR gate is unchanged: at most one of the three ever renders,
+                      and the three stay contiguous, so a closed pill and the counter can never
+                      appear together. They no longer lead the strip: the blocked-menu alert slot
+                      and the drift badge come first. */}
                   <Show when={autoClosed() && !manuallyClosed()}>
                     <span
                       class="ac-discovery-badge coord-autoclosed"
@@ -2476,6 +2476,40 @@ const ProjectPanel: Component = () => {
                     >
                       MANUALLY-CLOSED
                     </span>
+                  </Show>
+                  <Show when={!autoClosed() && !manuallyClosed() && idleBadge()}>
+                    {(b) => (
+                      <span
+                        class={`ac-discovery-badge coord-idle ${COORD_IDLE_CLASS[b().level]}`}
+                        title={idleBadgeTitle()}
+                      >
+                        {b().label}
+                      </span>
+                    )}
+                  </Show>
+                  <span
+                    class="agent-name-chip"
+                    title={replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}
+                  >
+                    {replica.name}
+                  </span>
+                  <Show when={isCoord()}>
+                    <span class="ac-discovery-badge coord">orchestrator</span>
+                  </Show>
+                  <Show when={liveAgentLabel()}>
+                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
+                  </Show>
+                  <Show when={profileBadge()}>
+                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
+                  </Show>
+                  <Show when={ctxVisible()}>
+                    <ContextBadge
+                      percent={ctxPercent()}
+                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                    />
+                  </Show>
+                  <Show when={extraBadge}>
+                    <span class="ac-discovery-badge team">{extraBadge}</span>
                   </Show>
                   <Show when={runningPeers && runningPeers()!.length > 0}>
                     <For each={runningPeers!()}>
@@ -2502,39 +2536,6 @@ const ProjectPanel: Component = () => {
                       )}
                     </For>
                   </Show>
-                  <Show when={liveAgentLabel()}>
-                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
-                  </Show>
-                  <Show when={profileBadge()}>
-                    {(badge) => <span class="profile-badge" title={profileBadgeTitle()}>{badge()}</span>}
-                  </Show>
-                  <Show when={ctxVisible()}>
-                    <ContextBadge
-                      percent={ctxPercent()}
-                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
-                    />
-                  </Show>
-                  {/* #592 - drift indicator for a WG replica session. Mirrors the
-                      SessionItem badge: the backend marks profileOutdated in
-                      list_sessions when the loaded cell != current config; clicking
-                      relaunches via the existing replica restart (re-stamps the hash
-                      and clears the flag). stopPropagation keeps the row from
-                      selecting the session under the click. */}
-                  <Show when={session()?.profileOutdated}>
-                    <ProfileOutdatedBadge
-                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
-                      onReload={() => {
-                        const s = session();
-                        if (s) void restartReplicaSession(s.id);
-                      }}
-                    />
-                  </Show>
-                  <Show when={isCoord()}>
-                    <span class="ac-discovery-badge coord">orchestrator</span>
-                  </Show>
-                  <Show when={extraBadge}>
-                    <span class="ac-discovery-badge team">{extraBadge}</span>
-                  </Show>
                 </div>
               </div>
               <Show when={isLive()}>
@@ -2542,7 +2543,13 @@ const ProjectPanel: Component = () => {
                   <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
                 </Show>
                 <Show when={bridge()}>
-                  <div class="session-item-bridge-dot" style={{ background: bridge()!.color }} title={`Telegram: ${bridge()!.botLabel}`} />
+                  <span
+                    class="session-item-bridge-icon"
+                    style={{ color: bridge()!.color }}
+                    title={`Telegram: ${bridge()!.botLabel}`}
+                  >
+                    <TelegramIcon />
+                  </span>
                 </Show>
               </Show>
             </div>
