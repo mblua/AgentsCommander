@@ -24,7 +24,7 @@ import { automationIdPart } from "./replica-repo-badges";
 // before/between launches.
 //   - gray (no session): Coding Agent + Matrix folder + Replica folder + broom menu.
 //   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
-//     Matrix/Replica folders, Open in new window) PLUS the clear-task broom (#545 rework).
+//     Matrix/Replica folders, Detach session) PLUS the clear-task broom (#545 rework).
 //   - green (running): the full menu, including the broom.
 
 const projectPath = "C:\\Project";
@@ -190,6 +190,49 @@ function projectDiscoveryTwoWorkgroups(
   });
 }
 
+function projectDiscoveryWithTeam(): AcDiscoveryResult {
+  const result = projectDiscovery();
+  return {
+    ...result,
+    teams: [
+      {
+        name: "team-alpha",
+        coordinator: "dev-webpage-ui",
+        agents: ["dev-webpage-ui", "dev-rust"],
+      },
+    ],
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+type TelegramBotFixture = { id: string; label: string; color: string };
+type TelegramBridgeFixture = {
+  sessionId: string;
+  botId: string;
+  botLabel: string;
+  color: string;
+};
+
+async function testBridgesStore() {
+  const actual = await vi.importActual("../stores/bridges");
+  return (
+    actual as {
+      bridgesStore: {
+        setBridges: (bridges: TelegramBridgeFixture[]) => void;
+      };
+    }
+  ).bridgesStore;
+}
+
 function replicaMenu(): HTMLElement | null {
   // Context menus render through a Portal into document.body, not the panel root.
   return document.querySelector<HTMLElement>(".session-context-menu");
@@ -244,10 +287,16 @@ function repoFolderLabel(item: HTMLElement): string | null {
   return item.querySelector<HTMLElement>(".session-context-repo-label")?.textContent ?? null;
 }
 
+function menuButtonLabel(button: HTMLButtonElement): string {
+  return (button.textContent ?? "")
+    .trim()
+    .replace(/\u203a/g, "")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .trim();
+}
+
 function menuButtonLabels(menu: HTMLElement): string[] {
-  return Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).map((button) =>
-    (button.textContent ?? "").trim().replace(/\u203a/g, "").replace(/^[^A-Za-z0-9]+/, "").trim()
-  );
+  return Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).map(menuButtonLabel);
 }
 
 function findRow(root: ParentNode, testId: string): HTMLElement {
@@ -283,7 +332,7 @@ function findAgentsHeader(root: ParentNode): HTMLElement {
 function findExactMenuButton(menu: HTMLElement, label: string): HTMLButtonElement | null {
   return (
     Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-      (button.textContent ?? "").trim() === label
+      menuButtonLabel(button) === label
     ) ?? null
   );
 }
@@ -339,7 +388,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     });
     const menu = replicaMenu()!;
     expect(menu.textContent).not.toContain("Restart Session");
-    expect(menu.textContent).not.toContain("Open in new window");
+    expect(menu.textContent).not.toContain("Detach session");
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
@@ -501,7 +550,9 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "docs",
       "cli",
       "Open Matrix folder",
-      "Open in new window",
+      "Close Session",
+      "Detach session",
+      "Attach Telegram",
       "Add to Group",
       "Edit TASK title",
       "Clear task title",
@@ -991,7 +1042,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(menu!.textContent).toContain("Restart Session");
       expect(menu!.textContent).toContain("Coding Agent");
       expect(menu!.textContent).toContain("Open Replica's Folder");
-      expect(menu!.textContent).toContain("Open in new window");
+      expect(menu!.textContent).toContain("Detach session");
       // ...and gains the broom (#545 rework).
       expect(menu!.textContent).toContain("Clear task title");
     });
@@ -1068,7 +1119,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const menu = replicaMenu()!;
     expect(menu.textContent).toContain("Coding Agent");
     expect(menu.textContent).toContain("Open Replica's Folder");
-    expect(menu.textContent).toContain("Open in new window");
+    expect(menu.textContent).toContain("Detach session");
     // #545: the broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
   });
@@ -1092,8 +1143,8 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(cancelButton).not.toBeNull();
       expect(row.querySelector(".session-item-mic")).toBeNull();
       expect(row.querySelector(".session-item-detach")).toBeNull();
-      expect(row.querySelector(".session-item-telegram")).not.toBeNull();
-      expect(row.querySelector(".session-item-close")).not.toBeNull();
+      expect(row.querySelector(".session-item-telegram")).toBeNull();
+      expect(row.querySelector(".session-item-close")).toBeNull();
 
       click(cancelButton!);
       expect(cancelSpy).toHaveBeenCalledTimes(1);
@@ -1274,6 +1325,758 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(replicaMenu()).toBeNull();
     } finally {
       errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("ProjectPanel replica context menu — session actions (#1673)", () => {
+  let cleanupDom: (() => void) | null = null;
+  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+
+  const botOne: TelegramBotFixture = { id: "bot-one", label: "Bot One", color: "red" };
+  const botTwo: TelegramBotFixture = { id: "bot-two", label: "Bot Two", color: "blue" };
+
+  async function setupPanel(
+    sessions: Session[] = [coordSession(), memberSession()],
+    discoveryResult: AcDiscoveryResult = projectDiscovery(),
+  ): Promise<FakeTransport> {
+    const fake = new FakeTransport();
+    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+    fake.resolve("discover_project", discoveryResult);
+    fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("open_in_explorer", null);
+    fake.resolve("get_settings", { telegramBots: [] });
+    fake.resolve("telegram_attach", null);
+    fake.resolve("telegram_detach", null);
+    fake.resolve("destroy_session", null);
+    fake.resolve("close_coordinator", { closed: true, workingCount: 0 });
+    sessionsStore.setSessions(sessions);
+    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    await projectStore.createAndLoad(projectPath);
+    await waitFor(() => expect(rendered!.root.textContent).toContain("dev-rust"));
+    return fake;
+  }
+
+  async function openMenu(
+    row: HTMLElement = findRow(rendered!.root, memberRowTestId),
+    x = 48,
+    y = 64,
+  ): Promise<HTMLElement> {
+    row.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: x,
+        clientY: y,
+      }),
+    );
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    return replicaMenu()!;
+  }
+
+  function dispatchDismiss(kind: "click" | "contextmenu" | "escape" = "click") {
+    if (kind === "escape") {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return;
+    }
+    window.dispatchEvent(new MouseEvent(kind, { bubbles: true, cancelable: true }));
+  }
+
+  function recordedListener(spy: { mock: { calls: unknown[][] } }, type: string) {
+    return [...spy.mock.calls]
+      .reverse()
+      .find((call) => call[0] === type)?.[1] as EventListenerOrEventListenerObject | undefined;
+  }
+
+  async function captureDismissListeners(spy: { mock: { calls: unknown[][] } }) {
+    await waitFor(() => {
+      expect(recordedListener(spy, "click")).toBeDefined();
+      expect(recordedListener(spy, "contextmenu")).toBeDefined();
+      expect(recordedListener(spy, "keydown")).toBeDefined();
+    });
+    return {
+      click: recordedListener(spy, "click")!,
+      contextmenu: recordedListener(spy, "contextmenu")!,
+      keydown: recordedListener(spy, "keydown")!,
+    };
+  }
+
+  function listenerWasRemoved(
+    spy: { mock: { calls: unknown[][] } },
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+  ) {
+    return spy.mock.calls.some((call) => call[0] === type && call[1] === listener);
+  }
+
+  function expectNoTelegramCalls(fake: FakeTransport) {
+    expect(fake.callsFor("telegram_attach")).toHaveLength(0);
+    expect(fake.callsFor("telegram_detach")).toHaveLength(0);
+  }
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(async () => {
+    rendered?.cleanup();
+    rendered = null;
+    (await testBridgesStore()).setBridges([]);
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  it("orders Close and Telegram around the existing active-menu anchors", async () => {
+    const detachedSpy = vi.spyOn(sessionsStore, "isDetached").mockReturnValue(false);
+    try {
+      await setupPanel();
+      const coordinatorRow = findRow(rendered!.root, coordQuickRowTestId);
+      let menu = await openMenu(coordinatorRow);
+      const matrix = findExactMenuButton(menu, "Open Matrix folder")!;
+      const close = findExactMenuButton(menu, "Close Session")!;
+      const open = findExactMenuButton(menu, "Detach session")!;
+      const attach = findExactMenuButton(menu, "Attach Telegram")!;
+      const add = findExactMenuButton(menu, "Add to Group")!;
+
+      expect(matrix.nextElementSibling).toBe(close);
+      expect(close.nextElementSibling?.classList.contains("context-separator")).toBe(true);
+      const labels = menuButtonLabels(menu);
+      expect(labels.indexOf("Attach Telegram")).toBe(labels.indexOf("Detach session") + 1);
+      expect(labels.indexOf("Add to Group")).toBe(labels.indexOf("Attach Telegram") + 1);
+      expect(open).not.toBeNull();
+      expect(add).not.toBeNull();
+      expect(attach.querySelector("svg")).not.toBeNull();
+      // #1708 - Add to Group fills its icon gutter like every other entry.
+      expect(add.querySelector(".session-context-option-icon")?.textContent).toBe("\u{1F465}");
+      // #1708 - the detach entry carries the sized, tinted SVG, not a text glyph.
+      expect(open.querySelector(".session-context-detach-icon")).not.toBeNull();
+      // #1708 - with no bridge the Telegram icon falls back to the Telegram blue.
+      // jsdom's cssstyle may normalise the hex to rgb(), so accept either form.
+      const attachIconColor =
+        attach.querySelector<HTMLElement>(".session-context-option-icon")!.style.color;
+      expect(["#0088cc", "rgb(0, 136, 204)"]).toContain(attachIconColor);
+      expect(close.classList.contains("context-option-danger")).toBe(true);
+
+      dispatchDismiss("click");
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+      detachedSpy.mockReturnValue(true);
+
+      menu = await openMenu(coordinatorRow);
+      const reattach = findExactMenuButton(menu, "Re-attach session")!;
+      const detachedAttach = findExactMenuButton(menu, "Attach Telegram")!;
+      const detachedLabels = menuButtonLabels(menu);
+      expect(detachedLabels.indexOf("Attach Telegram")).toBe(
+        detachedLabels.indexOf("Re-attach session") + 1,
+      );
+      expect(detachedLabels.indexOf("Add to Group")).toBe(
+        detachedLabels.indexOf("Attach Telegram") + 1,
+      );
+      expect(reattach).not.toBeNull();
+      expect(detachedAttach).not.toBeNull();
+      // #1708 - the detached state shows the mirrored icon, also sized and tinted.
+      expect(reattach.querySelector(".session-context-detach-icon")).not.toBeNull();
+    } finally {
+      if (replicaMenu()) dispatchDismiss("click");
+      detachedSpy.mockRestore();
+    }
+  });
+
+  it("removes row buttons while preserving the bridge indicator and colored Detach action", async () => {
+    const bridges = await testBridgesStore();
+    bridges.setBridges([
+      { sessionId: "member-session", botId: botOne.id, botLabel: botOne.label, color: "red" },
+    ]);
+    try {
+      await setupPanel();
+      const row = findRow(rendered!.root, memberRowTestId);
+      expect(row.querySelector(".session-item-telegram")).toBeNull();
+      expect(row.querySelector(".session-item-close")).toBeNull();
+      expect(row.querySelector<HTMLElement>(".session-item-bridge-dot")?.style.background).toBe(
+        "red",
+      );
+
+      const menu = await openMenu(row);
+      const detach = findExactMenuButton(menu, "Detach Telegram")!;
+      expect(detach).not.toBeNull();
+      expect(detach.querySelector("svg")).not.toBeNull();
+      expect(
+        detach.querySelector<HTMLElement>(".session-context-option-icon")?.style.color,
+      ).toBe("red");
+    } finally {
+      if (replicaMenu()) dispatchDismiss("click");
+      bridges.setBridges([]);
+    }
+  });
+
+  it("detaches an existing bridge only after the portal is closed", async () => {
+    const bridges = await testBridgesStore();
+    bridges.setBridges([
+      { sessionId: "member-session", botId: botOne.id, botLabel: botOne.label, color: "red" },
+    ]);
+    try {
+      const fake = await setupPanel();
+      let menuAtDetach: HTMLElement | null | undefined;
+      fake.onInvoke("telegram_detach", () => {
+        menuAtDetach = replicaMenu();
+        return null;
+      });
+
+      click(findExactMenuButton(await openMenu(), "Detach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("telegram_detach")).toHaveLength(1));
+      expect(fake.callsFor("telegram_detach")[0].args).toEqual({ sessionId: "member-session" });
+      expect(menuAtDetach).toBeNull();
+      expect(fake.callsFor("get_settings")).toHaveLength(0);
+      expect(fake.callsFor("telegram_attach")).toHaveLength(0);
+    } finally {
+      if (replicaMenu()) dispatchDismiss("click");
+      bridges.setBridges([]);
+    }
+  });
+
+  it("closes without a Telegram call for a current zero-bot response", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    let settled = false;
+    try {
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+      click(findExactMenuButton(await openMenu(), "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+      settled = true;
+      gate.resolve({ telegramBots: [] });
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+      expectNoTelegramCalls(fake);
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+    }
+  });
+
+  it("attaches the sole current bot only after menu and chooser removal", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    let settled = false;
+    try {
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+      let menuAtAttach: HTMLElement | null | undefined;
+      let choicesAtAttach = -1;
+      fake.onInvoke("telegram_attach", () => {
+        menuAtAttach = replicaMenu();
+        choicesAtAttach = document.querySelectorAll(".settings-color-dot").length;
+        return null;
+      });
+      click(findExactMenuButton(await openMenu(), "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+      settled = true;
+      gate.resolve({ telegramBots: [botOne] });
+      await waitFor(() => expect(fake.callsFor("telegram_attach")).toHaveLength(1));
+      expect(fake.callsFor("telegram_attach")[0].args).toEqual({
+        sessionId: "member-session",
+        botId: botOne.id,
+      });
+      expect(menuAtAttach).toBeNull();
+      expect(choicesAtAttach).toBe(0);
+      expect(fake.callsFor("telegram_detach")).toHaveLength(0);
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+    }
+  });
+
+  it("renders current multi-bot choices inline and closes before selecting the second bot", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    let settled = false;
+    try {
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+      const originalMenu = await openMenu(findRow(rendered!.root, coordQuickRowTestId));
+      click(findExactMenuButton(originalMenu, "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+      settled = true;
+      gate.resolve({ telegramBots: [botOne, botTwo] });
+      await waitFor(() =>
+        expect(findExactMenuButton(replicaMenu()!, botTwo.label)).not.toBeNull(),
+      );
+      const menu = replicaMenu()!;
+      const attach = findExactMenuButton(menu, "Attach Telegram")!;
+      const first = findExactMenuButton(menu, botOne.label)!;
+      const second = findExactMenuButton(menu, botTwo.label)!;
+      const add = findExactMenuButton(menu, "Add to Group")!;
+      expect(menu).toBe(originalMenu);
+      expect(attach.nextElementSibling).toBe(first);
+      expect(first.nextElementSibling).toBe(second);
+      expect(menuButtonLabels(menu).indexOf(botTwo.label)).toBe(
+        menuButtonLabels(menu).indexOf("Attach Telegram") + 2,
+      );
+      expect(menuButtonLabels(menu).indexOf("Add to Group")).toBe(
+        menuButtonLabels(menu).indexOf(botTwo.label) + 1,
+      );
+      expect(add).not.toBeNull();
+      expectNoTelegramCalls(fake);
+
+      let menuAtAttach: HTMLElement | null | undefined;
+      let choicesAtAttach = -1;
+      fake.onInvoke("telegram_attach", () => {
+        menuAtAttach = replicaMenu();
+        choicesAtAttach = document.querySelectorAll(".settings-color-dot").length;
+        return null;
+      });
+      click(second);
+      await waitFor(() => expect(fake.callsFor("telegram_attach")).toHaveLength(1));
+      expect(fake.callsFor("telegram_attach")[0].args).toEqual({
+        sessionId: "coord-session",
+        botId: botTwo.id,
+      });
+      expect(menuAtAttach).toBeNull();
+      expect(choicesAtAttach).toBe(0);
+      expect(fake.callsFor("telegram_detach")).toHaveLength(0);
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+    }
+  });
+
+  it("reclamps the same expanded menu after multi-bot rows mount", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    const innerHeightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    let settled = false;
+    let rectSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let rafSpy: ReturnType<typeof vi.spyOn> | null = null;
+    try {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 160 });
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+
+      const row = findRow(rendered!.root, memberRowTestId);
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 140,
+        }),
+      );
+      const menu = replicaMenu()!;
+      expect(menu).not.toBeNull();
+      rectSpy = vi.spyOn(menu, "getBoundingClientRect").mockImplementation(
+        () =>
+          ({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 120,
+            bottom: menu.querySelectorAll(".settings-color-dot").length > 0 ? 100 : 40,
+            width: 120,
+            height: menu.querySelectorAll(".settings-color-dot").length > 0 ? 100 : 40,
+            toJSON: () => ({}),
+          }) as DOMRect,
+      );
+      await waitFor(() => expect(parseFloat(menu.style.top)).toBeLessThan(140));
+
+      const rafCallbacks: FrameRequestCallback[] = [];
+      rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        rafCallbacks.push(callback);
+        return rafCallbacks.length;
+      });
+      click(findExactMenuButton(menu, "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      settled = true;
+      gate.resolve({ telegramBots: [botOne, botTwo] });
+      await waitFor(() => expect(menu.querySelectorAll(".settings-color-dot")).toHaveLength(2));
+      expect(replicaMenu()).toBe(menu);
+      expect(parseFloat(menu.style.top) + menu.getBoundingClientRect().height).toBeGreaterThan(
+        window.innerHeight,
+      );
+      expect(rafCallbacks).toHaveLength(1);
+
+      rafCallbacks.shift()!(0);
+      await waitFor(() =>
+        expect(parseFloat(menu.style.top) + menu.getBoundingClientRect().height).toBeLessThanOrEqual(
+          window.innerHeight,
+        ),
+      );
+      expect(replicaMenu()).toBe(menu);
+      expect(menu.querySelectorAll(".settings-color-dot")).toHaveLength(2);
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+      rafSpy?.mockRestore();
+      rectSpy?.mockRestore();
+      if (innerHeightDescriptor) {
+        Object.defineProperty(window, "innerHeight", innerHeightDescriptor);
+      }
+    }
+  });
+
+  it("gives a second same-menu Attach invocation ownership and consumes the first stale rejection", async () => {
+    const first = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    const second = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    const sentinel = new Error("stale settings rejection");
+    let firstSettled = false;
+    let secondSettled = false;
+    let addSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let removeSpy: ReturnType<typeof vi.spyOn> | null = null;
+    try {
+      const fake = await setupPanel();
+      let invocation = 0;
+      fake.onInvoke("get_settings", () => {
+        const current = invocation++;
+        return current === 0 ? first.promise : second.promise;
+      });
+      const firstObserved = first.promise.then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+
+      addSpy = vi.spyOn(window, "addEventListener");
+      removeSpy = vi.spyOn(window, "removeEventListener");
+      const menu = await openMenu();
+      const listeners = await captureDismissListeners(addSpy);
+      const labels = menuButtonLabels(menu);
+      const attach = findExactMenuButton(menu, "Attach Telegram")!;
+
+      click(attach);
+      click(attach);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(2));
+
+      firstSettled = true;
+      first.reject(sentinel);
+      expect(await firstObserved).toEqual({ status: "rejected", error: sentinel });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(replicaMenu()).toBe(menu);
+      expect(menuButtonLabels(menu)).toEqual(labels);
+      expect(menu.querySelector(".settings-color-dot")).toBeNull();
+      expectNoTelegramCalls(fake);
+      expect(listenerWasRemoved(removeSpy, "click", listeners.click)).toBe(false);
+      expect(listenerWasRemoved(removeSpy, "contextmenu", listeners.contextmenu)).toBe(false);
+      expect(listenerWasRemoved(removeSpy, "keydown", listeners.keydown)).toBe(false);
+
+      secondSettled = true;
+      second.resolve({ telegramBots: [botTwo] });
+      await waitFor(() => expect(fake.callsFor("telegram_attach")).toHaveLength(1));
+      expect(fake.callsFor("telegram_attach")[0].args).toEqual({
+        sessionId: "member-session",
+        botId: botTwo.id,
+      });
+      expect(replicaMenu()).toBeNull();
+      expect(listenerWasRemoved(removeSpy, "click", listeners.click)).toBe(true);
+      expect(listenerWasRemoved(removeSpy, "contextmenu", listeners.contextmenu)).toBe(true);
+      expect(listenerWasRemoved(removeSpy, "keydown", listeners.keydown)).toBe(true);
+    } finally {
+      if (!firstSettled) first.resolve({ telegramBots: [] });
+      if (!secondSettled) second.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+      removeSpy?.mockRestore();
+      addSpy?.mockRestore();
+    }
+  });
+
+  it("prevents an old same-session reclamp callback from moving or cleaning the reopened menu", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    const innerWidthDescriptor = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const innerHeightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    let settled = false;
+    let addSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let removeSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let rafSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let replacementRectSpy: ReturnType<typeof vi.spyOn> | null = null;
+    try {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 300 });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 200 });
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+      addSpy = vi.spyOn(window, "addEventListener");
+      removeSpy = vi.spyOn(window, "removeEventListener");
+
+      const menuA = await openMenu(undefined, 40, 120);
+      const menuAListeners = await captureDismissListeners(addSpy);
+      const rafCallbacks: FrameRequestCallback[] = [];
+      rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        rafCallbacks.push(callback);
+        return rafCallbacks.length;
+      });
+      click(findExactMenuButton(menuA, "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      settled = true;
+      gate.resolve({ telegramBots: [botOne, botTwo] });
+      await waitFor(() => expect(menuA.querySelectorAll(".settings-color-dot")).toHaveLength(2));
+      expect(rafCallbacks).toHaveLength(1);
+      const staleReclamp = rafCallbacks.shift()!;
+
+      dispatchDismiss("escape");
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+      const replacement = await openMenu(undefined, 210, 40);
+      expect(replacement).not.toBe(menuA);
+      await waitFor(() => {
+        expect(recordedListener(addSpy!, "click")).not.toBe(menuAListeners.click);
+        expect(recordedListener(addSpy!, "contextmenu")).not.toBe(menuAListeners.contextmenu);
+        expect(recordedListener(addSpy!, "keydown")).not.toBe(menuAListeners.keydown);
+      });
+      const replacementListeners = await captureDismissListeners(addSpy);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      const left = replacement.style.left;
+      const top = replacement.style.top;
+      const labels = menuButtonLabels(replacement);
+      replacementRectSpy = vi.spyOn(replacement, "getBoundingClientRect").mockReturnValue({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 290,
+        bottom: 190,
+        width: 290,
+        height: 190,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      staleReclamp(0);
+      await Promise.resolve();
+      expect(replicaMenu()).toBe(replacement);
+      expect(replacement.style.left).toBe(left);
+      expect(replacement.style.top).toBe(top);
+      expect(menuButtonLabels(replacement)).toEqual(labels);
+      expect(replacement.querySelector(".settings-color-dot")).toBeNull();
+      expect(listenerWasRemoved(removeSpy, "click", replacementListeners.click)).toBe(false);
+      expect(
+        listenerWasRemoved(removeSpy, "contextmenu", replacementListeners.contextmenu),
+      ).toBe(false);
+      expect(listenerWasRemoved(removeSpy, "keydown", replacementListeners.keydown)).toBe(false);
+
+      dispatchDismiss("click");
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+      expect(listenerWasRemoved(removeSpy, "click", replacementListeners.click)).toBe(true);
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+      replacementRectSpy?.mockRestore();
+      rafSpy?.mockRestore();
+      removeSpy?.mockRestore();
+      addSpy?.mockRestore();
+      if (innerWidthDescriptor) Object.defineProperty(window, "innerWidth", innerWidthDescriptor);
+      if (innerHeightDescriptor) {
+        Object.defineProperty(window, "innerHeight", innerHeightDescriptor);
+      }
+    }
+  });
+
+  it.each(["a-to-b", "same-id", "team", "workgroup"] as const)(
+    "ignores a deferred stale response after %s replacement and preserves its dismissal listener",
+    async (scenario) => {
+      const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+      let settled = false;
+      try {
+        const discoveryResult =
+          scenario === "a-to-b"
+            ? projectDiscoveryTwoWorkgroups()
+            : scenario === "team"
+              ? projectDiscoveryWithTeam()
+              : projectDiscovery();
+        const sessions =
+          scenario === "a-to-b"
+            ? [coordSession(), memberSession(), otherSession()]
+            : [coordSession(), memberSession()];
+        const fake = await setupPanel(sessions, discoveryResult);
+        fake.onInvoke("get_settings", () => gate.promise);
+
+        const original = await openMenu();
+        click(findExactMenuButton(original, "Attach Telegram")!);
+        await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+        let dismiss: "click" | "contextmenu" | "escape";
+        if (scenario === "a-to-b") {
+          await openMenu(findRow(rendered!.root, otherRowTestId), 210, 45);
+          dismiss = "click";
+        } else if (scenario === "same-id") {
+          dispatchDismiss("escape");
+          await waitFor(() => expect(replicaMenu()).toBeNull());
+          await openMenu(undefined, 180, 35);
+          dismiss = "escape";
+        } else if (scenario === "team") {
+          const team = Array.from(
+            rendered!.root.querySelectorAll<HTMLElement>(".ac-team-header"),
+          ).find((candidate) => candidate.textContent?.includes("team-alpha"));
+          expect(team).toBeDefined();
+          await openMenu(team!, 190, 30);
+          dismiss = "contextmenu";
+        } else {
+          const workgroup = Array.from(
+            rendered!.root.querySelectorAll<HTMLElement>(".ac-wg-header[title]"),
+          ).find((candidate) => candidate.title === workgroupPath);
+          expect(workgroup).toBeDefined();
+          await openMenu(workgroup!, 200, 30);
+          dismiss = "escape";
+        }
+
+        if (scenario === "a-to-b") {
+          await waitFor(() =>
+            expect(findReplicaFolderAction(replicaMenu()!)?.title).toBe(otherMemberPath),
+          );
+        } else if (scenario === "same-id") {
+          await waitFor(() => expect(replicaMenu()).not.toBeNull());
+        } else if (scenario === "team") {
+          await waitFor(() =>
+            expect(findExactMenuButton(replicaMenu()!, "Edit Team")).not.toBeNull(),
+          );
+        } else {
+          await waitFor(() =>
+            expect(findExactMenuButton(replicaMenu()!, "Delete Room")).not.toBeNull(),
+          );
+        }
+        const replacement = replicaMenu()!;
+        const labels = menuButtonLabels(replacement);
+        settled = true;
+        gate.resolve({
+          telegramBots:
+            scenario === "a-to-b" ? [] : scenario === "same-id" ? [botOne] : [botOne, botTwo],
+        });
+        await gate.promise;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+        expect(replicaMenu()).toBe(replacement);
+        expect(menuButtonLabels(replacement)).toEqual(labels);
+        expect(replacement.querySelector(".settings-color-dot")).toBeNull();
+        expectNoTelegramCalls(fake);
+
+        dispatchDismiss(dismiss);
+        await waitFor(() => expect(replicaMenu()).toBeNull());
+      } finally {
+        if (!settled) gate.resolve({ telegramBots: [] });
+        if (replicaMenu()) dispatchDismiss("click");
+      }
+    },
+  );
+
+  it.each([
+    { race: "exit", response: [botOne] },
+    { race: "removal", response: [botOne, botTwo] },
+  ] as const)(
+    "keeps the owning menu/listener untouched when the exact session races to $race",
+    async ({ race, response }) => {
+      const gate = deferred<{ telegramBots: readonly TelegramBotFixture[] }>();
+      let settled = false;
+      try {
+        const fake = await setupPanel();
+        fake.onInvoke("get_settings", () => gate.promise);
+        const menu = await openMenu();
+        click(findExactMenuButton(menu, "Attach Telegram")!);
+        await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+        sessionsStore.setSessions(
+          race === "exit"
+            ? [coordSession(), memberSession({ status: { exited: 0 } })]
+            : [coordSession()],
+        );
+        await waitFor(() =>
+          expect(findExactMenuButton(menu, "Attach Telegram")).toBeNull(),
+        );
+        settled = true;
+        gate.resolve({ telegramBots: response });
+        await gate.promise;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+        expect(replicaMenu()).toBe(menu);
+        expect(menu.querySelector(".settings-color-dot")).toBeNull();
+        expectNoTelegramCalls(fake);
+        dispatchDismiss("click");
+        await waitFor(() => expect(replicaMenu()).toBeNull());
+      } finally {
+        if (!settled) gate.resolve({ telegramBots: [] });
+        if (replicaMenu()) dispatchDismiss("click");
+      }
+    },
+  );
+
+  it("ignores pending settings after a bridge appears and is replaced", async () => {
+    const gate = deferred<{ telegramBots: TelegramBotFixture[] }>();
+    const bridges = await testBridgesStore();
+    let settled = false;
+    try {
+      const fake = await setupPanel();
+      fake.onInvoke("get_settings", () => gate.promise);
+      const menu = await openMenu();
+      click(findExactMenuButton(menu, "Attach Telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+
+      bridges.setBridges([
+        { sessionId: "member-session", botId: botOne.id, botLabel: botOne.label, color: "red" },
+      ]);
+      await waitFor(() => expect(findExactMenuButton(menu, "Detach Telegram")).not.toBeNull());
+      bridges.setBridges([
+        { sessionId: "member-session", botId: botTwo.id, botLabel: botTwo.label, color: "blue" },
+      ]);
+      await waitFor(() => {
+        const detach = findExactMenuButton(menu, "Detach Telegram")!;
+        expect(
+          detach.querySelector<HTMLElement>(".session-context-option-icon")?.style.color,
+        ).toBe("blue");
+      });
+
+      settled = true;
+      gate.resolve({ telegramBots: [botOne, botTwo] });
+      await gate.promise;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      expect(replicaMenu()).toBe(menu);
+      expect(menu.querySelector(".settings-color-dot")).toBeNull();
+      expect(findExactMenuButton(menu, "Detach Telegram")).not.toBeNull();
+      expectNoTelegramCalls(fake);
+
+      dispatchDismiss("escape");
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+    } finally {
+      if (!settled) gate.resolve({ telegramBots: [] });
+      if (replicaMenu()) dispatchDismiss("click");
+      bridges.setBridges([]);
+    }
+  });
+
+  it("hides Telegram for an exited session but keeps Close Session actionable", async () => {
+    try {
+      await setupPanel([coordSession(), memberSession({ status: { exited: 0 } })]);
+      const menu = await openMenu();
+      expect(findExactMenuButton(menu, "Attach Telegram")).toBeNull();
+      expect(findExactMenuButton(menu, "Detach Telegram")).toBeNull();
+      const close = findExactMenuButton(menu, "Close Session");
+      expect(close).not.toBeNull();
+      click(close!);
+      await waitFor(() => expect(replicaMenu()).toBeNull());
+    } finally {
+      if (replicaMenu()) dispatchDismiss("click");
+    }
+  });
+
+  it("routes coordinator Close Session through close_coordinator after portal removal", async () => {
+    try {
+      const fake = await setupPanel([
+        coordSession(),
+        memberSession({ isCoordinator: true }),
+      ]);
+      let menuAtClose: HTMLElement | null | undefined;
+      fake.onInvoke("close_coordinator", () => {
+        menuAtClose = replicaMenu();
+        return { closed: true, workingCount: 0 };
+      });
+
+      click(findExactMenuButton(await openMenu(), "Close Session")!);
+      await waitFor(() => expect(fake.callsFor("close_coordinator")).toHaveLength(1));
+      expect(fake.callsFor("close_coordinator")[0].args).toEqual({
+        id: "member-session",
+        confirmed: false,
+      });
+      expect(fake.callsFor("destroy_session")).toHaveLength(0);
+      expect(menuAtClose).toBeNull();
+      expect(replicaMenu()).toBeNull();
+    } finally {
+      if (replicaMenu()) dispatchDismiss("click");
     }
   });
 });

@@ -2,7 +2,7 @@ import { Component, Show, createSignal, createMemo, onMount } from "solid-js";
 import { terminalStore } from "../stores/terminal";
 import iconUrl from "../../assets/icon-16.png";
 import { isTauri } from "../../shared/platform";
-import { WindowAPI } from "../../shared/ipc";
+import { InstanceAPI, WindowAPI } from "../../shared/ipc";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
@@ -23,8 +23,7 @@ const Titlebar: Component<TitlebarProps> = (props) => {
   onMount(async () => {
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const label = await invoke<string>("get_instance_label");
+        const label = await InstanceAPI.getLabel();
         if (label) setInstanceLabel(label);
       } catch { /* non-Tauri or command unavailable */ }
     }
@@ -92,7 +91,7 @@ const Titlebar: Component<TitlebarProps> = (props) => {
             <button
               class="titlebar-btn titlebar-btn-attach"
               onClick={handleReattach}
-              title="Re-attach to main window"
+              title="Re-attach session"
               data-ac-testid="terminal.titlebar.reattach"
               data-ac-role="button"
             >

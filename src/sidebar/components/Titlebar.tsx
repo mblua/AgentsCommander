@@ -1,6 +1,6 @@
 import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from "solid-js";
 import iconUrl from "../../assets/icon-16.png";
-import { ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
+import { InstanceAPI, ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
 import { terminalStore } from "../../terminal/stores/terminal";
@@ -191,8 +191,7 @@ const Titlebar: Component = () => {
     } catch { /* keep default */ }
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const label = await invoke<string>("get_instance_label");
+        const label = await InstanceAPI.getLabel();
         if (label) setInstanceLabel(label);
       } catch { /* non-Tauri or command unavailable */ }
     }

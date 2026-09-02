@@ -64,6 +64,8 @@ import AgentPickerModal, { type AgentPickerScopeContext } from "./AgentPickerMod
 import RestartPromptModal from "./RestartPromptModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
+import DetachIcon from "./DetachIcon";
+import ReattachIcon from "./ReattachIcon";
 import { normalizeBlockerReport } from "./workgroup-delete-diagnostics";
 import {
   automationIdPart,
@@ -632,6 +634,12 @@ const ProjectPanel: Component = () => {
           | { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
           | null
         >(null);
+        const [replicaTelegramBotMenu, setReplicaTelegramBotMenu] = createSignal<{
+          epoch: number;
+          sessionId: string;
+          bots: TelegramBotConfig[];
+        } | null>(null);
+        let replicaCtxMenuEpoch = 0;
         // #1536 - inline TASK-title editor state (shared by both menu branches;
         // only one menu is ever open). titleEdit pins the raw wg.path + the
         // resolved live-session id at click time, so guards compare strings,
@@ -1097,7 +1105,14 @@ const ProjectPanel: Component = () => {
           replicaCtxMenuCloseTimer = undefined;
         };
 
+        const advanceReplicaCtxMenuEpoch = () => {
+          replicaCtxMenuEpoch += 1;
+          setReplicaTelegramBotMenu(null);
+          return replicaCtxMenuEpoch;
+        };
+
         const cleanupCtx = () => {
+          advanceReplicaCtxMenuEpoch();
           cancelReplicaCtxMenuClose();
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
@@ -1148,10 +1163,21 @@ const ProjectPanel: Component = () => {
           );
         };
 
-        const reclampReplicaCtxMenu = () => {
-          const menu = replicaCtxMenu();
-          if (!menu) return;
-          const clamp = () => positionReplicaCtxMenu(menu.x, menu.y);
+        const reclampReplicaCtxMenu = (expected?: { epoch: number; sessionId: string }) => {
+          if (!replicaCtxMenu()) return;
+          const clamp = () => {
+            const menu = replicaCtxMenu();
+            if (!menu) return;
+            if (
+              expected &&
+              (replicaCtxMenuEpoch !== expected.epoch ||
+                menu.kind !== "active" ||
+                menu.sessionId !== expected.sessionId)
+            ) {
+              return;
+            }
+            positionReplicaCtxMenu(menu.x, menu.y);
+          };
           if (typeof window.requestAnimationFrame === "function") {
             window.requestAnimationFrame(clamp);
             return;
@@ -1292,8 +1318,7 @@ const ProjectPanel: Component = () => {
 
         const openRepoBrowse = async (url: string) => {
           closeRepoFlyout();
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           try {
             await WindowAPI.openExternal(url);
           } catch (e) {
@@ -1315,14 +1340,12 @@ const ProjectPanel: Component = () => {
           agentId?: string,
           requestedProfile?: string | null,
         ) => {
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           await restartReplicaSessionCore(sessionId, agentId, requestedProfile);
         };
 
         const toggleReplicaDetach = async (sessionId: string) => {
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           try {
             if (sessionsStore.isDetached(sessionId)) {
               await WindowAPI.attach(sessionId);
@@ -1341,6 +1364,134 @@ const ProjectPanel: Component = () => {
         const inactiveReplicaMenu = () => {
           const m = replicaCtxMenu();
           return m && m.kind === "inactive" ? m : null;
+        };
+        const activeReplicaMenuSession = () => {
+          const menu = activeReplicaMenu();
+          return menu
+            ? sessionsStore.sessions.find((session) => session.id === menu.sessionId)
+            : undefined;
+        };
+        const activeReplicaMenuBridge = () => {
+          const menu = activeReplicaMenu();
+          return menu ? bridgesStore.getBridge(menu.sessionId) : undefined;
+        };
+
+        type ReplicaTelegramInvocation = {
+          epoch: number;
+          sessionId: string;
+          startedLive: boolean;
+          startingBridge: NonNullable<ReturnType<typeof bridgesStore.getBridge>> | null;
+        };
+
+        const currentReplicaTelegramInvocation = (
+          token: ReplicaTelegramInvocation,
+        ): Session | null => {
+          if (!token.startedLive || replicaCtxMenuEpoch !== token.epoch) return null;
+          const menu = activeReplicaMenu();
+          if (!menu || menu.sessionId !== token.sessionId) return null;
+          const session = sessionsStore.sessions.find(
+            (candidate) => candidate.id === token.sessionId,
+          );
+          if (!session || !isSessionLive(session)) return null;
+          const bridge = bridgesStore.getBridge(token.sessionId) ?? null;
+          return bridge === token.startingBridge ? session : null;
+        };
+
+        const handleReplicaTelegramAction = async (
+          event: MouseEvent,
+          sessionId: string,
+        ) => {
+          event.stopPropagation();
+          if (activeReplicaMenu()?.sessionId !== sessionId) return;
+
+          const session = sessionsStore.sessions.find((candidate) => candidate.id === sessionId);
+          const startingBridge = bridgesStore.getBridge(sessionId) ?? null;
+          const startedLive = !!session && isSessionLive(session);
+          const epoch = advanceReplicaCtxMenuEpoch();
+          const token: ReplicaTelegramInvocation = {
+            epoch,
+            sessionId,
+            startedLive,
+            startingBridge,
+          };
+
+          if (!session || !startedLive) {
+            closeReplicaCtxMenu();
+            return;
+          }
+          if (startingBridge) {
+            closeReplicaCtxMenu();
+            await TelegramAPI.detach(sessionId);
+            return;
+          }
+
+          let settings: Awaited<ReturnType<typeof SettingsAPI.get>>;
+          try {
+            settings = await SettingsAPI.get();
+          } catch (error) {
+            if (currentReplicaTelegramInvocation(token)) throw error;
+            return;
+          }
+
+          if (!currentReplicaTelegramInvocation(token)) return;
+          const bots = settings.telegramBots || [];
+          if (bots.length === 0) {
+            closeReplicaCtxMenu();
+            return;
+          }
+          if (bots.length === 1) {
+            closeReplicaCtxMenu();
+            await TelegramAPI.attach(sessionId, bots[0].id);
+            return;
+          }
+
+          setReplicaTelegramBotMenu({ epoch, sessionId, bots });
+          reclampReplicaCtxMenu({ epoch, sessionId });
+        };
+
+        const handleReplicaTelegramBotSelect = async (
+          event: MouseEvent,
+          sessionId: string,
+          botId: string,
+          epoch: number,
+        ) => {
+          event.stopPropagation();
+          const menu = activeReplicaMenu();
+          const choices = replicaTelegramBotMenu();
+          const session = sessionsStore.sessions.find((candidate) => candidate.id === sessionId);
+          if (
+            replicaCtxMenuEpoch !== epoch ||
+            !menu ||
+            menu.sessionId !== sessionId ||
+            !choices ||
+            choices.epoch !== epoch ||
+            choices.sessionId !== sessionId ||
+            !session ||
+            !isSessionLive(session) ||
+            (bridgesStore.getBridge(sessionId) ?? null) !== null
+          ) {
+            return;
+          }
+
+          const targetSessionId = sessionId;
+          const targetBotId = botId;
+          closeReplicaCtxMenu();
+          const currentSession = sessionsStore.sessions.find(
+            (candidate) => candidate.id === targetSessionId,
+          );
+          if (!currentSession || !isSessionLive(currentSession)) return;
+          await TelegramAPI.attach(targetSessionId, targetBotId);
+        };
+
+        const handleReplicaContextClose = (event: MouseEvent, sessionId: string) => {
+          event.stopPropagation();
+          if (activeReplicaMenu()?.sessionId !== sessionId) return;
+          const targetSessionId = sessionId;
+          closeReplicaCtxMenu();
+          const session = sessionsStore.sessions.find(
+            (candidate) => candidate.id === targetSessionId,
+          );
+          if (session) void requestCoordinatorClose(session);
         };
 
         const resolveWorkgroupSessionId = (wg: AcWorkgroup): string | null => {
@@ -1556,7 +1707,7 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
             >
-              <span class="session-context-option-icon" aria-hidden="true" />
+              <span class="session-context-option-icon" aria-hidden="true">&#x1F465;</span>
               <span>Add to Group</span>
               <span class="session-context-submenu-arrow">&rsaquo;</span>
             </button>
@@ -1703,8 +1854,7 @@ const ProjectPanel: Component = () => {
         );
 
         const clearReplicaTaskTitle = async (wg: AcWorkgroup) => {
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           const sessionId = resolveWorkgroupSessionId(wg);
           try {
             if (sessionId) {
@@ -1808,8 +1958,7 @@ const ProjectPanel: Component = () => {
 
         const openMatrixFolder = async (path: string) => {
           setAgentCtxMenu(null);
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           try {
             await WindowAPI.openInExplorer(path);
           } catch (e) {
@@ -1818,8 +1967,7 @@ const ProjectPanel: Component = () => {
         };
 
         const openReplicaFolder = async (path: string) => {
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           try {
             await WindowAPI.openInExplorer(path);
           } catch (e) {
@@ -1828,8 +1976,7 @@ const ProjectPanel: Component = () => {
         };
 
         const openRepoFolder = async (path: string) => {
-          setReplicaCtxMenu(null);
-          cleanupCtx();
+          closeReplicaCtxMenu();
           try {
             await WindowAPI.openInExplorer(path);
           } catch (e) {
@@ -2110,8 +2257,7 @@ const ProjectPanel: Component = () => {
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
-            setReplicaCtxMenu(null);
-            cleanupCtx();
+            closeReplicaCtxMenu();
           };
           dismissCtx = dismiss;
           setTimeout(() => {
@@ -2142,8 +2288,7 @@ const ProjectPanel: Component = () => {
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
-            setReplicaCtxMenu(null);
-            cleanupCtx();
+            closeReplicaCtxMenu();
           };
           dismissCtx = dismiss;
           setTimeout(() => {
@@ -2239,42 +2384,10 @@ const ProjectPanel: Component = () => {
           });
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isRecording = () => { const s = session(); return s ? voiceRecorder.recordingSessionId() === s.id : false; };
-          const [showBotMenu, setShowBotMenu] = createSignal(false);
-          const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
 
           const handleCancelRecording = (e: MouseEvent) => {
             e.stopPropagation();
             voiceRecorder.cancel();
-          };
-          const handleTelegramClick = async (e: MouseEvent) => {
-            e.stopPropagation();
-            if (!isLive()) return;
-            const s = session();
-            if (!s) return;
-            const b = bridge();
-            if (b) {
-              await TelegramAPI.detach(s.id);
-            } else {
-              const settings = await SettingsAPI.get();
-              const bots = settings.telegramBots || [];
-              if (bots.length === 1) {
-                await TelegramAPI.attach(s.id, bots[0].id);
-              } else if (bots.length > 1) {
-                setAvailableBots(bots);
-                setShowBotMenu(true);
-              }
-            }
-          };
-          const handleBotSelect = async (botId: string) => {
-            setShowBotMenu(false);
-            if (!isLive()) return;
-            const s = session();
-            if (s) await TelegramAPI.attach(s.id, botId);
-          };
-          const handleClose = (e: MouseEvent) => {
-            e.stopPropagation();
-            const s = session();
-            if (s) void requestCoordinatorClose(s);
           };
 
           return (
@@ -2431,27 +2544,6 @@ const ProjectPanel: Component = () => {
                 <Show when={bridge()}>
                   <div class="session-item-bridge-dot" style={{ background: bridge()!.color }} title={`Telegram: ${bridge()!.botLabel}`} />
                 </Show>
-                <button
-                  class={`session-item-telegram ${bridge() ? "active" : ""}`}
-                  onClick={handleTelegramClick}
-                  title={bridge() ? "Detach Telegram" : "Attach Telegram"}
-                  style={bridge() ? { color: bridge()!.color } : {}}
-                ><TelegramIcon /></button>
-                <Show when={showBotMenu()}>
-                  <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
-                    <For each={availableBots()}>
-                      {(bot) => (
-                        <button class="session-item-bot-option" onClick={() => handleBotSelect(bot.id)}>
-                          <span class="settings-color-dot" style={{ background: bot.color }} />
-                          {bot.label}
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </Show>
-              <Show when={session()}>
-                <button class="session-item-close" onClick={handleClose} title="Close session">&#x2715;</button>
               </Show>
             </div>
           );
@@ -3497,6 +3589,27 @@ const ProjectPanel: Component = () => {
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       const repoEntries = () => replicaRepoMenuEntries(menu().wg, menu().replica);
+                      const liveTelegramSession = () => {
+                        const session = activeReplicaMenuSession();
+                        return session && isSessionLive(session) ? session : null;
+                      };
+                      const telegramBridge = () => activeReplicaMenuBridge();
+                      const telegramChoices = () => {
+                        const choices = replicaTelegramBotMenu();
+                        const session = liveTelegramSession();
+                        const currentMenu = activeReplicaMenu();
+                        if (
+                          !choices ||
+                          choices.epoch !== replicaCtxMenuEpoch ||
+                          choices.sessionId !== menu().sessionId ||
+                          currentMenu?.sessionId !== choices.sessionId ||
+                          !session ||
+                          telegramBridge()
+                        ) {
+                          return null;
+                        }
+                        return choices;
+                      };
                       return (
                       <>
                         <button
@@ -3512,8 +3625,7 @@ const ProjectPanel: Component = () => {
                           onClick={() => {
                             const sessionId = menu().sessionId;
                             const sessionName = menu().sessionName;
-                            setReplicaCtxMenu(null);
-                            cleanupCtx();
+                            closeReplicaCtxMenu();
                             setReplicaCodingAgentTarget({ sessionId, sessionName });
                           }}
                         >
@@ -3538,17 +3650,75 @@ const ProjectPanel: Component = () => {
                             </button>
                           )}
                         </Show>
+                        <Show when={activeReplicaMenuSession()}>
+                          <button
+                            class="session-context-option context-option-danger"
+                            onClick={(event) =>
+                              handleReplicaContextClose(event, menu().sessionId)
+                            }
+                          >
+                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session
+                          </button>
+                        </Show>
                         <div class="context-separator" />
                         <button
                           class="session-context-option"
                           onClick={() => toggleReplicaDetach(menu().sessionId)}
                         >
-                          {/* #987 - the two glyphs the session row's detach button uses. */}
+                          {/* #987, #1708 - the same icon pair the session row's detach button uses. */}
                           <span class="session-context-option-icon" aria-hidden="true">
-                            {sessionsStore.isDetached(menu().sessionId) ? "\u2934" : "\u29C9"}
+                            {sessionsStore.isDetached(menu().sessionId) ? (
+                              <ReattachIcon class="session-context-detach-icon" />
+                            ) : (
+                              <DetachIcon class="session-context-detach-icon" />
+                            )}
                           </span>{" "}
-                          {sessionsStore.isDetached(menu().sessionId) ? "Re-attach to main" : "Open in new window"}
+                          {sessionsStore.isDetached(menu().sessionId) ? "Re-attach session" : "Detach session"}
                         </button>
+                        <Show when={liveTelegramSession()}>
+                          <button
+                            class="session-context-option"
+                            onClick={(event) =>
+                              void handleReplicaTelegramAction(event, menu().sessionId)
+                            }
+                          >
+                            <span
+                              class="session-context-option-icon"
+                              aria-hidden="true"
+                              style={telegramBridge() ? { color: telegramBridge()!.color } : { color: "#0088cc" }}
+                            >
+                              <TelegramIcon />
+                            </span>{" "}
+                            {telegramBridge() ? "Detach Telegram" : "Attach Telegram"}
+                          </button>
+                        </Show>
+                        <Show when={telegramChoices()}>
+                          {(choices) => (
+                            <For each={choices().bots}>
+                              {(bot) => (
+                                <button
+                                  class="session-context-option"
+                                  onClick={(event) =>
+                                    void handleReplicaTelegramBotSelect(
+                                      event,
+                                      choices().sessionId,
+                                      bot.id,
+                                      choices().epoch,
+                                    )
+                                  }
+                                >
+                                  <span class="session-context-option-icon" aria-hidden="true">
+                                    <span
+                                      class="settings-color-dot"
+                                      style={{ background: bot.color }}
+                                    />
+                                  </span>{" "}
+                                  {bot.label}
+                                </button>
+                              )}
+                            </For>
+                          )}
+                        </Show>
                         {renderAddToGroupItem(menu().wg, menu().replica)}
                         <div class="context-separator" />
                         <button
@@ -3559,7 +3729,7 @@ const ProjectPanel: Component = () => {
                             void startReplicaTitleEdit(menu().wg);
                           }}
                         >
-                          <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                          <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                         </button>
                         <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
                           <div
@@ -3636,8 +3806,7 @@ const ProjectPanel: Component = () => {
                             onClick={() => {
                               const wg = menu().wg;
                               const replica = menu().replica;
-                              setReplicaCtxMenu(null);
-                              cleanupCtx();
+                              closeReplicaCtxMenu();
                               setInactiveCodingAgentTarget({
                                 projectPath: proj.path,
                                 wgPath: wg.path,
@@ -3675,7 +3844,7 @@ const ProjectPanel: Component = () => {
                               void startReplicaTitleEdit(menu().wg);
                             }}
                           >
-                            <span class="session-context-option-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
+                            <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                           </button>
                           <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
                             <div

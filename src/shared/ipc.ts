@@ -1199,6 +1199,17 @@ export const HomeAPI = {
   fetchMarkdown: () => transport.invoke<string>("fetch_home_markdown"),
 };
 
+export const InstanceAPI = {
+  getLabel: () => transport.invoke<string>("get_instance_label"),
+};
+
+export const BlackBoxAPI = {
+  /** #1652 - hands the previous run's renderer black boxes to the backend and
+   *  returns the storage keys it wants deleted. */
+  report: (records: { key: string; json: string }[]) =>
+    transport.invoke<string[]>("ipc_blackbox_report", { records }),
+};
+
 export function emitThemeChanged(light: boolean): Promise<void> {
   return transport.emit("theme_changed", { light });
 }

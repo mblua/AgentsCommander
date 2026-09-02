@@ -2647,7 +2647,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         case "swap":
           return `Swap this agent onto the ${railSide()} comparison rail`;
         default:
-          return `Show this agent in the ${railSide()} comparison rail`;
+          return `Show this agent's profiles in the ${railSide()} comparison rail`;
       }
     };
     const agentBackendKind = () => agent.backend?.kind ?? "localProcess";
@@ -2699,12 +2699,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
           <div class="settings-agent-row-actions">
             {/* #526: the rail indicator is shown once, on the color line. #895:
-                the head click assigns the rail, so no "Use" button lives here —
-                and no "Remove" either. A per-row Remove widened this column on
-                exactly one row, squeezing the meta column until the rail pill
-                wrapped to a second line: that row rendered 15px taller and the
-                tall row moved on every click. Clearing the comparison now lives
-                in the right rail's own header, next to the thing it clears. */}
+                Keep this action column symmetric across every configured row. Do not add a
+                per-row rail Remove: it widened only one row, squeezed the meta column, and
+                wrapped the rail pill. Clearing the comparison stays in the right rail header. */}
+            <button
+              class="settings-row-btn"
+              disabled={railAction() === "none"}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (railAction() === "none") return;
+                selectAgentRail(agent.id, i());
+              }}
+              title={railTitle()}
+              aria-label={`${agent.label || "agent"}: ${railTitle()}`}
+              data-ac-testid={`settings.agentRow.${i()}.use`}
+              data-ac-role="button"
+            >
+              See profiles
+            </button>
             <button
               class="settings-agent-row-delete"
               onClick={(e) => {

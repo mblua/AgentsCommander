@@ -2471,7 +2471,7 @@ html.light-theme .settings-api-client-warning {
   cursor: default;
 }
 
-.settings-agent-row-head[aria-disabled="true"] button {
+.settings-agent-row-head[aria-disabled="true"] button:not(:disabled) {
   cursor: pointer;
 }
 
@@ -3206,6 +3206,15 @@ html.light-theme .settings-api-client-warning {
   height: 14px;
   display: block;
 }
+
+/* #1708 - the row detach button now holds DetachIcon/ReattachIcon, not a text
+   glyph. Mirrors .session-item-telegram svg above. The colour is NOT set here:
+   the button's own color (dim, accent on hover) still tints the icon. */
+.session-item-detach svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 /* Bot selection dropdown on session item */
 .session-item-bot-menu {
   position: absolute;
@@ -3323,12 +3332,14 @@ html.light-theme .settings-api-client-warning {
 /* #987 - fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
    SVGs with entities and emoji, whose advance widths all differ, so an unwrapped
    glyph starts every label at a different x. Centering each glyph in this slot
-   lands every label on the same x. Rows with no icon (Add to Group) carry an
-   empty slot.
+   lands every label on the same x. #1708 filled the last empty slot (Add to
+   Group); the slot keeps its fixed width, so an iconless row would still align.
 
    The 16px box is a CENTRING ANCHOR, NOT A FIT. Measured at the 13px this slot
    sets: the emoji (U+1F916, U+1F4C2, U+1F9F9) advance 17.86px, so they overflow
-   the box by ~0.93px per side; the SVGs are 14px, U+29C9 is 13px, U+21BA is 10px.
+   the box by ~0.93px per side; U+1F465 (#1708) is emoji-presentation like them
+   and was not re-measured; the SVGs are 14px and U+21BA is 10px (#1708 put a
+   14px SVG where the former detach glyph was).
    The overflow is deliberate and harmless: the box does not clip, the bleed is
    symmetric (every glyph's centre lands on the same axis) and it spills into the
    row's 12px padding and 8px gap, where nothing is drawn.
@@ -3472,6 +3483,24 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   height: 14px;
   flex: 0 0 14px;
   color: var(--danger, #ef4444);
+}
+
+/* #1708 - detach/re-attach icon in the session context menu. Geometry mirrors
+   .session-context-matrix-icon above. The colour is the TOKEN, not the raw
+   #00d4ff: that literal is only the dark value (variables.css:6) and renders at
+   contrast 1.49 on the light --sidebar-surface (#ebebf0). */
+.session-context-detach-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--sidebar-accent);
+}
+
+/* #1708 - the Edit TASK title pencil, pairing it with the Clear task title broom
+   below it. Token, not the raw #eab308: that literal is only the dark value
+   (variables.css:18) and renders at contrast 1.61 on #ebebf0. */
+.session-context-task-icon {
+  color: var(--status-pending);
 }
 
 .session-context-trash-icon {

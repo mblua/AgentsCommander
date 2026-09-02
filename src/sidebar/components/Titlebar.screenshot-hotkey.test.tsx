@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getHotkeyStatus: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
+  getLabel: vi.fn(),
   invoke: vi.fn(),
 }));
 
@@ -32,6 +33,9 @@ vi.mock("../../shared/ipc", () => ({
   SettingsAPI: {
     get: mocks.getSettings,
     update: mocks.updateSettings,
+  },
+  InstanceAPI: {
+    getLabel: mocks.getLabel,
   },
 }));
 
@@ -89,6 +93,7 @@ const mountTitlebar = async ({
   setNativeRuntime(native);
   mocks.getSettings.mockResolvedValue({ mainSidebarSide: "right" });
   mocks.invoke.mockResolvedValue("");
+  mocks.getLabel.mockResolvedValue("");
   if (rejectStatus) {
     mocks.getHotkeyStatus.mockRejectedValue(new Error("status unavailable"));
   } else {
@@ -117,6 +122,7 @@ describe("Titlebar screenshot hotkey status", () => {
     mocks.getHotkeyStatus.mockReset();
     mocks.getSettings.mockReset();
     mocks.updateSettings.mockReset();
+    mocks.getLabel.mockReset();
     mocks.invoke.mockReset();
   });
 
@@ -201,11 +207,16 @@ describe("Titlebar screenshot hotkey status", () => {
     expect(mocks.getHotkeyStatus).not.toHaveBeenCalled();
   });
 
-  it("uses the typed status route while preserving the complete native invoke allowlist", async () => {
+  it("uses the typed status and label routes while preserving the complete native invoke allowlist", async () => {
     await mountTitlebar();
 
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke.mock.calls).toEqual([["get_instance_label"]]);
+    expect(mocks.getLabel).toHaveBeenCalledTimes(1);
+    // #1652 - the sidebar Titlebar now makes NO raw `@tauri-apps/api/core`
+    // invoke: `get_instance_label` moved onto `InstanceAPI`, so the whole
+    // registry sees it. The empty array is the tripwire: a new raw invoke here
+    // must be justified, not appended.
+    expect(mocks.invoke.mock.calls).toEqual([]);
   });
 
   it("shows the chip when a later status reports the registration", async () => {
